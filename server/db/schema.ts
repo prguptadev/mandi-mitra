@@ -23,6 +23,8 @@ export const users = sqliteTable(
     lockedUntil: integer("locked_until"),
     lang: text("lang").notNull().default("en"),
     theme: text("theme").notNull().default("system"),
+    /** JSON blob of per-screen preferences (column layout, row order, ...). */
+    prefs: text("prefs"),
     createdAt: integer("created_at").notNull().$defaultFn(now),
     updatedAt: integer("updated_at").notNull().$defaultFn(now),
   },

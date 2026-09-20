@@ -176,3 +176,57 @@ export interface GeminiSettings {
   configured: boolean; maskedKey: string | null; keyUnreadable: boolean;
   models: { id: string; label: string; note: string }[];
 }
+
+export interface ScanIssue { code: string; level: "error" | "warn"; message: string; params?: Record<string, string | number> }
+
+export interface ScanRow {
+  id: string;
+  ocr: {
+    rstNo: string | null; adatiName: string | null; grossQtl: number | null;
+    katauti: number | null; netQtl: number | null; rate: number | null;
+    confidence: number | null; struckThrough: boolean | null;
+  };
+  rstNo: string;
+  adatiId: string | null;
+  adatiRawText: string;
+  grossGrams: number | null;
+  katautiOverride: number | null;
+  ratePaisePerQtl: number | null;
+  excluded: boolean;
+  nameCorrected: boolean;
+  match: { adatiId: string; nameHi: string; nameHinglish: string; confidence: number; via: "alias" | "normkey" | "fuzzy" } | null;
+  suggestions: { adatiId: string; nameHi: string; nameHinglish: string; village: string | null; confidence: number }[];
+  derivedKatautiUnits: number | null;
+  derivedNetGrams: number | null;
+  derivedAmountPaise: number | null;
+  netAgrees: boolean | null;
+  netDiffGrams: number | null;
+  issues: ScanIssue[];
+  blocking: boolean;
+}
+
+export interface ScanSummary {
+  total: number; included: number; excluded: number;
+  blocking: number; warnings: number; clean: number;
+  autoMatchedNames: number; netAgreeing: number; netChecked: number;
+  totalNetGrams: number; totalAmountPaise: number; meanConfidence: number;
+}
+
+export interface ScanBatch {
+  id: string; status: string; sourceKind: string;
+  slipDate: string | null; merchantId: string | null; jinsId: string | null;
+  model: string | null; errorText: string | null;
+  tokensIn: number | null; tokensOut: number | null;
+  createdAt: number; reviewedAt: number | null;
+  pages: { index: number; name: string; mimeType: string; bytes: number }[];
+  rows: ScanRow[];
+  summary: ScanSummary | null;
+}
+
+export interface ScanListRow {
+  id: string; status: string; sourceKind: string;
+  slipDate: string | null; merchantId: string | null; merchantCode: string | null;
+  model: string | null; errorText: string | null;
+  pages: number; rowCount: number;
+  createdAt: number; reviewedAt: number | null;
+}

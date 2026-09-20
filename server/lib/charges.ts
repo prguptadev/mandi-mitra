@@ -18,6 +18,12 @@ export const KatautiSchema = z.object({
   mode: z.enum(["per_quintal_rounded", "per_quintal_exact", "per_bag", "none"])
     .default("per_quintal_rounded"),
   kgPerUnit: z.number().min(0).max(5).default(1),
+  /**
+   * half_up is what your munshi uses: it matched 45/45 rows, and every exact
+   * .50 case rounds up (32.50 -> 33, 28.50 -> 29, 17.50 -> 18). A bigger
+   * katauti is a bigger deduction, so rounding up favours the owner.
+   */
+  rounding: z.enum(["half_up", "up", "down", "half_even"]).default("half_up"),
 }).default({});
 
 export const ChargeConfigSchema = z.object({
@@ -125,7 +131,18 @@ export const ChargeConfigSchema = z.object({
 export type ChargeConfig = z.infer<typeof ChargeConfigSchema>;
 export type Katauti = z.infer<typeof KatautiSchema>;
 
-const halfUp = (n: number) => Math.sign(n) * Math.round(Math.abs(n));
+function roundBy(x: number, mode: Katauti["rounding"]): number {
+  if (mode === "up") return Math.ceil(x);
+  if (mode === "down") return Math.floor(x);
+  if (mode === "half_even") {
+    const fl = Math.floor(x);
+    const frac = x - fl;
+    if (frac > 0.5) return fl + 1;
+    if (frac < 0.5) return fl;
+    return fl % 2 === 0 ? fl : fl + 1;
+  }
+  return Math.floor(x + 0.5); // half_up — the owner-favouring default
+}
 
 /**
  * How many katauti units a slip carries, and what that deducts.
@@ -139,7 +156,7 @@ export function deriveKatauti(
   let units: number;
   if (override != null) units = override;
   else if (cfg.mode === "none") units = 0;
-  else if (cfg.mode === "per_quintal_rounded") units = halfUp(grossGrams / 100_000);
+  else if (cfg.mode === "per_quintal_rounded") units = roundBy(grossGrams / 100_000, cfg.rounding);
   else if (cfg.mode === "per_quintal_exact") units = grossGrams / 100_000;
   else units = 0; // per_bag needs a bag count the daily list does not carry
   return { units, deductionGrams: Math.round(units * cfg.kgPerUnit * 1000) };

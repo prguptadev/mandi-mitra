@@ -10,6 +10,7 @@ import { audit } from "../lib/audit.ts";
 import { defaultChargeConfig } from "../lib/charges.ts";
 import { COOKIE, HttpError, bad, requireAuth, actor, type Env } from "../lib/http.ts";
 import { toHinglish } from "../lib/translit.ts";
+import { PrefsSchema, parsePrefs, defaultPrefs, DAILY_COLUMNS } from "../lib/prefs.ts";
 
 export const authRoutes = new Hono<Env>();
 
@@ -254,6 +255,33 @@ authRoutes.post("/prefs", requireAuth, async (c) => {
   await db.update(schema.users).set({ ...body, updatedAt: nowSec() })
     .where(eq(schema.users.id, auth.user.id));
   return c.json({ ok: true });
+});
+
+/** Per-user screen preferences: column layout, row order, density. */
+authRoutes.get("/prefs", requireAuth, async (c) => {
+  const auth = c.get("auth")!;
+  return c.json({ prefs: parsePrefs(auth.user.prefs), columns: DAILY_COLUMNS });
+});
+
+/** Merges — send only the slice you changed. */
+authRoutes.put("/prefs", requireAuth, async (c) => {
+  const auth = c.get("auth")!;
+  const patch = PrefsSchema.deepPartial().parse(await c.req.json());
+  const current = parsePrefs(auth.user.prefs);
+  const next = PrefsSchema.parse({
+    ...current,
+    dailyList: { ...current.dailyList, ...(patch.dailyList ?? {}) },
+  });
+  await db.update(schema.users).set({ prefs: JSON.stringify(next), updatedAt: nowSec() })
+    .where(eq(schema.users.id, auth.user.id));
+  return c.json(next);
+});
+
+authRoutes.post("/prefs/reset", requireAuth, async (c) => {
+  const auth = c.get("auth")!;
+  await db.update(schema.users).set({ prefs: null, updatedAt: nowSec() })
+    .where(eq(schema.users.id, auth.user.id));
+  return c.json(defaultPrefs());
 });
 
 /** Utility the UI calls while typing a Hindi name. */

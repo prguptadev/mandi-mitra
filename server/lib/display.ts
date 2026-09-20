@@ -19,6 +19,7 @@ export const DisplayConfigSchema = z.object({
   katautiMode: z.enum(["per_quintal_rounded", "per_quintal_exact", "per_bag", "none"])
     .default("per_quintal_rounded"),
   katautiKgPerUnit: z.number().min(0).max(5).default(1),
+  katautiRounding: z.enum(["half_up", "up", "down", "half_even"]).default("half_up"),
 });
 
 export type DisplayConfig = z.infer<typeof DisplayConfigSchema>;

@@ -10,8 +10,10 @@ against buyer-mill purchase orders.
   katauti, net weight, rate. Only four fields are typed: RST, supplier, gross
   and rate. Katauti and net are derived, never typed.
 - **Scan / OCR** — scan or photograph the handwritten sheet, read it with Gemini,
-  then review side by side. Every row is cross-checked by arithmetic before it
-  can be accepted.
+  then review side by side against the image. Every row is cross-checked by
+  arithmetic before it can be accepted, and approving it writes straight into
+  the daily list. Corrections are remembered, so the same misreading resolves
+  by itself next time.
 - **Loads & PO** — group slips into a truck load against a mill's PO. A slip can
   belong to exactly one load, ever.
 - **Kaccha parcha** — generated from the mill's own charge terms. Rate is the
@@ -64,7 +66,20 @@ Against a running dev server:
 
 ```bash
 npx tsx scripts/e2e-daily-list.ts        # enters the real L.B sheet, asserts totals
+npx tsx scripts/e2e-scan-review.ts       # OCR review pipeline, no Gemini call needed
+npx tsx scripts/dev-make-review-scan.ts  # leaves a scan in review, to poke at the UI
 ```
+
+### OCR
+
+The prompt asks the model for what is **written**, never for what is correct.
+Net weight and amount are re-derived from gross by our own code; the model's
+reading of the net column is used only as a cross-check. A row whose written
+net equals our arithmetic is almost certainly read correctly, and the review
+screen reports that ratio up front. Rows split into *must fix* (missing or
+duplicate RST, unresolvable supplier, impossible weight) and *check this*
+(fuzzy name match, net disagreement, missing rate, low confidence). Nothing
+commits while a *must fix* row remains.
 
 Fresh dev database:
 

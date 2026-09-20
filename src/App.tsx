@@ -12,6 +12,8 @@ import { SignupPage, LoginPage } from "@/pages/Auth.tsx";
 import { DashboardPage } from "@/pages/Dashboard.tsx";
 import { SuppliersPage } from "@/pages/Suppliers.tsx";
 import { DailyListPage } from "@/pages/DailyList.tsx";
+import { ScanListPage } from "@/pages/ScanList.tsx";
+import { ScanReviewPage } from "@/pages/ScanReview.tsx";
 import { MillsPage } from "@/pages/Mills.tsx";
 import { UsersPage, RolesPage, AuditPage, CommoditiesPage, SettingsPage } from "@/pages/Admin.tsx";
 
@@ -105,6 +107,8 @@ export default function App() {
       <AppShell onAddBusiness={() => setAddBiz(true)}>
         <RouteSwitch>
           <Route path="/" component={DashboardPage} />
+          <Route path="/scan">{() => <Guard perm="scan.create"><ScanListPage /></Guard>}</Route>
+          <Route path="/scan/:id">{(p) => <Guard perm="scan.review"><ScanReviewPage scanId={p.id} /></Guard>}</Route>
           <Route path="/daily">{() => <Guard perm="slip.read"><DailyListPage /></Guard>}</Route>
           <Route path="/suppliers">{() => <Guard perm="adati.read"><SuppliersPage /></Guard>}</Route>
           <Route path="/mills">{() => <Guard perm="merchant.read"><MillsPage /></Guard>}</Route>

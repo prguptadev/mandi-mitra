@@ -1,0 +1,234 @@
+import { useRef, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "wouter";
+import {
+  Upload, ScanLine, FileText, Check, AlertTriangle, Clock, Eye, Play, X, KeyRound,
+} from "lucide-react";
+import { api, ApiError, type ScanListRow, type Merchant, type Jins, type GeminiSettings } from "@/lib/api.ts";
+import { useI18n } from "@/lib/i18n.tsx";
+import { useSession } from "@/lib/session.tsx";
+import { PageHeader } from "@/components/AppShell.tsx";
+import { SkeletonList } from "@/components/Skeletons.tsx";
+import {
+  Button, Card, CardHeader, Select, Input, Badge, Alert, EmptyState, Field, Spinner,
+} from "@/components/ui/index.tsx";
+import { cn, fmtDateTime, relTime } from "@/lib/utils.ts";
+
+const todayISO = () => new Date().toLocaleDateString("en-CA");
+
+const STATUS_TONE: Record<string, "ok" | "warn" | "bad" | "neutral" | "brand"> = {
+  uploaded: "neutral", reading: "brand", review: "warn", committed: "ok", failed: "bad",
+};
+
+export function ScanListPage() {
+  const { t, pick, lang } = useI18n();
+  const qc = useQueryClient();
+  const { can } = useSession();
+  const [, navigate] = useLocation();
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const [status, setStatus] = useState("all");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [merchantId, setMerchantId] = useState("");
+  const [upDate, setUpDate] = useState(todayISO);
+  const [upMill, setUpMill] = useState("");
+  const [upJins, setUpJins] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const gemini = useQuery({ queryKey: ["settings", "gemini"], queryFn: () => api.get<GeminiSettings>("/settings/gemini") });
+  const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
+  const jinsList = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
+  const counts = useQuery({ queryKey: ["scans", "counts"], queryFn: () => api.get<Record<string, number>>("/scans/counts") });
+
+  const list = useQuery({
+    queryKey: ["scans", { status, from, to, merchantId }],
+    queryFn: () => api.get<ScanListRow[]>(`/scans?${new URLSearchParams({
+      ...(status !== "all" ? { status } : {}),
+      ...(from ? { from } : {}), ...(to ? { to } : {}),
+      ...(merchantId ? { merchantId } : {}),
+    })}`),
+  });
+
+  const upload = useMutation({
+    mutationFn: async (files: FileList | File[]) => {
+      const fd = new FormData();
+      for (const f of Array.from(files)) fd.append("files", f);
+      if (upDate) fd.append("slipDate", upDate);
+      if (upMill) fd.append("merchantId", upMill);
+      if (upJins) fd.append("jinsId", upJins);
+      const res = await fetch("/api/scans", { method: "POST", body: fd, credentials: "same-origin" });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) throw new ApiError(res.status, json?.error ?? "Upload failed", json?.code);
+      return json as { id: string; pages: number };
+    },
+    onSuccess: async (r) => {
+      setErr(null);
+      await qc.invalidateQueries({ queryKey: ["scans"] });
+      if (gemini.data?.configured) run.mutate(r.id);
+      else navigate(`/scan/${r.id}`);
+    },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+
+  const run = useMutation({
+    mutationFn: (id: string) => api.post(`/scans/${id}/run`, {}),
+    onSuccess: async (_r, id) => { await qc.invalidateQueries({ queryKey: ["scans"] }); navigate(`/scan/${id}`); },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+
+  const busy = upload.isPending || run.isPending;
+  const filtersOn = status !== "all" || from || to || merchantId;
+
+  return (
+    <>
+      <PageHeader title={t("scan.title")} sub={t("scan.sub")} />
+
+      {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
+      {gemini.data && !gemini.data.configured && (
+        <Alert tone="warn" className="mb-3">
+          <span className="inline-flex items-center gap-2">
+            <KeyRound className="h-3.5 w-3.5" />
+            {t("scan.noKey")}
+            <Button size="sm" variant="secondary" onClick={() => navigate("/settings")}>{t("nav.settings")}</Button>
+          </span>
+        </Alert>
+      )}
+
+      {can("scan.create") && (
+        <Card className="mb-4">
+          <CardHeader title={t("scan.upload")} sub={t("scan.uploadSub")} />
+          <div className="space-y-3 p-3">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Field label={t("daily.date")}>
+                <Input type="date" value={upDate} className="h-8 num text-[13px]"
+                  onChange={(e) => setUpDate(e.target.value)} />
+              </Field>
+              <Field label={t("daily.mill")}>
+                <Select value={upMill} className="h-8 text-[13px]" onChange={(e) => setUpMill(e.target.value)}>
+                  <option value="">{t("daily.noMill")}</option>
+                  {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
+                </Select>
+              </Field>
+              <Field label={t("daily.jins")}>
+                <Select value={upJins} className="h-8 text-[13px]" onChange={(e) => setUpJins(e.target.value)}>
+                  <option value="">—</option>
+                  {jinsList.data?.map((j) => <option key={j.id} value={j.id}>{j.code} — {pick(j.name, j.nameHi)}</option>)}
+                </Select>
+              </Field>
+            </div>
+
+            <div
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault(); setDragging(false);
+                if (e.dataTransfer.files.length) upload.mutate(e.dataTransfer.files);
+              }}
+              onClick={() => fileRef.current?.click()}
+              className={cn(
+                "flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-center transition-colors",
+                dragging ? "border-brand bg-brand/5" : "border-line hover:border-faint hover:bg-raised/40",
+                busy && "pointer-events-none opacity-60",
+              )}
+            >
+              {busy ? <Spinner className="h-6 w-6" /> : <Upload className="h-6 w-6 text-faint" />}
+              <p className="text-[13px] font-medium text-ink">
+                {upload.isPending ? t("common.saving") : run.isPending ? t("scan.reading") : t("scan.dropHere")}
+              </p>
+              <p className="text-[11px] text-faint">{t("scan.uploadSub")}</p>
+              <input ref={fileRef} type="file" multiple hidden
+                accept="image/jpeg,image/png,image/webp,application/pdf"
+                onChange={(e) => { if (e.target.files?.length) upload.mutate(e.target.files); e.target.value = ""; }} />
+            </div>
+          </div>
+        </Card>
+      )}
+
+      <Card>
+        <div className="flex flex-wrap items-end gap-2 border-b border-line p-3">
+          <Field label={t("scan.filterStatus")} className="min-w-[150px]">
+            <Select value={status} onChange={(e) => setStatus(e.target.value)} className="h-8 text-[13px]">
+              <option value="all">{t("common.all")}</option>
+              {(["uploaded", "review", "committed", "failed"] as const).map((s) => (
+                <option key={s} value={s}>
+                  {t(`scan.status.${s}` as never)}{counts.data?.[s] ? ` (${counts.data[s]})` : ""}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label={t("scan.filterFrom")} className="w-[150px]">
+            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 num text-[13px]" />
+          </Field>
+          <Field label={t("scan.filterTo")} className="w-[150px]">
+            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 num text-[13px]" />
+          </Field>
+          <Field label={t("scan.filterMill")} className="min-w-[160px]">
+            <Select value={merchantId} onChange={(e) => setMerchantId(e.target.value)} className="h-8 text-[13px]">
+              <option value="">{t("common.all")}</option>
+              {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code}</option>)}
+            </Select>
+          </Field>
+          {filtersOn && (
+            <Button size="sm" variant="ghost" icon={<X className="h-3.5 w-3.5" />}
+              onClick={() => { setStatus("all"); setFrom(""); setTo(""); setMerchantId(""); }}>
+              {t("scan.clearFilters")}
+            </Button>
+          )}
+        </div>
+
+        {list.isLoading ? (
+          <div className="p-4"><SkeletonList rows={5} /></div>
+        ) : !list.data?.length ? (
+          <EmptyState icon={<ScanLine className="h-8 w-8" />}
+            title={filtersOn ? t("common.noResults") : t("scan.empty")}
+            sub={filtersOn ? undefined : t("scan.emptySub")} />
+        ) : (
+          <div className="divide-y divide-line/70">
+            {list.data.map((s) => (
+              <button key={s.id} type="button" onClick={() => navigate(`/scan/${s.id}`)}
+                className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-raised/50">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-raised">
+                  {s.status === "committed" ? <Check className="h-4 w-4 text-ok" />
+                    : s.status === "failed" ? <AlertTriangle className="h-4 w-4 text-bad" />
+                    : s.status === "reading" ? <Spinner />
+                    : <FileText className="h-4 w-4 text-faint" />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    <span className="num text-[13px] font-medium text-ink">{s.slipDate ?? "—"}</span>
+                    {s.merchantCode && <Badge tone="neutral" className="num">{s.merchantCode}</Badge>}
+                    <Badge tone={STATUS_TONE[s.status] ?? "neutral"}>{t(`scan.status.${s.status}` as never)}</Badge>
+                  </span>
+                  <span className="mt-0.5 block text-[11px] text-muted">
+                    {t("scan.pages", { n: s.pages })}
+                    {s.rowCount > 0 && ` · ${t("daily.rowCount", { n: s.rowCount })}`}
+                    {s.model && ` · ${s.model}`}
+                    {s.errorText && ` · ${s.errorText.slice(0, 60)}`}
+                  </span>
+                </span>
+                <span className="shrink-0 text-right text-[11px] text-faint">
+                  <span className="block">{relTime(s.createdAt, lang)}</span>
+                </span>
+                {s.status === "uploaded" && can("scan.create") && (
+                  <Button size="sm" variant="secondary" icon={<Play className="h-3.5 w-3.5" />}
+                    loading={run.isPending}
+                    onClick={(e) => { e.stopPropagation(); run.mutate(s.id); }}>
+                    {t("scan.read")}
+                  </Button>
+                )}
+                {s.status === "review" && (
+                  <Button size="sm" variant="primary" icon={<Eye className="h-3.5 w-3.5" />}
+                    onClick={(e) => { e.stopPropagation(); navigate(`/scan/${s.id}`); }}>
+                    {t("scan.review")}
+                  </Button>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </Card>
+    </>
+  );
+}

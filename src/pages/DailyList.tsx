@@ -9,6 +9,8 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, parseLooseNumber, parseQtlToGrams, parseRupeesToPaise, GRAMS_PER_QTL } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
+import { DailyListSettings } from "@/components/DailyListSettings.tsx";
+import { usePrefs, DAILY_COLUMNS, type DailyColumnKey } from "@/lib/prefs.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import {
@@ -61,6 +63,13 @@ function derive(draft: Draft, cfg: KatautiConfig) {
   return { grossGrams, katautiUnits, suggested, overridden: typed !== null, katautiGrams, netGrams, ratePaise, amountPaise };
 }
 
+const NUMERIC = new Set<string>(["sr", "gross", "katauti", "deduction", "net", "rate", "amount", "bagsCount"]);
+const WIDTHS: Record<string, string> = {
+  sr: "w-10", rstNo: "w-20", adatiHi: "min-w-[170px]", adatiLatin: "min-w-[140px]",
+  village: "w-28", mill: "w-16", jins: "w-16", gross: "w-24", katauti: "w-20",
+  deduction: "w-20", net: "w-24", rate: "w-24", amount: "w-32", bagsCount: "w-16", status: "w-20",
+};
+
 const CELL = "h-8 w-full rounded-md border border-line bg-surface px-2 text-[13px] text-ink num text-right placeholder:text-faint focus:border-brand disabled:opacity-60";
 
 export function DailyListPage() {
@@ -68,6 +77,8 @@ export function DailyListPage() {
   const f = useFormat();
   const qc = useQueryClient();
   const { can } = useSession();
+  const { prefs } = usePrefs();
+  const P = prefs.dailyList;
 
   const [date, setDate] = useState(todayISO);
   const [merchantId, setMerchantId] = useState<string>("");
@@ -141,7 +152,8 @@ export function DailyListPage() {
     }),
     onSuccess: async () => {
       setErr(null);
-      setDraft(emptyDraft());
+      // most rows on a sheet share a rate, so keep it unless told otherwise
+      setDraft(P.carryRateForward ? { ...emptyDraft(), rate: draft.rate } : emptyDraft());
       await qc.invalidateQueries({ queryKey: ["slips"] });
       rstRef.current?.focus();
     },
@@ -216,26 +228,48 @@ export function DailyListPage() {
   const sheetDiff = sheetTotalGrams !== null && totals ? totals.netGrams - sheetTotalGrams : null;
 
   const exportCsv = () => {
-    const header = ["Sr", "RST No", "Adati (Hindi)", "Adati", "Village", "Mill", "Jins",
-      "Dharam Kanta", "Katauti", "Deduction", "Net Weight", "Rate", "Amount"];
+    const cols = DAILY_COLUMNS.filter((c) => P.exportColumns[c.key] !== false);
+    const value = (c: DailyColumnKey, r: SlipRow, i: number): string | number => {
+      switch (c) {
+        case "sr": return i + 1;
+        case "rstNo": return r.rstNo;
+        case "adatiHi": return r.adatiNameHi;
+        case "adatiLatin": return r.adatiNameHinglish;
+        case "village": return r.adatiVillage ?? "";
+        case "mill": return r.merchantCode ?? "";
+        case "jins": return r.jinsCode;
+        case "gross": return (r.grossGrams / GRAMS_PER_QTL).toFixed(2);
+        case "katauti": return r.katautiUnits;
+        case "deduction": return (r.katautiGrams / GRAMS_PER_QTL).toFixed(2);
+        case "net": return (r.netGrams / GRAMS_PER_QTL).toFixed(2);
+        case "rate": return r.ratePending ? "" : (r.ratePaisePerQtl / 100).toFixed(2);
+        case "amount": return r.ratePending ? "" : (r.amountPaise / 100).toFixed(2);
+        case "bagsCount": return r.bagsCount ?? "";
+        case "status": return r.status;
+        default: return "";
+      }
+    };
+    const totalValue = (c: DailyColumnKey): string | number => {
+      if (!totals) return "";
+      switch (c) {
+        case "rstNo": return "TOTAL";
+        case "gross": return (totals.grossGrams / GRAMS_PER_QTL).toFixed(2);
+        case "katauti": return totals.katautiUnits;
+        case "deduction": return (totals.katautiGrams / GRAMS_PER_QTL).toFixed(2);
+        case "net": return (totals.netGrams / GRAMS_PER_QTL).toFixed(2);
+        case "rate": return (totals.weightedAvgRatePaise / 100).toFixed(2);
+        case "amount": return (totals.amountPaise / 100).toFixed(2);
+        case "bagsCount": return totals.bagsCount || "";
+        default: return "";
+      }
+    };
+    const header = cols.map((c) => c.en);
     const esc = (v: unknown) => {
       const s = String(v ?? "");
       return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
     };
-    const body = rows.map((r, i) => [
-      i + 1, r.rstNo, r.adatiNameHi, r.adatiNameHinglish, r.adatiVillage ?? "",
-      r.merchantCode ?? "", r.jinsCode,
-      (r.grossGrams / GRAMS_PER_QTL).toFixed(2), r.katautiUnits,
-      (r.katautiGrams / GRAMS_PER_QTL).toFixed(2),
-      (r.netGrams / GRAMS_PER_QTL).toFixed(2),
-      (r.ratePaisePerQtl / 100).toFixed(2), (r.amountPaise / 100).toFixed(2),
-    ]);
-    const foot = totals ? [["", "TOTAL", "", "", "", "", "",
-      (totals.grossGrams / GRAMS_PER_QTL).toFixed(2), totals.katautiUnits,
-      (totals.katautiGrams / GRAMS_PER_QTL).toFixed(2),
-      (totals.netGrams / GRAMS_PER_QTL).toFixed(2),
-      (totals.weightedAvgRatePaise / 100).toFixed(2),
-      (totals.amountPaise / 100).toFixed(2)]] : [];
+    const body = ordered.map((r, i) => cols.map((c) => value(c.key, r, i)));
+    const foot = totals ? [cols.map((c) => totalValue(c.key))] : [];
     const csv = [header, ...body, ...foot].map((r) => r.map(esc).join(",")).join("\r\n");
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
@@ -247,6 +281,164 @@ export function DailyListPage() {
 
   const dayInfo = days.data?.find((x) => x.slipDate === date);
 
+  /* ---------------------------------------------- column-driven rendering */
+
+  const visibleCols = DAILY_COLUMNS.filter((c) => P.columns[c.key] !== false);
+  const PAD = P.density === "compact" ? "py-0.5" : "py-1";
+
+  const ordered = useMemo(() => {
+    const list = [...rows];
+    if (P.sortOrder === "rstAsc") list.sort((a, b) => (Number(a.rstNo) || 0) - (Number(b.rstNo) || 0));
+    else if (P.sortOrder === "rstDesc") list.sort((a, b) => (Number(b.rstNo) || 0) - (Number(a.rstNo) || 0));
+    else if (P.sortOrder === "newestFirst") list.sort((a, b) => b.createdAt - a.createdAt);
+    return list;
+  }, [rows, P.sortOrder]);
+
+  function displayCell(key: DailyColumnKey, r: SlipRow, i: number) {
+    switch (key) {
+      case "sr": return <span className="num text-[11px] text-faint">{i + 1}</span>;
+      case "rstNo": return <span className="num font-medium">{r.rstNo}</span>;
+      case "adatiHi": return (
+        <span className="flex items-center gap-1.5">
+          <span lang="hi" className="truncate text-[14px] text-ink">{r.adatiNameHi}</span>
+          {r.ratePending && <Badge tone="warn">{t("daily.ratePending")}</Badge>}
+          {Boolean(r.loadId) && <Badge tone="warn"><Lock className="h-2.5 w-2.5" />{t("daily.onLoad")}</Badge>}
+        </span>
+      );
+      case "adatiLatin": return <span className="truncate text-[12px] text-muted">{r.adatiNameHinglish}</span>;
+      case "village": return <span className="text-[12px] text-muted">{lang === "hi" ? (r.adatiVillage ?? "") : (r.adatiVillage ?? "")}</span>;
+      case "mill": return r.merchantCode ? <Badge tone="neutral" className="num">{r.merchantCode}</Badge> : <span className="text-faint">—</span>;
+      case "jins": return <span className="num text-[12px] text-muted">{r.jinsCode}</span>;
+      case "gross": return f.weight(r.grossGrams);
+      case "katauti": return (
+        <span className={cn(r.katautiOverride && "text-warn")}>
+          {f.int(r.katautiUnits)}
+          {r.katautiOverride && <span className="ml-0.5 text-[10px]" title={t("daily.katautiEdited")}>*</span>}
+        </span>
+      );
+      case "deduction": return <span className="text-faint">{f.weight(r.katautiGrams)}</span>;
+      case "net": return (
+        <span className={cn("font-semibold", r.netMismatchGrams !== 0 && "text-bad")}>
+          {f.weight(r.netGrams)}
+          {r.netMismatchGrams !== 0 && <span className="ml-1 text-[10px]">({f.weight(r.expectedNetGrams)})</span>}
+        </span>
+      );
+      case "rate": return r.ratePending ? <span className="text-faint">—</span> : f.rate(r.ratePaisePerQtl);
+      case "amount": return r.ratePending
+        ? <span className="text-faint">—</span>
+        : <span className="font-semibold">{f.amount(r.amountPaise)}</span>;
+      case "bagsCount": return r.bagsCount != null ? f.int(r.bagsCount) : <span className="text-faint">—</span>;
+      case "status": return <span className="text-[11px] text-muted">{r.status}</span>;
+      default: return null;
+    }
+  }
+
+  function editCell(
+    key: DailyColumnKey, ed: Draft,
+    dd: ReturnType<typeof derive>, r: SlipRow, i: number,
+  ) {
+    const upd = (patch: Partial<Draft>) => setEditing({ id: r.id, draft: { ...ed, ...patch } });
+    switch (key) {
+      case "sr": return <span className="num text-[11px] text-faint">{i + 1}</span>;
+      case "rstNo": return <input className={cn(CELL, "text-left")} value={ed.rstNo} autoFocus
+        onChange={(e) => upd({ rstNo: e.target.value })} />;
+      case "adatiHi": return <SupplierPicker suppliers={suppliers.data ?? []} value={ed.adatiId}
+        onChange={(v) => upd({ adatiId: v })} />;
+      case "gross": return <input className={CELL} value={ed.gross} inputMode="decimal"
+        onChange={(e) => upd({ gross: e.target.value })} />;
+      case "katauti": return <input className={cn(CELL, !ed.katauti && "text-faint")} inputMode="numeric"
+        value={ed.katauti} placeholder={dd.suggested === null ? "" : String(dd.suggested)}
+        onChange={(e) => upd({ katauti: e.target.value })} />;
+      case "deduction": return <span className="num text-faint">{dd.katautiGrams === null ? "—" : f.weight(dd.katautiGrams)}</span>;
+      case "net": return <span className="num font-semibold">{dd.netGrams === null ? "—" : f.weight(dd.netGrams)}</span>;
+      case "rate": return <input className={CELL} value={ed.rate} inputMode="decimal" disabled={!can("rate.edit")}
+        onChange={(e) => upd({ rate: e.target.value })}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); update.mutate({ id: r.id, draft: ed }); }
+          if (e.key === "Escape") setEditing(null);
+        }} />;
+      case "amount": return <span className="num font-semibold">{dd.amountPaise === null ? "—" : f.amount(dd.amountPaise)}</span>;
+      default: return displayCell(key, r, i);
+    }
+  }
+
+  function totalCell(key: DailyColumnKey) {
+    if (!totals) return null;
+    switch (key) {
+      case "gross": return f.weight(totals.grossGrams);
+      case "katauti": return f.int(totals.katautiUnits);
+      case "deduction": return <span className="text-muted">{f.weight(totals.katautiGrams)}</span>;
+      case "net": return <span className="text-[14px]">{f.weight(totals.netGrams)}</span>;
+      case "rate": return (
+        <span className="text-[12px] text-muted" title={t("daily.weightedAvg")}>
+          {f.rate(totals.weightedAvgRatePaise)}
+          {totals.ratePendingRows > 0 && <span className="ml-1 text-[10px] font-normal text-warn">*</span>}
+        </span>
+      );
+      case "amount": return <span className="text-[14px] text-brand">{f.amount(totals.amountPaise)}</span>;
+      case "bagsCount": return totals.bagsCount ? f.int(totals.bagsCount) : null;
+      default: return null;
+    }
+  }
+
+  const entryRow = can("slip.write") ? (
+    <tr className="bg-brand/[0.04]">
+      <td className="border-b border-line px-2 py-1.5 text-center">
+        <Plus className="mx-auto h-3.5 w-3.5 text-brand" />
+      </td>
+      {visibleCols.map((c) => (
+        <td key={c.key} className={cn("border-b border-line px-1 py-1.5", NUMERIC.has(c.key) && "text-right")}>
+          {c.key === "sr" ? <span className="num text-[11px] text-faint">{rows.length + 1}</span>
+            : c.key === "rstNo" ? (
+              <input ref={rstRef} className={cn(CELL, "text-left", rstTaken && "border-bad")}
+                value={draft.rstNo} placeholder={nextRst.data?.rstNo ?? "626"}
+                onChange={(e) => setDraft((p) => ({ ...p, rstNo: e.target.value }))}
+                onKeyDown={step("adati")} />
+            ) : c.key === "adatiHi" ? (
+              <SupplierPicker ref={adatiRef} suppliers={suppliers.data ?? []} value={draft.adatiId}
+                onChange={(v) => setDraft((p) => ({ ...p, adatiId: v }))}
+                onCommit={() => grossRef.current?.focus()}
+                onCreate={can("adati.write") ? (name) => setNewSupplierName(name) : undefined} />
+            ) : c.key === "gross" ? (
+              <input ref={grossRef} className={CELL} value={draft.gross} inputMode="decimal" placeholder="19.20"
+                onChange={(e) => setDraft((p) => ({ ...p, gross: e.target.value }))}
+                onKeyDown={step("bags")} />
+            ) : c.key === "katauti" ? (
+              <input ref={bagsRef} inputMode="numeric" value={draft.katauti}
+                className={cn(CELL, !draft.katauti && "text-faint")}
+                placeholder={d.suggested === null ? "" : String(d.suggested)}
+                title={t("daily.katautiAuto")}
+                onChange={(e) => setDraft((p) => ({ ...p, katauti: e.target.value }))}
+                onKeyDown={step("rate")} />
+            ) : c.key === "deduction" ? (
+              <span className="num text-faint">{d.katautiGrams === null ? "—" : f.weight(d.katautiGrams)}</span>
+            ) : c.key === "net" ? (
+              <span className={cn("num font-semibold", d.netGrams !== null && d.netGrams <= 0 && "text-bad")}>
+                {d.netGrams === null ? "—" : f.weight(d.netGrams)}
+              </span>
+            ) : c.key === "rate" ? (
+              <input ref={rateRef} className={CELL} value={draft.rate} inputMode="decimal"
+                disabled={!can("rate.edit")}
+                placeholder={lastRate.data?.ratePaisePerQtl ? f.rate(lastRate.data.ratePaisePerQtl) : "3500"}
+                onChange={(e) => setDraft((p) => ({ ...p, rate: e.target.value }))}
+                onKeyDown={step("save")} />
+            ) : c.key === "amount" ? (
+              <span className="num font-semibold text-brand">{d.amountPaise === null ? "—" : f.amount(d.amountPaise)}</span>
+            ) : c.key === "mill" ? (
+              activeMill ? <Badge tone="neutral" className="num">{activeMill.code}</Badge> : <span className="text-faint">—</span>
+            ) : null}
+        </td>
+      ))}
+      <td className="border-b border-line px-1 py-1.5">
+        <Button size="icon" variant="primary" className="h-7 w-7" loading={create.isPending}
+          disabled={!draftReady} onClick={() => create.mutate()} title={t("daily.saveRow")}>
+          <Check className="h-3.5 w-3.5" />
+        </Button>
+      </td>
+    </tr>
+  ) : null;
+
+
   return (
     <>
       <PageHeader
@@ -255,6 +447,7 @@ export function DailyListPage() {
         action={
           <div className="flex items-center gap-2">
             <Button size="sm" variant="ghost" icon={<Keyboard className="h-3.5 w-3.5" />} onClick={() => setShowHelp(true)} />
+            <DailyListSettings />
             {can("export.data") && (
               <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={exportCsv} disabled={!rows.length}>
                 CSV
@@ -357,76 +550,50 @@ export function DailyListPage() {
             <thead>
               <tr className="bg-raised/80">
                 <th className="w-8 border-b border-line px-2 py-1.5" />
-                <th className="w-10 border-b border-line px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-muted">#</th>
-                <th className="w-20 border-b border-line px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-muted">{t("daily.rst")}</th>
-                <th className="min-w-[200px] border-b border-line px-2 py-1.5 text-left text-[10px] font-semibold uppercase tracking-wide text-muted">{t("daily.supplier")}</th>
-                <th className="w-24 border-b border-line px-2 py-1.5 text-right text-[10px] font-semibold uppercase tracking-wide text-muted">{t("daily.gross")}</th>
-                <th className="w-20 border-b border-line px-2 py-1.5 text-right text-[10px] font-semibold uppercase tracking-wide text-muted" title={t("daily.katautiAuto")}>{t("daily.bags")}</th>
-                <th className="w-20 border-b border-line px-2 py-1.5 text-right text-[10px] font-semibold uppercase tracking-wide text-muted">{t("daily.katautiWt")}</th>
-                <th className="w-24 border-b border-line px-2 py-1.5 text-right text-[10px] font-semibold uppercase tracking-wide text-muted">{t("daily.net")}</th>
-                <th className="w-24 border-b border-line px-2 py-1.5 text-right text-[10px] font-semibold uppercase tracking-wide text-muted">
-                  {t("daily.rate")}{f.symbol && <span className="ml-0.5 font-normal normal-case text-faint">{f.symbol}</span>}
-                </th>
-                <th className="w-32 border-b border-line px-2 py-1.5 text-right text-[10px] font-semibold uppercase tracking-wide text-muted">
-                  {t("daily.amount")}{f.symbol && <span className="ml-0.5 font-normal normal-case text-faint">{f.symbol}</span>}
-                </th>
+                {visibleCols.map((c) => (
+                  <th key={c.key}
+                    title={c.key === "katauti" ? t("daily.katautiAuto") : undefined}
+                    className={cn(
+                      "border-b border-line px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted",
+                      NUMERIC.has(c.key) ? "text-right" : "text-left",
+                      WIDTHS[c.key],
+                    )}>
+                    {pick(c.en, c.hi)}
+                    {(c.key === "rate" || c.key === "amount") && f.symbol && (
+                      <span className="ml-0.5 font-normal normal-case text-faint">{f.symbol}</span>
+                    )}
+                  </th>
+                ))}
                 <th className="w-16 border-b border-line px-2 py-1.5" />
               </tr>
             </thead>
 
             <tbody>
               {sheet.isLoading && (
-                <tr><td colSpan={11} className="p-0"><SkeletonTable rows={6} cols={[{ w: "w-12" }, { w: "w-40" }, { w: "w-16", numeric: true }, { w: "w-12", numeric: true }, { w: "w-16", numeric: true }, { w: "w-20", numeric: true }]} /></td></tr>
+                <tr><td colSpan={visibleCols.length + 2} className="p-0">
+                  <SkeletonTable rows={6} cols={[{ w: "w-12" }, { w: "w-40" }, { w: "w-16", numeric: true }, { w: "w-12", numeric: true }, { w: "w-16", numeric: true }, { w: "w-20", numeric: true }]} />
+                </td></tr>
               )}
 
-              {!sheet.isLoading && rows.map((r, i) => {
-                const isEditing = editing?.id === r.id;
+              {P.newRowPosition === "top" && entryRow}
+
+              {!sheet.isLoading && ordered.map((r, i) => {
                 const locked = Boolean(r.loadId);
-                if (isEditing) {
-                  const ed = editing!.draft;
+                if (editing?.id === r.id) {
+                  const ed = editing.draft;
                   const dd = derive(ed, r.katautiCfg);
                   return (
                     <tr key={r.id} className="bg-brand/[0.06]">
-                      <td className="border-b border-line/70 px-2 py-1" />
-                      <td className="num border-b border-line/70 px-2 py-1 text-[11px] text-faint">{i + 1}</td>
-                      <td className="border-b border-line/70 px-1 py-1">
-                        <input className={cn(CELL, "text-left")} value={ed.rstNo} autoFocus
-                          onChange={(e) => setEditing({ id: r.id, draft: { ...ed, rstNo: e.target.value } })} />
-                      </td>
-                      <td className="border-b border-line/70 px-1 py-1">
-                        <SupplierPicker suppliers={suppliers.data ?? []} value={ed.adatiId}
-                          onChange={(v) => setEditing({ id: r.id, draft: { ...ed, adatiId: v } })} />
-                      </td>
-                      <td className="border-b border-line/70 px-1 py-1">
-                        <input className={CELL} value={ed.gross} inputMode="decimal"
-                          onChange={(e) => setEditing({ id: r.id, draft: { ...ed, gross: e.target.value } })} />
-                      </td>
-                      <td className="border-b border-line/70 px-1 py-1">
-                        <input className={cn(CELL, !ed.katauti && "text-faint")} inputMode="numeric"
-                          value={ed.katauti} placeholder={dd.suggested === null ? "" : String(dd.suggested)}
-                          onChange={(e) => setEditing({ id: r.id, draft: { ...ed, katauti: e.target.value } })} />
-                      </td>
-                      <td className="num border-b border-line/70 px-2 py-1 text-right text-faint">
-                        {dd.katautiGrams === null ? "—" : f.weight(dd.katautiGrams)}
-                      </td>
-                      <td className="num border-b border-line/70 px-2 py-1 text-right font-semibold">
-                        {dd.netGrams === null ? "—" : f.weight(dd.netGrams)}
-                      </td>
-                      <td className="border-b border-line/70 px-1 py-1">
-                        <input className={CELL} value={ed.rate} inputMode="decimal" disabled={!can("rate.edit")}
-                          onChange={(e) => setEditing({ id: r.id, draft: { ...ed, rate: e.target.value } })}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") { e.preventDefault(); update.mutate(editing!); }
-                            if (e.key === "Escape") setEditing(null);
-                          }} />
-                      </td>
-                      <td className="num border-b border-line/70 px-2 py-1 text-right font-semibold">
-                        {dd.amountPaise === null ? "—" : f.amount(dd.amountPaise)}
-                      </td>
-                      <td className="border-b border-line/70 px-1 py-1">
+                      <td className={cn("border-b border-line/70 px-2", PAD)} />
+                      {visibleCols.map((c) => (
+                        <td key={c.key} className={cn("border-b border-line/70 px-1", PAD, NUMERIC.has(c.key) && "text-right")}>
+                          {editCell(c.key, ed, dd, r, i)}
+                        </td>
+                      ))}
+                      <td className={cn("border-b border-line/70 px-1", PAD)}>
                         <div className="flex items-center gap-0.5">
                           <Button size="icon" variant="primary" className="h-7 w-7" loading={update.isPending}
-                            onClick={() => update.mutate(editing!)}><Check className="h-3.5 w-3.5" /></Button>
+                            onClick={() => update.mutate(editing)}><Check className="h-3.5 w-3.5" /></Button>
                           <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditing(null)}>
                             <X className="h-3.5 w-3.5" />
                           </Button>
@@ -436,13 +603,12 @@ export function DailyListPage() {
                   );
                 }
                 return (
-                  <tr key={r.id}
-                    className={cn(
-                      "transition-colors hover:bg-raised/40",
-                      !r.reconciles && "bg-bad-soft/60",
-                      locked && "opacity-75",
-                    )}>
-                    <td className="border-b border-line/70 px-2 py-1">
+                  <tr key={r.id} className={cn(
+                    "transition-colors hover:bg-raised/40",
+                    !r.reconciles && "bg-bad-soft/60",
+                    locked && "opacity-75",
+                  )}>
+                    <td className={cn("border-b border-line/70 px-2", PAD)}>
                       {!locked && can("slip.write") && (
                         <Checkbox checked={selected.has(r.id)} onChange={(v) => {
                           const next = new Set(selected);
@@ -451,44 +617,15 @@ export function DailyListPage() {
                         }} />
                       )}
                     </td>
-                    <td className="num border-b border-line/70 px-2 py-1 text-[11px] text-faint">{i + 1}</td>
-                    <td className="num border-b border-line/70 px-2 py-1 font-medium">{r.rstNo}</td>
-                    <td className="border-b border-line/70 px-2 py-1">
-                      <span className="flex items-center gap-1.5">
-                        <span className="min-w-0">
-                          <span lang="hi" className="block truncate text-[14px] text-ink">{r.adatiNameHi}</span>
-                          <span className="block truncate text-[11px] text-faint">{r.adatiNameHinglish}</span>
-                        </span>
-                        {r.merchantCode && !merchantId && <Badge tone="neutral" className="num">{r.merchantCode}</Badge>}
-                        {r.ratePending && <Badge tone="warn">{t("daily.ratePending")}</Badge>}
-                        {r.bagWarning && r.avgBagKg !== null && (
-                          <Badge tone="bad" className="num" title={t("daily.bagWarning")}>
-                            {r.avgBagKg.toFixed(1)} kg/bag
-                          </Badge>
-                        )}
-                        {locked && <Badge tone="warn"><Lock className="h-2.5 w-2.5" />{t("daily.onLoad")}</Badge>}
-                      </span>
-                    </td>
-                    <td className="num border-b border-line/70 px-2 py-1 text-right">{f.weight(r.grossGrams)}</td>
-                    <td className={cn("num border-b border-line/70 px-2 py-1 text-right", r.katautiOverride && "text-warn")}>
-                      {f.int(r.katautiUnits)}
-                      {r.katautiOverride && <span className="ml-0.5 text-[10px]" title={t("daily.katautiEdited")}>*</span>}
-                    </td>
-                    <td className="num border-b border-line/70 px-2 py-1 text-right text-faint">{f.weight(r.katautiGrams)}</td>
-                    <td className={cn("num border-b border-line/70 px-2 py-1 text-right font-semibold",
-                      r.netMismatchGrams !== 0 && "text-bad")}>
-                      {f.weight(r.netGrams)}
-                      {r.netMismatchGrams !== 0 && (
-                        <span className="ml-1 text-[10px]">({f.weight(r.expectedNetGrams)})</span>
-                      )}
-                    </td>
-                    <td className={cn("num border-b border-line/70 px-2 py-1 text-right", r.ratePending && "text-faint")}>
-                      {r.ratePending ? "—" : f.rate(r.ratePaisePerQtl)}
-                    </td>
-                    <td className={cn("num border-b border-line/70 px-2 py-1 text-right font-semibold", r.ratePending && "font-normal text-faint")}>
-                      {r.ratePending ? "—" : f.amount(r.amountPaise)}
-                    </td>
-                    <td className="border-b border-line/70 px-1 py-1">
+                    {visibleCols.map((c) => (
+                      <td key={c.key} className={cn(
+                        "border-b border-line/70 px-2", PAD,
+                        NUMERIC.has(c.key) && "num text-right",
+                      )}>
+                        {displayCell(c.key, r, i)}
+                      </td>
+                    ))}
+                    <td className={cn("border-b border-line/70 px-1", PAD)}>
                       <div className="flex items-center justify-end gap-0.5">
                         {can("slip.write") && !locked && (
                           <Button size="icon" variant="ghost" className="h-7 w-7"
@@ -516,83 +653,20 @@ export function DailyListPage() {
                 );
               })}
 
-              {/* the always-present entry row */}
-              {can("slip.write") && (
-                <tr className="bg-brand/[0.04]">
-                  <td className="border-b border-line px-2 py-1.5 text-center">
-                    <Plus className="mx-auto h-3.5 w-3.5 text-brand" />
-                  </td>
-                  <td className="num border-b border-line px-2 py-1.5 text-[11px] text-faint">{rows.length + 1}</td>
-                  <td className="border-b border-line px-1 py-1.5">
-                    <input ref={rstRef} className={cn(CELL, "text-left", rstTaken && "border-bad")}
-                      value={draft.rstNo} placeholder={nextRst.data?.rstNo ?? "626"}
-                      onChange={(e) => setDraft((p) => ({ ...p, rstNo: e.target.value }))}
-                      onKeyDown={step("adati")} />
-                  </td>
-                  <td className="border-b border-line px-1 py-1.5">
-                    <SupplierPicker ref={adatiRef} suppliers={suppliers.data ?? []}
-                      value={draft.adatiId}
-                      onChange={(v) => setDraft((p) => ({ ...p, adatiId: v }))}
-                      onCommit={() => grossRef.current?.focus()}
-                      onCreate={can("adati.write") ? (name) => setNewSupplierName(name) : undefined} />
-                  </td>
-                  <td className="border-b border-line px-1 py-1.5">
-                    <input ref={grossRef} className={CELL} value={draft.gross} inputMode="decimal" placeholder="19.20"
-                      onChange={(e) => setDraft((p) => ({ ...p, gross: e.target.value }))}
-                      onKeyDown={step("bags")} />
-                  </td>
-                  <td className="border-b border-line px-1 py-1.5">
-                    <input ref={bagsRef} inputMode="numeric" value={draft.katauti}
-                      className={cn(CELL, !draft.katauti && "text-faint")}
-                      placeholder={d.suggested === null ? "" : String(d.suggested)}
-                      title={t("daily.katautiAuto")}
-                      onChange={(e) => setDraft((p) => ({ ...p, katauti: e.target.value }))}
-                      onKeyDown={step("rate")} />
-                  </td>
-                  <td className="num border-b border-line px-2 py-1.5 text-right text-faint">
-                    {d.katautiGrams === null ? "—" : f.weight(d.katautiGrams)}
-                  </td>
-                  <td className={cn("num border-b border-line px-2 py-1.5 text-right font-semibold",
-                    d.netGrams !== null && d.netGrams <= 0 && "text-bad")}>
-                    {d.netGrams === null ? "—" : f.weight(d.netGrams)}
-                  </td>
-                  <td className="border-b border-line px-1 py-1.5">
-                    <input ref={rateRef} className={CELL} value={draft.rate} inputMode="decimal"
-                      disabled={!can("rate.edit")}
-                      placeholder={lastRate.data?.ratePaisePerQtl ? f.rate(lastRate.data.ratePaisePerQtl) : "3500"}
-                      onChange={(e) => setDraft((p) => ({ ...p, rate: e.target.value }))}
-                      onKeyDown={step("save")} />
-                  </td>
-                  <td className="num border-b border-line px-2 py-1.5 text-right font-semibold text-brand">
-                    {d.amountPaise === null ? "—" : f.amount(d.amountPaise)}
-                  </td>
-                  <td className="border-b border-line px-1 py-1.5">
-                    <Button size="icon" variant="primary" className="h-7 w-7" loading={create.isPending}
-                      disabled={!draftReady} onClick={() => create.mutate()} title={t("daily.saveRow")}>
-                      <Check className="h-3.5 w-3.5" />
-                    </Button>
-                  </td>
-                </tr>
-              )}
+              {P.newRowPosition === "bottom" && entryRow}
             </tbody>
 
-            {totals && totals.rows > 0 && (
+            {totals && totals.rows > 0 && P.showRunningTotal && (
               <tfoot>
                 <tr className="bg-raised font-semibold">
-                  <td colSpan={4} className="px-2 py-2 text-right text-[12px] uppercase tracking-wide text-muted">
-                    {t("daily.totals")}
-                  </td>
-                  <td className="num px-2 py-2 text-right">{f.weight(totals.grossGrams)}</td>
-                  <td className="num px-2 py-2 text-right">{f.int(totals.katautiUnits)}</td>
-                  <td className="num px-2 py-2 text-right text-muted">{f.weight(totals.katautiGrams)}</td>
-                  <td className="num px-2 py-2 text-right text-[14px]">{f.weight(totals.netGrams)}</td>
-                  <td className="num px-2 py-2 text-right text-[12px] text-muted" title={t("daily.weightedAvg")}>
-                    {f.rate(totals.weightedAvgRatePaise)}
-                    {totals.ratePendingRows > 0 && (
-                      <span className="ml-1 text-[10px] font-normal text-warn">*</span>
-                    )}
-                  </td>
-                  <td className="num px-2 py-2 text-right text-[14px] text-brand">{f.amount(totals.amountPaise)}</td>
+                  <td />
+                  {visibleCols.map((c, idx) => (
+                    <td key={c.key} className={cn("px-2 py-2", NUMERIC.has(c.key) ? "num text-right" : "text-right")}>
+                      {idx === 0 && !NUMERIC.has(c.key)
+                        ? <span className="text-[12px] uppercase tracking-wide text-muted">{t("daily.totals")}</span>
+                        : totalCell(c.key)}
+                    </td>
+                  ))}
                   <td />
                 </tr>
               </tfoot>

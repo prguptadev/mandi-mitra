@@ -6,6 +6,7 @@ import { ThemeProvider } from "./lib/theme.tsx";
 import { I18nProvider } from "./lib/i18n.tsx";
 import { SessionProvider } from "./lib/session.tsx";
 import { FormatProvider } from "./lib/format.tsx";
+import { PrefsProvider } from "./lib/prefs.tsx";
 import "./index.css";
 
 const qc = new QueryClient({
@@ -21,7 +22,9 @@ createRoot(document.getElementById("root")!).render(
         <I18nProvider>
           <SessionProvider>
             <FormatProvider>
-              <App />
+              <PrefsProvider>
+                <App />
+              </PrefsProvider>
             </FormatProvider>
           </SessionProvider>
         </I18nProvider>
