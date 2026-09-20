@@ -8,6 +8,7 @@ import { api, ApiError, type UserRow, type Role, type AuditRow, type PermissionM
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
+import { HindiInput } from "@/components/HindiInput.tsx";
 import { SkeletonTable, SkeletonList, SkeletonForm } from "@/components/Skeletons.tsx";
 import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge,
@@ -56,7 +57,7 @@ function UserDialog({ open, onClose, editing, roles }: { open: boolean; onClose:
         </Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label={t("auth.yourNameHi")}>
-            <Input value={f.nameHi} lang="hi" onChange={(e) => setF((p) => ({ ...p, nameHi: e.target.value }))} />
+            <HindiInput value={f.nameHi} onChange={(v) => setF((p) => ({ ...p, nameHi: v }))} />
           </Field>
           <Field label={t("auth.phone")}>
             <Input value={f.phone} mono inputMode="tel" onChange={(e) => setF((p) => ({ ...p, phone: e.target.value }))} />
@@ -523,7 +524,7 @@ export function CommoditiesPage() {
             </Field>
           </div>
           <Field label={`${t("jins.name")} (${t("common.hindi")})`}>
-            <Input value={f.nameHi} lang="hi" onChange={(e) => setF((p) => ({ ...p, nameHi: e.target.value }))} />
+            <HindiInput value={f.nameHi} onChange={(v) => setF((p) => ({ ...p, nameHi: v }))} />
           </Field>
           <Field label={t("jins.crop")} required>
             <Select value={f.crop} onChange={(e) => setF((p) => ({ ...p, crop: e.target.value }))}>
@@ -591,7 +592,7 @@ export function SettingsPage() {
                     onChange={(e) => setF((p) => ({ ...p, shortCode: e.target.value.toUpperCase() }))} />
                 </Field>
               </div>
-              <Field label={t("auth.businessNameHi")}><Input value={v("nameHi")} lang="hi" onChange={set("nameHi")} disabled={!can("business.write")} /></Field>
+              <Field label={t("auth.businessNameHi")}><HindiInput value={v("nameHi")} onChange={(x) => setF((p) => ({ ...p, nameHi: x }))} disabled={!can("business.write")} /></Field>
               <Field label={t("biz.addressLine1")}><Input value={v("addressLine1")} onChange={set("addressLine1")} disabled={!can("business.write")} /></Field>
               <Field label={t("biz.addressLine2")}><Input value={v("addressLine2")} onChange={set("addressLine2")} disabled={!can("business.write")} /></Field>
               <div className="grid gap-4 sm:grid-cols-2">

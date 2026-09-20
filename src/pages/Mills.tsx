@@ -5,6 +5,7 @@ import { api, ApiError, type Merchant, type ChargeConfig, type ParchaResult, typ
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
+import { HindiInput } from "@/components/HindiInput.tsx";
 import { SkeletonTable, SkeletonForm } from "@/components/Skeletons.tsx";
 import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge,
@@ -202,7 +203,7 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
             </Field>
           </div>
           <Field label={t("merchant.nameHi")}>
-            <Input value={f.nameHi} onChange={(e) => setF((p) => ({ ...p, nameHi: e.target.value }))} lang="hi" />
+            <HindiInput value={f.nameHi} onChange={(v) => setF((p) => ({ ...p, nameHi: v }))} />
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={t("biz.addressLine1")}>
@@ -373,7 +374,7 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
               <Input value={cfg.parcha.title} onChange={(e) => patch("parcha", { ...cfg.parcha, title: e.target.value })} />
             </Field>
             <Field label={`${t("merchant.parchaLayout")} — ${t("common.hindi")}`}>
-              <Input value={cfg.parcha.titleHi} lang="hi" onChange={(e) => patch("parcha", { ...cfg.parcha, titleHi: e.target.value })} />
+              <HindiInput value={cfg.parcha.titleHi} onChange={(v) => patch("parcha", { ...cfg.parcha, titleHi: v })} />
             </Field>
             <Field label={t("merchant.paymentTerms")}>
               <Input mono value={String(cfg.paymentTermsDays)} inputMode="numeric"

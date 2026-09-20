@@ -6,7 +6,7 @@ import {
   ArrowRight, Trash2, RotateCcw, ScanLine, ChevronLeft, ChevronRight, Equal,
   PanelRightClose, PanelRightOpen,
 } from "lucide-react";
-import { api, ApiError, apiStatus, type ScanBatch, type ScanRow, type ScanIssue, type Adati, type Jins, type Merchant } from "@/lib/api.ts";
+import { api, ApiError, apiStatus, type ScanBatch, type ScanRow, type ScanIssue, type Jins, type Merchant } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, parseLooseNumber, GRAMS_PER_QTL } from "@/lib/format.tsx";
@@ -104,7 +104,6 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
     refetchInterval: (q) => (q?.state?.data?.status === "reading" ? 2000 : false),
     refetchOnWindowFocus: true,
   });
-  const suppliers = useQuery({ queryKey: ["adati", {}], queryFn: () => api.get<Adati[]>("/adati") });
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
   const jinsList = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
 
@@ -365,8 +364,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
               <tbody>
                 {visible.map((r, i) => {
                   const locked = r.excluded || b.status === "committed";
-                  const matched = r.adatiId ? suppliers.data?.find((s) => s.id === r.adatiId) ?? null : null;
-                  const name = matched ?? r.match;
+                  const name = r.match;
                   return (
                     <Fragment key={r.id}>
                       <tr className={cn(
@@ -406,7 +404,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
                               )}
                             </div>
                           ) : (
-                            <SupplierPicker suppliers={suppliers.data ?? []} value={r.adatiId} disabled={locked}
+                            <SupplierPicker value={r.adatiId} disabled={locked}
                               invalid={!locked}
                               placeholder={r.adatiRawText || t("scan.pickName")}
                               onChange={(v) => patchRow(r.id, { adatiId: v, nameCorrected: true })} />

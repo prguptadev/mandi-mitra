@@ -10,6 +10,7 @@ import { audit } from "../lib/audit.ts";
 import { defaultChargeConfig } from "../lib/charges.ts";
 import { COOKIE, HttpError, bad, requireAuth, actor, type Env } from "../lib/http.ts";
 import { toHinglish } from "../lib/translit.ts";
+import { toDevanagari, looksLatin } from "../lib/devanagari.ts";
 import { PrefsSchema, parsePrefs, defaultPrefs, DAILY_COLUMNS } from "../lib/prefs.ts";
 
 export const authRoutes = new Hono<Env>();
@@ -297,6 +298,13 @@ authRoutes.post("/prefs/reset", requireAuth, async (c) => {
 authRoutes.post("/transliterate", async (c) => {
   const { text } = z.object({ text: z.string() }).parse(await c.req.json());
   return c.json({ hinglish: toHinglish(text) });
+});
+
+/** Latin -> Devanagari without a business context, for the signup screen. */
+authRoutes.post("/to-devanagari", async (c) => {
+  const { text } = z.object({ text: z.string() }).parse(await c.req.json());
+  if (!looksLatin(text)) return c.json({ hindi: text, converted: false });
+  return c.json({ hindi: toDevanagari(text), converted: true });
 });
 
 export { seedRoles, seedJins, defaultChargeConfig };

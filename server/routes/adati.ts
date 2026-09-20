@@ -4,7 +4,8 @@ import { eq, and, like, or, desc, asc, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
-import { toHinglish, normKey, similarity } from "../lib/translit.ts";
+import { toHinglish, normKey, similarity, canonicalFirm } from "../lib/translit.ts";
+import { toDevanagari, looksLatin } from "../lib/devanagari.ts";
 import { param, can, actor, notFound, bad, type Env } from "../lib/http.ts";
 
 export const adatiRoutes = new Hono<Env>();
@@ -51,6 +52,101 @@ adatiRoutes.get("/", can("adati.read"), async (c) => {
   const cmap = new Map(counts.map((r) => [r.adatiId, r.n]));
 
   return c.json(rows.map((r) => ({ ...r, aliasCount: cmap.get(r.id) ?? 0 })));
+});
+
+/**
+ * Typeahead source. Never returns the whole master — this has to stay quick
+ * with a few thousand suppliers, so matching happens in SQL and the caller
+ * gets a short, ranked list plus the true total.
+ */
+adatiRoutes.get("/search", can("adati.read"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const raw = (c.req.query("q") ?? "").trim();
+  const limit = Math.min(Number(c.req.query("limit") ?? 20), 50);
+
+  const [{ total }] = await db.select({ total: sql<number>`count(*)`.as("total") })
+    .from(schema.adati)
+    .where(and(eq(schema.adati.businessId, biz), eq(schema.adati.active, true)));
+
+  if (!raw) {
+    // no query yet: the ones actually used most, so the common case is one tap
+    const rows = await db.select({
+      id: schema.adati.id, nameHi: schema.adati.nameHi,
+      nameHinglish: schema.adati.nameHinglish, village: schema.adati.village,
+    })
+      .from(schema.adati)
+      .where(and(eq(schema.adati.businessId, biz), eq(schema.adati.active, true)))
+      .orderBy(asc(schema.adati.nameHinglish))
+      .limit(limit);
+    return c.json({ rows, total, truncated: total > rows.length });
+  }
+
+  // a Latin query should also find the Devanagari name
+  const asHindi = looksLatin(raw) ? toDevanagari(raw) : "";
+  const patterns = [`${raw}%`, `%${raw}%`, ...(asHindi ? [`${asHindi}%`, `%${asHindi}%`] : [])];
+
+  const rows = await db.select({
+    id: schema.adati.id, nameHi: schema.adati.nameHi,
+    nameHinglish: schema.adati.nameHinglish, village: schema.adati.village,
+  })
+    .from(schema.adati)
+    .where(and(
+      eq(schema.adati.businessId, biz),
+      eq(schema.adati.active, true),
+      or(...patterns.flatMap((p) => [
+        like(schema.adati.nameHi, p),
+        like(schema.adati.nameHinglish, p),
+      ]), like(schema.adati.village, `%${raw}%`))!,
+    ))
+    .limit(limit * 3);
+
+  // rank: prefix hits first, then by closeness
+  const q = raw.toLowerCase();
+  const qh = asHindi;
+  const ranked = rows
+    .map((r) => {
+      const hi = r.nameHi.toLowerCase();
+      const lat = r.nameHinglish.toLowerCase();
+      const prefix = lat.startsWith(q) || hi.startsWith(q) || (qh && r.nameHi.startsWith(qh));
+      const score = Math.max(
+        similarity(raw, r.nameHi),
+        similarity(raw, r.nameHinglish),
+        qh ? similarity(qh, r.nameHi) : 0,
+      );
+      return { r, rank: (prefix ? 1 : 0) + score };
+    })
+    .sort((a, b) => b.rank - a.rank)
+    .slice(0, limit)
+    .map((x) => x.r);
+
+  return c.json({ rows: ranked, total, truncated: rows.length > ranked.length });
+});
+
+/** Live Hinglish -> Hindi while typing, using this business's own spellings. */
+adatiRoutes.post("/to-devanagari", can("adati.read"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const { text } = z.object({ text: z.string() }).parse(await c.req.json());
+  if (!looksLatin(text)) return c.json({ hindi: text, converted: false });
+
+  const master = await db.select({ hi: schema.adati.nameHi, lat: schema.adati.nameHinglish })
+    .from(schema.adati)
+    .where(and(eq(schema.adati.businessId, biz), eq(schema.adati.active, true)));
+
+  const known = new Map<string, string>();
+  for (const m of master) {
+    known.set(m.lat.toLowerCase(), m.hi);
+    // individual words too, so a new name reuses the spellings already in use
+    const hiWords = m.hi.split(/\s+/);
+    const latWords = m.lat.split(/\s+/);
+    if (hiWords.length === latWords.length) {
+      for (let i = 0; i < hiWords.length; i++) {
+        const k = latWords[i].toLowerCase();
+        if (!known.has(k)) known.set(k, hiWords[i]);
+      }
+    }
+  }
+
+  return c.json({ hindi: toDevanagari(text, { known }), converted: true });
 });
 
 adatiRoutes.get("/:id", can("adati.read"), async (c) => {
@@ -215,7 +311,7 @@ adatiRoutes.post("/resolve", can("adati.read"), async (c) => {
     .map((a) => ({ a, score: Math.max(similarity(raw, a.nameHi), similarity(raw, a.nameHinglish)) }))
     .filter((s) => s.score >= 0.62)
     .sort((x, y) => y.score - x.score)
-    .slice(0, limit ?? 5);
+    .slice(0, Math.min(limit ?? 3, 3));
 
   const best = scored[0];
   return c.json({

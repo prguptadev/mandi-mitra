@@ -23,5 +23,7 @@ jobs:
         run: npx tsx server/lib/translit.check.ts
       - name: Number format check
         run: npx tsx src/lib/format.check.ts
+      - name: Hinglish to Hindi check
+        run: npx tsx src/lib/devanagari.check.ts
       - name: Build web bundle
         run: npm run build

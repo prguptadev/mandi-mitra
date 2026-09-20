@@ -5,6 +5,7 @@ import { api, ApiError, type Adati, type AdatiAlias } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
+import { HindiInput } from "@/components/HindiInput.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import {
   Button, Card, Field, Input, Textarea, Table, Th, Td, Tr, Badge, Dialog,
@@ -95,9 +96,9 @@ function SupplierDialog({
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label={t("adati.nameHi")} hint={t("adati.nameHiHelp")} required>
-            <Input
-              value={f.nameHi} onChange={(e) => setF((p) => ({ ...p, nameHi: e.target.value }))}
-              lang="hi" autoFocus placeholder="फूलसिंह वर्मा" className="text-[15px]"
+            <HindiInput
+              value={f.nameHi} onChange={(v) => setF((p) => ({ ...p, nameHi: v }))}
+              autoFocus placeholder="phoolsingh verma / फूलसिंह वर्मा" className="text-[15px]"
             />
           </Field>
 
@@ -142,7 +143,7 @@ function SupplierDialog({
             <Input value={f.village} onChange={(e) => setF((p) => ({ ...p, village: e.target.value }))} />
           </Field>
           <Field label={`${t("adati.village")} (${t("common.hindi")})`}>
-            <Input value={f.villageHi} onChange={(e) => setF((p) => ({ ...p, villageHi: e.target.value }))} lang="hi" />
+            <HindiInput value={f.villageHi} onChange={(v) => setF((p) => ({ ...p, villageHi: v }))} />
           </Field>
           <Field label={t("adati.phone")}>
             <Input value={f.phone} onChange={(e) => setF((p) => ({ ...p, phone: e.target.value }))} inputMode="tel" mono />
@@ -232,7 +233,7 @@ function AliasPanel({ adatiId }: { adatiId: string }) {
 
       {can("adati.write") && (
         <div className="flex gap-2">
-          <Input value={draft} onChange={(e) => setDraft(e.target.value)} lang="hi"
+          <HindiInput value={draft} onChange={setDraft}
             placeholder={t("adati.aliasAdd")} className="h-8 text-[13px]"
             onKeyDown={(e) => { if (e.key === "Enter" && draft.trim()) { e.preventDefault(); add.mutate(); } }} />
           <Button size="sm" onClick={() => add.mutate()} disabled={!draft.trim()} loading={add.isPending}>

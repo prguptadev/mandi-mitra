@@ -66,7 +66,7 @@ export async function loadResolver(businessId: string) {
         .map((a) => ({ a, score: Math.max(similarity(text, a.nameHi), similarity(text, a.nameHinglish)) }))
         .filter((s) => s.score >= SUGGEST_FLOOR)
         .sort((x, y) => y.score - x.score)
-        .slice(0, 6);
+        .slice(0, 3);   // three closest; more is noise on a 30-row sheet
 
       const best = scored[0];
       return {

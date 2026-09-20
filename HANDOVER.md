@@ -204,6 +204,14 @@ scripts/
   straight into the daily list. Corrections are learnt.
 - **Bilingual** — every screen in Hindi or English, including dates, relative
   times and OCR issue messages.
+- **Type Hinglish, get Hindi** — every hand-typed Hindi field converts as you
+  type: "phoolsingh verma" becomes फूलसिंह वर्मा. Enter or Tab accepts, Esc
+  keeps the Latin. The business's own supplier spellings are consulted first, so
+  a name is written the way that office already writes it; then a dictionary of
+  common name and firm words; then a phonetic engine.
+- **Scales to thousands of suppliers** — the picker searches on the server and
+  never renders more than 20 rows. Measured at 2,131 suppliers: every query
+  answered in 2–4 ms, and a Latin query finds the Devanagari name.
 - **Light / dark**, skeleton loaders, collapsible sidebar, error boundary.
 
 ### How the OCR is made trustworthy
@@ -214,6 +222,8 @@ NET column is used only as a **cross-check**. A row whose written net equals our
 arithmetic is almost certainly read correctly.
 
 Three-tier supplier matching, each verified:
+
+Suggestions are capped at the **three closest**; more is noise on a 30-row sheet.
 
 | Tier | Example | Confidence |
 |---|---|---|

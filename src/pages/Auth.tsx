@@ -5,6 +5,7 @@ import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useTheme } from "@/lib/theme.tsx";
 import { Button, Field, Input, Alert, Card, Spinner } from "@/components/ui/index.tsx";
+import { HindiInput } from "@/components/HindiInput.tsx";
 import { cn } from "@/lib/utils.ts";
 
 function AuthChrome({ children }: { children: React.ReactNode }) {
@@ -96,7 +97,8 @@ export function SignupPage() {
             </Field>
             <div className="grid gap-3.5 sm:grid-cols-2">
               <Field label={t("auth.yourNameHi")} hint={t("common.optional")}>
-                <Input value={f.nameHi} onChange={set("nameHi")} lang="hi" placeholder="विजय कुमार" />
+                <HindiInput value={f.nameHi} publicOnly
+                  onChange={(v) => setF((p) => ({ ...p, nameHi: v }))} placeholder="vijay kumar" />
               </Field>
               <Field label={t("auth.phone")} hint={t("common.optional")}>
                 <Input value={f.phone} onChange={set("phone")} inputMode="tel" mono autoComplete="tel" />
@@ -111,7 +113,8 @@ export function SignupPage() {
             </Field>
             <div className="grid gap-3.5 sm:grid-cols-2">
               <Field label={t("auth.businessNameHi")} hint={t("common.optional")}>
-                <Input value={f.businessNameHi} onChange={set("businessNameHi")} lang="hi" placeholder="विजय लक्ष्मी दाल मिल" />
+                <HindiInput value={f.businessNameHi} publicOnly
+                  onChange={(v) => setF((p) => ({ ...p, businessNameHi: v }))} placeholder="vijay laxmi dal mill" />
               </Field>
               <Field label={t("auth.shortCode")} hint={t("auth.shortCodeHelp")} required>
                 <Input value={f.shortCode} onChange={(e) => setF((p) => ({ ...p, shortCode: e.target.value.toUpperCase() }))}

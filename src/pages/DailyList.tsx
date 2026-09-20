@@ -5,7 +5,7 @@ import {
   ChevronLeft, ChevronRight, Calendar, Trash2, Truck, AlertTriangle, Check,
   RefreshCw, Download, Keyboard, Lock, Plus, X, Image as ImageIcon, CheckSquare,
 } from "lucide-react";
-import { api, ApiError, type Adati, type Jins, type Merchant, type SlipRow, type SlipTotals, type SlipDay, type KatautiConfig } from "@/lib/api.ts";
+import { api, ApiError, type Jins, type Merchant, type SlipRow, type SlipTotals, type SlipDay, type KatautiConfig } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, parseLooseNumber, parseQtlToGrams, parseRupeesToPaise, GRAMS_PER_QTL } from "@/lib/format.tsx";
@@ -14,6 +14,7 @@ import { DailyListSettings } from "@/components/DailyListSettings.tsx";
 import { usePrefs, DAILY_COLUMNS, type DailyColumnKey } from "@/lib/prefs.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { SupplierPicker } from "@/components/SupplierPicker.tsx";
+import { HindiInput } from "@/components/HindiInput.tsx";
 import {
   Button, Card, Select, Input, Badge, Alert, EmptyState, Dialog, Field, Spinner, Checkbox,
 } from "@/components/ui/index.tsx";
@@ -99,7 +100,6 @@ export function DailyListPage() {
   const bagsRef = useRef<HTMLInputElement>(null);
   const rateRef = useRef<HTMLInputElement>(null);
 
-  const suppliers = useQuery({ queryKey: ["adati", {}], queryFn: () => api.get<Adati[]>("/adati") });
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
   const jinsList = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
   const days = useQuery({ queryKey: ["slips", "days"], queryFn: () => api.get<SlipDay[]>("/slips/days") });
@@ -355,7 +355,8 @@ export function DailyListPage() {
       case "sr": return <span className="num text-[11px] text-faint">{i + 1}</span>;
       case "rstNo": return <input className={cn(CELL, "text-left")} value={ed.rstNo} autoFocus
         onChange={(e) => upd({ rstNo: e.target.value })} />;
-      case "adatiHi": return <SupplierPicker suppliers={suppliers.data ?? []} value={ed.adatiId}
+      case "adatiHi": return <SupplierPicker value={ed.adatiId}
+        selectedLabel={{ nameHi: r.adatiNameHi, nameHinglish: r.adatiNameHinglish }}
         onChange={(v) => upd({ adatiId: v })} />;
       case "gross": return <input className={CELL} value={ed.gross} inputMode="decimal"
         onChange={(e) => upd({ gross: e.target.value })} />;
@@ -408,7 +409,7 @@ export function DailyListPage() {
                 onChange={(e) => setDraft((p) => ({ ...p, rstNo: e.target.value }))}
                 onKeyDown={step("adati")} />
             ) : c.key === "adatiHi" ? (
-              <SupplierPicker ref={adatiRef} suppliers={suppliers.data ?? []} value={draft.adatiId}
+              <SupplierPicker ref={adatiRef} value={draft.adatiId}
                 onChange={(v) => setDraft((p) => ({ ...p, adatiId: v }))}
                 onCommit={() => grossRef.current?.focus()}
                 onCreate={can("adati.write") ? (name) => setNewSupplierName(name) : undefined} />
@@ -770,8 +771,7 @@ export function DailyListPage() {
           </Button>
         </>}>
         <Field label={t("adati.nameHi")} hint={t("adati.nameHiHelp")}>
-          <Input value={newSupplierName ?? ""} lang="hi" autoFocus
-            onChange={(e) => setNewSupplierName(e.target.value)} />
+          <HindiInput value={newSupplierName ?? ""} autoFocus onChange={setNewSupplierName} />
         </Field>
       </Dialog>
     </>
