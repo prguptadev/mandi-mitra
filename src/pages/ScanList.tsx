@@ -52,9 +52,15 @@ export function ScanListPage() {
   });
 
   const upload = useMutation({
-    mutationFn: async (files: FileList | File[]) => {
+    /**
+     * Takes File[], never a live FileList. A FileList is emptied the moment the
+     * input is cleared, and this runs asynchronously — the caller must copy it
+     * first or the upload arrives with no files at all.
+     */
+    mutationFn: async (files: File[]) => {
+      if (!files.length) throw new ApiError(400, t("scan.noFilesPicked"), "no_file");
       const fd = new FormData();
-      for (const f of Array.from(files)) fd.append("files", f);
+      for (const f of files) fd.append("files", f);
       if (upDate) fd.append("slipDate", upDate);
       if (upMill) fd.append("merchantId", upMill);
       if (upJins) fd.append("jinsId", upJins);
@@ -124,7 +130,8 @@ export function ScanListPage() {
               onDragLeave={() => setDragging(false)}
               onDrop={(e) => {
                 e.preventDefault(); setDragging(false);
-                if (e.dataTransfer.files.length) upload.mutate(e.dataTransfer.files);
+                const dropped = Array.from(e.dataTransfer.files);
+                if (dropped.length) upload.mutate(dropped);
               }}
               onClick={() => fileRef.current?.click()}
               className={cn(
@@ -139,8 +146,13 @@ export function ScanListPage() {
               </p>
               <p className="text-[11px] text-faint">{t("scan.uploadSub")}</p>
               <input ref={fileRef} type="file" multiple hidden
-                accept="image/jpeg,image/png,image/webp,application/pdf"
-                onChange={(e) => { if (e.target.files?.length) upload.mutate(e.target.files); e.target.value = ""; }} />
+                accept="image/*,application/pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,.tif,.tiff,.bmp,.pdf"
+                onChange={(e) => {
+                  // copy first: clearing the input empties the FileList
+                  const picked = Array.from(e.target.files ?? []);
+                  e.target.value = "";
+                  if (picked.length) upload.mutate(picked);
+                }} />
             </div>
           </div>
         </Card>

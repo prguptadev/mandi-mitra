@@ -34,6 +34,24 @@ const check = (label: string, got: unknown, want: unknown) => {
   console.log(` ${ok ? "PASS" : "FAIL"}  ${label.padEnd(46)} ${JSON.stringify(got)}${ok ? "" : "  want " + JSON.stringify(want)}`);
 };
 
+/* Self-cleaning: this script both COMMITS slips and TEACHES aliases, so a
+   second run would legitimately behave differently (the misspelling would
+   already be known, the RST numbers already taken). Wipe its own footprint
+   first so the assertions describe a first encounter every time. */
+const RAW_NAMES = [
+  "फूलसिंह वर्मा", "पुष्पेन्द्र यादव", "वीरेन्द्र जोशी", "फुलसिह वर्मा",
+  "अज्ञात व्यापारी", "अरुण कुमार यादव", "अरविन्द ट्रेडिंग", "अमित ट्रेडिंग",
+  "सहदेव सिंह ट्रेडिंग", "शिवम ट्रेडिंग",
+];
+{
+  sqlite.prepare("delete from purchase_slips where slip_date = ?").run(DATE);
+  const olds = sqlite.prepare("select id from scan_batches where slip_date = ?").all(DATE) as any[];
+  for (const o of olds) sqlite.prepare("delete from scan_batches where id = ?").run(o.id);
+  const del = sqlite.prepare("delete from adati_aliases where raw_text = ? and source in ('ocr','correction')");
+  for (const n of RAW_NAMES) del.run(n);
+  console.log(`Cleaned ${olds.length} old scan(s), slips and learnt aliases for ${DATE}`);
+}
+
 const users = await call("GET", "/auth/users");
 await call("POST", "/auth/login", { userId: users.find((u: any) => u.name === "Test Owner").id, pin: PIN });
 const mills = await call("GET", "/merchants");
@@ -50,6 +68,29 @@ fd.append("jinsId", j1509.id);
 const up = await fetch(`${BASE}/scans`, { method: "POST", body: fd, headers: { cookie } });
 const { id: scanId } = await up.json() as { id: string };
 console.log(`Scan created: ${scanId}\n`);
+
+/* A two-page sheet, mixed PNG + JPEG, is one scan. Your G.R.M list runs
+   30 rows then continues onto a second page, so this is the normal case. */
+const JPG = Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==", "base64");
+{
+  const multi = new FormData();
+  multi.append("files", new File([PNG], "page-1.png", { type: "image/png" }));
+  multi.append("files", new File([JPG], "page-2.jpg", { type: "image/jpeg" }));
+  multi.append("files", new File([JPG], "page-3.jpeg", { type: "" }));   // browser gave no MIME type
+  multi.append("slipDate", DATE);
+  const r = await fetch(`${BASE}/scans`, { method: "POST", body: multi, headers: { cookie } });
+  const j = await r.json() as { id?: string; pages?: number; error?: string };
+  console.log("Multi-page upload");
+  check("three mixed pages accepted as one scan", j.pages, 3);
+  if (j.id) await call("DELETE", `/scans/${j.id}`);
+
+  const empty = new FormData();
+  empty.append("slipDate", DATE);
+  const r2 = await fetch(`${BASE}/scans`, { method: "POST", body: empty, headers: { cookie } });
+  const j2 = await r2.json() as { code?: string };
+  check("upload with no file is rejected cleanly", j2.code, "no_file");
+  console.log();
+}
 
 /* What a model plausibly returns from the G.R.M sheet, warts and all. */
 const OCR = [

@@ -25,7 +25,27 @@ const DATA_DIR = process.env.MANDI_DATA_DIR ?? path.resolve(process.cwd(), "data
 const SCAN_DIR = path.join(DATA_DIR, "scans");
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_BYTES = 12 * 1024 * 1024;
-const OK_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "application/pdf"]);
+const OK_TYPES = new Set([
+  "image/jpeg", "image/jpg", "image/png", "image/webp",
+  "image/heic", "image/heif", "image/tiff", "image/bmp", "application/pdf",
+]);
+/** Phones and scanner drivers often send an empty or generic MIME type. */
+const EXT_TYPES: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp",
+  heic: "image/heic", heif: "image/heif", tif: "image/tiff", tiff: "image/tiff",
+  bmp: "image/bmp", pdf: "application/pdf",
+};
+
+function resolveType(file: File): string | null {
+  const declared = (file.type || "").toLowerCase();
+  if (OK_TYPES.has(declared)) return declared === "image/jpg" ? "image/jpeg" : declared;
+  // fall back to the extension when the browser says nothing useful
+  if (!declared || declared === "application/octet-stream" || declared === "binary/octet-stream") {
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    return EXT_TYPES[ext] ?? null;
+  }
+  return null;
+}
 
 async function setting(businessId: string, key: string) {
   const [row] = await db.select().from(schema.settings)
@@ -108,9 +128,20 @@ scanRoutes.post("/", can("scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const body = await c.req.parseBody({ all: true });
 
-  const raw = body["files"] ?? body["file"];
-  const files = (Array.isArray(raw) ? raw : [raw]).filter((f): f is File => f instanceof File);
-  if (!files.length) throw bad("Attach at least one image of the sheet", "no_file");
+  // accept whatever field name the client used, so a stray key is not fatal
+  const candidates = [body["files"], body["file"], ...Object.values(body)];
+  const files: File[] = [];
+  for (const v of candidates) {
+    for (const item of Array.isArray(v) ? v : [v]) {
+      if (item instanceof File && !files.includes(item)) files.push(item);
+    }
+  }
+  if (!files.length) {
+    throw bad(
+      "No file reached the server. Pick the scan again — if it still fails, try dragging the file onto the box.",
+      "no_file",
+    );
+  }
   if (files.length > 10) throw bad("Ten pages at a time is the limit", "too_many");
 
   const id = newId();
@@ -119,20 +150,28 @@ scanRoutes.post("/", can("scan.create"), async (c) => {
 
   const saved: { name: string; mimeType: string; bytes: number }[] = [];
   for (const [i, file] of files.entries()) {
-    if (!OK_TYPES.has(file.type)) {
+    const mimeType = resolveType(file);
+    if (!mimeType) {
       fs.rmSync(dir, { recursive: true, force: true });
       throw bad(`"${file.name}" is a ${file.type || "unknown"} file. Use JPG, PNG, WEBP or PDF.`, "bad_type");
+    }
+    if (file.size === 0) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      throw bad(`"${file.name}" is empty. Scan it again.`, "empty_file");
     }
     if (file.size > MAX_BYTES) {
       fs.rmSync(dir, { recursive: true, force: true });
       throw bad(`"${file.name}" is over 12 MB. Scan at 200–300 dpi instead.`, "too_big");
     }
-    const ext = file.type === "application/pdf" ? "pdf"
-      : file.type === "image/png" ? "png"
-      : file.type === "image/webp" ? "webp" : "jpg";
+    const ext = mimeType === "application/pdf" ? "pdf"
+      : mimeType === "image/png" ? "png"
+      : mimeType === "image/webp" ? "webp"
+      : mimeType === "image/heic" || mimeType === "image/heif" ? "heic"
+      : mimeType === "image/tiff" ? "tiff"
+      : mimeType === "image/bmp" ? "bmp" : "jpg";
     const name = `${String(i).padStart(2, "0")}.${ext}`;
     fs.writeFileSync(path.join(dir, name), Buffer.from(await file.arrayBuffer()));
-    saved.push({ name, mimeType: file.type, bytes: file.size });
+    saved.push({ name, mimeType, bytes: file.size });
   }
 
   const slipDate = typeof body["slipDate"] === "string" && ISO_DATE.test(body["slipDate"])
