@@ -20,7 +20,7 @@ const NAV: NavGroup[] = [
     { href: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, perm: "dashboard.view" },
   ] },
   { labelKey: "nav.operations", items: [
-    { href: "/daily", labelKey: "nav.dailyList", icon: ListOrdered, perm: "slip.read", soon: true },
+    { href: "/daily", labelKey: "nav.dailyList", icon: ListOrdered, perm: "slip.read" },
     { href: "/scan", labelKey: "nav.scan", icon: ScanLine, perm: "scan.create", soon: true },
     { href: "/loads", labelKey: "nav.loads", icon: Truck, perm: "load.read", soon: true },
     { href: "/parcha", labelKey: "nav.parcha", icon: FileText, perm: "parcha.read", soon: true },

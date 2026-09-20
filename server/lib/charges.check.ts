@@ -1,6 +1,6 @@
 /* Regression check against the real Vijay Laxmi -> Shri Laxmi Badri parcha
    dated 20-09-2026 (invoice 196, truck UP25CT5038). Run: npx tsx server/lib/charges.check.ts */
-import { defaultChargeConfig, computeParcha } from "./charges.ts";
+import { defaultChargeConfig, computeParcha, deriveKatauti } from "./charges.ts";
 import { weightedAvgRate, qtlToGrams, rupeesToPaise, fmtINR, fmtQtl } from "./money.ts";
 
 // The L.B daily list, exactly as written on the sheet.
@@ -12,11 +12,17 @@ const lbSheet = [
   ["666", 49.90, 50, 3350],
 ] as const;
 
-const KATAUTI_KG_PER_BAG = 1;
-const rows = lbSheet.map(([rst, gross, bags, rate]) => {
+/* KATAUTI is the gross weight rounded to the nearest quintal, with 1 kg
+   deducted per unit — i.e. 1 kg per quintal. Confirmed on all 45 rows of the
+   two sheets; it is NOT the bag count (the parcha's 800 katte is separate). */
+const cfg0 = defaultChargeConfig();
+const rows = lbSheet.map(([rst, gross, katautiOnSheet, rate]) => {
   const grossGrams = qtlToGrams(gross);
-  const netGrams = grossGrams - bags * KATAUTI_KG_PER_BAG * 1000;
-  return { rst, grossGrams, bags, netGrams, ratePaisePerQtl: rupeesToPaise(rate) };
+  const k = deriveKatauti(grossGrams, cfg0.katauti);
+  if (k.units !== katautiOnSheet) {
+    console.log(`  !! RST ${rst}: derived katauti ${k.units}, sheet says ${katautiOnSheet}`);
+  }
+  return { rst, grossGrams, katautiUnits: k.units, netGrams: grossGrams - k.deductionGrams, ratePaisePerQtl: rupeesToPaise(rate) };
 });
 
 const totalNet = rows.reduce((s, r) => s + r.netGrams, 0);

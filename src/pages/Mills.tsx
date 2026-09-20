@@ -10,7 +10,8 @@ import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge,
   Dialog, EmptyState, Alert, Switch, Tabs, Textarea,
 } from "@/components/ui/index.tsx";
-import { cn, fmtINR, fmtQtl } from "@/lib/utils.ts";
+import { cn } from "@/lib/utils.ts";
+import { useFormat } from "@/lib/format.tsx";
 
 /** A charge row: on/off switch, its number, and what it is charged on. */
 function ChargeRow({
@@ -64,6 +65,7 @@ function NumBox({ value, onChange, width = "w-24", label }: { value: number; onC
 /** Runs the sample load through the server's own engine — the same code the parcha uses. */
 function ParchaPreview({ cfg }: { cfg: ChargeConfig }) {
   const { t, pick } = useI18n();
+  const f = useFormat();
   const [sample, setSample] = useState({ grossQtl: 315.3, bags: 800, rate: 3413.45, bardanaQtl: 4.56, netQtl: 310.74, advanceRupees: 10000, manualDaraRupees: 3597.38 });
   const [res, setRes] = useState<ParchaResult | null>(null);
 
@@ -110,7 +112,7 @@ function ParchaPreview({ cfg }: { cfg: ChargeConfig }) {
                     <td className={cn("num py-1.5 text-right whitespace-nowrap",
                       strong && "font-bold text-[15px] text-brand", sub && "font-semibold",
                       l.kind === "info" && "text-muted")}>
-                      {fmtINR(l.amountPaise)}
+                      {f.money(l.amountPaise)}
                     </td>
                   </tr>
                 );
@@ -118,7 +120,8 @@ function ParchaPreview({ cfg }: { cfg: ChargeConfig }) {
             </tbody>
           </table>
           <p className="mt-2.5 border-t border-line pt-2 text-[11px] leading-relaxed text-faint">
-            {fmtQtl(res.netGrams)} qtl net · {res.bags} bags · bardana {fmtQtl(res.bardanaGrams)} qtl
+            {f.weight(res.netGrams, { unit: true })} net · {f.int(res.bags)} bags · bardana {f.weight(res.bardanaGrams, { unit: true })}
+            {f.words(res.grandTotalPaise) && <> · {f.words(res.grandTotalPaise)}</>}
           </p>
         </div>
       )}
@@ -240,8 +243,16 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
               <p className="mb-2.5 text-[13px] font-semibold text-ink">{t("merchant.weights")}</p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label={t("merchant.katauti")} hint={t("merchant.katautiHelp")}>
-                  <Input mono value={String(cfg.purchaseKatautiKgPerBag)} inputMode="decimal" className="h-8 text-[13px]"
-                    onChange={(e) => patch("purchaseKatautiKgPerBag", Number(e.target.value) || 0)} />
+                  <div className="flex gap-2">
+                    <Select value={cfg.katauti.mode} className="h-8 flex-1 text-[13px]"
+                      onChange={(e) => patch("katauti", { ...cfg.katauti, mode: e.target.value as ChargeConfig["katauti"]["mode"] })}>
+                      <option value="per_quintal_rounded">{t("merchant.katautiMode.per_quintal_rounded")}</option>
+                      <option value="per_quintal_exact">{t("merchant.katautiMode.per_quintal_exact")}</option>
+                      <option value="none">{t("merchant.katautiMode.none")}</option>
+                    </Select>
+                    <Input mono value={String(cfg.katauti.kgPerUnit)} inputMode="decimal" className="h-8 w-20 text-[13px]"
+                      onChange={(e) => patch("katauti", { ...cfg.katauti, kgPerUnit: Number(e.target.value) || 0 })} />
+                  </div>
                 </Field>
                 <Field label={t("merchant.millBardana")} hint={t("merchant.millBardanaHelp")}>
                   <Input mono value={String(cfg.millBardanaKgPerBag)} inputMode="decimal" className="h-8 text-[13px]"
@@ -386,6 +397,7 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
 
 export function MillsPage() {
   const { t, pick } = useI18n();
+  const f = useFormat();
   const qc = useQueryClient();
   const { can } = useSession();
   const [dialog, setDialog] = useState<{ open: boolean; editing: Merchant | null }>({ open: false, editing: null });
@@ -451,7 +463,7 @@ export function MillsPage() {
                   <Td numeric>{m.chargeConfig.adat.enabled ? `${m.chargeConfig.adat.pct}%` : <span className="text-faint">—</span>}</Td>
                   <Td numeric>{m.chargeConfig.mandiTax.enabled ? `${m.chargeConfig.mandiTax.pct}%` : <span className="text-faint">—</span>}</Td>
                   <Td numeric>{m.chargeConfig.commission.enabled ? `${m.chargeConfig.commission.pct}%` : <span className="text-faint">—</span>}</Td>
-                  <Td numeric>{m.chargeConfig.labour1.enabled ? m.chargeConfig.labour1.perBagRupees.toFixed(2) : <span className="text-faint">—</span>}</Td>
+                  <Td numeric>{m.chargeConfig.labour1.enabled ? f.money(Math.round(m.chargeConfig.labour1.perBagRupees * 100)) : <span className="text-faint">—</span>}</Td>
                   <Td align="center">
                     {m.chargeConfig.dara.mode === "none"
                       ? <span className="text-faint">—</span>

@@ -14,6 +14,7 @@ import {
   Dialog, EmptyState, Alert, Switch, Checkbox, Spinner,
 } from "@/components/ui/index.tsx";
 import { cn, fmtDateTime, relTime } from "@/lib/utils.ts";
+import { NumberFormatCard, GeminiCard } from "./SettingsExtras.tsx";
 
 /* ------------------------------------------------------------------- users */
 
@@ -613,6 +614,8 @@ export function SettingsPage() {
         </Card>
 
         <div className="space-y-4">
+          <NumberFormatCard />
+          <GeminiCard />
           <Card>
             <CardHeader title={t("common.language")} />
             <div className="flex gap-2 p-4">

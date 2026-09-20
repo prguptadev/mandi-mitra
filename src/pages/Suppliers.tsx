@@ -10,7 +10,8 @@ import {
   Button, Card, Field, Input, Textarea, Table, Th, Td, Tr, Badge, Dialog,
   EmptyState, Alert, Switch, Checkbox, Spinner,
 } from "@/components/ui/index.tsx";
-import { cn, fmtINR, relTime } from "@/lib/utils.ts";
+import { cn } from "@/lib/utils.ts";
+import { useFormat } from "@/lib/format.tsx";
 
 /** Debounced server-side transliteration preview while the Hindi name is typed. */
 function useHinglishPreview(nameHi: string, enabled: boolean) {
@@ -245,6 +246,7 @@ function AliasPanel({ adatiId }: { adatiId: string }) {
 
 export function SuppliersPage() {
   const { t, lang } = useI18n();
+  const f = useFormat();
   const qc = useQueryClient();
   const { can } = useSession();
   const [q, setQ] = useState("");
@@ -373,7 +375,7 @@ export function SuppliersPage() {
                 {nameMode !== "hi" && <Th>{t("adati.nameHinglish")}</Th>}
                 <Th>{t("adati.village")}</Th>
                 <Th>{t("adati.phone")}</Th>
-                <Th numeric>{t("adati.openingBalance")}</Th>
+                <Th numeric>{t("adati.openingBalance")}{f.symbol && <span className="ml-1 font-normal normal-case text-faint">{f.symbol}</span>}</Th>
                 <Th align="center">{t("adati.aliases")}</Th>
                 <Th className="w-20" />
               </tr>
@@ -398,7 +400,7 @@ export function SuppliersPage() {
                   <Td className="text-muted">{lang === "hi" ? (r.villageHi || r.village) : (r.village || r.villageHi)}</Td>
                   <Td className="num text-[13px] text-muted">{r.phone}</Td>
                   <Td numeric className={cn(r.openingBalancePaise === 0 && "text-faint")}>
-                    {fmtINR(r.openingBalancePaise)}
+                    {f.money(r.openingBalancePaise)}
                   </Td>
                   <Td align="center">
                     {r.aliasCount ? <Badge tone="brand">{r.aliasCount}</Badge> : <span className="text-faint">—</span>}

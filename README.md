@@ -7,7 +7,8 @@ against buyer-mill purchase orders.
 ## What it does
 
 - **Daily list** — one row per supplier slip: RST no, dharam kanta (gross),
-  katauti (bag count), net weight, rate. Net is always derived, never typed.
+  katauti, net weight, rate. Only four fields are typed: RST, supplier, gross
+  and rate. Katauti and net are derived, never typed.
 - **Scan / OCR** — scan or photograph the handwritten sheet, read it with Gemini,
   then review side by side. Every row is cross-checked by arithmetic before it
   can be accepted.
@@ -32,6 +33,14 @@ against buyer-mill purchase orders.
 Money is stored in **paise** and weight in **grams**, both as integers.
 Floats are never used for either — see `server/lib/money.ts`.
 
+### Katauti
+
+The KATAUTI column on the paper sheet is **not** a bag count. Tested against
+all 45 rows of the 20-09-2026 sheets: it is the gross weight rounded to the
+nearest whole quintal, with 1 kg deducted per unit — 1 kg per quintal. The
+kaccha parcha's bag count (800 katte) is a separate quantity captured at load
+time. Both the basis and the rate are per-mill configurable.
+
 ## Develop
 
 ```bash
@@ -48,4 +57,17 @@ Open http://localhost:5173 and complete signup.
 npm run typecheck                        # whole repo
 npx tsx server/lib/charges.check.ts      # parcha maths vs a real paper parcha
 npx tsx server/lib/translit.check.ts     # Hindi -> Hinglish + fuzzy matching
+npx tsx src/lib/format.check.ts          # Indian digit grouping + input parsing
+```
+
+Against a running dev server:
+
+```bash
+npx tsx scripts/e2e-daily-list.ts        # enters the real L.B sheet, asserts totals
+```
+
+Fresh dev database:
+
+```bash
+rm -f data/mandi.db* && npm run db:push && npx tsx scripts/dev-bootstrap.ts && npm run db:seed
 ```

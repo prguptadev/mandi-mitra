@@ -8,9 +8,20 @@ import { amountPaise, pctPaise, roundHalfUp, GRAMS_PER_QTL } from "./money.ts";
 export const PctBase = z.enum(["amount", "amount_plus_adat", "total_before_charge"]);
 export const WeightBase = z.enum(["gross", "net"]);
 
+  /**
+   * Katauti on the purchase side. Verified against 45 rows of the 20-09-2026
+   * sheets: the KATAUTI column is the gross weight rounded to the nearest
+   * whole quintal, and 1 kg is deducted per unit — i.e. 1 kg per quintal.
+   * It is NOT the bag count; the parcha's 800 katte is a different quantity.
+   */
+export const KatautiSchema = z.object({
+  mode: z.enum(["per_quintal_rounded", "per_quintal_exact", "per_bag", "none"])
+    .default("per_quintal_rounded"),
+  kgPerUnit: z.number().min(0).max(5).default(1),
+}).default({});
+
 export const ChargeConfigSchema = z.object({
-  /** Deduction per bag when weighing IN from the supplier (your side). */
-  purchaseKatautiKgPerBag: z.number().min(0).max(5).default(1),
+  katauti: KatautiSchema,
   /** Bardana weight per bag as the destination mill counts it. */
   millBardanaKgPerBag: z.number().min(0).max(5).default(0.57),
 
@@ -112,6 +123,27 @@ export const ChargeConfigSchema = z.object({
 });
 
 export type ChargeConfig = z.infer<typeof ChargeConfigSchema>;
+export type Katauti = z.infer<typeof KatautiSchema>;
+
+const halfUp = (n: number) => Math.sign(n) * Math.round(Math.abs(n));
+
+/**
+ * How many katauti units a slip carries, and what that deducts.
+ * `override` is the number written on the sheet, when it differs from ours.
+ */
+export function deriveKatauti(
+  grossGrams: number,
+  cfg: Katauti,
+  override?: number | null,
+): { units: number; deductionGrams: number } {
+  let units: number;
+  if (override != null) units = override;
+  else if (cfg.mode === "none") units = 0;
+  else if (cfg.mode === "per_quintal_rounded") units = halfUp(grossGrams / 100_000);
+  else if (cfg.mode === "per_quintal_exact") units = grossGrams / 100_000;
+  else units = 0; // per_bag needs a bag count the daily list does not carry
+  return { units, deductionGrams: Math.round(units * cfg.kgPerUnit * 1000) };
+}
 
 export const defaultChargeConfig = (): ChargeConfig => ChargeConfigSchema.parse({});
 

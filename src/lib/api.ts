@@ -73,7 +73,7 @@ export interface Merchant {
 }
 
 export interface ChargeConfig {
-  purchaseKatautiKgPerBag: number;
+  katauti: KatautiConfig;
   millBardanaKgPerBag: number;
   adat: { enabled: boolean; pct: number; label: string };
   labour1: { enabled: boolean; perBagRupees: number; label: string };
@@ -136,3 +136,43 @@ export interface AuditRow {
 
 export interface PermissionMeta { key: string; group: string; en: string; hi: string }
 export interface GroupMeta { key: string; en: string; hi: string }
+
+export interface SlipRow {
+  id: string; slipDate: string; rstNo: string;
+  adatiId: string; adatiNameHi: string; adatiNameHinglish: string; adatiVillage: string | null;
+  jinsId: string; jinsCode: string; jinsName: string; jinsNameHi: string | null;
+  merchantId: string | null; merchantCode: string | null; merchantName: string | null;
+  loadId: string | null;
+  grossGrams: number; katautiUnits: number; katautiOverride: boolean;
+  bagsCount: number | null; netGrams: number;
+  ratePaisePerQtl: number; amountPaise: number;
+  status: string; ocrConfidence: number | null; scanBatchId: string | null;
+  katautiGrams: number; katautiCfg: KatautiConfig; suggestedKatautiUnits: number;
+  expectedNetGrams: number; expectedAmountPaise: number;
+  netMismatchGrams: number; amountMismatchPaise: number; reconciles: boolean;
+  ratePending: boolean; avgBagKg: number | null; bagWarning: boolean;
+  createdAt: number; updatedAt: number;
+}
+
+export interface KatautiConfig {
+  mode: "per_quintal_rounded" | "per_quintal_exact" | "per_bag" | "none";
+  kgPerUnit: number;
+}
+
+export interface SlipTotals {
+  rows: number; grossGrams: number; katautiUnits: number; bagsCount: number; katautiGrams: number;
+  netGrams: number; amountPaise: number; weightedAvgRatePaise: number;
+  pricedNetGrams: number; allocatedRows: number; mismatchRows: number;
+  ratePendingRows: number; bagWarningRows: number;
+}
+
+export interface SlipDay {
+  slipDate: string; n: number; netGrams: number; amountPaise: number;
+}
+
+export interface GeminiSettings {
+  model: string; fallbackModel: string; fallbackBelowConfidence: number;
+  maxOutputTokens: number; temperature: number;
+  configured: boolean; maskedKey: string | null; keyUnreadable: boolean;
+  models: { id: string; label: string; note: string }[];
+}

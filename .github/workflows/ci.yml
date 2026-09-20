@@ -21,5 +21,7 @@ jobs:
         run: npx tsx server/lib/charges.check.ts
       - name: Transliteration check
         run: npx tsx server/lib/translit.check.ts
+      - name: Number format check
+        run: npx tsx src/lib/format.check.ts
       - name: Build web bundle
         run: npm run build

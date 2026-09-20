@@ -1,0 +1,134 @@
+/* End-to-end check against a RUNNING dev server: enters the real L.B daily
+ * list of 20-09-2026 through the HTTP API and asserts the day totals match
+ * the paper (331.05 qtl net, 3413.45 weighted average).
+ *
+ * Needs: npm run dev, and a signed-up owner. Usage:
+ *   npx tsx scripts/e2e-daily-list.ts [PIN]
+ */
+const BASE = "http://localhost:8787/api";
+let cookie = "";
+
+async function call(method: string, path: string, body?: unknown) {
+  const res = await fetch(BASE + path, {
+    method,
+    headers: { "Content-Type": "application/json", ...(cookie ? { cookie } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const sc = res.headers.get("set-cookie");
+  if (sc) cookie = sc.split(";")[0];
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status} ${JSON.stringify(json)}`);
+  return json;
+}
+
+const users = await call("GET", "/auth/users");
+const owner = users.find((u: any) => u.name === "Test Owner");
+const PIN = process.argv[2] ?? process.env.MANDI_PIN ?? "482915";
+await call("POST", "/auth/login", { userId: owner.id, pin: PIN });
+console.log("logged in as Test Owner");
+
+const mills = await call("GET", "/merchants");
+const lb = mills.find((m: any) => m.code === "LB");
+const jins = await call("GET", "/jins");
+const j1509 = jins.find((j: any) => j.code === "1509");
+const suppliers = await call("GET", "/adati");
+const byHi = new Map(suppliers.map((s: any) => [s.nameHi, s]));
+
+/* The L.B sheet dated 20-09-2026: RST, dharam kanta, KATAUTI as written, rate.
+   Katauti is NOT sent — the server derives it and we assert it comes back equal. */
+const SHEET: [string, string, number, number, number][] = [ // rst, name, gross, katauti, rate
+  ["630", "सामरा इंटरप्राइजेज", 28.60, 29, 3450],
+  ["634", "शिवम ट्रेडिंग",      41.25, 41, 3550],
+  ["635", "शिवम ट्रेडिंग",      35.85, 36, 3400],
+  ["633", "अमित ट्रेडिंग",      26.40, 26, 3521],
+  ["636", "राधा चरन ट्रेडिंग",  18.75, 19, 3400],
+  ["639", "राजू संजीव कुमार",   5.70,  6,  3611],
+  ["643", "धर्मपाल सिंह",       18.20, 18, 3300],
+  ["648", "रामपाल सिंह यादव",   9.60,  10, 3200],
+  ["651", "सूर्य प्रकाश वर्मा", 24.95, 25, 3400],
+  ["652", "राधा चरन ट्रेडिंग",  42.60, 43, 3450],
+  ["653", "शिवम ट्रेडिंग",      14.40, 14, 3100],
+  ["662", "राधा चरन ट्रेडिंग",  18.20, 18, 3450],
+  ["666", "राधे श्याम एण्ड संस", 49.90, 50, 3350],
+];
+
+const DATE = "2026-09-20";
+console.log(`\nEntering ${SHEET.length} rows for ${DATE} against mill ${lb.code}...`);
+let entered = 0;
+for (const [rst, nameHi, gross, bags, rate] of SHEET) {
+  const ad: any = byHi.get(nameHi);
+  if (!ad) { console.log(`  !! no supplier "${nameHi}"`); continue; }
+  try {
+    await call("POST", "/slips", {
+      slipDate: DATE, rstNo: rst, adatiId: ad.id, jinsId: j1509.id, merchantId: lb.id,
+      grossGrams: Math.round(gross * 100000), ratePaisePerQtl: Math.round(rate * 100),
+    });
+    entered++;
+  } catch (e) {
+    console.log(`  !! RST ${rst}: ${(e as Error).message.slice(0, 110)}`);
+  }
+}
+console.log(`  ${entered} rows accepted`);
+
+const day = await call("GET", `/slips?date=${DATE}&merchantId=${lb.id}`);
+const T = day.totals;
+const q = (g: number) => (g / 100000).toFixed(2);
+const r = (p: number) => (p / 100).toFixed(2);
+
+console.log("\nDay totals computed by the server:");
+console.log("  rows              ", T.rows);
+console.log("  katauti units     ", T.katautiUnits);
+console.log("  gross (dharam)    ", q(T.grossGrams));
+console.log("  katauti deduction ", q(T.katautiGrams));
+console.log("  NET               ", q(T.netGrams), "   sheet says 331.05");
+console.log("  weighted avg rate ", r(T.weightedAvgRatePaise), " parcha says 3413.45");
+console.log("  amount            ", r(T.amountPaise));
+console.log("  rows not adding up", T.mismatchRows);
+
+const checks: [string, unknown, unknown][] = [
+  ["row count", T.rows, 13],
+  ["katauti units (derived)", T.katautiUnits, 335],
+  ["net weight", q(T.netGrams), "331.05"],
+  ["weighted avg rate", r(T.weightedAvgRatePaise), "3413.45"],
+  ["rows failing reconciliation", T.mismatchRows, 0],
+];
+let bad = 0;
+console.log("\nAgainst the paper:");
+for (const [name, got, want] of checks) {
+  const ok = got === want;
+  if (!ok) bad++;
+  console.log(` ${ok ? "PASS" : "FAIL"}  ${String(name).padEnd(30)} ${got}${ok ? "" : "  want " + want}`);
+}
+
+console.log("\nDerived katauti vs what is written on the sheet:");
+{
+  const byRst = new Map(day.rows.map((r: any) => [r.rstNo, r]));
+  let miss = 0;
+  for (const [rst, , , katautiOnSheet] of SHEET) {
+    const row: any = byRst.get(rst);
+    if (!row) continue;
+    if (row.katautiUnits !== katautiOnSheet) {
+      miss++; bad++;
+      console.log(` FAIL  RST ${rst}: derived ${row.katautiUnits}, sheet says ${katautiOnSheet}`);
+    }
+  }
+  console.log(miss === 0 ? ` PASS  all ${SHEET.length} derived katauti values match the sheet` : "");
+}
+
+console.log("\nDuplicate-RST guard:");
+try {
+  const ad: any = byHi.get("शिवम ट्रेडिंग");
+  await call("POST", "/slips", {
+    slipDate: DATE, rstNo: "634", adatiId: ad.id, jinsId: j1509.id, merchantId: lb.id,
+    grossGrams: 1000000, ratePaisePerQtl: 300000,
+  });
+  console.log(" FAIL  a duplicate RST was accepted"); bad++;
+} catch (e) {
+  const m = (e as Error).message;
+  console.log(m.includes("duplicate_rst") ? " PASS  duplicate RST 634 rejected" : " FAIL  " + m.slice(0, 90));
+  if (!m.includes("duplicate_rst")) bad++;
+}
+
+console.log(bad === 0 ? "\nDaily list reproduces the sheet exactly." : `\n${bad} FAILED`);
+process.exit(bad === 0 ? 0 : 1);

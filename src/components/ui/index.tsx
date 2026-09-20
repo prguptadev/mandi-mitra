@@ -195,9 +195,9 @@ const TONES: Record<Tone, string> = {
   brand: "bg-brand/10 text-brand border-brand/25",
 };
 
-export function Badge({ tone = "neutral", className, children }: { tone?: Tone; className?: string; children: ReactNode }) {
+export function Badge({ tone = "neutral", className, children, title }: { tone?: Tone; className?: string; children: ReactNode; title?: string }) {
   return (
-    <span className={cn(
+    <span title={title} className={cn(
       "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium leading-tight whitespace-nowrap",
       TONES[tone], className,
     )}>

@@ -11,6 +11,7 @@ import { Button, Card, Dialog, Field, Input, Alert, EmptyState } from "@/compone
 import { SignupPage, LoginPage } from "@/pages/Auth.tsx";
 import { DashboardPage } from "@/pages/Dashboard.tsx";
 import { SuppliersPage } from "@/pages/Suppliers.tsx";
+import { DailyListPage } from "@/pages/DailyList.tsx";
 import { MillsPage } from "@/pages/Mills.tsx";
 import { UsersPage, RolesPage, AuditPage, CommoditiesPage, SettingsPage } from "@/pages/Admin.tsx";
 
@@ -104,6 +105,7 @@ export default function App() {
       <AppShell onAddBusiness={() => setAddBiz(true)}>
         <RouteSwitch>
           <Route path="/" component={DashboardPage} />
+          <Route path="/daily">{() => <Guard perm="slip.read"><DailyListPage /></Guard>}</Route>
           <Route path="/suppliers">{() => <Guard perm="adati.read"><SuppliersPage /></Guard>}</Route>
           <Route path="/mills">{() => <Guard perm="merchant.read"><MillsPage /></Guard>}</Route>
           <Route path="/commodities">{() => <Guard perm="jins.read"><CommoditiesPage /></Guard>}</Route>

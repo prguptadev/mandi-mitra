@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "24491096-2e5a-4a45-b1f5-57602bf44187",
+  "id": "f850b009-64d4-40fd-9085-6f4ec906dcc1",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "adati": {
@@ -1618,11 +1618,26 @@
           "notNull": true,
           "autoincrement": false
         },
-        "bags": {
-          "name": "bags",
+        "katauti_units": {
+          "name": "katauti_units",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
+          "autoincrement": false
+        },
+        "katauti_override": {
+          "name": "katauti_override",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "bags_count": {
+          "name": "bags_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "net_grams": {

@@ -231,7 +231,12 @@ export const purchaseSlips = sqliteTable(
     merchantId: text("merchant_id").references(() => merchants.id),
     loadId: text("load_id"),
     grossGrams: integer("gross_grams").notNull(),
-    bags: integer("bags").notNull(),
+    /** The KATAUTI column: gross rounded to the nearest quintal, 1 kg each. */
+    katautiUnits: integer("katauti_units").notNull(),
+    /** Set only when the operator overrode the derived value. */
+    katautiOverride: integer("katauti_override", { mode: "boolean" }).notNull().default(false),
+    /** Physical bag count, if it is known at purchase time. Usually it is not. */
+    bagsCount: integer("bags_count"),
     netGrams: integer("net_grams").notNull(),
     ratePaisePerQtl: integer("rate_paise_per_qtl").notNull(),
     amountPaise: integer("amount_paise").notNull(),
