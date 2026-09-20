@@ -37,3 +37,5 @@ const rows = OCR.map(([rst,name,g,k,n,rate,conf,struck],i)=>({
 }));
 sqlite.prepare("update scan_batches set parsed_rows=?, status='review', model='gemini-2.5-flash', tokens_in=2841, tokens_out=1190 where id=?").run(JSON.stringify(rows), id);
 console.log(id);
+console.log("NOTE: the page image is a 1x1 placeholder, so the viewer shows a plain square.");
+console.log("Delete it from Scan & OCR when you are done, or it will sit in the list.");

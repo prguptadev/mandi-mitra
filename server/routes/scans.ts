@@ -327,6 +327,30 @@ async function performRead(opts: {
     return;
   }
 
+  /* Someone will upload a photo of something else — a parcha, a bill, a
+     thumb over the lens. Say so plainly instead of presenting an empty grid
+     and letting them wonder whether the reader is broken. */
+  const usable = result.page.rows.filter(
+    (r) => (r.rstNo && r.rstNo.trim()) || r.grossQtl != null || (r.adatiName && r.adatiName.trim()),
+  );
+  if (usable.length === 0) {
+    await db.update(schema.scanBatches).set({
+      status: "failed",
+      errorText: result.page.rows.length === 0
+        ? "Nothing on this image looks like a daily list. Check it is the purchase register page, right way up and in focus."
+        : "This image was read, but none of the rows carry an RST number, a supplier or a weight. It may not be a daily list page.",
+      model: result.model,
+      rawResponse: JSON.stringify(result.raw ?? null).slice(0, 40000),
+      tokensIn: result.tokensIn ?? null, tokensOut: result.tokensOut ?? null,
+    }).where(eq(schema.scanBatches.id, id));
+    await audit({
+      actor: { ...opts.actorInfo, businessId: biz },
+      action: "scan.read.empty", entity: "scan_batch", entityId: id,
+      entityLabel: `${result.model} found no usable rows`,
+    });
+    return;
+  }
+
   const rows: ReviewRow[] = result.page.rows.map(ocrToReviewRow);
   const warning = result.truncated
     ? `The reply was cut short, so ${rows.length} complete rows were recovered. Check the bottom of the sheet for any row that did not come through.`

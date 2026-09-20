@@ -6,6 +6,8 @@
  *
  * Usage: npx tsx scripts/e2e-scan-review.ts [PIN]
  */
+import fs from "node:fs";
+import path from "node:path";
 import { sqlite } from "../server/db/client.ts";
 
 const BASE = "http://localhost:8787/api";
@@ -202,6 +204,20 @@ try {
   const ok = (e as Error).message.includes("already_committed");
   if (!ok) bad++;
   console.log(` ${ok ? "PASS" : "FAIL"}  refused: already_committed`);
+}
+
+/* Clean up. A committed scan cannot be deleted through the API by design, and
+   leaving a 1x1 test image behind means the owner clicks a row in the daily
+   list and gets a green square. */
+{
+  const dir = path.resolve("data/scans", scanId);
+  sqlite.prepare("delete from purchase_slips where scan_batch_id = ?").run(scanId);
+  sqlite.prepare("delete from purchase_slips where slip_date = ?").run(DATE);
+  sqlite.prepare("delete from scan_batches where id = ?").run(scanId);
+  fs.rmSync(dir, { recursive: true, force: true });
+  const del = sqlite.prepare("delete from adati_aliases where raw_text = ? and source in ('ocr','correction')");
+  for (const n of RAW_NAMES) del.run(n);
+  console.log("\ncleaned up: test scan, its image and its slips removed");
 }
 
 console.log(bad === 0 ? "\nOCR review pipeline works end to end." : `\n${bad} FAILED`);
