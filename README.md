@@ -4,6 +4,9 @@ Daily-list, stock and kaccha-parcha software for a grain commission business
 (arhat / adat) buying paddy, wheat and maize from small suppliers and dispatching
 against buyer-mill purchase orders.
 
+> **New here?** Read [HANDOVER.md](HANDOVER.md) first — business rules,
+> architecture, what is built, what is pending, and the questions still open.
+
 ## What it does
 
 - **Daily list** — one row per supplier slip: RST no, dharam kanta (gross),

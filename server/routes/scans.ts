@@ -21,6 +21,26 @@ import { can, actor, param, notFound, bad, HttpError, type Env } from "../lib/ht
 
 export const scanRoutes = new Hono<Env>();
 
+/* Reading a full sheet takes 20-60s. It runs detached from the request so the
+ * operator can switch tabs, open the daily list, or close the page entirely
+ * without killing it. The browser polls the batch instead of holding a socket
+ * open, so nothing is lost by navigating away and coming back. */
+const inFlight = new Set<string>();
+
+/** A process restart leaves reads orphaned; nothing is running for them. */
+export function recoverInterruptedScans() {
+  const stale = db.select({ id: schema.scanBatches.id }).from(schema.scanBatches)
+    .where(eq(schema.scanBatches.status, "reading")).all();
+  if (!stale.length) return 0;
+  for (const s of stale) {
+    db.update(schema.scanBatches).set({
+      status: "uploaded",
+      warningText: "The reader was interrupted before it finished. Start it again.",
+    }).where(eq(schema.scanBatches.id, s.id)).run();
+  }
+  return stale.length;
+}
+
 const DATA_DIR = process.env.MANDI_DATA_DIR ?? path.resolve(process.cwd(), "data");
 const SCAN_DIR = path.join(DATA_DIR, "scans");
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -197,28 +217,20 @@ scanRoutes.post("/", can("scan.create"), async (c) => {
 
 /* --------------------------------------------------------------------- run */
 
-scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
-  const biz = c.get("auth")!.businessId!;
-  const id = param(c, "id");
+/** Does the actual reading. Never awaited by the request handler. */
+async function performRead(opts: {
+  biz: string; id: string; apiKey: string;
+  cfg: ReturnType<typeof defaultGeminiConfig>; wanted?: string;
+  actorInfo: { userId: string | null; userName: string | null };
+}) {
+  const { biz, id, apiKey, cfg, wanted } = opts;
   const batch = await loadBatch(biz, id);
-
-  const keyRaw = await setting(biz, "gemini.apiKey");
-  const apiKey = keyRaw ? decryptSecret(keyRaw) : null;
-  if (!apiKey) throw bad("Add the Gemini API key in Settings first", "no_key");
-
-  const cfgRaw = await setting(biz, "gemini");
-  const cfg = cfgRaw ? GeminiConfigSchema.parse(JSON.parse(cfgRaw)) : defaultGeminiConfig();
-  const wanted = (await c.req.json().catch(() => ({})))?.model as string | undefined;
-
   const files: { name: string; mimeType: string }[] = JSON.parse(batch.filePaths);
   const dir = path.join(SCAN_DIR, id);
   const images = files.map((f) => ({
     base64: fs.readFileSync(path.join(dir, f.name)).toString("base64"),
     mimeType: f.mimeType,
   }));
-
-  await db.update(schema.scanBatches).set({ status: "reading", errorText: null })
-    .where(eq(schema.scanBatches.id, id));
 
   let result = await readSheet({
     apiKey, model: wanted ?? cfg.model, images,
@@ -241,16 +253,25 @@ scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
 
   if (!result.ok || !result.page) {
     await db.update(schema.scanBatches).set({
-      status: "failed", errorText: result.error ?? "Unknown error",
-      model: result.model, rawResponse: JSON.stringify(result.raw ?? null).slice(0, 20000),
+      status: "failed", errorText: result.error ?? "Unknown error", warningText: null,
+      model: result.model, rawResponse: JSON.stringify(result.raw ?? null).slice(0, 40000),
+      tokensIn: result.tokensIn ?? null, tokensOut: result.tokensOut ?? null,
     }).where(eq(schema.scanBatches.id, id));
-    await audit({ actor: actor(c), action: "scan.read.fail", entity: "scan_batch", entityId: id, entityLabel: result.error ?? "failed" });
-    return c.json({ ok: false, error: result.error, model: result.model }, 200);
+    await audit({
+      actor: { ...opts.actorInfo, businessId: biz },
+      action: "scan.read.fail", entity: "scan_batch", entityId: id,
+      entityLabel: result.error ?? "failed",
+    });
+    return;
   }
 
   const rows: ReviewRow[] = result.page.rows.map(ocrToReviewRow);
+  const warning = result.truncated
+    ? `The reply was cut short, so ${rows.length} complete rows were recovered. Check the bottom of the sheet for any row that did not come through.`
+    : null;
   await db.update(schema.scanBatches).set({
     status: "review",
+    warningText: warning,
     model: result.model,
     parsedRows: JSON.stringify(rows),
     rawResponse: JSON.stringify(result.raw).slice(0, 200000),
@@ -262,18 +283,46 @@ scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
   }).where(eq(schema.scanBatches.id, id));
 
   await audit({
-    actor: actor(c), action: "scan.read", entity: "scan_batch", entityId: id,
-    entityLabel: `${rows.length} rows via ${result.model}${usedFallback ? " (fallback)" : ""} in ${result.ms} ms`,
+    actor: { ...opts.actorInfo, businessId: biz },
+    action: "scan.read", entity: "scan_batch", entityId: id,
+    entityLabel: `${rows.length} rows via ${result.model}${usedFallback ? " (fallback)" : ""}${result.truncated ? " (recovered from a truncated reply)" : ""} in ${result.ms} ms`,
     after: { rows: rows.length, model: result.model, ms: result.ms, tokensIn: result.tokensIn, tokensOut: result.tokensOut },
   });
+}
 
-  const fresh = await loadBatch(biz, id);
-  const checked = await checkAll(biz, fresh);
-  return c.json({
-    ok: true, model: result.model, ms: result.ms, usedFallback,
-    header: { date: result.page.date, millName: result.page.millName, jins: result.page.jins, totalWeightWritten: result.page.totalWeightWritten },
-    ...checked,
-  });
+/** Starts the read and returns immediately. Poll GET /scans/:id for progress. */
+scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const id = param(c, "id");
+  const batch = await loadBatch(biz, id);
+  if (batch.status === "committed") throw new HttpError(409, "This scan is already on the daily list", "already_committed");
+  if (inFlight.has(id)) return c.json({ started: true, alreadyRunning: true });
+
+  const keyRaw = await setting(biz, "gemini.apiKey");
+  const apiKey = keyRaw ? decryptSecret(keyRaw) : null;
+  if (!apiKey) throw bad("Add the Gemini API key in Settings first", "no_key");
+
+  const cfgRaw = await setting(biz, "gemini");
+  const cfg = cfgRaw ? GeminiConfigSchema.parse(JSON.parse(cfgRaw)) : defaultGeminiConfig();
+  const wanted = (await c.req.json().catch(() => ({})))?.model as string | undefined;
+  const actorInfo = { userId: c.get("auth")!.user.id, userName: c.get("auth")!.user.name };
+
+  await db.update(schema.scanBatches)
+    .set({ status: "reading", errorText: null, warningText: null })
+    .where(eq(schema.scanBatches.id, id));
+
+  inFlight.add(id);
+  void performRead({ biz, id, apiKey, cfg, wanted, actorInfo })
+    .catch(async (err) => {
+      console.error("[scan]", id, err);
+      await db.update(schema.scanBatches).set({
+        status: "failed",
+        errorText: err instanceof Error ? err.message : "The reader stopped unexpectedly",
+      }).where(eq(schema.scanBatches.id, id));
+    })
+    .finally(() => inFlight.delete(id));
+
+  return c.json({ started: true });
 });
 
 /* ------------------------------------------------------------------ review */
@@ -286,7 +335,8 @@ scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
   return c.json({
     id: batch.id, status: batch.status, sourceKind: batch.sourceKind,
     slipDate: batch.slipDate, merchantId: batch.merchantId, jinsId: batch.jinsId,
-    model: batch.model, errorText: batch.errorText,
+    model: batch.model, errorText: batch.errorText, warningText: batch.warningText,
+    running: inFlight.has(batch.id),
     tokensIn: batch.tokensIn, tokensOut: batch.tokensOut,
     createdAt: batch.createdAt, reviewedAt: batch.reviewedAt,
     pages: files.map((f, i) => ({ index: i, name: f.name, mimeType: f.mimeType, bytes: f.bytes })),

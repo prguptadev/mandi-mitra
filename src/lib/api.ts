@@ -1,3 +1,9 @@
+/** Duck-typed: `instanceof` is unreliable across hot-reloaded module copies. */
+export function apiStatus(err: unknown): number | null {
+  const s = (err as { status?: unknown } | null)?.status;
+  return typeof s === "number" ? s : null;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -215,9 +221,10 @@ export interface ScanSummary {
 export interface ScanBatch {
   id: string; status: string; sourceKind: string;
   slipDate: string | null; merchantId: string | null; jinsId: string | null;
-  model: string | null; errorText: string | null;
+  model: string | null; errorText: string | null; warningText: string | null;
   tokensIn: number | null; tokensOut: number | null;
   createdAt: number; reviewedAt: number | null;
+  running: boolean;
   pages: { index: number; name: string; mimeType: string; bytes: number }[];
   rows: ScanRow[];
   summary: ScanSummary | null;

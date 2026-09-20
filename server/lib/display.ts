@@ -30,7 +30,9 @@ export const GeminiConfigSchema = z.object({
   fallbackModel: z.string().default("gemini-2.5-pro"),
   /** Retry a page on the stronger model when mean confidence is below this. */
   fallbackBelowConfidence: z.number().min(0).max(1).default(0.8),
-  maxOutputTokens: z.number().int().min(256).max(32768).default(8192),
+  /** A 30-row sheet needs ~6k; the ceiling is generous because truncation
+   *  loses the whole page and a retry costs more than the unused headroom. */
+  maxOutputTokens: z.number().int().min(4096).max(65536).default(32768),
   temperature: z.number().min(0).max(1).default(0),
 });
 

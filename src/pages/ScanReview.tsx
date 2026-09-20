@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
   ZoomIn, ZoomOut, Maximize2, Check, X, AlertTriangle, AlertCircle, Sparkles,
   ArrowRight, Trash2, RotateCcw, ScanLine, ChevronLeft, ChevronRight, Equal,
+  PanelRightClose, PanelRightOpen,
 } from "lucide-react";
-import { api, ApiError, type ScanBatch, type ScanRow, type ScanIssue, type Adati, type Jins, type Merchant } from "@/lib/api.ts";
+import { api, ApiError, apiStatus, type ScanBatch, type ScanRow, type ScanIssue, type Adati, type Jins, type Merchant } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, parseLooseNumber, GRAMS_PER_QTL } from "@/lib/format.tsx";
@@ -82,23 +83,6 @@ function PageViewer({ scanId, pages }: { scanId: string; pages: ScanBatch["pages
   );
 }
 
-function IssueChip({ issue }: { issue: ScanIssue }) {
-  const { t } = useI18n();
-  // localise from the code; the server's English is only a fallback
-  const key = `issue.${issue.code}` as never;
-  const localised = t(key, issue.params as Record<string, string | number> | undefined);
-  const text = localised === key ? issue.message : localised;
-  return (
-    <span className={cn(
-      "inline-flex items-start gap-1 rounded px-1.5 py-0.5 text-[11px] leading-snug",
-      issue.level === "error" ? "bg-bad-soft text-bad" : "bg-warn-soft text-warn",
-    )}>
-      {issue.level === "error" ? <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" /> : <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />}
-      {text}
-    </span>
-  );
-}
-
 export function ScanReviewPage({ scanId }: { scanId: string }) {
   const { t, pick } = useI18n();
   const f = useFormat();
@@ -107,13 +91,18 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   const [, navigate] = useLocation();
 
   const [draft, setDraft] = useState<ScanRow[] | null>(null);
-  const [filter, setFilter] = useState<"all" | "issues" | "blocking" | "clean">("all");
+  const [showScan, setShowScan] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<{ created: number; learned: number; date: string } | null>(null);
 
   const batch = useQuery({
     queryKey: ["scan", scanId],
     queryFn: () => api.get<ScanBatch>(`/scans/${scanId}`),
+    /* The read runs on the server, detached from any request. Polling means
+       switching tabs, opening the daily list, or reloading the page loses
+       nothing — come back and the rows are simply there. */
+    refetchInterval: (q) => (q?.state?.data?.status === "reading" ? 2000 : false),
+    refetchOnWindowFocus: true,
   });
   const suppliers = useQuery({ queryKey: ["adati", {}], queryFn: () => api.get<Adati[]>("/adati") });
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
@@ -131,7 +120,11 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
 
   const run = useMutation({
     mutationFn: (model?: string) => api.post(`/scans/${scanId}/run`, model ? { model } : {}),
-    onSuccess: async () => { setDraft(null); await qc.invalidateQueries({ queryKey: ["scan", scanId] }); },
+    onSuccess: async () => {
+      setDraft(null);
+      // the server picks it up from here; polling shows it landing
+      await qc.invalidateQueries({ queryKey: ["scan", scanId] });
+    },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
@@ -160,17 +153,84 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
-  const visible = useMemo(() => {
-    if (filter === "issues") return rows.filter((r) => !r.excluded && r.issues.length > 0);
-    if (filter === "blocking") return rows.filter((r) => !r.excluded && r.blocking);
-    if (filter === "clean") return rows.filter((r) => !r.excluded && r.issues.length === 0);
-    return rows;
-  }, [rows, filter]);
+  /** Every row stays on screen and editable until it is approved. */
+  const visible = rows;
 
   if (batch.isLoading) {
     return (<><PageHeader title={t("scan.review")} /><Card><SkeletonTable rows={8} /></Card></>);
   }
-  const b = batch.data!;
+
+  /* A scan belongs to one business. Switching business while this page is open,
+     or opening a stale link, lands here — say so instead of blanking out. */
+  if (batch.isError || !batch.data) {
+    const notFound = apiStatus(batch.error) === 404;
+    return (
+      <>
+        <PageHeader title={t("scan.review")} />
+        <Card className="mx-auto max-w-lg">
+          <EmptyState
+            icon={<ScanLine className="h-8 w-8" />}
+            title={notFound ? t("scan.notFound") : t("common.somethingWrong")}
+            sub={notFound ? t("scan.notFoundSub") : (batch.error instanceof Error ? batch.error.message : undefined)}
+            action={
+              <div className="flex gap-2">
+                <Button onClick={() => batch.refetch()}>{t("common.retry")}</Button>
+                <Button variant="primary" onClick={() => navigate("/scan")}>{t("scan.title")}</Button>
+              </div>
+            }
+          />
+        </Card>
+      </>
+    );
+  }
+  const b = batch.data;
+
+  if (b.status === "reading") {
+    return (
+      <>
+        <PageHeader title={t("scan.review")} sub={t("scan.reviewSub")} />
+        <div className="grid gap-3 lg:grid-cols-[minmax(320px,1fr)_minmax(0,1.35fr)]">
+          <div className="h-[45vh] lg:h-[calc(100vh-8rem)]"><PageViewer scanId={scanId} pages={b.pages} /></div>
+          <Card>
+            <div className="flex flex-col items-center justify-center gap-3 px-6 py-20 text-center">
+              <Spinner className="h-7 w-7 text-brand" />
+              <p className="text-sm font-semibold text-ink">{t("scan.reading")}</p>
+              <p className="max-w-sm text-[13px] leading-relaxed text-muted">{t("scan.readingSub")}</p>
+              <p className="text-[12px] text-faint">{t("scan.pages", { n: b.pages.length })}</p>
+            </div>
+            <div className="border-t border-line p-3">
+              <SkeletonTable rows={6} cols={[{ w: "w-14" }, { w: "w-40" }, { w: "w-16", numeric: true }, { w: "w-16", numeric: true }, { w: "w-20", numeric: true }]} />
+            </div>
+          </Card>
+        </div>
+      </>
+    );
+  }
+
+  if (b.status === "uploaded") {
+    return (
+      <>
+        <PageHeader title={t("scan.review")} sub={t("scan.reviewSub")} />
+        {b.warningText && <Alert tone="warn" className="mb-3">{b.warningText}</Alert>}
+        <div className="grid gap-3 lg:grid-cols-[minmax(320px,1fr)_minmax(0,1.35fr)]">
+          <div className="h-[45vh] lg:h-[calc(100vh-8rem)]"><PageViewer scanId={scanId} pages={b.pages} /></div>
+          <Card>
+            <EmptyState
+              icon={<ScanLine className="h-8 w-8" />}
+              title={t("scan.status.uploaded")}
+              sub={t("scan.pages", { n: b.pages.length })}
+              action={
+                <Button variant="primary" size="lg" loading={run.isPending}
+                  icon={<ScanLine className="h-4 w-4" />} onClick={() => run.mutate(undefined)}>
+                  {t("scan.read")}
+                </Button>
+              }
+            />
+          </Card>
+        </div>
+      </>
+    );
+  }
 
   if (done) {
     return (
@@ -208,6 +268,14 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
 
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
       {b.status === "committed" && <Alert tone="ok" className="mb-3">{t("scan.status.committed")}</Alert>}
+      {b.warningText && (
+        <Alert tone="warn" className="mb-3">
+          <span className="inline-flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {b.warningText}
+          </span>
+        </Alert>
+      )}
       {b.errorText && (
         <Alert tone="bad" className="mb-3">
           <p className="font-semibold">{t("scan.failedTitle")}</p>
@@ -243,224 +311,238 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
         </div>
       </Card>
 
-      {summary && (
-        <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-          <Stat label={t("scan.summary.total")} value={summary.total} />
-          <Stat label={t("scan.summary.clean")} value={summary.clean} tone="ok" />
-          <Stat label={t("scan.summary.warnings")} value={summary.warnings} tone={summary.warnings ? "warn" : undefined} />
-          <Stat label={t("scan.summary.blocking")} value={summary.blocking} tone={summary.blocking ? "bad" : "ok"} />
-          <Stat label={t("scan.summary.netAgree")} title={t("scan.netAgreeHelp")}
-            value={`${summary.netAgreeing}/${summary.netChecked}`}
-            tone={summary.netChecked > 0 && summary.netAgreeing === summary.netChecked ? "ok" : "warn"} />
-          <Stat label={t("scan.summary.names")} value={`${summary.autoMatchedNames}/${summary.included}`}
-            tone={summary.autoMatchedNames === summary.included ? "ok" : "warn"} />
-        </div>
-      )}
-
-      <div className="grid gap-3 lg:grid-cols-[minmax(320px,1fr)_minmax(0,1.35fr)]">
-        <div className="lg:sticky lg:top-4 lg:h-[calc(100vh-8rem)]">
-          <PageViewer scanId={scanId} pages={b.pages} />
-        </div>
+      <div className={cn("grid gap-3", showScan && "xl:grid-cols-[minmax(300px,0.8fr)_minmax(0,2fr)]")}>
+        {showScan && (
+          <div className="h-[45vh] xl:sticky xl:top-4 xl:h-[calc(100vh-8rem)]">
+            <PageViewer scanId={scanId} pages={b.pages} />
+          </div>
+        )}
 
         <Card className="overflow-hidden">
           <div className="flex flex-wrap items-center gap-2 border-b border-line p-2.5">
-            <Tabs value={filter} onChange={setFilter} className="border-0"
-              tabs={[
-                { value: "all", label: t("scan.rowsAll"), count: rows.length },
-                { value: "blocking", label: t("scan.rowsBlocking"), count: summary?.blocking ?? 0 },
-                { value: "issues", label: t("scan.rowsIssues"), count: summary?.warnings ?? 0 },
-                { value: "clean", label: t("scan.rowsClean"), count: summary?.clean ?? 0 },
-              ]} />
+            <p className="text-[13px] font-medium text-ink">{t("scan.extracted")}</p>
             <div className="flex-1" />
             {save.isPending && <Spinner />}
+            <Button size="sm" variant="ghost" onClick={() => setShowScan((v) => !v)}
+              icon={showScan ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRightOpen className="h-3.5 w-3.5" />}>
+              <span className="hidden sm:inline">{showScan ? t("scan.hideScan") : t("scan.showScan")}</span>
+            </Button>
           </div>
 
-          <div className="divide-y divide-line/70">
-            {visible.map((r) => {
-              const matched = r.adatiId
-                ? suppliers.data?.find((s) => s.id === r.adatiId) ?? null
-                : null;
-              return (
-                <div key={r.id} className={cn(
-                  "p-2.5 transition-colors",
-                  r.excluded && "bg-raised/40 opacity-55",
-                  !r.excluded && r.blocking && "bg-bad-soft/40",
-                  !r.excluded && !r.blocking && r.issues.length > 0 && "bg-warn-soft/30",
-                )}>
-                  <div className="flex items-start gap-2">
-                    <div className="flex w-full min-w-0 flex-col gap-2">
-                      {/* line 1: rst + name */}
-                      <div className="flex flex-wrap items-center gap-2">
-                        <input
-                          value={r.rstNo} disabled={r.excluded || b.status === "committed"}
-                          onChange={(e) => patchRow(r.id, { rstNo: e.target.value })}
-                          className={cn(CELL, "w-16 text-left")} placeholder="RST"
-                        />
-                        <div className="min-w-[200px] flex-1">
-                          {r.adatiId || r.match ? (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-[13px]">
+              <thead>
+                <tr className="bg-raised/80">
+                  {([
+                    ["rowNo", "w-9", false], ["rst", "w-16", false], ["adati", "min-w-[190px]", false],
+                    ["gross", "w-24", true], ["katauti", "w-16", true], ["deduction", "w-20", true],
+                    ["net", "w-24", true], ["rate", "w-24", true], ["amount", "w-28", true],
+                    ["conf", "w-14", true], ["act", "w-10", false],
+                  ] as const).map(([key, w, numeric]) => (
+                    <th key={key} className={cn(
+                      "border-b border-line px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted",
+                      numeric ? "text-right" : "text-left", w,
+                    )}>
+                      {key === "rowNo" ? t("scan.rowNo")
+                        : key === "rst" ? t("daily.rst")
+                        : key === "adati" ? t("daily.supplier")
+                        : key === "gross" ? t("daily.gross")
+                        : key === "katauti" ? t("daily.bags")
+                        : key === "deduction" ? t("daily.katautiWt")
+                        : key === "net" ? t("daily.net")
+                        : key === "rate" ? <>{t("daily.rate")}{f.symbol && <span className="ml-0.5 font-normal normal-case text-faint">{f.symbol}</span>}</>
+                        : key === "amount" ? <>{t("daily.amount")}{f.symbol && <span className="ml-0.5 font-normal normal-case text-faint">{f.symbol}</span>}</>
+                        : key === "conf" ? t("scan.conf")
+                        : ""}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((r, i) => {
+                  const locked = r.excluded || b.status === "committed";
+                  const matched = r.adatiId ? suppliers.data?.find((s) => s.id === r.adatiId) ?? null : null;
+                  const name = matched ?? r.match;
+                  return (
+                    <Fragment key={r.id}>
+                      <tr className={cn(
+                        "transition-colors hover:bg-raised/30",
+                        r.excluded && "bg-raised/50 opacity-55",
+                      )}>
+                        <td className="num border-b border-line/70 px-2 py-1 text-[11px] text-faint">{i + 1}</td>
+
+                        <td className="border-b border-line/70 px-1 py-1">
+                          <input value={r.rstNo} disabled={locked} placeholder="RST"
+                            onChange={(e) => patchRow(r.id, { rstNo: e.target.value })}
+                            className={cn(CELL, "text-left")} />
+                        </td>
+
+                        <td className="border-b border-line/70 px-1 py-1">
+                          {name ? (
                             <div className="flex items-center gap-1.5">
-                              <span lang="hi" className="truncate text-[14px] font-medium text-ink">
-                                {matched?.nameHi ?? r.match?.nameHi}
-                              </span>
-                              <span className="truncate text-[11px] text-faint">
-                                {matched?.nameHinglish ?? r.match?.nameHinglish}
+                              <span className="min-w-0 flex-1">
+                                <span lang="hi" className="block truncate text-[14px] text-ink">{name.nameHi}</span>
+                                <span className="block truncate text-[10px] text-faint">
+                                  {name.nameHinglish}
+                                  {r.ocr.adatiName && r.ocr.adatiName !== name.nameHi && (
+                                    <span lang="hi"> · {t("scan.ocrSaid")}: {r.ocr.adatiName}</span>
+                                  )}
+                                </span>
                               </span>
                               {r.match && (
                                 <Badge tone={r.match.via === "fuzzy" ? "warn" : "ok"} className="shrink-0">
                                   {t(`scan.matchedBy.${r.match.via}` as never)}
                                 </Badge>
                               )}
-                              {!r.excluded && b.status !== "committed" && (
-                                <Button size="icon" variant="ghost" className="h-6 w-6"
+                              {!locked && (
+                                <Button size="icon" variant="ghost" className="h-6 w-6 shrink-0"
                                   onClick={() => patchRow(r.id, { adatiId: null, nameCorrected: true })}>
                                   <X className="h-3 w-3" />
                                 </Button>
                               )}
                             </div>
                           ) : (
-                            <SupplierPicker
-                              suppliers={suppliers.data ?? []}
-                              value={r.adatiId}
-                              disabled={r.excluded || b.status === "committed"}
+                            <SupplierPicker suppliers={suppliers.data ?? []} value={r.adatiId} disabled={locked}
+                              invalid={!locked}
                               placeholder={r.adatiRawText || t("scan.pickName")}
-                              onChange={(v) => patchRow(r.id, { adatiId: v, nameCorrected: true })}
-                            />
+                              onChange={(v) => patchRow(r.id, { adatiId: v, nameCorrected: true })} />
                           )}
-                        </div>
-                        {r.ocr.adatiName && (
-                          <span lang="hi" className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-[11px] text-muted"
-                            title={t("scan.ocrSaid")}>
-                            {t("scan.ocrSaid")}: {r.ocr.adatiName}
-                          </span>
-                        )}
-                        {r.ocr.confidence != null && (
-                          <Badge tone={r.ocr.confidence >= 0.8 ? "ok" : r.ocr.confidence >= 0.6 ? "warn" : "bad"} className="num shrink-0">
-                            {Math.round(r.ocr.confidence * 100)}%
-                          </Badge>
-                        )}
-                        <Button size="icon" variant="ghost" className="h-6 w-6 shrink-0"
-                          title={r.excluded ? t("scan.include") : t("scan.exclude")}
-                          disabled={b.status === "committed"}
-                          onClick={() => patchRow(r.id, { excluded: !r.excluded })}>
-                          {r.excluded ? <RotateCcw className="h-3 w-3" /> : <Trash2 className="h-3 w-3 text-bad/70" />}
-                        </Button>
-                      </div>
+                        </td>
 
-                      {/* line 2: the numbers */}
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px]">
-                        <label className="flex items-center gap-1">
-                          <span className="text-faint">{t("daily.gross")}</span>
-                          <input
-                            className={cn(CELL, "w-20")} inputMode="decimal"
-                            disabled={r.excluded || b.status === "committed"}
+                        <td className="border-b border-line/70 px-1 py-1">
+                          <input inputMode="decimal" disabled={locked} className={CELL}
                             value={r.grossGrams === null ? "" : (r.grossGrams / GRAMS_PER_QTL).toFixed(2)}
                             onChange={(e) => {
                               const n = parseLooseNumber(e.target.value);
                               patchRow(r.id, { grossGrams: n === null ? null : Math.round(n * GRAMS_PER_QTL) });
-                            }}
-                          />
-                        </label>
-                        <label className="flex items-center gap-1">
-                          <span className="text-faint">{t("daily.bags")}</span>
-                          <input
-                            className={cn(CELL, "w-14", r.katautiOverride === null && "text-faint")} inputMode="numeric"
-                            disabled={r.excluded || b.status === "committed"}
+                            }} />
+                        </td>
+
+                        <td className="border-b border-line/70 px-1 py-1">
+                          <input inputMode="numeric" disabled={locked}
+                            className={cn(CELL, r.katautiOverride === null && "text-faint")}
                             placeholder={r.derivedKatautiUnits === null ? "" : String(r.derivedKatautiUnits)}
                             value={r.katautiOverride === null ? "" : String(r.katautiOverride)}
                             onChange={(e) => {
                               const n = parseLooseNumber(e.target.value);
                               patchRow(r.id, { katautiOverride: n === null ? null : Math.round(n) });
-                            }}
-                          />
-                        </label>
-                        <span className="flex items-center gap-1">
-                          <span className="text-faint">{t("daily.net")}</span>
-                          <span className="num font-semibold text-ink">
+                            }} />
+                        </td>
+
+                        <td className="num border-b border-line/70 px-2 py-1 text-right text-faint">
+                          {r.derivedNetGrams === null || r.grossGrams === null ? "—" : f.weight(r.grossGrams - r.derivedNetGrams)}
+                        </td>
+
+                        <td className="num border-b border-line/70 px-2 py-1 text-right font-semibold">
+                          <span className="inline-flex items-center justify-end gap-1">
                             {r.derivedNetGrams === null ? "—" : f.weight(r.derivedNetGrams)}
+                            {r.netAgrees === true && <span title={t("scan.netAgreeHelp")}><Equal className="h-3 w-3 text-ok" /></span>}
+                            {r.netAgrees === false && r.ocr.netQtl != null && (
+                              <span className="num text-[10px] font-normal text-warn" title={t("scan.sheetSaid")}>
+                                ({r.ocr.netQtl.toFixed(2)})
+                              </span>
+                            )}
                           </span>
-                          {r.netAgrees === true && (
-                            <span title={t("scan.netAgreeHelp")}>
-                              <Equal className="h-3 w-3 text-ok" />
-                            </span>
-                          )}
-                          {r.ocr.netQtl != null && r.netAgrees === false && (
-                            <span className="num text-[11px] text-warn" title={t("scan.sheetSaid")}>
-                              ({t("scan.sheetSaid")} {r.ocr.netQtl.toFixed(2)})
-                            </span>
-                          )}
-                        </span>
-                        <label className="flex items-center gap-1">
-                          <span className="text-faint">{t("daily.rate")}</span>
-                          <input
-                            className={cn(CELL, "w-20")} inputMode="decimal"
-                            disabled={r.excluded || b.status === "committed" || !can("rate.edit")}
+                        </td>
+
+                        <td className="border-b border-line/70 px-1 py-1">
+                          <input inputMode="decimal" disabled={locked || !can("rate.edit")} className={CELL}
                             value={r.ratePaisePerQtl === null ? "" : (r.ratePaisePerQtl / 100).toFixed(2)}
                             onChange={(e) => {
                               const n = parseLooseNumber(e.target.value);
                               patchRow(r.id, { ratePaisePerQtl: n === null ? null : Math.round(n * 100) });
-                            }}
-                          />
-                        </label>
-                        <span className="flex items-center gap-1">
-                          <span className="text-faint">{t("daily.amount")}</span>
-                          <span className="num font-semibold text-brand">
-                            {r.derivedAmountPaise === null ? "—" : f.money(r.derivedAmountPaise)}
-                          </span>
-                        </span>
-                      </div>
+                            }} />
+                        </td>
 
-                      {/* suggestions for an unresolved name */}
+                        <td className="num border-b border-line/70 px-2 py-1 text-right font-semibold text-brand">
+                          {r.derivedAmountPaise === null ? "—" : f.amount(r.derivedAmountPaise)}
+                        </td>
+
+                        <td className="num border-b border-line/70 px-2 py-1 text-right">
+                          {r.ocr.confidence == null ? "—" : (
+                            <Badge tone={r.ocr.confidence >= 0.8 ? "ok" : r.ocr.confidence >= 0.6 ? "warn" : "bad"} className="num">
+                              {Math.round(r.ocr.confidence * 100)}
+                            </Badge>
+                          )}
+                        </td>
+
+                        <td className="border-b border-line/70 px-1 py-1">
+                          <Button size="icon" variant="ghost" className="h-6 w-6"
+                            title={r.excluded ? t("scan.include") : t("scan.exclude")}
+                            disabled={b.status === "committed"}
+                            onClick={() => patchRow(r.id, { excluded: !r.excluded })}>
+                            {r.excluded ? <RotateCcw className="h-3 w-3" /> : <Trash2 className="h-3 w-3 text-bad/70" />}
+                          </Button>
+                        </td>
+                      </tr>
+
+                      {/* only offers, never verdicts: one tap fills the supplier in */}
                       {!r.excluded && !r.adatiId && !r.match && r.suggestions.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <Sparkles className="h-3 w-3 text-faint" />
-                          {r.suggestions.map((s) => (
-                            <button key={s.adatiId} type="button"
-                              onClick={() => patchRow(r.id, { adatiId: s.adatiId, nameCorrected: true })}
-                              className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] hover:border-brand hover:bg-brand/5">
-                              <span lang="hi">{s.nameHi}</span>
-                              <span className="num text-faint">{Math.round(s.confidence * 100)}%</span>
-                            </button>
-                          ))}
-                        </div>
+                        <tr>
+                          <td className="border-b border-line/70" />
+                          <td className="border-b border-line/70" />
+                          <td colSpan={9} className="border-b border-line/70 px-1 pb-1.5">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Sparkles className="h-2.5 w-2.5 shrink-0 text-faint" />
+                              {r.suggestions.map((sg) => (
+                                <button key={sg.adatiId} type="button"
+                                  onClick={() => patchRow(r.id, { adatiId: sg.adatiId, nameCorrected: true })}
+                                  className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] hover:border-brand hover:bg-brand/5">
+                                  <span lang="hi">{sg.nameHi}</span>
+                                  <span className="num text-faint">{Math.round(sg.confidence * 100)}%</span>
+                                </button>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
                       )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
 
-                      {!r.excluded && r.issues.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5">
-                          {r.issues.map((iss, k) => <IssueChip key={k} issue={iss} />)}
-                        </div>
-                      )}
-                      {r.excluded && r.ocr.struckThrough && (
-                        <p className="text-[11px] text-faint">{t("scan.struck")}</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            {visible.length === 0 && (
-              <EmptyState icon={<ScanLine className="h-7 w-7" />} title={t("common.noResults")} />
-            )}
+              {summary && summary.included > 0 && (
+                <tfoot>
+                  <tr className="bg-raised font-semibold">
+                    <td colSpan={3} className="px-2 py-2 text-right text-[12px] uppercase tracking-wide text-muted">
+                      {t("daily.totals")}
+                    </td>
+                    <td className="num px-2 py-2 text-right">
+                      {f.weight(rows.filter((r) => !r.excluded).reduce((s, r) => s + (r.grossGrams ?? 0), 0))}
+                    </td>
+                    <td className="num px-2 py-2 text-right">
+                      {f.int(rows.filter((r) => !r.excluded).reduce((s, r) => s + (r.derivedKatautiUnits ?? 0), 0))}
+                    </td>
+                    <td />
+                    <td className="num px-2 py-2 text-right text-[14px]">{f.weight(summary.totalNetGrams)}</td>
+                    <td />
+                    <td className="num px-2 py-2 text-right text-[14px] text-brand">{f.amount(summary.totalAmountPaise)}</td>
+                    <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              )}
+            </table>
           </div>
+
+          {visible.length === 0 && (
+            <EmptyState icon={<ScanLine className="h-7 w-7" />} title={t("common.noResults")} />
+          )}
 
           {summary && b.status !== "committed" && (
             <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t border-line bg-surface/95 p-3 backdrop-blur">
               <div className="text-[12px] text-muted">
-                <span className="num font-semibold text-ink">{summary.included}</span> {t("daily.rowCount", { n: "" }).trim()}
+                <span className="num font-semibold text-ink">{summary.included}</span>{" "}{t("scan.rowsWord")}
                 {" · "}
                 <span className="num font-semibold text-ink">{f.weight(summary.totalNetGrams, { unit: true })}</span>
                 {" · "}
                 <span className="num font-semibold text-brand">{f.money(summary.totalAmountPaise)}</span>
               </div>
               <div className="flex-1" />
-              <Button
-                variant="primary" size="lg"
-                loading={commit.isPending}
+              <Button variant="primary" size="lg" loading={commit.isPending}
                 disabled={summary.blocking > 0 || !b.slipDate || !b.jinsId || summary.included === 0}
                 icon={<Check className="h-4 w-4" />}
-                onClick={() => { setErr(null); commit.mutate(); }}
-              >
-                {summary.blocking > 0
-                  ? t("scan.commitBlocked", { n: summary.blocking })
+                onClick={() => { setErr(null); commit.mutate(); }}>
+                {summary.blocking > 0 ? t("scan.needSuppliers", { n: summary.blocking })
                   : !b.slipDate ? t("scan.needDate")
                   : !b.jinsId ? t("scan.needJins")
                   : t("scan.commit")}
@@ -469,6 +551,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
           )}
         </Card>
       </div>
+
     </>
   );
 }

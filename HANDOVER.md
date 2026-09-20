@@ -1,0 +1,394 @@
+# Mandi Mitra — project handover
+
+Everything a new session (or a new developer) needs to pick this up cold.
+Last updated: 2026-09-20.
+
+---
+
+## 1. The business
+
+The owner runs a grain commission business (*arhat* / *adat*) trading as
+**Vijay Laxmi Dal Mill, Etah, Uttar Pradesh**, plus a second firm,
+**V C Enterpises**. The flow:
+
+1. Small suppliers (*adati*) bring paddy, wheat or maize to the mandi daily.
+2. Each delivery is weighed and written on a paper **daily list** — one row per
+   slip: supplier name (Hindi), RST no, gross weight, katauti, net weight, rate.
+3. Slips are grouped per buyer mill and loaded onto a truck against that mill's
+   purchase order. Whatever is not loaded stays in stock.
+4. The mill is billed with a **kaccha parcha** — goods value plus the charges
+   that mill applies.
+5. Separately, each supplier is owed money, tracked day-wise like Tally.
+
+The owner scans the handwritten sheets on a **Canon G3770** (flatbed, no ADF)
+and wants them read automatically, checked, and turned into the parcha.
+
+### Source documents this was built from
+
+Photographs of four papers dated **20-09-2026**:
+
+- G.R.M daily list, 30 rows + 3 on a second page, handwritten total 620.36 qtl
+- L.B daily list, 13 rows, total 331.05 qtl
+- Kaccha parcha, invoice 196, truck UP25CT5038, grand total ₹11,27,851.22
+
+---
+
+## 2. Business rules — derived and verified, not assumed
+
+Every rule below was tested against the actual paper. **Do not change these
+without re-running the checks.**
+
+### Katauti is NOT the bag count
+
+This was got wrong once and corrected. Both hypotheses were tested against
+**all 45 rows** of the two sheets:
+
+```
+katauti === round(gross to nearest quintal):  45/45 rows
+```
+
+Katauti is the **gross weight rounded to the nearest quintal**, and **1 kg is
+deducted per unit** — i.e. 1 kg per quintal.
+
+Proof it is not bags: if it were, the sheet implies 98.8 kg per bag, while the
+parcha's 800 *katte* over 310.74 qtl work out to 38.8 kg. Two different
+quantities. The parcha's bag count is captured at load time, in its own column.
+
+**Consequence: the operator never types katauti.** Four typed fields per row —
+RST, supplier, gross, rate. Everything else is derived.
+
+### Rounding is half-up ("owner's favour")
+
+```
+half_up     45/45   <-- the one in use
+half_even   43/45
+up (ceil)   28/45
+down        19/45
+```
+
+The three exact `.50` cases all round **up** on the paper: 32.50→33, 28.50→29,
+17.50→18. A bigger katauti is a bigger deduction, so up favours the owner.
+Configurable per mill; `half_up` is the default.
+
+### Parcha arithmetic — reproduces invoice 196 to the paisa
+
+| Line | Rule | Value on the paper |
+|---|---|---|
+| Goods value | net × rate | 10,60,695.45 |
+| Kacchi adat | 2% of goods | 21,213.91 |
+| Subtotal | goods + adat | 10,81,909.36 |
+| Labour | ₹9.50 per bag × 800 | 7,600.00 |
+| Sutli | ₹1 per bag × 800 | 800.00 |
+| Gaushala | ₹1.25/qtl on **gross**, not net | 394.13 |
+| Mandi tax | 1.5% of **(goods + adat)** | 16,228.64 |
+| Commission | 1% of **(goods + adat)** | 10,819.09 |
+| Gate pass | ₹100 per truck | 100.00 |
+| Total | | 11,17,851.22 |
+| Dara | printed, **excluded** from grand total | 3,597.38 |
+| Advance | **added**, not deducted | 10,000.00 |
+| **Grand total** | | **11,27,851.22** |
+
+The percentage **base** matters: switching mandi tax from *goods + adat* to
+*goods only* changes one truck by **₹318.21**. That is why every base is
+per-mill configurable and nothing is hardcoded.
+
+### Parcha rate is the weighted average
+
+`Σ(net × rate) / Σ net` over the slips in the load. The L.B sheet's 13 rows give
+331.05 qtl and exactly **3413.45**, the rate printed on the parcha. It is never
+typed by hand.
+
+Slips with **no rate yet are excluded from that average** — one unpriced row
+would quietly drag the parcha rate down.
+
+### Other observed behaviour
+
+- Slips move between mills: RST 634 was struck off the G.R.M sheet and appears
+  on the L.B sheet. The software must allow reassignment and must enforce that
+  a slip belongs to exactly one load, ever.
+- Bardana differs by side: 1.00 kg/bag when buying, 0.57 kg/bag as the
+  destination mill counts it (4.56 qtl ÷ 800 bags).
+- Sheets run onto a second page; both pages are one list.
+
+---
+
+## 3. Architecture
+
+| Layer | Choice | Why |
+|---|---|---|
+| UI | React 18 + TypeScript + Vite, Tailwind | |
+| API | **Hono**, one app object (`server/app.ts`) | Electron will import the same object — no second data layer |
+| Local DB | SQLite + Drizzle ORM | Offline, single file, easy backup |
+| Cloud | Postgres later, same Drizzle schema | `sync_outbox` already records every write |
+| IDs | **UUIDv7** everywhere | Local and cloud rows can never collide |
+| OCR | Gemini via REST, strict `responseSchema` | No SDK dependency |
+| Router | wouter | |
+| Data fetching | TanStack Query | |
+
+### Non-negotiables
+
+- **Money is paise, weight is grams, both integers.** Never floats for either.
+  `server/lib/money.ts`. `310.74 × 3413.45` must land on the exact paisa.
+- **Net and amount are always derived server-side**, never trusted from the
+  client, and re-checked on every read.
+- Every mutation writes an **append-only audit row** with before/after.
+- Browser first. **Electron only when the owner asks** — the boundary is
+  already in place.
+
+### Layout
+
+```
+server/
+  app.ts                 Hono app — the single API surface
+  index.ts               dev entry; runs migrations + scan recovery
+  db/schema.ts           Drizzle schema (source of truth)
+  db/migrations/         generated; never hand-edit
+  lib/
+    money.ts             paise/grams helpers, weightedAvgRate
+    charges.ts           ChargeConfig, deriveKatauti, computeParcha
+    charges.check.ts     regression vs invoice 196
+    translit.ts          Devanagari -> Hinglish, normKey, fuzzy matching
+    translit.check.ts    regression over the sheet names
+    display.ts           number/currency + katauti defaults
+    prefs.ts             per-user screen preferences
+    secrets.ts           AES-256-GCM for the API key
+    gemini.ts            prompt, response schema, salvageRows
+    scanRows.ts          per-row OCR validation
+    adatiResolve.ts      three-tier supplier matching
+    rbac.ts              36 permissions, 5 role presets
+    auth.ts  audit.ts  http.ts  ids.ts
+  routes/
+    auth.ts  adati.ts  merchants.ts  jins.ts  users.ts
+    system.ts  settings.ts  slips.ts  scans.ts
+src/
+  lib/       api.ts  format.tsx  prefs.tsx  i18n.tsx  strings.ts
+             session.tsx  theme.tsx  utils.ts  format.check.ts
+  components/ AppShell  SupplierPicker  DailyListSettings
+              Skeletons  ErrorBoundary  ui/index.tsx
+  pages/     Auth  Dashboard  Suppliers  Mills  DailyList
+             ScanList  ScanReview  Admin  SettingsExtras
+scripts/
+  dev-bootstrap.ts        signup an owner on an empty DB
+  dev-make-review-scan.ts a scan stuck in review, no Gemini call
+  e2e-daily-list.ts       real L.B sheet through the HTTP API
+  e2e-scan-review.ts      OCR pipeline, no Gemini call
+```
+
+---
+
+## 4. What is built
+
+### Working and verified
+
+- **Auth** — one-time signup, PIN login (4–6 digits, scrypt, lockout after 5),
+  change PIN, per-user language and theme.
+- **Multi-business** — Vijay Laxmi and V C Enterpises, switcher in the sidebar.
+  Suppliers, mills, stock, scans and **the Gemini key** are all per business.
+- **RBAC** — 36 permissions, roles as editable DB rows (owner / manager /
+  accountant / operator / viewer), per-user allow/deny on top, deny wins.
+  Owner role cannot be stripped; the last owner cannot be demoted.
+- **Audit trail** — every mutation, before/after diff, redaction, no delete path.
+- **Masters** — suppliers (Hindi + Hinglish + learnt aliases), mills (full
+  charge config with a live parcha preview), commodities.
+- **Daily list** — Tally-style keyboard grid. Enter walks the row and saves on
+  the last field. Column-driven from preferences. Live totals, sheet-total
+  cross-check, bulk mill reassignment, CSV export.
+- **Daily-list settings** — on-screen gear button: new row top/bottom, row
+  order, density, column visibility (separately for screen and download),
+  carry-rate-forward. Two save scopes: **this browser only** or **saved for me**.
+- **Numbers & currency** — Indian / international / no grouping, currency
+  symbol on-off and configurable, decimals per field type, brackets or minus
+  for negatives, lakh/crore hints. One formatter drives every figure.
+- **Scan & OCR** — upload one or many pages (JPG/JPEG/PNG/WEBP/HEIC/TIFF/PDF),
+  read with Gemini, review in a spreadsheet beside the scanned image, approve
+  straight into the daily list. Corrections are learnt.
+- **Bilingual** — every screen in Hindi or English, including dates, relative
+  times and OCR issue messages.
+- **Light / dark**, skeleton loaders, collapsible sidebar, error boundary.
+
+### How the OCR is made trustworthy
+
+The prompt asks Gemini for **what is written**, never for a calculation. Net
+weight and amount are re-derived by our own code; the model's reading of the
+NET column is used only as a **cross-check**. A row whose written net equals our
+arithmetic is almost certainly read correctly.
+
+Three-tier supplier matching, each verified:
+
+| Tier | Example | Confidence |
+|---|---|---|
+| Exact alias | `फूलसिंह वर्मा` | 1.00 |
+| Normalised key (matras stripped, confusable consonants folded) | `फुलसिह वर्मा`, `फूलसींह बर्मा` | 0.95 |
+| Fuzzy (Damerau-Levenshtein) | `फूलसिंघ वरमा` | 0.86 |
+| Genuinely different name | `राकेश यादव` | **no match, no guess** |
+
+Every correction becomes an alias with a hit counter, so the same misreading
+resolves by itself next time. Verified: a name the operator picked manually
+resolves via `alias` on the very next lookup.
+
+Rows struck through on the paper are detected and excluded by default — this
+worked on the real G.R.M sheet (row 6, RST 634).
+
+### Read quality on the real sheet
+
+Against the owner's actual 30-row G.R.M photograph, compared to a manual
+transcription:
+
+```
+rows agreeing on gross, katauti and rate : 29 / 29
+the only unmatched row                   : the struck-through one, correctly flagged
+katauti matching round(gross)            : 30 / 30
+written net matching our arithmetic      : 30 / 30
+mean confidence                          : 0.90
+```
+
+---
+
+## 5. Setup
+
+```bash
+npm install
+npm run db:push                       # apply migrations
+npm run dev                           # api :8787, web :5173
+```
+
+Fresh database from nothing:
+
+```bash
+rm -f data/mandi.db* && npm run db:push \
+  && npx tsx scripts/dev-bootstrap.ts \
+  && npm run db:seed
+```
+
+`db:seed` loads the two mills (G.R.M, L.B) and the 31 supplier names read off
+the real sheets, plus an Operator and an Accountant login so role restrictions
+can be exercised.
+
+### Dev logins (throwaway — delete `data/mandi.db*` before real use)
+
+| User | PIN | Role |
+|---|---|---|
+| Test Owner | 482915 | Owner, all 36 permissions |
+| Munshi Ji | 271830 | Operator, 17 |
+| Accounts | 394726 | Accountant, 14 |
+
+### Checks — run all of these before claiming anything works
+
+```bash
+npm run typecheck
+npx tsx server/lib/charges.check.ts      # parcha maths vs invoice 196
+npx tsx src/lib/format.check.ts          # Indian grouping + input parsing
+npx tsx server/lib/translit.check.ts     # Hindi -> Hinglish + fuzzy
+npm run build
+```
+
+Against a running dev server:
+
+```bash
+npx tsx scripts/e2e-daily-list.ts        # real L.B sheet, asserts 331.05 / 3413.45
+npx tsx scripts/e2e-scan-review.ts       # OCR pipeline, 24 assertions, no Gemini call
+npx tsx scripts/dev-make-review-scan.ts  # leaves a scan in review to poke at
+```
+
+CI (`.github/workflows/ci.yml`) runs the first four on every push.
+
+### Gemini
+
+Settings → Gemini API key. Stored **per business**, encrypted with AES-256-GCM;
+the key file is `data/.secret.key`, mode 0600, gitignored. The key is never
+returned to the browser or written to the audit log — only a mask.
+
+Known limitation: the key file sits on the same disk as the database. That
+protects a leaked backup, not someone with full machine access. Moving it to
+the Windows Credential Store is an Electron-era task.
+
+---
+
+## 6. Decisions already taken — do not re-litigate
+
+- **Scan images live on the filesystem**, at `data/scans/<batchId>/`, not in the
+  database. Reasons: a 4 MB JPEG per sheet would bloat the SQLite file and its
+  WAL, slow every backup, and there is no query ever run against image bytes.
+  The DB stores the path, MIME type and size. Images are **kept after commit**
+  so a parcha can always be traced back to the paper, and so they can be tagged
+  later. `data/scans/` is gitignored.
+- **Reads run detached from the request.** `POST /scans/:id/run` returns
+  immediately; the work continues server-side and the browser polls. Switching
+  tabs, opening the daily list or reloading loses nothing. A process restart
+  resets orphaned `reading` rows on startup (`recoverInterruptedScans`).
+- **Browser first**; Electron when asked.
+- **Roles are rows, not code**, so permissions stay editable.
+- **Katauti is derived, not typed.**
+
+---
+
+## 7. Bugs already found and fixed — context for the next session
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Toggle switch knob rendered outside its track | `<button>` centres content, moving an absolutely positioned child's static origin; it stacked with the transform | explicit `left-0.5` + `text-left` |
+| "Attach at least one image of the sheet" from the file picker | the live `FileList` was handed to an async mutation, then the input was cleared on the next line, emptying it | copy to `File[]` synchronously; the mutation only accepts `File[]` |
+| "The model's reply was not valid JSON" | 30 rows read perfectly, then truncated on the closing brace — 8192 output tokens, and Gemini 2.5 spends thinking tokens from the same budget | `thinkingBudget: 0`, ceiling raised to 32768, plus `salvageRows()` which recovers complete rows from a truncated reply |
+| `netQtl` null on every row | it was optional in the response schema, so with thinking off the model skipped it — killing the arithmetic cross-check | `netQtl` and `struckThrough` are now **required** in the schema |
+| White screen on a scan URL | `batch.data!` dereferenced when the query 404s (scan belongs to another business) | explicit load-failure state + an `ErrorBoundary` around the router |
+| `instanceof ApiError` unreliable | Vite HMR creates duplicate module copies | duck-typed `apiStatus(err)` |
+| OCR e2e failed on the second run | the test commits slips and teaches aliases, so a rerun legitimately saw different behaviour | the script now clears its own footprint first |
+
+---
+
+## 8. Pending
+
+### Blocked on the owner — ask before building
+
+1. **What is Dara?** ₹3,597.38 on the parcha, printed but excluded from the
+   grand total. How is it calculated and who bears it?
+2. **The 20.31 qtl gap.** The L.B list totals 331.05 qtl; the parcha bills
+   310.74. Transit loss the owner absorbs, a partial load, or stock carried
+   forward? **This decides what suppliers get paid** and how Loads must behave.
+3. **Labour ₹15.50/bag** — when does the second slab apply instead of ₹9.50?
+4. **GST / e-way bill** — inside this tool, or handled elsewhere? An e-way bill
+   is mandatory above ₹50,000 per consignment in UP.
+
+### Next to build, in order
+
+1. **Loads** — truck, transporter, PO link, allocate slips into a load, enforce
+   one-slip-one-load, mill weighbridge entry (gross / bardana / net), and the
+   transit-loss reconciliation that question 2 decides.
+2. **Purchase orders** — per-mill, quantity balance, over-ship prevention.
+3. **Kaccha parcha output** — generate from load + charge config, version,
+   approve, lock. Print, PDF, and **Excel in the owner's exact template**.
+4. **Stock** — per commodity: purchased − dispatched, opening/closing, by date.
+5. **Supplier ledger** — Tally-style day-wise, running balance, printable
+   statement per supplier.
+6. **Payments** — against suppliers, by mode, with reference.
+7. **Electron + installer** — main process imports the existing Hono app,
+   electron-updater, GitHub Action for the Windows build.
+8. **Scanner integration** (Electron only) — watch folder as the default, a
+   button that opens the Canon scan window, and one-click WIA via PowerShell.
+   The G3770 is flatbed-only, so a two-page sheet is two files.
+9. **Cloud sync** — Postgres plus the outbox pusher. The table already fills.
+10. **Backup / restore** — scheduled local SQLite backup. Do this before the
+    owner trusts it with real money.
+
+### Smaller gaps
+
+- No unit test runner (vitest). There are four regression scripts in CI.
+- The Gemini key is per business; an owner running two firms must enter it
+  twice. Consider an explicit "copy from <other business>" action rather than a
+  silent cross-tenant fallback.
+- Print stylesheet for the parcha not written.
+- Responsive but untested on a real tablet.
+- PDF uploads are passed to Gemini as-is; multi-page PDFs are not split.
+
+---
+
+## 9. Working style that has paid off
+
+- **Verify against the paper, do not assume.** The katauti correction, the
+  rounding mode and the truncation diagnosis all came from testing rival
+  hypotheses against the real sheets rather than reasoning about them.
+- **Drive the real UI in a browser.** The switch bug, the FileList bug and the
+  white screen all compiled and type-checked cleanly.
+- **When a test fails, ask whether the test or the code is wrong.** Twice the
+  feature was right and the test was not idempotent.
+- Report what was actually checked, and say plainly when something was not.

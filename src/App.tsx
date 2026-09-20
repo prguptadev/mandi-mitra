@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Route, Switch as RouteSwitch } from "wouter";
+import { Route, Switch as RouteSwitch, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ShieldAlert, WifiOff, Plus } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { AppShell } from "@/components/AppShell.tsx";
+import { ErrorBoundary } from "@/components/ErrorBoundary.tsx";
 import { SkeletonShell } from "@/components/Skeletons.tsx";
 import { Button, Card, Dialog, Field, Input, Alert, EmptyState } from "@/components/ui/index.tsx";
 import { SignupPage, LoginPage } from "@/pages/Auth.tsx";
@@ -79,6 +80,7 @@ export default function App() {
   const { t } = useI18n();
   const { me, loading, error, refresh } = useSession();
   const [addBiz, setAddBiz] = useState(false);
+  const [location] = useLocation();
 
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
@@ -105,6 +107,12 @@ export default function App() {
   return (
     <>
       <AppShell onAddBusiness={() => setAddBiz(true)}>
+        <ErrorBoundary
+          key={location}
+          fallbackTitle={t("err.crashed")}
+          fallbackSub={t("err.crashedSub")}
+          reloadLabel={t("err.reload")}
+        >
         <RouteSwitch>
           <Route path="/" component={DashboardPage} />
           <Route path="/scan">{() => <Guard perm="scan.create"><ScanListPage /></Guard>}</Route>
@@ -123,6 +131,7 @@ export default function App() {
             </Card>
           </Route>
         </RouteSwitch>
+        </ErrorBoundary>
       </AppShell>
       <AddBusinessDialog open={addBiz} onClose={() => setAddBiz(false)} />
     </>

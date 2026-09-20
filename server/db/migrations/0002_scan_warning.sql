@@ -1,0 +1,1 @@
+ALTER TABLE `scan_batches` ADD `warning_text` text;

@@ -43,6 +43,9 @@ export function ScanListPage() {
   const counts = useQuery({ queryKey: ["scans", "counts"], queryFn: () => api.get<Record<string, number>>("/scans/counts") });
 
   const list = useQuery({
+    // poll while any scan is still being read, so the list never looks stuck
+    refetchInterval: (q) =>
+      (q?.state?.data ?? []).some((r) => r.status === "reading") ? 3000 : false,
     queryKey: ["scans", { status, from, to, merchantId }],
     queryFn: () => api.get<ScanListRow[]>(`/scans?${new URLSearchParams({
       ...(status !== "all" ? { status } : {}),
@@ -72,8 +75,12 @@ export function ScanListPage() {
     onSuccess: async (r) => {
       setErr(null);
       await qc.invalidateQueries({ queryKey: ["scans"] });
-      if (gemini.data?.configured) run.mutate(r.id);
-      else navigate(`/scan/${r.id}`);
+      // straight to the review screen; the read runs on the server and the
+      // review screen polls, so leaving this page cannot interrupt it
+      if (gemini.data?.configured) {
+        api.post(`/scans/${r.id}/run`, {}).catch(() => { /* the review screen reports it */ });
+      }
+      navigate(`/scan/${r.id}`);
     },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
@@ -142,7 +149,7 @@ export function ScanListPage() {
             >
               {busy ? <Spinner className="h-6 w-6" /> : <Upload className="h-6 w-6 text-faint" />}
               <p className="text-[13px] font-medium text-ink">
-                {upload.isPending ? t("common.saving") : run.isPending ? t("scan.reading") : t("scan.dropHere")}
+                {upload.isPending ? t("scan.uploadingNow") : run.isPending ? t("scan.reading") : t("scan.dropHere")}
               </p>
               <p className="text-[11px] text-faint">{t("scan.uploadSub")}</p>
               <input ref={fileRef} type="file" multiple hidden

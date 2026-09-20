@@ -15,6 +15,13 @@
       "when": 1789916208597,
       "tag": "0001_user_prefs",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789918017401,
+      "tag": "0002_scan_warning",
+      "breakpoints": true
     }
   ]
 }

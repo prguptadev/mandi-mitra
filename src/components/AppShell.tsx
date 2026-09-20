@@ -4,6 +4,7 @@ import {
   LayoutDashboard, ListOrdered, ScanLine, Truck, FileText, Boxes, Users2,
   Factory, Wheat, BookOpen, Wallet, UserCog, ShieldCheck, ScrollText, Settings,
   Menu, X, Sun, Moon, Languages, ChevronDown, LogOut, Building2, Check, Plus,
+  PanelLeftClose, PanelLeftOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -109,12 +110,25 @@ function BusinessSwitcher({ onAdd }: { onAdd: () => void }) {
   );
 }
 
+const SIDEBAR_KEY = "mandi.sidebar.collapsed";
+
 export function AppShell({ children, onAddBusiness }: { children: ReactNode; onAddBusiness: () => void }) {
   const { t, lang, setLang } = useI18n();
   const { resolved, cycle } = useTheme();
   const { me, can, logout } = useSession();
   const [location] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(SIDEBAR_KEY) === "1"; } catch { return false; }
+  });
+
+  const toggleSidebar = () => {
+    setCollapsed((v) => {
+      const next = !v;
+      try { localStorage.setItem(SIDEBAR_KEY, next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  };
 
   const groups = NAV.map((g) => ({
     ...g,
@@ -158,7 +172,12 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
 
   return (
     <div className="flex h-full bg-bg">
-      <aside className="hidden w-60 shrink-0 border-r border-line bg-surface lg:block">{sidebar}</aside>
+      <aside className={cn(
+        "hidden shrink-0 border-r border-line bg-surface transition-[width] duration-200 lg:block",
+        collapsed ? "w-0 overflow-hidden border-r-0" : "w-60",
+      )}>
+        {!collapsed && sidebar}
+      </aside>
 
       {mobileOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
@@ -177,6 +196,11 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
         <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface/85 px-3 backdrop-blur sm:px-5">
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Menu">
             <Menu className="h-4.5 w-4.5" />
+          </Button>
+          <Button variant="ghost" size="icon" className="hidden lg:inline-flex" onClick={toggleSidebar}
+            title={collapsed ? t("nav.showSidebar") : t("nav.hideSidebar")}
+            aria-label={collapsed ? t("nav.showSidebar") : t("nav.hideSidebar")}>
+            {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
           </Button>
 
           <div className="flex min-w-0 items-center gap-2">

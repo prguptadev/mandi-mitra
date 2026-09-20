@@ -64,7 +64,11 @@ const RESPONSE_SCHEMA = {
           struckThrough: { type: "BOOLEAN", nullable: true },
           notes: { type: "STRING", nullable: true },
         },
-        required: ["rstNo", "adatiName", "grossQtl", "katauti", "rate", "confidence"],
+        /* netQtl and struckThrough must be REQUIRED. They are the two fields
+           we rely on but never compute from: the written net is the arithmetic
+           cross-check, and a struck-through row must not silently become a
+           purchase. Left optional, the model skips them to save tokens. */
+        required: ["rstNo", "adatiName", "grossQtl", "katauti", "netQtl", "rate", "confidence", "struckThrough"],
       },
     },
   },
@@ -81,18 +85,68 @@ Columns, left to right:
 - RST NO — a 3 or 4 digit slip number.
 - DHARAM KANTA — gross weight in quintal, normally two decimal places (e.g. 19.20, 46.95).
 - KATAUTI — a whole number, normally close to the gross weight rounded off.
-- NET WEIGHT — weight in quintal, slightly less than the gross.
+- NET WEIGHT — weight in quintal, slightly less than the gross. Always copy this column; it is how the entry is checked. If the column is blank on the paper, return null.
 - RATE — rupees per quintal, normally a 4 digit number between 2800 and 4200.
 
 Rules:
 - Report what is WRITTEN. Do not calculate, correct or reconcile anything. If the net weight on the paper looks wrong, still report what is written.
 - A digit you cannot read: return null for that field rather than guessing.
-- If a row is struck through or crossed out, still include it and set struckThrough to true.
+- struckThrough is required on every row: true if the row is struck through or crossed out on the paper, false otherwise. Never leave it out.
 - Skip printed headers and blank ruled rows. Only rows with handwriting.
 - confidence is YOUR certainty about that whole row, 0 to 1. Be strict: use below 0.6 when any digit is genuinely unclear.
 - Decimal points in this handwriting are often faint. A gross weight is nearly always between 1 and 60 quintal with two decimals, so 1920 almost certainly means 19.20.
 
 Return only the structured object.`;
+
+/**
+ * Pull whole row objects out of a reply that was cut off mid-stream.
+ *
+ * A 30-row sheet can be read perfectly and still get truncated on the closing
+ * brace. Throwing all 30 rows away because the last two characters are missing
+ * would be the wrong trade: the operator reviews every row anyway.
+ */
+export function salvageRows(text: string): unknown[] {
+  const key = text.indexOf('"rows"');
+  if (key === -1) return [];
+  const arrayStart = text.indexOf("[", key);
+  if (arrayStart === -1) return [];
+
+  const out: unknown[] = [];
+  let i = arrayStart + 1;
+  while (i < text.length) {
+    while (i < text.length && /[\s,]/.test(text[i])) i++;
+    if (text[i] !== "{") break;
+
+    let depth = 0, inString = false, escaped = false, j = i;
+    for (; j < text.length; j++) {
+      const ch = text[j];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === "{") depth++;
+      else if (ch === "}" && --depth === 0) break;
+    }
+    if (depth !== 0 || j >= text.length) break; // this object is incomplete
+    try {
+      out.push(JSON.parse(text.slice(i, j + 1)));
+    } catch {
+      break;
+    }
+    i = j + 1;
+  }
+  return out;
+}
+
+/** Models sometimes wrap JSON in a markdown fence despite responseMimeType. */
+function stripFence(text: string): string {
+  const t = text.trim();
+  if (!t.startsWith("```")) return t;
+  return t.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+}
 
 export interface GeminiCallResult {
   ok: boolean;
@@ -103,6 +157,9 @@ export interface GeminiCallResult {
   ms: number;
   tokensIn?: number;
   tokensOut?: number;
+  /** Set when the reply was truncated and rows were recovered from the fragment. */
+  truncated?: boolean;
+  finishReason?: string;
 }
 
 export async function readSheet(opts: {
@@ -113,6 +170,11 @@ export async function readSheet(opts: {
   temperature?: number;
   signal?: AbortSignal;
 }): Promise<GeminiCallResult> {
+  /* A 30-row sheet needs roughly 5–6k tokens of JSON. Gemini 2.5 also spends
+     "thinking" tokens out of the same budget, which is what truncated the
+     first real sheet at 8192. Copying a table needs no deliberation, so
+     thinking is switched off and the ceiling raised. */
+  const maxOutputTokens = Math.max(opts.maxOutputTokens ?? 32768, 32768);
   const started = Date.now();
   const parts: unknown[] = [{ text: PROMPT }];
   for (const img of opts.images) {
@@ -129,9 +191,10 @@ export async function readSheet(opts: {
           contents: [{ parts }],
           generationConfig: {
             temperature: opts.temperature ?? 0,
-            maxOutputTokens: opts.maxOutputTokens ?? 8192,
+            maxOutputTokens,
             responseMimeType: "application/json",
             responseSchema: RESPONSE_SCHEMA,
+            thinkingConfig: { thinkingBudget: 0 },
           },
         }),
         signal: opts.signal ?? AbortSignal.timeout(180_000),
@@ -141,37 +204,56 @@ export async function readSheet(opts: {
     const ms = Date.now() - started;
     const json = await res.json().catch(() => null) as any;
 
+    const tokensIn = json?.usageMetadata?.promptTokenCount;
+    const tokensOut = json?.usageMetadata?.candidatesTokenCount;
+    const finishReason: string | undefined = json?.candidates?.[0]?.finishReason;
+
     if (!res.ok) {
-      return { ok: false, model: opts.model, ms, error: json?.error?.message ?? `HTTP ${res.status}`, raw: json };
+      return { ok: false, model: opts.model, ms, tokensIn, tokensOut, error: json?.error?.message ?? `HTTP ${res.status}`, raw: json };
     }
 
-    const text = json?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text ?? "").join("") ?? "";
+    const text = stripFence(json?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text ?? "").join("") ?? "");
     if (!text.trim()) {
-      const reason = json?.candidates?.[0]?.finishReason;
       return {
-        ok: false, model: opts.model, ms, raw: json,
-        error: reason === "MAX_TOKENS"
-          ? "The sheet was too long for one response. Split the scan into two pages."
-          : `The model returned nothing${reason ? ` (${reason})` : ""}.`,
+        ok: false, model: opts.model, ms, raw: json, tokensIn, tokensOut, finishReason,
+        error: finishReason === "MAX_TOKENS"
+          ? "The reply hit the length limit before any rows came back. Scan one page at a time."
+          : finishReason === "SAFETY" || finishReason === "PROHIBITED_CONTENT"
+          ? "The image was refused by the model. Try a clearer scan."
+          : `The model returned nothing${finishReason ? ` (${finishReason})` : ""}.`,
       };
     }
 
     let parsedJson: unknown;
+    let truncated = false;
     try {
       parsedJson = JSON.parse(text);
     } catch {
-      return { ok: false, model: opts.model, ms, raw: text, error: "The model's reply was not valid JSON." };
+      // Cut off mid-stream. Recover whatever whole rows made it through.
+      const rows = salvageRows(text);
+      if (!rows.length) {
+        return {
+          ok: false, model: opts.model, ms, raw: text, tokensIn, tokensOut, finishReason,
+          error: finishReason === "MAX_TOKENS"
+            ? "The reply was cut short before a single complete row. Scan one page at a time."
+            : "The model's reply was not valid JSON.",
+        };
+      }
+      truncated = true;
+      parsedJson = { rows };
     }
 
     const parsed = OcrPageSchema.safeParse(parsedJson);
     if (!parsed.success) {
-      return { ok: false, model: opts.model, ms, raw: parsedJson, error: `Unexpected shape: ${parsed.error.errors[0]?.message}` };
+      return {
+        ok: false, model: opts.model, ms, raw: parsedJson, tokensIn, tokensOut, finishReason,
+        error: `Unexpected shape: ${parsed.error.errors[0]?.message}`,
+      };
     }
 
     return {
       ok: true, model: opts.model, ms, page: parsed.data, raw: parsedJson,
-      tokensIn: json?.usageMetadata?.promptTokenCount,
-      tokensOut: json?.usageMetadata?.candidatesTokenCount,
+      tokensIn, tokensOut, truncated, finishReason,
     };
   } catch (err) {
     return {
