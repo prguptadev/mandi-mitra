@@ -63,6 +63,8 @@ const WORD_OVERRIDES: Record<string, string> = {
   "मोहनी": "Mohani", "केशी": "Keshi", "अरुण": "Arun", "मुन्ना": "Munna",
   "बाबू": "Babu", "देवी": "Devi", "प्रसाद": "Prasad", "नाथ": "Nath",
   "बिहारी": "Bihari", "मुरारी": "Murari", "हरि": "Hari", "ओम": "Om",
+  "रामलखन": "Ramlakhan", "रामलाल": "Ramlal", "रामकुमार": "Ramkumar",
+  "कृष्णपाल": "Krishnapal", "चतुर्भुज": "Chaturbhuj", "सामरा": "Samra",
   // firm words
   "इंटरप्राइजेज": "Enterprises", "इन्टरप्राइजेज": "Enterprises",
   "एंटरप्राइजेज": "Enterprises", "ट्रेडर्स": "Traders", "ट्रेडिंग": "Trading",
