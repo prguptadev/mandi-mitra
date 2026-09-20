@@ -1,0 +1,132 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Warm off-white rather than pure white: these screens run all day under
+   tube lights, and the paper being copied from is cream anyway. */
+:root {
+  --bg: 40 22% 97%;
+  --surface: 0 0% 100%;
+  --raised: 40 16% 95%;
+  --line: 35 13% 87%;
+  --ink: 25 16% 13%;
+  --muted: 25 8% 40%;
+  --faint: 28 7% 58%;
+  --brand: 158 62% 27%;
+  --brand-ink: 0 0% 100%;
+  --ok: 152 58% 32%;
+  --warn: 30 88% 42%;
+  --bad: 2 66% 45%;
+  --ok-soft: 152 48% 94%;
+  --warn-soft: 36 92% 94%;
+  --bad-soft: 4 80% 96%;
+  --shadow: 25 30% 20%;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: 213 18% 8%;
+  --surface: 213 15% 11%;
+  --raised: 213 13% 15%;
+  --line: 213 11% 21%;
+  --ink: 40 14% 94%;
+  --muted: 213 10% 66%;
+  --faint: 213 9% 46%;
+  --brand: 158 48% 48%;
+  --brand-ink: 158 70% 8%;
+  --ok: 152 46% 50%;
+  --warn: 36 80% 58%;
+  --bad: 4 72% 62%;
+  --ok-soft: 152 32% 15%;
+  --warn-soft: 36 40% 15%;
+  --bad-soft: 4 40% 17%;
+  --shadow: 0 0% 0%;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    --bg: 213 18% 8%;
+    --surface: 213 15% 11%;
+    --raised: 213 13% 15%;
+    --line: 213 11% 21%;
+    --ink: 40 14% 94%;
+    --muted: 213 10% 66%;
+    --faint: 213 9% 46%;
+    --brand: 158 48% 48%;
+    --brand-ink: 158 70% 8%;
+    --ok: 152 46% 50%;
+    --warn: 36 80% 58%;
+    --bad: 4 72% 62%;
+    --ok-soft: 152 32% 15%;
+    --warn-soft: 36 40% 15%;
+    --bad-soft: 4 40% 17%;
+    --shadow: 0 0% 0%;
+    color-scheme: dark;
+  }
+}
+
+* { border-color: hsl(var(--line)); }
+
+html, body, #root { height: 100%; }
+
+body {
+  background: hsl(var(--bg));
+  color: hsl(var(--ink));
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Devanagari needs more leading than Latin or the matras collide. */
+:lang(hi), [data-lang="hi"] { line-height: 1.7; }
+[data-lang="hi"] .tracking-tight { letter-spacing: 0; }
+
+/* Every figure in this app is tabular — columns of rupees must line up. */
+.num {
+  font-family: "Roboto Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+::selection { background: hsl(var(--brand) / 0.22); }
+
+*:focus-visible {
+  outline: 2px solid hsl(var(--brand));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--faint) / 0.45);
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--faint) / 0.7); background-clip: content-box; }
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: hsl(var(--raised));
+  border-radius: 6px;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, hsl(var(--ink) / 0.05), transparent);
+  animation: shimmer 1.6s infinite;
+}
+@keyframes shimmer { 100% { transform: translateX(100%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; color: #000; }
+}
