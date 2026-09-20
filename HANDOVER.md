@@ -310,8 +310,12 @@ the Windows Credential Store is an Electron-era task.
   database. Reasons: a 4 MB JPEG per sheet would bloat the SQLite file and its
   WAL, slow every backup, and there is no query ever run against image bytes.
   The DB stores the path, MIME type and size. Images are **kept after commit**
-  so a parcha can always be traced back to the paper, and so they can be tagged
-  later. `data/scans/` is gitignored.
+  so a parcha can always be traced back to the paper. Each folder also carries a
+  `meta.json` sidecar naming the date, mill, commodity and status, so the images
+  still mean something browsed in Finder or Explorer, and remain taggable even
+  if the database is lost. Every slip created from a scan keeps its
+  `scanBatchId`, and the daily list shows a small image icon linking back to the
+  original. `data/scans/` is gitignored.
 - **Reads run detached from the request.** `POST /scans/:id/run` returns
   immediately; the work continues server-side and the browser polls. Switching
   tabs, opening the daily list or reloading loses nothing. A process restart
@@ -333,6 +337,9 @@ the Windows Credential Store is an Electron-era task.
 | White screen on a scan URL | `batch.data!` dereferenced when the query 404s (scan belongs to another business) | explicit load-failure state + an `ErrorBoundary` around the router |
 | `instanceof ApiError` unreliable | Vite HMR creates duplicate module copies | duck-typed `apiStatus(err)` |
 | OCR e2e failed on the second run | the test commits slips and teaches aliases, so a rerun legitimately saw different behaviour | the script now clears its own footprint first |
+| Daily-list e2e failed on the second run | same class of problem — it inserts slips, so a rerun hit the duplicate-RST guard | self-cleaning, and it now switches business explicitly |
+| Gemini 401 "invalid authentication credentials" | the saved value was an `AQ.…` short-lived token, not an `AIza…` API key. It works for a few hours then expires — which is why one business succeeded and the other failed overnight | plain-language error mapping, a format warning on save (warning, not a block — it demonstrably works), and a "copy the key from <business>" action |
+| Login landed in an arbitrary business | the first membership row the DB returned | the last business used is remembered in user prefs and restored at sign-in |
 
 ---
 
@@ -373,9 +380,8 @@ the Windows Credential Store is an Electron-era task.
 ### Smaller gaps
 
 - No unit test runner (vitest). There are four regression scripts in CI.
-- The Gemini key is per business; an owner running two firms must enter it
-  twice. Consider an explicit "copy from <other business>" action rather than a
-  silent cross-tenant fallback.
+- The Gemini key stays per business (no silent cross-tenant fallback), but
+  Settings now offers an explicit "copy the key from <business>" button.
 - Print stylesheet for the parcha not written.
 - Responsive but untested on a real tablet.
 - PDF uploads are passed to Gemini as-is; multi-page PDFs are not split.

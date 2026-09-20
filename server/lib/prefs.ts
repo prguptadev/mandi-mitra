@@ -48,6 +48,8 @@ export type DailyListPrefs = z.infer<typeof DailyListPrefsSchema>;
 
 export const PrefsSchema = z.object({
   dailyList: DailyListPrefsSchema.default({}),
+  /** Where this user was last working; restored at the next sign-in. */
+  lastBusinessId: z.string().nullable().default(null),
 });
 
 export type Prefs = z.infer<typeof PrefsSchema>;

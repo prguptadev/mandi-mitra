@@ -81,7 +81,9 @@ Read the table and return one object per data row, in the order they appear.
 
 Columns, left to right:
 - SR NO — printed row number.
-- ADATI NAME — the supplier's name, handwritten in Hindi. Copy the Devanagari EXACTLY as written. Do NOT transliterate it, do NOT correct the spelling, do NOT expand abbreviations. If it ends with something like "T.C" or "ट.C", keep that too.
+- ADATI NAME — the supplier's name, handwritten in Hindi. Always return it in Devanagari, never in Latin letters. Copy the spelling as written; do not correct it.
+  One exception: a trailing "T.C", "ट.C", "टी.सी" or "TC" is the abbreviation for Trading Company. Write it out as "ट्रेडिंग कंपनी". For example "शिवम T.C" becomes "शिवम ट्रेडिंग कंपनी".
+  This column is never blank on a real row. If the name is hard to read, give your best reading in Devanagari and lower the confidence for that row rather than returning null.
 - RST NO — a 3 or 4 digit slip number.
 - DHARAM KANTA — gross weight in quintal, normally two decimal places (e.g. 19.20, 46.95).
 - KATAUTI — a whole number, normally close to the gross weight rounded off.
@@ -93,7 +95,7 @@ Rules:
 - A digit you cannot read: return null for that field rather than guessing.
 - struckThrough is required on every row: true if the row is struck through or crossed out on the paper, false otherwise. Never leave it out.
 - Skip printed headers and blank ruled rows. Only rows with handwriting.
-- confidence is YOUR certainty about that whole row, 0 to 1. Be strict: use below 0.6 when any digit is genuinely unclear.
+- confidence is YOUR certainty about that whole row, 0 to 1. Be strict: use below 0.6 when any digit or letter is genuinely unclear. An honest low score is more useful than a confident guess, because low-confidence pages are read again with a stronger model.
 - Decimal points in this handwriting are often faint. A gross weight is nearly always between 1 and 60 quintal with two decimals, so 1920 almost certainly means 19.20.
 
 Return only the structured object.`;
@@ -146,6 +148,36 @@ function stripFence(text: string): string {
   const t = text.trim();
   if (!t.startsWith("```")) return t;
   return t.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+}
+
+/**
+ * Google's errors are aimed at API developers, not at a munshi in Etah.
+ * Translate the ones that actually happen into something actionable.
+ *
+ * The 401 in particular: an AI Studio API key starts with "AIza" and never
+ * expires. A value starting with "AQ." is a short-lived OAuth token, which
+ * works for a while and then stops — the confusing failure this maps.
+ */
+export function explainGeminiError(status: number, message: string, apiKey?: string): string {
+  const looksLikeToken = Boolean(apiKey) && !apiKey!.startsWith("AIza");
+  if (status === 401 || /UNAUTHENTICATED|invalid authentication/i.test(message)) {
+    return looksLikeToken
+      ? "Google rejected the key. It does not look like an API key — an AI Studio key starts with \"AIza\". A temporary sign-in token works for a short while and then stops. Create a proper API key at aistudio.google.com/apikey and save it in Settings."
+      : "Google rejected the API key. Check it in Settings, or create a new one at aistudio.google.com/apikey.";
+  }
+  if (status === 403) {
+    return "Google refused the request. The key may not have access to this model, or billing is not enabled on that Google project.";
+  }
+  if (status === 429) {
+    return "Google's rate limit was hit. Wait a minute and read the sheet again.";
+  }
+  if (status === 404) {
+    return "That model name is not available on this key. Pick a different model in Settings.";
+  }
+  if (status >= 500) {
+    return "Google's service had a problem. Try reading the sheet again in a moment.";
+  }
+  return message;
 }
 
 export interface GeminiCallResult {
@@ -209,7 +241,10 @@ export async function readSheet(opts: {
     const finishReason: string | undefined = json?.candidates?.[0]?.finishReason;
 
     if (!res.ok) {
-      return { ok: false, model: opts.model, ms, tokensIn, tokensOut, error: json?.error?.message ?? `HTTP ${res.status}`, raw: json };
+      return {
+        ok: false, model: opts.model, ms, tokensIn, tokensOut, raw: json,
+        error: explainGeminiError(res.status, json?.error?.message ?? `HTTP ${res.status}`, opts.apiKey),
+      };
     }
 
     const text = stripFence(json?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text ?? "").join("") ?? "");

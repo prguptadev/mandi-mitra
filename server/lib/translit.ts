@@ -187,13 +187,36 @@ const FOLD: Record<string, string> = {
 };
 
 /**
- * Collapse a Devanagari string to a match key: drop every matra, nasal and
- * virama, fold confusable consonants. "फूलसिंह" and "फुलसिह" both become the
- * same key, so an OCR misread still finds the right supplier.
+ * Firm suffixes are written a dozen ways for the same firm: "शिवम ट्रेडिंग",
+ * "शिवम ट्रेडिंग कंपनी", "शिवम T.C". Collapse them to one token so the master
+ * list matches whichever the munshi wrote that day.
+ */
+const FIRM_SUFFIX_PATTERNS: [RegExp, string][] = [
+  [/\s*(?:ट्रेडिंग|ट्रेडींग)\s*(?:कंपनी|कम्पनी|कं\.?|को\.?)?\s*$/u, " ट्रेडिंग"],
+  [/\s*(?:t\.?\s*c\.?|ट\.?\s*c\.?|टी\.?\s*सी\.?)\s*$/iu, " ट्रेडिंग"],
+  [/\s*(?:trading)\s*(?:co\.?|company)?\s*$/iu, " ट्रेडिंग"],
+  [/\s*(?:एंड|एण्ड|and|&)\s*(?:संस|सन्स|sons)\s*$/iu, " संस"],
+  [/\s*(?:इंटरप्राइजेज|इन्टरप्राइजेज|एंटरप्राइजेज|enterprises?)\s*$/iu, " इंटरप्राइजेज"],
+  [/\s*(?:ट्रेडर्स|traders?)\s*$/iu, " ट्रेडर्स"],
+];
+
+export function canonicalFirm(input: string): string {
+  let out = (input ?? "").normalize("NFC").trim();
+  for (const [re, replacement] of FIRM_SUFFIX_PATTERNS) {
+    if (re.test(out)) { out = out.replace(re, replacement); break; }
+  }
+  return out.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Collapse a Devanagari string to a match key: normalise the firm suffix, then
+ * drop every matra, nasal and virama and fold confusable consonants.
+ * "फूलसिंह" and "फुलसिह" both become the same key, so an OCR misread still
+ * finds the right supplier.
  */
 export function normKey(input: string): string {
   if (!input) return "";
-  const stripped = Array.from(input.normalize("NFC"))
+  const stripped = Array.from(canonicalFirm(input).normalize("NFC"))
     .filter((c) => !MATRAS[c] && c !== ANUSVARA && c !== CHANDRABINDU && c !== VISARGA && c !== VIRAMA && c !== NUKTA)
     .map((c) => FOLD[c] ?? c)
     .join("");
@@ -226,7 +249,7 @@ export function editDistance(a: string, b: string): number {
   return prev[b.length];
 }
 
-/** 0..1 similarity on normalised keys. */
+/** 0..1 similarity on normalised keys, firm suffixes already reconciled. */
 export function similarity(a: string, b: string): number {
   const ka = normKey(a);
   const kb = normKey(b);

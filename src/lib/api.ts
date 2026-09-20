@@ -153,6 +153,7 @@ export interface SlipRow {
   bagsCount: number | null; netGrams: number;
   ratePaisePerQtl: number; amountPaise: number;
   status: string; ocrConfidence: number | null; scanBatchId: string | null;
+  scanStatus: string | null; scanPages: number;
   katautiGrams: number; katautiCfg: KatautiConfig; suggestedKatautiUnits: number;
   expectedNetGrams: number; expectedAmountPaise: number;
   netMismatchGrams: number; amountMismatchPaise: number; reconciles: boolean;

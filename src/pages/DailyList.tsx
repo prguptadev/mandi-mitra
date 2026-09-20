@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Calendar, Trash2, Truck, AlertTriangle, Check,
-  RefreshCw, Download, Keyboard, Lock, Plus, X,
+  RefreshCw, Download, Keyboard, Lock, Plus, X, Image as ImageIcon, CheckSquare,
 } from "lucide-react";
 import { api, ApiError, type Adati, type Jins, type Merchant, type SlipRow, type SlipTotals, type SlipDay, type KatautiConfig } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -283,6 +284,12 @@ export function DailyListPage() {
 
   /* ---------------------------------------------- column-driven rendering */
 
+  /* Rows already on a load are locked, so they can never be part of a bulk
+     action — select-all means "everything I am allowed to move". */
+  const selectableIds = rows.filter((r) => !r.loadId).map((r) => r.id);
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
+  const someSelected = selected.size > 0;
+
   const visibleCols = DAILY_COLUMNS.filter((c) => P.columns[c.key] !== false);
   const PAD = P.density === "compact" ? "py-0.5" : "py-1";
 
@@ -301,6 +308,12 @@ export function DailyListPage() {
       case "adatiHi": return (
         <span className="flex items-center gap-1.5">
           <span lang="hi" className="truncate text-[14px] text-ink">{r.adatiNameHi}</span>
+          {r.scanBatchId && (
+            <Link href={`/scan/${r.scanBatchId}`} title={t("daily.fromScan")}
+              className="shrink-0 text-faint transition-colors hover:text-brand">
+              <ImageIcon className="h-3.5 w-3.5" />
+            </Link>
+          )}
           {r.ratePending && <Badge tone="warn">{t("daily.ratePending")}</Badge>}
           {Boolean(r.loadId) && <Badge tone="warn"><Lock className="h-2.5 w-2.5" />{t("daily.onLoad")}</Badge>}
         </span>
@@ -532,6 +545,12 @@ export function DailyListPage() {
         <Card className="mb-3">
           <div className="flex flex-wrap items-center gap-2 p-2.5">
             <Badge tone="brand">{t("daily.selectedRows", { n: selected.size })}</Badge>
+            {!allSelected && selectableIds.length > selected.size && (
+              <Button size="sm" variant="ghost" icon={<CheckSquare className="h-3.5 w-3.5" />}
+                onClick={() => setSelected(new Set(selectableIds))}>
+                {t("daily.selectAllN", { n: selectableIds.length })}
+              </Button>
+            )}
             <span className="text-[12px] text-muted">{t("daily.reassign")}:</span>
             {mills.data?.map((m) => (
               <Button key={m.id} size="sm" variant="secondary" loading={reassign.isPending}
@@ -549,7 +568,15 @@ export function DailyListPage() {
           <table className="w-full border-collapse text-[13px]">
             <thead>
               <tr className="bg-raised/80">
-                <th className="w-8 border-b border-line px-2 py-1.5" />
+                <th className="w-8 border-b border-line px-2 py-1.5">
+                  {can("slip.write") && selectableIds.length > 0 && (
+                    <Checkbox
+                      checked={allSelected}
+                      indeterminate={someSelected && !allSelected}
+                      onChange={(v) => setSelected(v ? new Set(selectableIds) : new Set())}
+                    />
+                  )}
+                </th>
                 {visibleCols.map((c) => (
                   <th key={c.key}
                     title={c.key === "katauti" ? t("daily.katautiAuto") : undefined}

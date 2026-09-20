@@ -7,6 +7,7 @@
  */
 const BASE = "http://localhost:8787/api";
 let cookie = "";
+const DATE = "2026-09-20";
 
 async function call(method: string, path: string, body?: unknown) {
   const res = await fetch(BASE + path, {
@@ -27,6 +28,26 @@ const owner = users.find((u: any) => u.name === "Test Owner");
 const PIN = process.argv[2] ?? process.env.MANDI_PIN ?? "482915";
 await call("POST", "/auth/login", { userId: owner.id, pin: PIN });
 console.log("logged in as Test Owner");
+
+/* Two businesses exist; this sheet belongs to Vijay Laxmi. Be explicit rather
+   than trusting whichever business the session happened to resume. */
+const me = await call("GET", "/auth/me");
+const vldm = me.businesses.find((b: any) => b.shortCode === "VLDM");
+if (vldm && me.activeBusinessId !== vldm.businessId) {
+  await call("POST", "/auth/switch-business", { businessId: vldm.businessId });
+  console.log("switched to", vldm.name);
+}
+
+/* This script inserts slips, so a rerun would legitimately hit the duplicate
+   RST guard. Clear its own footprint first. */
+{
+  const existing = await call("GET", `/slips?date=${DATE}`);
+  let removed = 0;
+  for (const r of existing.rows) {
+    try { await call("DELETE", `/slips/${r.id}`); removed++; } catch { /* on a load */ }
+  }
+  if (removed) console.log(`cleared ${removed} slip(s) left from a previous run`);
+}
 
 const mills = await call("GET", "/merchants");
 const lb = mills.find((m: any) => m.code === "LB");
@@ -53,7 +74,6 @@ const SHEET: [string, string, number, number, number][] = [ // rst, name, gross,
   ["666", "राधे श्याम एण्ड संस", 49.90, 50, 3350],
 ];
 
-const DATE = "2026-09-20";
 console.log(`\nEntering ${SHEET.length} rows for ${DATE} against mill ${lb.code}...`);
 let entered = 0;
 for (const [rst, nameHi, gross, bags, rate] of SHEET) {

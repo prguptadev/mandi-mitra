@@ -279,7 +279,11 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
       {b.errorText && (
         <Alert tone="bad" className="mb-3">
           <p className="font-semibold">{t("scan.failedTitle")}</p>
-          <p>{b.errorText}</p>
+          <p className="mt-0.5 break-words leading-relaxed">{b.errorText}</p>
+          {/^Google rejected/.test(b.errorText) && (
+            <Button size="sm" variant="secondary" className="mt-2"
+              onClick={() => navigate("/settings")}>{t("nav.settings")}</Button>
+          )}
         </Alert>
       )}
 

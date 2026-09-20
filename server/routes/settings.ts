@@ -5,6 +5,7 @@ import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
 import { encryptSecret, decryptSecret, maskKey } from "../lib/secrets.ts";
+import { explainGeminiError } from "../lib/gemini.ts";
 import {
   DisplayConfigSchema, defaultDisplayConfig,
   GeminiConfigSchema, defaultGeminiConfig, GEMINI_MODELS,
@@ -85,6 +86,7 @@ settingsRoutes.put("/gemini", can("settings.write"), async (c) => {
   const prevRaw = await readSetting(biz, "gemini");
   const prev = prevRaw ? GeminiConfigSchema.parse(JSON.parse(prevRaw)) : defaultGeminiConfig();
   const { apiKey, clearKey, ...cfgPatch } = body;
+  let keyWarning: string | null = null;
   const next = GeminiConfigSchema.parse({ ...prev, ...cfgPatch });
   await writeSetting(biz, "gemini", JSON.stringify(next));
 
@@ -95,6 +97,13 @@ settingsRoutes.put("/gemini", can("settings.write"), async (c) => {
     await audit({ actor: actor(c), action: "settings.gemini.key.clear", entity: "settings", entityId: "gemini", entityLabel: "Gemini API key removed" });
   } else if (apiKey) {
     if (apiKey.length < 20) throw bad("That does not look like a Gemini API key", "bad_key");
+    /* An AI Studio API key starts with "AIza" and does not expire. An "AQ."
+       value is a short-lived token: it works, then starts failing with a 401
+       a few hours later. Warn, but never block — a working key is a working
+       key, and refusing to save one the user can prove works is wrong. */
+    if (!apiKey.startsWith("AIza")) {
+      keyWarning = "This works for now, but it looks like a temporary sign-in token rather than an API key. It will stop working after a few hours. A permanent key from aistudio.google.com/apikey starts with \"AIza\".";
+    }
     await writeSetting(biz, "gemini.apiKey", encryptSecret(apiKey));
     // the key itself never reaches the audit log
     await audit({
@@ -113,6 +122,52 @@ settingsRoutes.put("/gemini", can("settings.write"), async (c) => {
 });
 
 /** Round-trips a tiny prompt so the key and model are proven before a real scan. */
+/** Copy the key from another business this user already set it up in. */
+settingsRoutes.post("/gemini/copy-from", can("settings.write"), async (c) => {
+  const auth = c.get("auth")!;
+  const { businessId } = z.object({ businessId: z.string() }).parse(await c.req.json());
+
+  const [member] = await db.select().from(schema.memberships).where(and(
+    eq(schema.memberships.userId, auth.user.id),
+    eq(schema.memberships.businessId, businessId),
+    eq(schema.memberships.active, true),
+  )).limit(1);
+  if (!member) throw new HttpError(403, "You are not a member of that business", "forbidden");
+
+  const raw = await readSetting(businessId, "gemini.apiKey");
+  const plain = raw ? decryptSecret(raw) : null;
+  if (!plain) throw bad("That business has no key saved", "no_key");
+
+  await writeSetting(auth.businessId!, "gemini.apiKey", encryptSecret(plain));
+  await audit({
+    actor: actor(c), action: "settings.gemini.key.copy", entity: "settings", entityId: "gemini",
+    entityLabel: `Key copied from another business (${maskKey(plain)})`,
+  });
+  return c.json({ ok: true, maskedKey: maskKey(plain) });
+});
+
+/** Businesses this user could copy a key from. */
+settingsRoutes.get("/gemini/sources", can("settings.write"), async (c) => {
+  const auth = c.get("auth")!;
+  const mems = await db.select({
+    businessId: schema.memberships.businessId,
+    name: schema.businesses.name,
+    shortCode: schema.businesses.shortCode,
+  })
+    .from(schema.memberships)
+    .innerJoin(schema.businesses, eq(schema.businesses.id, schema.memberships.businessId))
+    .where(and(eq(schema.memberships.userId, auth.user.id), eq(schema.memberships.active, true)));
+
+  const out = [];
+  for (const m of mems) {
+    if (m.businessId === auth.businessId) continue;
+    const raw = await readSetting(m.businessId, "gemini.apiKey");
+    const plain = raw ? decryptSecret(raw) : null;
+    if (plain) out.push({ ...m, maskedKey: maskKey(plain) });
+  }
+  return c.json(out);
+});
+
 settingsRoutes.post("/gemini/test", can("settings.write", "scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const keyRaw = await readSetting(biz, "gemini.apiKey");
@@ -141,7 +196,7 @@ settingsRoutes.post("/gemini/test", can("settings.write", "scan.create"), async 
     const json = await res.json().catch(() => null) as any;
 
     if (!res.ok) {
-      const msg = json?.error?.message ?? `HTTP ${res.status}`;
+      const msg = explainGeminiError(res.status, json?.error?.message ?? `HTTP ${res.status}`, key);
       await audit({ actor: actor(c), action: "settings.gemini.test.fail", entity: "settings", entityId: "gemini", entityLabel: `${model}: ${msg}` });
       return c.json({ ok: false, model, ms, error: msg, status: res.status }, 200);
     }

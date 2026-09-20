@@ -130,7 +130,12 @@ authRoutes.post("/login", async (c) => {
   const mems = await db.select().from(schema.memberships).where(and(
     eq(schema.memberships.userId, user.id), eq(schema.memberships.active, true),
   ));
-  const token = await createSession(user.id, mems[0]?.businessId ?? null, c.req.header("user-agent"));
+  // come back to where they left off, not to whichever row the DB returns first
+  const remembered = parsePrefs(user.prefs).lastBusinessId;
+  const resume = mems.find((m) => m.businessId === remembered)?.businessId
+    ?? mems[0]?.businessId
+    ?? null;
+  const token = await createSession(user.id, resume, c.req.header("user-agent"));
   setCookie(c, COOKIE, token, cookieOpts);
   await audit({
     actor: { userId: user.id, userName: user.name, businessId: mems[0]?.businessId, ip: c.req.header("x-forwarded-for") },
@@ -194,6 +199,10 @@ authRoutes.post("/switch-business", requireAuth, async (c) => {
   await db.update(schema.sessions)
     .set({ activeBusinessId: businessId })
     .where(eq(schema.sessions.id, auth.session.id));
+  const prefs = parsePrefs(auth.user.prefs);
+  await db.update(schema.users)
+    .set({ prefs: JSON.stringify({ ...prefs, lastBusinessId: businessId }), updatedAt: nowSec() })
+    .where(eq(schema.users.id, auth.user.id));
   await audit({ actor: { ...actor(c), businessId }, action: "business.switch", entity: "business", entityId: businessId });
   return c.json({ ok: true });
 });

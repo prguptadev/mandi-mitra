@@ -183,12 +183,26 @@ export function GeminiCard() {
     queryFn: () => api.get<GeminiSettings>("/settings/gemini"),
   });
 
+  const [keyWarning, setKeyWarning] = useState<string | null>(null);
+
   const save = useMutation({
-    mutationFn: (body: Record<string, unknown>) => api.put("/settings/gemini", body),
-    onSuccess: async () => {
+    mutationFn: (body: Record<string, unknown>) => api.put<{ keyWarning: string | null }>("/settings/gemini", body),
+    onSuccess: async (r) => {
       setApiKey(""); setEntering(false); setErr(null); setTest(null);
+      setKeyWarning(r?.keyWarning ?? null);
       await qc.invalidateQueries({ queryKey: ["settings", "gemini"] });
     },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+
+  const sources = useQuery({
+    queryKey: ["settings", "gemini", "sources"],
+    queryFn: () => api.get<{ businessId: string; name: string; shortCode: string; maskedKey: string }[]>("/settings/gemini/sources"),
+  });
+
+  const copyKey = useMutation({
+    mutationFn: (businessId: string) => api.post("/settings/gemini/copy-from", { businessId }),
+    onSuccess: async () => { setErr(null); await qc.invalidateQueries({ queryKey: ["settings", "gemini"] }); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
@@ -215,6 +229,14 @@ export function GeminiCard() {
       <div className="space-y-4 p-4">
         {err && <Alert tone="bad">{err}</Alert>}
         {g.keyUnreadable && <Alert tone="bad">{t("settings.apiKeyUnreadable")}</Alert>}
+        {keyWarning && (
+          <Alert tone="warn">
+            <span className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 break-words">{keyWarning}</span>
+            </span>
+          </Alert>
+        )}
 
         {g.configured && !entering ? (
           <div className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-raised/40 px-3 py-2.5">
@@ -245,6 +267,19 @@ export function GeminiCard() {
           )
         )}
 
+        {/* one owner, two firms — no need to paste the same key twice */}
+        {(sources.data?.length ?? 0) > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            {sources.data!.map((b) => (
+              <Button key={b.businessId} size="sm" variant="secondary" loading={copyKey.isPending}
+                onClick={() => copyKey.mutate(b.businessId)}>
+                {t("settings.copyKeyFrom", { name: b.shortCode })}
+                <span className="num ml-1 text-[11px] text-faint">{b.maskedKey}</span>
+              </Button>
+            ))}
+          </div>
+        )}
+
         <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
           className="inline-flex items-center gap-1 text-[12px] font-medium text-brand hover:underline">
           aistudio.google.com <ExternalLink className="h-3 w-3" />
@@ -256,7 +291,7 @@ export function GeminiCard() {
               onChange={(e) => save.mutate({ model: e.target.value })}>
               {g.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
             </Select>
-            <p className="mt-1 text-[11px] text-faint">{g.models.find((m) => m.id === g.model)?.note}</p>
+            <p className="mt-1 text-[11px] leading-snug text-faint">{g.models.find((m) => m.id === g.model)?.note}</p>
           </Field>
           <Field label={t("settings.fallbackModel")} hint={t("settings.fallbackModelSub")}>
             <Select value={g.fallbackModel} disabled={!editable}
@@ -267,13 +302,21 @@ export function GeminiCard() {
         </div>
 
         {g.configured && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-line pt-4">
-            <Button variant="secondary" loading={runTest.isPending} icon={<Zap className="h-3.5 w-3.5" />}
-              onClick={() => runTest.mutate()}>{t("settings.testKey")}</Button>
-            {test && (
-              test.ok
-                ? <Badge tone="ok"><Check className="h-2.5 w-2.5" /> {t("settings.testOk", { ms: test.ms })}</Badge>
-                : <Badge tone="bad"><AlertTriangle className="h-2.5 w-2.5" /> {t("settings.testFail")}: {test.error}</Badge>
+          <div className="space-y-2.5 border-t border-line pt-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="secondary" loading={runTest.isPending} icon={<Zap className="h-3.5 w-3.5" />}
+                onClick={() => runTest.mutate()}>{t("settings.testKey")}</Button>
+              {test?.ok && (
+                <Badge tone="ok"><Check className="h-2.5 w-2.5" /> {t("settings.testOk", { ms: test.ms })}</Badge>
+              )}
+            </div>
+            {test && !test.ok && (
+              <Alert tone="bad">
+                <span className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0 break-words">{test.error}</span>
+                </span>
+              </Alert>
             )}
           </div>
         )}

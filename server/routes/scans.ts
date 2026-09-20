@@ -90,6 +90,37 @@ async function katautiFor(businessId: string, merchantId: string | null): Promis
   });
 }
 
+/** Written next to the images; refreshed whenever the tagging changes. */
+function writeScanMeta(id: string, meta: Record<string, unknown>) {
+  try {
+    fs.writeFileSync(path.join(SCAN_DIR, id, "meta.json"), JSON.stringify(meta, null, 2));
+  } catch (err) {
+    console.error("[scan] could not write meta.json", id, err);
+  }
+}
+
+async function refreshScanMeta(businessId: string, id: string) {
+  const [b] = await db.select().from(schema.scanBatches)
+    .where(and(eq(schema.scanBatches.id, id), eq(schema.scanBatches.businessId, businessId))).limit(1);
+  if (!b) return;
+  const [m] = b.merchantId
+    ? await db.select({ code: schema.merchants.code, name: schema.merchants.name })
+        .from(schema.merchants).where(eq(schema.merchants.id, b.merchantId)).limit(1)
+    : [null];
+  const [j] = b.jinsId
+    ? await db.select({ code: schema.jins.code }).from(schema.jins).where(eq(schema.jins.id, b.jinsId)).limit(1)
+    : [null];
+  writeScanMeta(id, {
+    scanId: id, businessId, status: b.status,
+    slipDate: b.slipDate,
+    mill: m ? { code: m.code, name: m.name } : null,
+    jins: j?.code ?? null,
+    model: b.model,
+    files: JSON.parse(b.filePaths),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
 async function loadBatch(businessId: string, id: string) {
   const [b] = await db.select().from(schema.scanBatches)
     .where(and(eq(schema.scanBatches.id, id), eq(schema.scanBatches.businessId, businessId))).limit(1);
@@ -200,6 +231,15 @@ scanRoutes.post("/", can("scan.create"), async (c) => {
   const jinsId = typeof body["jinsId"] === "string" && body["jinsId"] ? body["jinsId"] : null;
   const sourceKind = typeof body["sourceKind"] === "string" ? body["sourceKind"] : "upload";
 
+  /* A sidecar so the folder means something when browsed in Finder or
+     Explorer, and so the images can still be tagged if the DB is ever lost. */
+  writeScanMeta(id, {
+    scanId: id, businessId: biz, uploadedAt: new Date().toISOString(),
+    uploadedBy: c.get("auth")!.user.name,
+    slipDate, merchantId, jinsId, sourceKind,
+    files: saved,
+  });
+
   await db.insert(schema.scanBatches).values({
     id, businessId: biz, sourceKind,
     filePaths: JSON.stringify(saved),
@@ -237,18 +277,40 @@ async function performRead(opts: {
     maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
   });
 
-  // a weak first pass gets one retry on the stronger model
+  /* A weak first pass is read again on the stronger model. "Weak" is not just
+     a low average: a page can average 0.9 and still have a handful of rows the
+     reader clearly struggled with, or come back with names and weights
+     missing. Any of those is worth the second call. */
+  function weakness(r: typeof result): { weak: boolean; why: string } | null {
+    if (!r.ok || !r.page) return { weak: true, why: "the first pass failed" };
+    const rows = r.page.rows;
+    if (!rows.length) return { weak: true, why: "no rows came back" };
+    const mean = rows.reduce((a, x) => a + (x.confidence ?? 0), 0) / rows.length;
+    if (mean < cfg.fallbackBelowConfidence) return { weak: true, why: `average confidence ${mean.toFixed(2)}` };
+    const shaky = rows.filter((x) => (x.confidence ?? 1) < 0.6).length;
+    if (shaky / rows.length > 0.15) return { weak: true, why: `${shaky} rows read poorly` };
+    const missingName = rows.filter((x) => !x.adatiName?.trim()).length;
+    if (missingName / rows.length > 0.1) return { weak: true, why: `${missingName} names not read` };
+    const missingGross = rows.filter((x) => x.grossQtl == null).length;
+    if (missingGross / rows.length > 0.1) return { weak: true, why: `${missingGross} weights not read` };
+    if (r.truncated) return { weak: true, why: "the reply was cut short" };
+    return null;
+  }
+
   let usedFallback = false;
-  const meanConf = result.page
-    ? result.page.rows.reduce((s, r) => s + (r.confidence ?? 0), 0) / Math.max(1, result.page.rows.length)
-    : 0;
-  if (!wanted && cfg.fallbackModel && cfg.fallbackModel !== cfg.model
-      && (!result.ok || meanConf < cfg.fallbackBelowConfidence)) {
+  let fallbackReason: string | null = null;
+  const weak = weakness(result);
+  if (!wanted && weak && cfg.fallbackModel && cfg.fallbackModel !== cfg.model) {
     const second = await readSheet({
       apiKey, model: cfg.fallbackModel, images,
       maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
     });
-    if (second.ok) { result = second; usedFallback = true; }
+    // only keep the retry if it is genuinely no worse
+    if (second.ok && !weakness(second)) {
+      result = second; usedFallback = true; fallbackReason = weak.why;
+    } else if (second.ok && !result.ok) {
+      result = second; usedFallback = true; fallbackReason = weak.why;
+    }
   }
 
   if (!result.ok || !result.page) {
@@ -268,6 +330,8 @@ async function performRead(opts: {
   const rows: ReviewRow[] = result.page.rows.map(ocrToReviewRow);
   const warning = result.truncated
     ? `The reply was cut short, so ${rows.length} complete rows were recovered. Check the bottom of the sheet for any row that did not come through.`
+    : usedFallback
+    ? `Read again on ${result.model} because ${fallbackReason}.`
     : null;
   await db.update(schema.scanBatches).set({
     status: "review",
@@ -380,6 +444,7 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
   }).where(eq(schema.scanBatches.id, id));
 
   const fresh = await loadBatch(biz, id);
+  await refreshScanMeta(biz, id);
   return c.json(await checkAll(biz, fresh));
 });
 
@@ -450,6 +515,7 @@ scanRoutes.post("/:id/commit", can("scan.review", "slip.write"), async (c) => {
   await db.update(schema.scanBatches).set({
     status: "committed", reviewedBy: userId, reviewedAt: nowSec(),
   }).where(eq(schema.scanBatches.id, id));
+  await refreshScanMeta(biz, id);
 
   await audit({
     actor: actor(c), action: "scan.commit", entity: "scan_batch", entityId: id,

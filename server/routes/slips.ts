@@ -120,6 +120,8 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     status: schema.purchaseSlips.status,
     ocrConfidence: schema.purchaseSlips.ocrConfidence,
     scanBatchId: schema.purchaseSlips.scanBatchId,
+    scanStatus: schema.scanBatches.status,
+    scanPages: schema.scanBatches.filePaths,
     createdAt: schema.purchaseSlips.createdAt,
     updatedAt: schema.purchaseSlips.updatedAt,
   })
@@ -127,6 +129,7 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     .innerJoin(schema.adati, eq(schema.adati.id, schema.purchaseSlips.adatiId))
     .innerJoin(schema.jins, eq(schema.jins.id, schema.purchaseSlips.jinsId))
     .leftJoin(schema.merchants, eq(schema.merchants.id, schema.purchaseSlips.merchantId))
+    .leftJoin(schema.scanBatches, eq(schema.scanBatches.id, schema.purchaseSlips.scanBatchId))
     .where(and(...where))
     .orderBy(asc(schema.purchaseSlips.slipDate), asc(schema.purchaseSlips.createdAt));
 
@@ -143,6 +146,7 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     const avgBagKg = r.bagsCount && r.bagsCount > 0 ? (r.netGrams / 1000) / r.bagsCount : null;
     checked.push({
       ...r,
+      scanPages: r.scanPages ? (JSON.parse(r.scanPages) as unknown[]).length : 0,
       katautiGrams: d.katautiGrams,
       katautiCfg: cfg,
       suggestedKatautiUnits: suggested.katautiUnits,
