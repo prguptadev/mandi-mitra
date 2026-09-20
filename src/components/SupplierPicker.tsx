@@ -72,6 +72,22 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
     return () => clearTimeout(id);
   }, [query]);
 
+  /* Typing Latin should show the Hindi it means, both so the operator can read
+     it against the paper and so a new supplier is created in Devanagari. */
+  const [asHindi, setAsHindi] = useState<string | null>(null);
+  useEffect(() => {
+    const q = query.trim();
+    if (!q || !/[a-zA-Z]/.test(q) || DEVANAGARI.test(q)) { setAsHindi(null); return; }
+    let cancelled = false;
+    const id = setTimeout(async () => {
+      try {
+        const r = await api.post<{ hindi: string; converted: boolean }>("/adati/to-devanagari", { text: q });
+        if (!cancelled) setAsHindi(r.converted && r.hindi !== q ? r.hindi : null);
+      } catch { if (!cancelled) setAsHindi(null); }
+    }, 200);
+    return () => { cancelled = true; clearTimeout(id); };
+  }, [query]);
+
   const results = useQuery({
     queryKey: ["adati", "search", debounced],
     queryFn: () => api.get<{ rows: SupplierOption[]; total: number; truncated: boolean }>(
@@ -163,12 +179,24 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
               <p className="text-[12px] text-faint">
                 {results.isFetching ? t("common.loading") : t("daily.noSupplierFound")}
               </p>
+              {asHindi && !results.isFetching && (
+                <p className="mt-1 flex items-center gap-1.5 text-[11px]">
+                  <Languages className="h-3 w-3 shrink-0 text-brand" />
+                  <span className="text-faint">{t("hindi.reading")}</span>
+                  <span lang="hi" className="text-[14px] text-ink">{asHindi}</span>
+                </p>
+              )}
               {onCreate && query.trim() && !results.isFetching && (
                 <button type="button"
-                  onMouseDown={(e) => { e.preventDefault(); onCreate(query.trim()); setQuery(""); setOpen(false); }}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    // always create in Devanagari, whatever was typed
+                    onCreate(asHindi ?? query.trim());
+                    setQuery(""); setOpen(false);
+                  }}
                   className="mt-1.5 inline-flex items-center gap-1.5 text-[12px] font-medium text-brand hover:underline">
                   <Plus className="h-3 w-3" />
-                  {t("daily.createSupplier", { name: query.trim() })}
+                  {t("daily.createSupplier", { name: asHindi ?? query.trim() })}
                 </button>
               )}
             </div>
@@ -196,9 +224,11 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
                   {t("adati.showingOf", { n: matches.length, total })} · {t("adati.typeToSearch")}
                 </p>
               )}
-              {query.trim() && /[a-zA-Z]/.test(query) && (
-                <p className="flex items-center gap-1 border-t border-line px-2.5 py-1 text-[10px] text-faint">
-                  <Languages className="h-2.5 w-2.5" /> {t("daily.searchSupplier")}
+              {asHindi && (
+                <p className="flex items-center gap-1.5 border-t border-line px-2.5 py-1.5 text-[11px]">
+                  <Languages className="h-3 w-3 shrink-0 text-brand" />
+                  <span className="text-faint">{t("hindi.reading")}</span>
+                  <span lang="hi" className="text-[14px] text-ink">{asHindi}</span>
                 </p>
               )}
             </>

@@ -205,8 +205,9 @@ scripts/
 - **Bilingual** — every screen in Hindi or English, including dates, relative
   times and OCR issue messages.
 - **Type Hinglish, get Hindi** — every hand-typed Hindi field converts as you
-  type: "phoolsingh verma" becomes फूलसिंह वर्मा. Enter or Tab accepts, Esc
-  keeps the Latin. The business's own supplier spellings are consulted first, so
+  type: "phoolsingh verma" becomes फूलसिंह वर्मा. Space converts the finished
+  word, Enter or Tab accepts, Esc keeps the Latin. The supplier picker shows
+  the Hindi reading of a Latin query and creates new suppliers in Devanagari. The business's own supplier spellings are consulted first, so
   a name is written the way that office already writes it; then a dictionary of
   common name and firm words; then a phonetic engine.
 - **Scales to thousands of suppliers** — the picker searches on the server and
@@ -350,6 +351,10 @@ the Windows Credential Store is an Electron-era task.
 | Daily-list e2e failed on the second run | same class of problem — it inserts slips, so a rerun hit the duplicate-RST guard | self-cleaning, and it now switches business explicitly |
 | Gemini 401 "invalid authentication credentials" | the saved value was an `AQ.…` short-lived token, not an `AIza…` API key. It works for a few hours then expires — which is why one business succeeded and the other failed overnight | plain-language error mapping, a format warning on save (warning, not a block — it demonstrably works), and a "copy the key from <business>" action |
 | Login landed in an arbitrary business | the first membership row the DB returned | the last business used is remembered in user prefs and restored at sign-in |
+| A scan URL showed a bare "something went wrong" | TanStack Query v5's `isLoading` is `isPending && isFetching`, so it drops to false during retry backoff — no data, no error — and the guard fell through to the failure screen | gate on `isPending`, and never retry a 404 |
+| "Scan not found" was a dead end | a scan belongs to one business; the link was opened from another | `/scans/:id/whereis` names the business (only ones the user belongs to) and offers a one-click switch |
+| `<button>` nested inside `<button>` in the scan list | the whole row was a button and carried action buttons | the row is a `role="link"` div with keyboard handling |
+| Approve stuck disabled on a fresh business | every OCR name was unmatched because the master was empty, and picking 29 one by one is not a reasonable ask | "Add the N missing suppliers" creates them from the sheet and links the rows — 29 blocking to 0 in one action |
 
 ---
 

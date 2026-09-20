@@ -11,13 +11,13 @@ import { GeminiConfigSchema, defaultGeminiConfig, DisplayConfigSchema, defaultDi
 import { ChargeConfigSchema, KatautiSchema, type Katauti } from "../lib/charges.ts";
 import { readSheet } from "../lib/gemini.ts";
 import { loadResolver } from "../lib/adatiResolve.ts";
-import { normKey } from "../lib/translit.ts";
+import { normKey, toHinglish } from "../lib/translit.ts";
 import {
   ReviewRowSchema, ocrToReviewRow, checkRow, findDupes,
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
 import { deriveSlip } from "./slips.ts";
-import { can, actor, param, notFound, bad, HttpError, type Env } from "../lib/http.ts";
+import { can, actor, param, notFound, bad, requireBusiness, HttpError, type Env } from "../lib/http.ts";
 
 export const scanRoutes = new Hono<Env>();
 
@@ -408,6 +408,35 @@ scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
   });
 });
 
+/**
+ * A scan lives in one business. Opening its link from another is the usual
+ * cause of "not found", so say where it actually is instead of stopping dead.
+ * Only reports businesses this user is already a member of.
+ */
+scanRoutes.get("/:id/whereis", requireBusiness, async (c) => {
+  const auth = c.get("auth")!;
+  const id = param(c, "id");
+  const [batch] = await db.select({ businessId: schema.scanBatches.businessId })
+    .from(schema.scanBatches).where(eq(schema.scanBatches.id, id)).limit(1);
+  if (!batch) return c.json({ found: false });
+
+  const [m] = await db.select({
+    businessId: schema.businesses.id,
+    name: schema.businesses.name,
+    shortCode: schema.businesses.shortCode,
+  })
+    .from(schema.memberships)
+    .innerJoin(schema.businesses, eq(schema.businesses.id, schema.memberships.businessId))
+    .where(and(
+      eq(schema.memberships.userId, auth.user.id),
+      eq(schema.memberships.businessId, batch.businessId),
+      eq(schema.memberships.active, true),
+    )).limit(1);
+
+  // a member of that business gets told where to go; anyone else gets nothing
+  return c.json(m ? { found: true, ...m } : { found: false });
+});
+
 scanRoutes.get("/:id/page/:index", can("scan.review", "scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const batch = await loadBatch(biz, param(c, "id"));
@@ -527,6 +556,73 @@ scanRoutes.post("/:id/commit", can("scan.review", "slip.write"), async (c) => {
     ok: true, created: created.length, learnedAliases: learned.length,
     slipDate: batch.slipDate, merchantId: batch.merchantId,
   });
+});
+
+/**
+ * Create suppliers for the names this scan read but the master does not have.
+ * On a new business that is every row, and picking them one by one is not a
+ * reasonable ask — the names are already on the paper.
+ */
+scanRoutes.post("/:id/create-suppliers", can("adati.write", "scan.review"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const userId = c.get("auth")!.user.id;
+  const id = param(c, "id");
+  const batch = await loadBatch(biz, id);
+  if (batch.status === "committed") throw new HttpError(409, "This scan is already on the daily list", "already_committed");
+
+  const { rowIds } = z.object({ rowIds: z.array(z.string()).optional() })
+    .parse(await c.req.json().catch(() => ({})));
+
+  const { rows } = await checkAll(biz, batch);
+  const stored: ReviewRow[] = JSON.parse(batch.parsedRows ?? "[]");
+
+  // one supplier per distinct name, however many rows carry it
+  const wanted = new Map<string, string[]>();
+  for (const r of rows) {
+    if (r.excluded || r.adatiId || r.match) continue;
+    if (rowIds && !rowIds.includes(r.id)) continue;
+    const name = r.adatiRawText.trim();
+    if (!name) continue;
+    const list = wanted.get(name) ?? [];
+    list.push(r.id);
+    wanted.set(name, list);
+  }
+  if (!wanted.size) return c.json({ created: 0, linked: 0 });
+
+  const assign = new Map<string, string>();
+  let created = 0;
+  for (const [nameHi, ids] of wanted) {
+    const [exists] = await db.select({ id: schema.adati.id }).from(schema.adati)
+      .where(and(eq(schema.adati.businessId, biz), eq(schema.adati.nameHi, nameHi))).limit(1);
+
+    let adatiId = exists?.id;
+    if (!adatiId) {
+      adatiId = newId();
+      await db.insert(schema.adati).values({
+        id: adatiId, businessId: biz, nameHi,
+        nameHinglish: toHinglish(nameHi),
+      });
+      await db.insert(schema.adatiAliases).values({
+        id: newId(), businessId: biz, adatiId, rawText: nameHi,
+        normKey: normKey(nameHi), source: "canonical", createdBy: userId,
+      }).onConflictDoNothing();
+      created++;
+    }
+    for (const rid of ids) assign.set(rid, adatiId);
+  }
+
+  const next = stored.map((r) => (assign.has(r.id) ? { ...r, adatiId: assign.get(r.id)!, nameCorrected: false } : r));
+  await db.update(schema.scanBatches).set({ parsedRows: JSON.stringify(next) })
+    .where(eq(schema.scanBatches.id, id));
+
+  await audit({
+    actor: actor(c), action: "scan.create_suppliers", entity: "scan_batch", entityId: id,
+    entityLabel: `${created} new supplier${created === 1 ? "" : "s"} from the sheet`,
+    after: { created, linkedRows: assign.size, names: [...wanted.keys()] },
+  });
+
+  const fresh = await loadBatch(biz, id);
+  return c.json({ created, linked: assign.size, ...(await checkAll(biz, fresh)) });
 });
 
 scanRoutes.delete("/:id", can("scan.create"), async (c) => {

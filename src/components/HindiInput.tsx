@@ -72,6 +72,29 @@ export const HindiInput = forwardRef<HTMLInputElement, {
     return true;
   };
 
+  /**
+   * Space finishes a word, so convert what is behind the cursor and leave the
+   * space for the next one. Typing "rakesh verma " ends up as "राकेश वर्मा "
+   * without the operator pressing anything else.
+   */
+  const convertOnSpace = async (current: string) => {
+    if (!looksLatin(current)) return;
+    try {
+      const path = publicOnly ? "/auth/to-devanagari" : "/adati/to-devanagari";
+      let r: { hindi: string; converted: boolean };
+      try {
+        r = await api.post(path, { text: current });
+      } catch {
+        r = await api.post("/auth/to-devanagari", { text: current });
+      }
+      if (r.converted && r.hindi && r.hindi !== current) {
+        dismissed.current = null;
+        setSuggestion(null);
+        onChange(r.hindi + " ");
+      }
+    } catch { /* keep what was typed */ }
+  };
+
   return (
     <div className="relative">
       <input
@@ -84,6 +107,11 @@ export const HindiInput = forwardRef<HTMLInputElement, {
         onChange={(e) => { dismissed.current = null; onChange(e.target.value); }}
         onBlur={() => { if (convertOnBlur) accept(); }}
         onKeyDown={(e) => {
+          if (e.key === " " && looksLatin(value) && value.trim() && !value.endsWith(" ")) {
+            e.preventDefault();
+            void convertOnSpace(value);
+            return;
+          }
           if ((e.key === "Enter" || e.key === "Tab") && suggestion) {
             if (accept()) {
               if (e.key === "Enter") { e.preventDefault(); return; }

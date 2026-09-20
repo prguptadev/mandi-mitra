@@ -4,7 +4,7 @@ import { useLocation } from "wouter";
 import {
   ZoomIn, ZoomOut, Maximize2, Check, X, AlertTriangle, AlertCircle, Sparkles,
   ArrowRight, Trash2, RotateCcw, ScanLine, ChevronLeft, ChevronRight, Equal,
-  PanelRightClose, PanelRightOpen,
+  PanelRightClose, PanelRightOpen, UserPlus,
 } from "lucide-react";
 import { api, ApiError, apiStatus, type ScanBatch, type ScanRow, type ScanIssue, type Jins, type Merchant } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -94,6 +94,21 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   const [showScan, setShowScan] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<{ created: number; learned: number; date: string } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  /* A scan belongs to one business. Rather than a dead end, find out which of
+     the user's businesses holds it and offer to go there. */
+  const whereis = useQuery({
+    queryKey: ["scan", scanId, "whereis"],
+    queryFn: () => api.get<{ found: boolean; businessId?: string; name?: string; shortCode?: string }>(`/scans/${scanId}/whereis`),
+    enabled: false,
+    retry: false,
+  });
+
+  const goThere = useMutation({
+    mutationFn: (businessId: string) => api.post("/auth/switch-business", { businessId }),
+    onSuccess: async () => { await qc.invalidateQueries(); },
+  });
 
   const batch = useQuery({
     queryKey: ["scan", scanId],
@@ -103,6 +118,9 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
        nothing — come back and the rows are simply there. */
     refetchInterval: (q) => (q?.state?.data?.status === "reading" ? 2000 : false),
     refetchOnWindowFocus: true,
+    // a 404 will not become a 200 by asking again, and retrying it leaves the
+    // screen in backoff — no data, no error — for several seconds
+    retry: (count, err) => apiStatus(err) !== 404 && count < 2,
   });
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
   const jinsList = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
@@ -136,6 +154,17 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
+  const createSuppliers = useMutation({
+    mutationFn: () => api.post<{ created: number; linked: number }>(`/scans/${scanId}/create-suppliers`),
+    onSuccess: async (r) => {
+      setDraft(null); setErr(null);
+      setNotice(t("scan.suppliersCreated", { created: r.created, linked: r.linked }));
+      await qc.invalidateQueries({ queryKey: ["scan", scanId] });
+      await qc.invalidateQueries({ queryKey: ["adati"] });
+    },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+
   const remove = useMutation({
     mutationFn: () => api.del(`/scans/${scanId}`),
     onSuccess: () => navigate("/scan"),
@@ -152,10 +181,33 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
+  useEffect(() => {
+    if (apiStatus(batch.error) === 404 && !whereis.isFetched) void whereis.refetch();
+  }, [batch.error, whereis.isFetched]);
+
   /** Every row stays on screen and editable until it is approved. */
   const visible = rows;
 
-  if (batch.isLoading) {
+  /* A number that no longer matches what was read — whether corrected on
+     purpose or knocked by a stray keystroke — should say so and offer the
+     original back. A silent change to a weight is how money goes missing. */
+  const grossEdited = (r: ScanRow) =>
+    r.ocr.grossQtl != null && r.grossGrams !== null &&
+    Math.abs(r.grossGrams - Math.round(r.ocr.grossQtl * GRAMS_PER_QTL)) > 0;
+  const rateEdited = (r: ScanRow) =>
+    r.ocr.rate != null && r.ratePaisePerQtl !== null &&
+    Math.abs(r.ratePaisePerQtl - Math.round(r.ocr.rate * 100)) > 0;
+
+  /** Distinct names the sheet carries that the master does not have yet. */
+  const missingNames = new Set(
+    rows.filter((r) => !r.excluded && !r.adatiId && !r.match && r.adatiRawText.trim())
+      .map((r) => r.adatiRawText.trim()),
+  ).size;
+
+  /* isPending, not isLoading: isLoading is `isPending && isFetching`, so it
+     drops to false during retry backoff while there is still no data and no
+     error — which previously fell through to the failure screen. */
+  if (batch.isPending) {
     return (<><PageHeader title={t("scan.review")} /><Card><SkeletonTable rows={8} /></Card></>);
   }
 
@@ -163,6 +215,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
      or opening a stale link, lands here — say so instead of blanking out. */
   if (batch.isError || !batch.data) {
     const notFound = apiStatus(batch.error) === 404;
+    const elsewhere = whereis.data?.found ? whereis.data : null;
     return (
       <>
         <PageHeader title={t("scan.review")} />
@@ -170,11 +223,25 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
           <EmptyState
             icon={<ScanLine className="h-8 w-8" />}
             title={notFound ? t("scan.notFound") : t("common.somethingWrong")}
-            sub={notFound ? t("scan.notFoundSub") : (batch.error instanceof Error ? batch.error.message : undefined)}
+            sub={
+              elsewhere ? t("scan.foundInBusiness", { name: elsewhere.name ?? elsewhere.shortCode ?? "" })
+              : notFound ? t("scan.notFoundSub")
+              : (batch.error instanceof Error ? batch.error.message : undefined)
+            }
             action={
-              <div className="flex gap-2">
-                <Button onClick={() => batch.refetch()}>{t("common.retry")}</Button>
-                <Button variant="primary" onClick={() => navigate("/scan")}>{t("scan.title")}</Button>
+              <div className="flex flex-wrap justify-center gap-2">
+                {elsewhere ? (
+                  <Button variant="primary" loading={goThere.isPending}
+                    onClick={() => goThere.mutate(elsewhere.businessId!)}>
+                    {t("scan.switchAndOpen", { name: elsewhere.shortCode ?? "" })}
+                  </Button>
+                ) : notFound ? (
+                  <Button variant="secondary" loading={whereis.isFetching}
+                    onClick={() => whereis.refetch()}>{t("scan.findIt")}</Button>
+                ) : (
+                  <Button onClick={() => batch.refetch()}>{t("common.retry")}</Button>
+                )}
+                <Button onClick={() => navigate("/scan")}>{t("scan.title")}</Button>
               </div>
             }
           />
@@ -266,6 +333,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
       />
 
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
+      {notice && <Alert tone="ok" className="mb-3">{notice}</Alert>}
       {b.status === "committed" && <Alert tone="ok" className="mb-3">{t("scan.status.committed")}</Alert>}
       {b.warningText && (
         <Alert tone="warn" className="mb-3">
@@ -412,12 +480,20 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
                         </td>
 
                         <td className="border-b border-line/70 px-1 py-1">
-                          <input inputMode="decimal" disabled={locked} className={CELL}
+                          <input inputMode="decimal" disabled={locked}
+                            className={cn(CELL, grossEdited(r) && "border-warn text-warn")}
                             value={r.grossGrams === null ? "" : (r.grossGrams / GRAMS_PER_QTL).toFixed(2)}
                             onChange={(e) => {
                               const n = parseLooseNumber(e.target.value);
                               patchRow(r.id, { grossGrams: n === null ? null : Math.round(n * GRAMS_PER_QTL) });
                             }} />
+                          {grossEdited(r) && (
+                            <button type="button" title={t("scan.restoreRead")}
+                              onClick={() => patchRow(r.id, { grossGrams: Math.round(r.ocr.grossQtl! * GRAMS_PER_QTL) })}
+                              className="num mt-0.5 block w-full text-right text-[10px] text-warn hover:underline">
+                              {t("scan.wasRead")} {r.ocr.grossQtl!.toFixed(2)}
+                            </button>
+                          )}
                         </td>
 
                         <td className="border-b border-line/70 px-1 py-1">
@@ -539,6 +615,13 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
                 {" · "}
                 <span className="num font-semibold text-brand">{f.money(summary.totalAmountPaise)}</span>
               </div>
+              {summary.blocking > 0 && missingNames > 0 && can("adati.write") && (
+                <Button variant="secondary" loading={createSuppliers.isPending}
+                  icon={<UserPlus className="h-3.5 w-3.5" />}
+                  onClick={() => { setErr(null); createSuppliers.mutate(); }}>
+                  {t("scan.createMissing", { n: missingNames })}
+                </Button>
+              )}
               <div className="flex-1" />
               <Button variant="primary" size="lg" loading={commit.isPending}
                 disabled={summary.blocking > 0 || !b.slipDate || !b.jinsId || summary.included === 0}

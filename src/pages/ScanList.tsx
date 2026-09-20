@@ -206,8 +206,10 @@ export function ScanListPage() {
         ) : (
           <div className="divide-y divide-line/70">
             {list.data.map((s) => (
-              <button key={s.id} type="button" onClick={() => navigate(`/scan/${s.id}`)}
-                className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-raised/50">
+              <div key={s.id} role="link" tabIndex={0}
+                onClick={() => navigate(`/scan/${s.id}`)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(`/scan/${s.id}`); } }}
+                className="flex w-full cursor-pointer items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-raised/50 focus-visible:bg-raised/50">
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-raised">
                   {s.status === "committed" ? <Check className="h-4 w-4 text-ok" />
                     : s.status === "failed" ? <AlertTriangle className="h-4 w-4 text-bad" />
@@ -243,7 +245,7 @@ export function ScanListPage() {
                     {t("scan.review")}
                   </Button>
                 )}
-              </button>
+              </div>
             ))}
           </div>
         )}

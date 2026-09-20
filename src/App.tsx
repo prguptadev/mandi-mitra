@@ -7,6 +7,7 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { AppShell } from "@/components/AppShell.tsx";
 import { ErrorBoundary } from "@/components/ErrorBoundary.tsx";
+import { HindiInput } from "@/components/HindiInput.tsx";
 import { SkeletonShell } from "@/components/Skeletons.tsx";
 import { Button, Card, Dialog, Field, Input, Alert, EmptyState } from "@/components/ui/index.tsx";
 import { SignupPage, LoginPage } from "@/pages/Auth.tsx";
@@ -53,7 +54,7 @@ function AddBusinessDialog({ open, onClose }: { open: boolean; onClose: () => vo
             }} />
         </Field>
         <Field label={t("auth.businessNameHi")}>
-          <Input value={f.nameHi} lang="hi" onChange={(e) => setF((p) => ({ ...p, nameHi: e.target.value }))} />
+          <HindiInput value={f.nameHi} onChange={(v) => setF((p) => ({ ...p, nameHi: v }))} />
         </Field>
         <Field label={t("auth.shortCode")} hint={t("auth.shortCodeHelp")} required>
           <Input value={f.shortCode} mono className="uppercase" maxLength={12}
