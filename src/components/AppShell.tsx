@@ -35,8 +35,8 @@ const NAV: NavGroup[] = [
     { href: "/commodities", labelKey: "nav.commodities", icon: Wheat, perm: "jins.read" },
   ] },
   { labelKey: "nav.accounts", items: [
-    { href: "/ledger", labelKey: "nav.ledger", icon: BookOpen, perm: "ledger.read", soon: true },
-    { href: "/payments", labelKey: "nav.payments", icon: Wallet, perm: "payment.read", soon: true },
+    { href: "/ledger", labelKey: "nav.ledger", icon: BookOpen, perm: "ledger.read" },
+    { href: "/payments", labelKey: "nav.payments", icon: Wallet, perm: "payment.read" },
   ] },
   { labelKey: "nav.admin", items: [
     { href: "/users", labelKey: "nav.users", icon: UserCog, perm: "users.read" },

@@ -1,7 +1,7 @@
 # Mandi Mitra — project handover
 
 Everything a new session (or a new developer) needs to pick this up cold.
-Last updated: 2026-09-20.
+Last updated: 2026-09-21.
 
 ---
 
@@ -101,11 +101,36 @@ typed by hand.
 Slips with **no rate yet are excluded from that average** — one unpriced row
 would quietly drag the parcha rate down.
 
+### Trucks are loaded by weight, from a mill's stock (decided 21-09)
+
+The owner does not track which slip went on which truck. A truck is loaded
+**by weight** from its mill's stock:
+
+- **Stock** of a mill = what was bought on that mill's sheets (Σ slip net)
+  − what truck rows took, **per purchase day**. It **may go negative**
+  (orange, never blocks).
+- A truck has **rows**: weight taken from one purchase day (optionally
+  against a PO), priced at **that day's average rate for the mill** — the
+  owner's "dara" (Σ net × rate / Σ net over priced slips) — unless a rate is
+  typed. These are the parcha's PO / JEANS / DATE / WEIGHT / RATE / AMOUNT
+  rows; the paper's second row is for a second day.
+- One row may be left blank: it takes whatever of the **mill's net** the
+  typed rows leave. Rows must add up to the mill net to approve.
+- This settles the 20.31 qtl gap: L.B's 20-09 list is 331.05, the mill
+  billed 310.74, so **20.31 stays in L.B's stock** for the next truck.
+- Goods = Σ row amounts; the TOTAL row's rate is goods ÷ weight.
+
+### Supplier ledger
+
+balance = opening + Σ purchases (slip net × rate, on the slip date) −
+Σ payments. Positive = we owe (देना), negative = paid ahead (लेना). Never
+stored — summed every time. Slips with no rate count as 0 until priced.
+
 ### Other observed behaviour
 
 - Slips move between mills: RST 634 was struck off the G.R.M sheet and appears
-  on the L.B sheet. The software must allow reassignment and must enforce that
-  a slip belongs to exactly one load, ever.
+  on the L.B sheet. "Move to mill" on the daily list does this; the slip's
+  weight then counts in the new mill's stock.
 - Bardana differs by side: 1.00 kg/bag when buying, 0.57 kg/bag as the
   destination mill counts it (4.56 qtl ÷ 800 bags).
 - Sheets run onto a second page; both pages are one list.
@@ -155,11 +180,20 @@ server/
     gemini.ts            prompt, response schema, salvageRows
     scanRows.ts          per-row OCR validation
     adatiResolve.ts      three-tier supplier matching
+    parcha.ts            a truck's rows, stock, checks and the parcha document
+    parchaLabels.ts      printed wording / Indian number style (server + browser)
+    parchaXlsx.ts        the parcha as Excel, laid out like invoice 196
+    millReport.ts        Dara (mill report) Excel / CSV
+    slipOrder.ts         row order incl. by name (server + browser)
     rbac.ts              36 permissions, 5 role presets
     auth.ts  audit.ts  http.ts  ids.ts
   routes/
     auth.ts  adati.ts  merchants.ts  jins.ts  users.ts
     system.ts  settings.ts  slips.ts  scans.ts
+    orders.ts            purchase orders (number optional, date required)
+    loads.ts             trucks, their weight rows, approve / void, Excel
+    reports.ts           Dara (mill report) and mill stock
+    accounts.ts          supplier ledger and payments
 src/
   lib/       api.ts  format.tsx  prefs.tsx  i18n.tsx  strings.ts
              session.tsx  theme.tsx  utils.ts  format.check.ts
@@ -167,6 +201,7 @@ src/
               Skeletons  ErrorBoundary  ui/index.tsx
   pages/     Auth  Dashboard  Suppliers  Mills  DailyList
              ScanList  ScanReview  Admin  SettingsExtras
+             Orders  Loads (list, truck, register)  Stock  Accounts (ledger, payments)
 scripts/
   dev-bootstrap.ts        signup an owner on an empty DB
   dev-make-review-scan.ts a scan stuck in review, no Gemini call
@@ -219,6 +254,25 @@ scripts/
   answered in 2–4 ms, and a Latin query finds the Devanagari name.
 - **Light / dark**, skeleton loaders, collapsible sidebar, error boundary.
 
+- **Purchase orders** — per mill and commodity; the number is optional (a
+  mill often sends only a date), the date is required. Sent / balance from
+  truck rows; going over is flagged, never refused.
+- **Loads (trucks)** — by weight from the mill's stock (see §2), mill
+  weighbridge (gross, katte, bore, bardana per bag type → net), live parcha,
+  approve (frozen snapshot, truck locked), void with reason (version 2 on
+  re-approval, same number), print in the paper's layout, Excel.
+- **Kaccha parcha register** — every parcha, approved and void.
+- **Mill stock** — per mill bought / on trucks / left, then day by day with
+  the trucks and parcha numbers that took from each day and a running balance.
+- **Dara (mill report)** — "Vijay Laxmi Dal Mill → mill": the mill's slips for
+  a day or range, total and average rate; Excel / CSV; own columns in the
+  daily-list settings; a Dara button on the daily list and per day on stock.
+- **Daily-list download** — one day or a range; one "Adati name" column in the
+  chosen script; same order as the screen; sort by name by clicking the header.
+- **Supplier ledger and payments** — Tally-style statement with brought
+  forward, running balance, CSV and print; payments by cash / bank / UPI /
+  cheque with balance before and after.
+
 ### How the OCR is made trustworthy
 
 The prompt asks Gemini for **what is written**, never for a calculation. Net
@@ -256,6 +310,15 @@ resolves via `alias` on the very next lookup.
 
 Rows struck through on the paper are detected and excluded by default — this
 worked on the real G.R.M sheet (row 6, RST 634).
+
+### OCR when Google is busy
+
+A busy (5xx), unreachable or per-minute-limited Google is retried: 4 tries
+over ~40 s (`readSheetReliably`), then the fallback model gets a go. A page
+that still fails **stops the read** with the pages so far kept, and "Read
+again" resumes from that page — a page is never silently skipped. A daily
+limit, a bad key or a refused image are not retried (it only spends reads).
+`server/lib/gemini.check.ts` tests this offline against a stubbed Google.
 
 ### Read quality on the real sheet
 
@@ -305,20 +368,21 @@ can be exercised.
 ```bash
 npm run typecheck
 npx tsx server/lib/charges.check.ts      # parcha maths vs invoice 196
-npx tsx src/lib/format.check.ts          # Indian grouping + input parsing
 npx tsx server/lib/translit.check.ts     # Hindi -> Hinglish + fuzzy
+npx tsx src/lib/format.check.ts          # Indian grouping + input parsing
+npx tsx src/lib/devanagari.check.ts      # Hinglish -> Hindi, word by word
+npx tsx server/lib/gemini.check.ts       # OCR retry behaviour, stubbed Google
+npm run test:e2e                         # 112 checks on a throwaway database
 npm run build
 ```
 
-Against a running dev server:
+`npm run test:e2e` is the **only** way to run the e2e scripts: it starts its
+own server on :8799 with `data-test/` and deletes both afterwards. The scripts
+refuse to run against the real database (`scripts/_guard.ts`). It covers the
+daily list, the OCR review, trucks / PO / parcha / stock (invoice 196 to the
+paisa) and the ledger (hand-worked rupees).
 
-```bash
-npx tsx scripts/e2e-daily-list.ts        # real L.B sheet, asserts 331.05 / 3413.45
-npx tsx scripts/e2e-scan-review.ts       # OCR pipeline, 24 assertions, no Gemini call
-npx tsx scripts/dev-make-review-scan.ts  # leaves a scan in review to poke at
-```
-
-CI (`.github/workflows/ci.yml`) runs the first four on every push.
+CI (`.github/workflows/ci.yml`) runs all of the above on every push.
 
 ### Gemini
 
@@ -381,6 +445,17 @@ the Windows Credential Store is an Electron-era task.
   immediately; the work continues server-side and the browser polls. Switching
   tabs, opening the daily list or reloading loses nothing. A process restart
   resets orphaned `reading` rows on startup (`recoverInterruptedScans`).
+- **Trucks load by weight, not by slip** (see §2). Slips are never tied to a
+  truck; `purchase_slips.load_id` is unused since migration 0009.
+- **Hand-written migrations 0007 and 0009.** drizzle-kit answers a column
+  change on SQLite by rebuilding the table (`__new_x`, copy, DROP, RENAME).
+  Inside the migrator's transaction `PRAGMA foreign_keys=OFF` does nothing,
+  so the DROP fails once another table references it (0007 hit this with
+  `loads.po_id`). It also once copied columns the old table did not have
+  (0006). **Always test a generated migration on a copy of data/mandi.db**
+  (`sqlite3 data/mandi.db ".backup /tmp/x/mandi.db"`, then run migrations
+  with `MANDI_DATA_DIR=/tmp/x`) before the dev server picks it up — the dev
+  server applies migrations the moment a server file changes.
 - **Browser first**; Electron when asked.
 - **Roles are rows, not code**, so permissions stay editable.
 - **Katauti is derived, not typed.**
@@ -437,52 +512,62 @@ Never run a data-writing script against the dev server by hand again.
 | "Add missing suppliers" would have created duplicates | it created "धरमपाल" beside the existing "धर्मपाल सिंह", splitting that supplier's ledger | rows with a close suggestion are left to pick; only names with nothing close are created |
 | "Google's rate limit was hit. Wait a minute" every day | wrong diagnosis: it was the free tier's **daily** cap of 20, and a failed page still triggered the fallback model, so each failure spent two | quota parsed and explained, read stops and resumes, usage counter, key test spends nothing (see §5 Gemini). Two scans failed before the fix still show the old text until re-read |
 | Only the first word became Hindi | once the box held any Devanagari, `looksLatin` was false for the whole value, so later words were never converted; the server also refused mixed text | server converts only the Latin tokens of mixed text; the client converts just the word finished by the space |
+| Dev API down after a schema change (twice) | a generated migration failed on the real DB: 0006 copied parcha columns that did not exist; 0007 rebuilt purchase_orders, which SQLite refuses while loads reference it. Both rolled back; no data lost | hand-fixed / hand-written migrations, tested on a copy first (see §6) |
+| "Cannot read properties of undefined (reading 'length')" on a truck | the owner opened the page mid-change: new server, old screen expecting a slip list | not a code bug; screens and server changed together |
+| OCR "Google's service had a problem" failed the whole read; a failing middle page was skipped | no retry on 5xx; the loop noted the page and went on without its rows | retries with backoff, fallback model, stop-and-resume instead of skipping |
 | Approve stuck disabled on a fresh business | every OCR name was unmatched because the master was empty, and picking 29 one by one is not a reasonable ask | "Add the N missing suppliers" creates them from the sheet and links the rows — 29 blocking to 0 in one action |
 
 ---
 
 ## 8. Pending
 
-### Blocked on the owner — ask before building
+### Open questions for the owner
 
-1. **What is Dara?** ₹3,597.38 on the parcha, printed but excluded from the
-   grand total. How is it calculated and who bears it?
-2. **The 20.31 qtl gap.** The L.B list totals 331.05 qtl; the parcha bills
-   310.74. Transit loss the owner absorbs, a partial load, or stock carried
-   forward? **This decides what suppliers get paid** and how Loads must behave.
-3. **Labour ₹15.50/bag** — when does the second slab apply instead of ₹9.50?
-4. **GST / e-way bill** — inside this tool, or handled elsewhere? An e-way bill
-   is mandatory above ₹50,000 per consignment in UP.
+1. **Dara on the parcha (₹3,597.38 on invoice 196)** — typed by hand per truck
+   for now, printed but outside the grand total. The owner called the per-mill
+   daily average report "dara"; is the parcha's TOTAL DARA worked out from it?
+2. **Labour ₹15.50** — built as the rate for **bore** (jute) bags, because 196
+   prints it with a dash while BORE is empty. Which bags each labour / sutli
+   rate counts is a mill setting if that is wrong.
+3. **Bore bardana weight** — 1.00 kg a bag is a guess; set it per mill.
+4. **Business city** — the parcha heading reads "VIJAY LAXMI DAL MILL - ETAH
+   (U.P)" only once the business profile has a city.
+5. **GST / e-way bill** — an optional e-way bill no. is on the truck. Unbranded
+   paddy, wheat and maize are GST-exempt, and exempt goods need no e-way bill
+   (rule 138(14)(d)); confirm with the owner's CA.
 
-### Next to build, in order
+### Next to build
 
-1. **Loads** — truck, transporter, PO link, allocate slips into a load, enforce
-   one-slip-one-load, mill weighbridge entry (gross / bardana / net), and the
-   transit-loss reconciliation that question 2 decides.
-2. **Purchase orders** — per-mill, quantity balance, over-ship prevention.
-3. **Kaccha parcha output** — generate from load + charge config, version,
-   approve, lock. Print, PDF, and **Excel in the owner's exact template**.
-4. **Stock** — per commodity: purchased − dispatched, opening/closing, by date.
-5. **Supplier ledger** — Tally-style day-wise, running balance, printable
-   statement per supplier.
-6. **Payments** — against suppliers, by mode, with reference.
-7. **Electron + installer** — main process imports the existing Hono app,
+1. **Electron + installer** — main process imports the existing Hono app,
    electron-updater, GitHub Action for the Windows build.
-8. **Scanner integration** (Electron only) — watch folder as the default, a
-   button that opens the Canon scan window, and one-click WIA via PowerShell.
-   The G3770 is flatbed-only, so a two-page sheet is two files.
-9. **Cloud sync** — Postgres plus the outbox pusher. The table already fills.
-10. **Backup / restore** — scheduled local SQLite backup. Do this before the
-    owner trusts it with real money.
+2. **Scanner integration** (Electron only) — watch folder, open the Canon
+   scan window, WIA via PowerShell.
+3. **Backup / restore** — scheduled local SQLite backup. Before real money.
+4. **Cloud sync** — Postgres plus the outbox pusher.
+5. Supplier deductions on the ledger (if the owner charges suppliers anything),
+   a mill (receivable) ledger from approved parchas, dashboard figures.
 
 ### Smaller gaps
 
-- No unit test runner (vitest). There are four regression scripts in CI.
-- The Gemini key stays per business (no silent cross-tenant fallback), but
-  Settings now offers an explicit "copy the key from <business>" button.
-- Print stylesheet for the parcha not written.
+- No unit test runner (vitest). Five regression scripts in CI plus `test:e2e`
+  (112 checks).
+- Printing is via the browser's print dialog ("Save as PDF" for a PDF);
+  not yet tried on the owner's printer.
 - Responsive but untested on a real tablet.
 - PDF uploads are passed to Gemini as-is; multi-page PDFs are not split.
+
+### A second copy for clicking through
+
+Never click through new features on the real app. Run a throwaway copy:
+
+```
+MANDI_DATA_DIR=$PWD/data-uitest PORT=8798 npx tsx watch server/index.ts
+MANDI_API_PORT=8798 VITE_PORT=5174 npx vite --host 127.0.0.1 --strictPort
+MANDI_DATA_DIR=$PWD/data-uitest MANDI_API=http://localhost:8798/api npx tsx scripts/dev-bootstrap.ts   # then seed.ts, e2e-daily-list.ts
+```
+
+Open it at **http://127.0.0.1:5174** — a different host from localhost, so its
+session cookie never replaces the owner's. `data-uitest/` is gitignored.
 
 ---
 

@@ -1,0 +1,505 @@
+import { useMemo, useState } from "react";
+import { useSearch } from "wouter";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { BookOpen, Wallet, Plus, Pencil, Trash2, Download, Printer, Search } from "lucide-react";
+import { api, ApiError } from "@/lib/api.ts";
+import { useI18n } from "@/lib/i18n.tsx";
+import { useSession } from "@/lib/session.tsx";
+import { useFormat } from "@/lib/format.tsx";
+import { PageHeader } from "@/components/AppShell.tsx";
+import { NumberInput } from "@/components/NumberInput.tsx";
+import { SupplierPicker } from "@/components/SupplierPicker.tsx";
+import { SkeletonTable } from "@/components/Skeletons.tsx";
+import {
+  Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Textarea,
+} from "@/components/ui/index.tsx";
+import { cn, todayISO } from "@/lib/utils.ts";
+import { dmy } from "@server/lib/parchaLabels.ts";
+
+/* Supplier ledger and payments. What is owed to a supplier is always
+   opening + purchases − payments, summed from the slips and payments
+   themselves; nothing is kept as a stored balance that could drift. */
+
+const MODES = ["cash", "bank", "upi", "cheque"] as const;
+type Mode = (typeof MODES)[number];
+
+interface LedgerRow {
+  id: string; nameHi: string; nameHinglish: string; village: string | null; phone: string | null;
+  openingBalancePaise: number; slips: number; netGrams: number; unpriced: number;
+  purchasesPaise: number; paymentsPaise: number; balancePaise: number; lastActivity: string | null;
+}
+interface LedgerList {
+  rows: LedgerRow[];
+  totals: { openingPaise: number; purchasesPaise: number; paymentsPaise: number; balancePaise: number; toPayPaise: number; paidAheadPaise: number };
+}
+interface Entry {
+  kind: "purchase" | "payment"; id: string; date: string;
+  rstNo?: string; jinsCode?: string; millCode?: string | null; netGrams?: number; ratePaisePerQtl?: number;
+  mode?: Mode; reference?: string | null; notes?: string | null;
+  creditPaise: number; debitPaise: number; balancePaise: number;
+}
+interface Statement {
+  supplier: { id: string; nameHi: string; nameHinglish: string; village: string | null; phone: string | null; accountNo: string | null; ifsc: string | null; openingBalancePaise: number };
+  from: string | null; to: string | null; broughtForwardPaise: number; entries: Entry[];
+  totals: { purchasesPaise: number; paymentsPaise: number; netGrams: number; slips: number; unpriced: number; closingPaise: number };
+}
+interface PaymentRow {
+  id: string; adatiId: string; payDate: string; amountPaise: number; mode: Mode; reference: string | null; notes: string | null;
+  adatiNameHi: string; adatiNameHinglish: string; createdByName: string | null;
+}
+
+/** "₹12,500.00 to pay" / "₹2,000.00 paid ahead" — the sign in words, as a munshi says it. */
+function Balance({ paise, className }: { paise: number; className?: string }) {
+  const { t } = useI18n();
+  const f = useFormat();
+  if (paise === 0) return <span className={cn("num text-muted", className)}>{f.money(0)}</span>;
+  return (
+    <span className={cn("num whitespace-nowrap", paise < 0 && "text-warn", className)}>
+      {f.money(Math.abs(paise))} <span className="text-[11px] font-normal text-muted">{paise > 0 ? t("ledger.toPay") : t("ledger.paidAhead")}</span>
+    </span>
+  );
+}
+
+const invalidateAccounts = (qc: ReturnType<typeof useQueryClient>) => Promise.all([
+  qc.invalidateQueries({ queryKey: ["ledger"] }),
+  qc.invalidateQueries({ queryKey: ["payments"] }),
+]);
+
+/* ------------------------------------------------------------ payment form */
+
+export function PaymentDialog({ onClose, editing, adatiId: presetAdati, adatiLabel }: {
+  onClose: () => void; editing?: PaymentRow | null; adatiId?: string; adatiLabel?: { nameHi: string; nameHinglish?: string };
+}) {
+  const { t } = useI18n();
+  const f = useFormat();
+  const qc = useQueryClient();
+  const [v, setV] = useState(() => ({
+    adatiId: editing?.adatiId ?? presetAdati ?? null as string | null,
+    payDate: editing?.payDate ?? todayISO(),
+    amount: editing ? editing.amountPaise / 100 : null as number | null,
+    mode: (editing?.mode ?? "cash") as Mode,
+    reference: editing?.reference ?? "",
+    notes: editing?.notes ?? "",
+  }));
+  const [err, setErr] = useState<string | null>(null);
+  const ledger = useQuery({ queryKey: ["ledger", "all"], queryFn: () => api.get<LedgerList>("/ledger") });
+  const row = ledger.data?.rows.find((r) => r.id === v.adatiId);
+  const amountPaise = v.amount == null ? 0 : Math.round(v.amount * 100);
+  // what is owed now, not counting this payment if it is the one being edited
+  const now = row ? row.balancePaise + (editing && editing.adatiId === v.adatiId ? editing.amountPaise : 0) : null;
+
+  const save = useMutation({
+    mutationFn: () => {
+      const body = {
+        adatiId: v.adatiId, payDate: v.payDate, amountPaise, mode: v.mode,
+        reference: v.reference.trim() || null, notes: v.notes.trim() || null,
+      };
+      return editing ? api.put(`/payments/${editing.id}`, body) : api.post("/payments", body);
+    },
+    onSuccess: async () => { await invalidateAccounts(qc); onClose(); },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+
+  return (
+    <Dialog open onClose={onClose} title={editing ? t("pay.edit") : t("pay.add")} sub={t("pay.addSub")}
+      footer={<>
+        <Button onClick={onClose}>{t("common.cancel")}</Button>
+        <Button variant="primary" loading={save.isPending} disabled={!v.adatiId || !v.payDate || amountPaise <= 0}
+          onClick={() => { setErr(null); save.mutate(); }}>{t("common.save")}</Button>
+      </>}>
+      {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label={t("daily.supplier")} required className="sm:col-span-2">
+          <SupplierPicker value={v.adatiId} onChange={(id) => setV((p) => ({ ...p, adatiId: id }))}
+            selectedLabel={editing ? { nameHi: editing.adatiNameHi, nameHinglish: editing.adatiNameHinglish } : adatiLabel ?? null}
+            autoFocus={!v.adatiId} />
+        </Field>
+        <Field label={t("pay.date")} required>
+          <Input type="date" value={v.payDate} onChange={(e) => setV((p) => ({ ...p, payDate: e.target.value }))} />
+        </Field>
+        <Field label={t("pay.amount")} required>
+          <NumberInput value={v.amount} decimals={2} onValueChange={(n) => setV((p) => ({ ...p, amount: n }))} autoFocus={Boolean(v.adatiId)}
+            className="h-9.5 w-full rounded-lg border bg-surface px-3 text-right text-sm tabular-nums text-ink focus:border-brand" placeholder="0.00" />
+        </Field>
+        <Field label={t("pay.mode")}>
+          <Select value={v.mode} onChange={(e) => setV((p) => ({ ...p, mode: e.target.value as Mode }))}>
+            {MODES.map((m) => <option key={m} value={m}>{t(`pay.mode.${m}`)}</option>)}
+          </Select>
+        </Field>
+        <Field label={t("pay.reference")} hint={t("pay.referenceHelp")}>
+          <Input value={v.reference} onChange={(e) => setV((p) => ({ ...p, reference: e.target.value }))} />
+        </Field>
+      </div>
+      <Field label={t("adati.notes")} className="mt-4">
+        <Textarea value={v.notes} rows={2} onChange={(e) => setV((p) => ({ ...p, notes: e.target.value }))} />
+      </Field>
+      {now != null && (
+        <div className="mt-4 grid grid-cols-3 gap-2 rounded-lg border border-line bg-raised/40 p-3 text-[13px]">
+          <div><p className="text-[11px] text-faint">{t("pay.owedNow")}</p><Balance paise={now} /></div>
+          <div><p className="text-[11px] text-faint">{t("pay.thisPayment")}</p><span className="num">− {f.money(amountPaise)}</span></div>
+          <div><p className="text-[11px] text-faint">{t("pay.owedAfter")}</p><Balance paise={now - amountPaise} className="font-semibold" /></div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+/* ------------------------------------------------------------ ledger */
+
+function csvOf(lines: (string | number)[][]) {
+  const esc = (v: unknown) => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+  };
+  return "﻿" + lines.map((l) => l.map(esc).join(",")).join("\r\n");
+}
+
+function save(text: string, name: string) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+export function LedgerPage() {
+  const { t, lang } = useI18n();
+  const f = useFormat();
+  const { can } = useSession();
+  const qc = useQueryClient();
+  const search = new URLSearchParams(useSearch());
+  const [selected, setSelected] = useState<string | null>(search.get("adati"));
+  const [q, setQ] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [paying, setPaying] = useState<null | { editing?: PaymentRow | null }>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const list = useQuery({ queryKey: ["ledger", "all"], queryFn: () => api.get<LedgerList>("/ledger") });
+  const qs = new URLSearchParams();
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  const st = useQuery({
+    queryKey: ["ledger", selected, qs.toString()],
+    queryFn: () => api.get<Statement>(`/ledger/${selected}?${qs}`),
+    enabled: Boolean(selected),
+  });
+
+  const nameOf = (r: { nameHi: string; nameHinglish: string }) => (lang === "hi" ? r.nameHi : r.nameHinglish || r.nameHi);
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const all = list.data?.rows ?? [];
+    return needle ? all.filter((r) => r.nameHi.includes(q.trim()) || r.nameHinglish.toLowerCase().includes(needle) || (r.village ?? "").toLowerCase().includes(needle)) : all;
+  }, [list.data, q]);
+
+  const del = useMutation({
+    mutationFn: (id: string) => api.del(`/payments/${id}`),
+    onSuccess: () => invalidateAccounts(qc),
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+
+  const s = st.data;
+  const downloadCsv = () => {
+    if (!s) return;
+    const lines: (string | number)[][] = [
+      [`Ledger: ${s.supplier.nameHinglish || s.supplier.nameHi} (${s.supplier.nameHi})`],
+      [s.from || s.to ? `Period: ${s.from ? dmy(s.from) : "start"} to ${s.to ? dmy(s.to) : "today"}` : "All time"],
+      [],
+      ["Date", "Particulars", "Net qtl", "Rate", "Purchase", "Paid", "Balance"],
+      ["", s.from ? "Brought forward" : "Opening balance", "", "", "", "", (s.broughtForwardPaise / 100).toFixed(2)],
+      ...s.entries.map((e) => [
+        dmy(e.date),
+        e.kind === "purchase" ? `RST ${e.rstNo} · ${e.jinsCode}${e.millCode ? ` · ${e.millCode}` : ""}` : `Payment · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}`,
+        e.netGrams != null ? (e.netGrams / 100_000).toFixed(2) : "",
+        e.ratePaisePerQtl ? (e.ratePaisePerQtl / 100).toFixed(2) : "",
+        e.creditPaise ? (e.creditPaise / 100).toFixed(2) : "",
+        e.debitPaise ? (e.debitPaise / 100).toFixed(2) : "",
+        (e.balancePaise / 100).toFixed(2),
+      ]),
+      ["", "Total", (s.totals.netGrams / 100_000).toFixed(2), "", (s.totals.purchasesPaise / 100).toFixed(2), (s.totals.paymentsPaise / 100).toFixed(2), (s.totals.closingPaise / 100).toFixed(2)],
+    ];
+    save(csvOf(lines), `ledger-${(s.supplier.nameHinglish || "supplier").replace(/\s+/g, "-")}${s.from ? `-${s.from}` : ""}${s.to ? `-to-${s.to}` : ""}.csv`);
+  };
+
+  const printStatement = () => {
+    document.body.classList.add("print-parcha");
+    const done = () => { document.body.classList.remove("print-parcha"); window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    window.print();
+    setTimeout(done, 1000);
+  };
+
+  return (
+    <div>
+      <PageHeader title={t("ledger.title")} sub={t("ledger.sub")}
+        action={can("payment.write") && (
+          <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setPaying({})}>{t("pay.add")}</Button>
+        )} />
+      {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
+
+      {list.data && (
+        <div className="mb-4 grid gap-3 sm:grid-cols-3">
+          <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.totalToPay")}</p><p className="num text-lg font-semibold">{f.money(list.data.totals.toPayPaise)}</p></Card>
+          <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.totalPaidAhead")}</p><p className="num text-lg font-semibold text-warn">{f.money(list.data.totals.paidAheadPaise)}</p></Card>
+          <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.proof")}</p>
+            <p className="num text-[13px]">{f.money(list.data.totals.openingPaise)} + {f.money(list.data.totals.purchasesPaise)} − {f.money(list.data.totals.paymentsPaise)} = <b>{f.money(list.data.totals.balancePaise)}</b></p></Card>
+        </div>
+      )}
+
+      <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
+        <Card className="self-start">
+          <div className="border-b border-line p-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
+              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("ledger.search")} className="h-8 pl-8 text-[13px]" />
+            </div>
+          </div>
+          {list.isPending ? <SkeletonTable rows={8} /> : !rows.length ? (
+            <EmptyState icon={<BookOpen className="h-5 w-5" />} title={t("ledger.empty")} />
+          ) : (
+            <div className="max-h-[40vh] divide-y divide-line overflow-y-auto xl:max-h-[70vh]">
+              {rows.map((r) => (
+                <button key={r.id} type="button" onClick={() => setSelected(r.id)}
+                  className={cn("flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-raised/60", selected === r.id && "bg-brand/5")}>
+                  <span className="min-w-0">
+                    <span lang={lang === "hi" ? "hi" : undefined} className="block truncate text-[14px] text-ink">{nameOf(r)}</span>
+                    <span className="block text-[11px] text-faint">{r.slips} {t("ledger.slips")}{r.village ? ` · ${r.village}` : ""}</span>
+                  </span>
+                  <Balance paise={r.balancePaise} className="text-[13px]" />
+                </button>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        <div className="min-w-0">
+          {!selected ? (
+            <Card><EmptyState icon={<BookOpen className="h-5 w-5" />} title={t("ledger.pick")} sub={t("ledger.pickSub")} /></Card>
+          ) : st.isPending ? <Card><SkeletonTable rows={8} /></Card> : !s ? (
+            <Card><EmptyState title={t("common.somethingWrong")} /></Card>
+          ) : (
+            <Card>
+              <CardHeader
+                title={<span lang={lang === "hi" ? "hi" : undefined}>{nameOf(s.supplier)}</span>}
+                sub={[s.supplier.village, s.supplier.phone, s.supplier.accountNo && `A/c ${s.supplier.accountNo}${s.supplier.ifsc ? ` · ${s.supplier.ifsc}` : ""}`].filter(Boolean).join(" · ") || undefined}
+                action={
+                  <div className="no-print flex flex-wrap gap-2">
+                    {can("payment.write") && (
+                      <Button size="sm" variant="primary" icon={<Wallet className="h-3.5 w-3.5" />} onClick={() => setPaying({})}>{t("pay.add")}</Button>
+                    )}
+                    <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={downloadCsv}>CSV</Button>
+                    <Button size="sm" icon={<Printer className="h-3.5 w-3.5" />} onClick={printStatement}>{t("parcha.print")}</Button>
+                  </div>
+                } />
+              <div className="no-print flex flex-wrap items-end gap-3 border-b border-line p-3">
+                <Field label={t("load.from")} className="w-40">
+                  <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 text-[13px]" />
+                </Field>
+                <Field label={t("load.to")} className="w-40">
+                  <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 text-[13px]" />
+                </Field>
+                {(from || to) && <Button size="sm" variant="ghost" onClick={() => { setFrom(""); setTo(""); }}>{t("ledger.allTime")}</Button>}
+              </div>
+
+              <div className="print-area bg-surface">
+                <div className="hidden px-4 pt-4 print:block">
+                  <p className="text-[16px] font-bold">{s.supplier.nameHinglish} ({s.supplier.nameHi})</p>
+                  <p className="text-[12px]">{s.from || s.to ? `${s.from ? dmy(s.from) : "…"} – ${s.to ? dmy(s.to) : dmy(todayISO())}` : t("ledger.allTime")}</p>
+                </div>
+                <div className="grid grid-cols-2 gap-px border-b border-line bg-line 2xl:grid-cols-4">
+                  {[
+                    [s.from ? t("ledger.broughtForward") : t("ledger.opening"), <Balance key="a" paise={s.broughtForwardPaise} />],
+                    [t("ledger.purchases", { n: s.totals.slips }), <span key="b" className="num">{f.money(s.totals.purchasesPaise)}</span>],
+                    [t("ledger.payments"), <span key="c" className="num">{f.money(s.totals.paymentsPaise)}</span>],
+                    [t("ledger.closing"), <Balance key="d" paise={s.totals.closingPaise} className="font-semibold" />],
+                  ].map(([label, value], i) => (
+                    <div key={i} className="bg-surface px-4 py-2.5">
+                      <p className="text-[11px] text-faint">{label}</p>
+                      <p className="text-[14px]">{value}</p>
+                    </div>
+                  ))}
+                </div>
+                {s.totals.unpriced > 0 && <Alert tone="warn" className="m-3">{t("ledger.unpriced", { n: s.totals.unpriced })}</Alert>}
+                <Table>
+                  <thead>
+                    <tr>
+                      <Th>{t("daily.date")}</Th><Th>{t("ledger.particulars")}</Th><Th numeric>{t("load.net")}</Th>
+                      <Th numeric>{t("load.rate")}</Th><Th numeric>{t("ledger.purchase")}</Th><Th numeric>{t("ledger.paid")}</Th>
+                      <Th numeric>{t("ledger.balance")}</Th><Th className="no-print w-16" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-b border-line/70 bg-raised/30 text-[13px]">
+                      <td className="px-3 py-1.5" />
+                      <td className="px-3 py-1.5 text-muted">{s.from ? t("ledger.broughtForward") : t("ledger.opening")}</td>
+                      <td colSpan={4} />
+                      <td className="px-3 py-1.5 text-right"><Balance paise={s.broughtForwardPaise} /></td>
+                      <td className="no-print" />
+                    </tr>
+                    {s.entries.map((e) => (
+                      <Tr key={`${e.kind}-${e.id}`}>
+                        <Td className="whitespace-nowrap">{dmy(e.date)}</Td>
+                        <Td className="whitespace-nowrap">
+                          {e.kind === "purchase"
+                            ? <span>RST <span className="font-mono">{e.rstNo}</span> <span className="text-muted">· {e.jinsCode}{e.millCode ? ` · ${e.millCode}` : ""}</span>
+                                {!e.ratePaisePerQtl && <Badge tone="warn" className="ml-1.5">{t("daily.ratePending")}</Badge>}</span>
+                            : <span className="text-ok">{t("ledger.payment")} · {t(`pay.mode.${e.mode ?? "cash"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}</span>}
+                        </Td>
+                        <Td numeric>{e.netGrams != null ? f.weight(e.netGrams) : ""}</Td>
+                        <Td numeric>{e.ratePaisePerQtl ? f.rate(e.ratePaisePerQtl) : ""}</Td>
+                        <Td numeric>{e.creditPaise ? f.amount(e.creditPaise) : ""}</Td>
+                        <Td numeric className="text-ok">{e.debitPaise ? f.amount(e.debitPaise) : ""}</Td>
+                        <Td numeric><Balance paise={e.balancePaise} /></Td>
+                        <Td className="no-print whitespace-nowrap text-right">
+                          {e.kind === "payment" && can("payment.write") && (
+                            <>
+                              <Button variant="ghost" size="icon" title={t("common.edit")} onClick={() => setPaying({
+                                editing: { id: e.id, adatiId: s.supplier.id, payDate: e.date, amountPaise: e.debitPaise, mode: e.mode ?? "cash",
+                                  reference: e.reference ?? null, notes: e.notes ?? null, adatiNameHi: s.supplier.nameHi,
+                                  adatiNameHinglish: s.supplier.nameHinglish, createdByName: null },
+                              })}><Pencil className="h-3.5 w-3.5" /></Button>
+                              <Button variant="ghost" size="icon" title={t("common.delete")}
+                                onClick={() => { if (confirm(t("pay.confirmDelete", { amt: f.money(e.debitPaise) }))) { setErr(null); del.mutate(e.id); } }}>
+                                <Trash2 className="h-3.5 w-3.5 text-bad" />
+                              </Button>
+                            </>
+                          )}
+                        </Td>
+                      </Tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-raised/50 text-[13px] font-semibold">
+                      <td className="px-3 py-2" colSpan={2}>{t("load.total")}</td>
+                      <td className="num px-3 py-2 text-right">{f.weight(s.totals.netGrams)}</td>
+                      <td />
+                      <td className="num px-3 py-2 text-right">{f.amount(s.totals.purchasesPaise)}</td>
+                      <td className="num px-3 py-2 text-right">{f.amount(s.totals.paymentsPaise)}</td>
+                      <td className="px-3 py-2 text-right"><Balance paise={s.totals.closingPaise} /></td>
+                      <td className="no-print" />
+                    </tr>
+                  </tfoot>
+                </Table>
+              </div>
+            </Card>
+          )}
+        </div>
+      </div>
+
+      {paying && (
+        <PaymentDialog onClose={() => setPaying(null)} editing={paying.editing ?? null}
+          adatiId={selected ?? undefined}
+          adatiLabel={s && s.supplier.id === selected ? { nameHi: s.supplier.nameHi, nameHinglish: s.supplier.nameHinglish } : undefined} />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ payments */
+
+export function PaymentsPage() {
+  const { t, lang } = useI18n();
+  const f = useFormat();
+  const { can } = useSession();
+  const qc = useQueryClient();
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [mode, setMode] = useState<"" | Mode>("");
+  const [adati, setAdati] = useState<string | null>(null);
+  const [paying, setPaying] = useState<null | { editing?: PaymentRow | null }>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const qs = new URLSearchParams();
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  if (mode) qs.set("mode", mode);
+  if (adati) qs.set("adatiId", adati);
+  const list = useQuery({
+    queryKey: ["payments", qs.toString()],
+    queryFn: () => api.get<{ rows: PaymentRow[]; totals: { count: number; amountPaise: number; byMode: Record<Mode, number> } }>(`/payments?${qs}`),
+  });
+  const del = useMutation({
+    mutationFn: (id: string) => api.del(`/payments/${id}`),
+    onSuccess: () => invalidateAccounts(qc),
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+  const rows = list.data?.rows ?? [];
+
+  return (
+    <div>
+      <PageHeader title={t("pay.title")} sub={t("pay.sub")}
+        action={can("payment.write") && (
+          <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setPaying({})}>{t("pay.add")}</Button>
+        )} />
+      {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
+      <Card>
+        <div className="flex flex-wrap items-end gap-3 border-b border-line p-3">
+          <Field label={t("load.from")} className="w-40">
+            <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 text-[13px]" />
+          </Field>
+          <Field label={t("load.to")} className="w-40">
+            <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 text-[13px]" />
+          </Field>
+          <Field label={t("pay.mode")} className="w-36">
+            <Select value={mode} onChange={(e) => setMode(e.target.value as typeof mode)} className="h-8 text-[13px]">
+              <option value="">{t("common.all")}</option>
+              {MODES.map((m) => <option key={m} value={m}>{t(`pay.mode.${m}`)}</option>)}
+            </Select>
+          </Field>
+          <Field label={t("daily.supplier")} className="w-64">
+            <SupplierPicker value={adati} onChange={setAdati} className="h-8 text-[13px]" placeholder={t("common.all")} />
+          </Field>
+        </div>
+        {list.isPending ? <SkeletonTable rows={6} /> : !rows.length ? (
+          <EmptyState icon={<Wallet className="h-5 w-5" />} title={t("pay.empty")} sub={t("pay.emptySub")}
+            action={can("payment.write") && <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setPaying({})}>{t("pay.add")}</Button>} />
+        ) : (
+          <Table>
+            <thead>
+              <tr>
+                <Th>{t("pay.date")}</Th><Th>{t("daily.supplier")}</Th><Th>{t("pay.mode")}</Th><Th>{t("pay.reference")}</Th>
+                <Th numeric>{t("pay.amount")}</Th><Th>{t("pay.by")}</Th><Th className="w-20" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((p) => (
+                <Tr key={p.id}>
+                  <Td className="whitespace-nowrap">{dmy(p.payDate)}</Td>
+                  <Td><span lang={lang === "hi" ? "hi" : undefined}>{lang === "hi" ? p.adatiNameHi : p.adatiNameHinglish || p.adatiNameHi}</span></Td>
+                  <Td><Badge>{t(`pay.mode.${p.mode}`)}</Badge></Td>
+                  <Td className="text-muted">{p.reference ?? ""}{p.notes ? <span className="block text-[11px] text-faint">{p.notes}</span> : null}</Td>
+                  <Td numeric className="font-medium">{f.money(p.amountPaise)}</Td>
+                  <Td className="text-[12px] text-muted">{p.createdByName ?? ""}</Td>
+                  <Td className="whitespace-nowrap text-right">
+                    {can("payment.write") && (
+                      <>
+                        <Button variant="ghost" size="icon" title={t("common.edit")} onClick={() => setPaying({ editing: p })}><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="icon" title={t("common.delete")}
+                          onClick={() => { if (confirm(t("pay.confirmDelete", { amt: f.money(p.amountPaise) }))) { setErr(null); del.mutate(p.id); } }}>
+                          <Trash2 className="h-3.5 w-3.5 text-bad" />
+                        </Button>
+                      </>
+                    )}
+                  </Td>
+                </Tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="bg-raised/50 text-[13px] font-semibold">
+                <td className="px-3 py-2" colSpan={4}>
+                  {t("pay.totalN", { n: list.data!.totals.count })}
+                  <span className="ml-3 font-normal text-muted">
+                    {MODES.filter((m) => list.data!.totals.byMode[m]).map((m) => `${t(`pay.mode.${m}`)} ${f.money(list.data!.totals.byMode[m])}`).join(" · ")}
+                  </span>
+                </td>
+                <td className="num px-3 py-2 text-right">{f.money(list.data!.totals.amountPaise)}</td>
+                <td colSpan={2} />
+              </tr>
+            </tfoot>
+          </Table>
+        )}
+      </Card>
+      {paying && <PaymentDialog onClose={() => setPaying(null)} editing={paying.editing ?? null} adatiId={adati ?? undefined} />}
+    </div>
+  );
+}

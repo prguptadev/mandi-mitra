@@ -13,6 +13,7 @@ import { scanRoutes } from "./routes/scans.ts";
 import { orderRoutes } from "./routes/orders.ts";
 import { loadRoutes, parchaRoutes } from "./routes/loads.ts";
 import { reportRoutes, stockRoutes } from "./routes/reports.ts";
+import { ledgerRoutes, paymentRoutes } from "./routes/accounts.ts";
 
 /** The whole API. Electron imports this same object — no second implementation. */
 export function createApp() {
@@ -38,6 +39,8 @@ export function createApp() {
   app.route("/api/parchas", parchaRoutes);
   app.route("/api/reports", reportRoutes);
   app.route("/api/stock", stockRoutes);
+  app.route("/api/ledger", ledgerRoutes);
+  app.route("/api/payments", paymentRoutes);
 
   app.onError((err, c) => {
     if (err instanceof HttpError) {

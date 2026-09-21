@@ -6,6 +6,7 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
+import { NumberInput } from "@/components/NumberInput.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import {
   Button, Card, Field, Input, Textarea, Table, Th, Td, Tr, Badge, Dialog,
@@ -44,7 +45,7 @@ function SupplierDialog({
     phone: editing?.phone ?? "",
     accountNo: editing?.accountNo ?? "",
     ifsc: editing?.ifsc ?? "",
-    openingBalance: editing ? String(editing.openingBalancePaise / 100) : "",
+    openingBalance: editing ? editing.openingBalancePaise / 100 : null as number | null,
     notes: editing?.notes ?? "",
     active: editing?.active ?? true,
   }));
@@ -64,7 +65,7 @@ function SupplierDialog({
         phone: f.phone || undefined,
         accountNo: f.accountNo || undefined,
         ifsc: f.ifsc || undefined,
-        openingBalanceRupees: f.openingBalance ? Number(f.openingBalance) : undefined,
+        openingBalanceRupees: f.openingBalance ?? 0,
         notes: f.notes || undefined,
         active: f.active,
       };
@@ -148,9 +149,10 @@ function SupplierDialog({
           <Field label={t("adati.phone")}>
             <Input value={f.phone} onChange={(e) => setF((p) => ({ ...p, phone: e.target.value }))} inputMode="tel" mono />
           </Field>
-          <Field label={t("adati.openingBalance")} hint={t("common.rupees")}>
-            <Input value={f.openingBalance} onChange={(e) => setF((p) => ({ ...p, openingBalance: e.target.value }))}
-              inputMode="decimal" mono placeholder="0.00" />
+          <Field label={t("adati.openingBalance")} hint={t("adati.openingBalanceHelp")}>
+            <NumberInput value={f.openingBalance} decimals={2} allowNegative
+              onValueChange={(n) => setF((p) => ({ ...p, openingBalance: n }))}
+              className="h-9.5 w-full rounded-lg border bg-surface px-3 text-right font-mono text-sm tabular-nums text-ink focus:border-brand" placeholder="0.00" />
           </Field>
           <Field label={t("adati.accountNo")}>
             <Input value={f.accountNo} onChange={(e) => setF((p) => ({ ...p, accountNo: e.target.value }))} mono />
