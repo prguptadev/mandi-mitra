@@ -24,14 +24,22 @@ export type DailyColumnKey = (typeof DAILY_COLUMNS)[number]["key"];
 /** These carry the arithmetic; hiding them would make the sheet unreadable. */
 export const LOCKED_COLUMNS: DailyColumnKey[] = ["rstNo", "gross", "net", "rate", "amount"];
 
+export { MILL_REPORT_COLUMNS, DEFAULT_MILL_REPORT_COLUMNS, type MillReportColumnKey } from "@server/lib/prefs.ts";
+import { DEFAULT_MILL_REPORT_COLUMNS } from "@server/lib/prefs.ts";
+import type { SlipSortOrder } from "@server/lib/slipOrder.ts";
+
 export interface DailyListPrefs {
   newRowPosition: "top" | "bottom";
-  sortOrder: "entry" | "rstAsc" | "rstDesc" | "newestFirst";
+  sortOrder: SlipSortOrder;
   density: "compact" | "normal";
   columns: Record<string, boolean>;
   exportColumns: Record<string, boolean>;
   carryRateForward: boolean;
   showRunningTotal: boolean;
+  /** Downloads carry one "Adati name" column, in this script. */
+  exportNameLang: "hi" | "latin";
+  /** Columns of the report sent to a mill ("dara"). */
+  millReportColumns: Record<string, boolean>;
 }
 
 export interface Prefs { dailyList: DailyListPrefs }
@@ -48,6 +56,8 @@ export const DEFAULT_PREFS: Prefs = {
     exportColumns: cols(["status"]),
     carryRateForward: true,
     showRunningTotal: true,
+    exportNameLang: "hi",
+    millReportColumns: { ...DEFAULT_MILL_REPORT_COLUMNS },
   },
 };
 
@@ -105,6 +115,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
       ...(session?.dailyList ?? {}),
       columns: { ...DEFAULT_PREFS.dailyList.columns, ...saved.dailyList?.columns, ...(session?.dailyList?.columns ?? {}) },
       exportColumns: { ...DEFAULT_PREFS.dailyList.exportColumns, ...saved.dailyList?.exportColumns, ...(session?.dailyList?.exportColumns ?? {}) },
+      millReportColumns: { ...DEFAULT_PREFS.dailyList.millReportColumns, ...saved.dailyList?.millReportColumns, ...(session?.dailyList?.millReportColumns ?? {}) },
     },
   }), [saved, session]);
 

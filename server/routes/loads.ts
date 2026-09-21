@@ -5,15 +5,16 @@ import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { ChargeConfigSchema } from "../lib/charges.ts";
-import { loadState, storedWeighment, type ParchaDoc } from "../lib/parcha.ts";
+import { loadState, storedWeighment, stockDays, linesWithWeights, type ParchaDoc } from "../lib/parcha.ts";
 import { parchaXlsx } from "../lib/parchaXlsx.ts";
-import { katautiCfg, deriveSlip } from "./slips.ts";
+import { poLabel } from "./orders.ts";
 import { can, actor, param, notFound, bad, HttpError, type Env } from "../lib/http.ts";
 
-/* A load is one truck to one mill. Slips from the daily list are put on it —
-   each slip on exactly one load, ever — the mill's weighbridge reading is
-   entered when it comes back, and approving it freezes the kaccha parcha.
-   Once approved, the load and its slips are locked until the parcha is voided. */
+/* A load is one truck to one mill, loaded by weight from that mill's stock:
+   each row takes a weight from one purchase day (optionally against a PO),
+   priced at that day's average rate. The mill's weighbridge reading is
+   entered when it comes back, and approving freezes the kaccha parcha.
+   Once approved, the load is locked until the parcha is voided. */
 
 export const loadRoutes = new Hono<Env>();
 export const parchaRoutes = new Hono<Env>();
@@ -74,65 +75,36 @@ async function checkHeaderRefs(biz: string, h: { merchantId: string; jinsId: str
     const [p] = await db.select().from(schema.purchaseOrders)
       .where(and(eq(schema.purchaseOrders.id, h.poId), eq(schema.purchaseOrders.businessId, biz))).limit(1);
     if (!p) throw bad("That PO does not belong to this business", "bad_po");
-    if (p.merchantId !== h.merchantId) throw bad(`PO ${p.poNo} is for another mill`, "po_mill");
-    if (p.jinsId !== h.jinsId) throw bad(`PO ${p.poNo} is for another commodity`, "po_jins");
+    if (p.merchantId !== h.merchantId) throw bad(`${poLabel(p)} is for another mill`, "po_mill");
+    if (p.jinsId !== h.jinsId) throw bad(`${poLabel(p)} is for another commodity`, "po_jins");
   }
   return { millCode: m.code, jinsCode: j.code };
 }
 
-/**
- * Put slips on a load. The update only touches slips with no load, inside one
- * transaction, so two people allocating the same slip cannot both succeed.
- * A slip moved here takes this load's mill, and its katauti is re-derived on
- * that mill's terms, the same as the daily list's "move to mill".
- */
-async function allocate(biz: string, load: { id: string; merchantId: string; jinsId: string }, slipIds: string[]) {
-  const ids = [...new Set(slipIds)];
-  const slips = ids.length ? await db.select({
-    s: schema.purchaseSlips,
-    otherTruck: schema.loads.truckNo,
-    otherDate: schema.loads.loadDate,
-    jinsCode: schema.jins.code,
-  })
-    .from(schema.purchaseSlips)
-    .innerJoin(schema.jins, eq(schema.jins.id, schema.purchaseSlips.jinsId))
-    .leftJoin(schema.loads, eq(schema.loads.id, schema.purchaseSlips.loadId))
-    .where(and(eq(schema.purchaseSlips.businessId, biz), inArray(schema.purchaseSlips.id, ids))) : [];
-  if (slips.length !== ids.length) throw bad("Some slips were not found", "missing");
+const LineBody = z.object({
+  stockDate: z.string().regex(ISO_DATE, "Pick the purchase day this weight comes from"),
+  poId: z.string().nullish(),
+  /** grams; null = the rest of the mill's net */
+  netGrams: z.number().int().min(1, "Weight must be more than zero").nullish(),
+  /** null = that day's average rate */
+  ratePaisePerQtl: z.number().int().min(1).nullish(),
+});
 
-  const [j] = await db.select({ code: schema.jins.code }).from(schema.jins).where(eq(schema.jins.id, load.jinsId)).limit(1);
-  const wrongJins = slips.filter((r) => r.s.jinsId !== load.jinsId);
-  if (wrongJins.length) {
-    throw new HttpError(409,
-      `RST ${wrongJins.map((r) => r.s.rstNo).join(", ")} ${wrongJins.length === 1 ? "is" : "are"} ${wrongJins[0].jinsCode}; this load is ${j.code}. A truck carries one commodity.`,
-      "wrong_jins");
-  }
+async function checkLinePo(biz: string, load: { merchantId: string; jinsId: string }, poId: string | null | undefined) {
+  if (!poId) return;
+  const [p] = await db.select().from(schema.purchaseOrders)
+    .where(and(eq(schema.purchaseOrders.id, poId), eq(schema.purchaseOrders.businessId, biz))).limit(1);
+  if (!p) throw bad("That PO does not belong to this business", "bad_po");
+  if (p.merchantId !== load.merchantId) throw bad(`${poLabel(p)} is for another mill`, "po_mill");
+  if (p.jinsId !== load.jinsId) throw bad(`${poLabel(p)} is for another commodity`, "po_jins");
+}
 
-  const elsewhere = slips.filter((r) => r.s.loadId && r.s.loadId !== load.id)
-    .map((r) => ({ rstNo: r.s.rstNo, loadId: r.s.loadId!, truckNo: r.otherTruck, loadDate: r.otherDate }));
-  // slips already on this load are re-derived too (the load's mill may have changed)
-  const free = slips.filter((r) => !r.s.loadId || r.s.loadId === load.id).map((r) => r.s);
-
-  const cfg = await katautiCfg(biz, load.merchantId);
-  const derived = free.map((s) => ({
-    s, d: deriveSlip(s.grossGrams, cfg, s.ratePaisePerQtl, s.katautiOverride ? s.katautiUnits : null),
-  }));
-
-  let added = 0;
-  db.transaction((tx) => {
-    for (const { s, d } of derived) {
-      const r = tx.update(schema.purchaseSlips).set({
-        loadId: load.id, merchantId: load.merchantId,
-        katautiUnits: d.katautiUnits, netGrams: d.netGrams, amountPaise: d.amountPaise,
-        updatedAt: nowSec(),
-      }).where(and(
-        eq(schema.purchaseSlips.id, s.id),
-        or(isNull(schema.purchaseSlips.loadId), eq(schema.purchaseSlips.loadId, load.id)),
-      )).run();
-      if (r.changes && s.loadId !== load.id) added++;
-    }
-  });
-  return { added, elsewhere, moved: free.filter((s) => s.merchantId !== load.merchantId).length };
+/** The newest day with stock left for this mill, else the newest purchase day, else the load date. */
+async function defaultStockDate(biz: string, merchantId: string, jinsId: string, loadDate: string) {
+  const days = await stockDays(biz, merchantId, jinsId);
+  return days.find((d) => d.leftGrams > 0 && d.date <= loadDate)?.date
+    ?? days.find((d) => d.boughtNetGrams > 0 && d.date <= loadDate)?.date
+    ?? loadDate;
 }
 
 async function refreshWeighment(loadId: string) {
@@ -157,7 +129,7 @@ loadRoutes.get("/", can("load.read"), async (c) => {
   if (from && ISO_DATE.test(from)) where.push(gte(schema.loads.loadDate, from));
   if (to && ISO_DATE.test(to)) where.push(lte(schema.loads.loadDate, to));
   if (merchantId) where.push(eq(schema.loads.merchantId, merchantId));
-  if (poId) where.push(eq(schema.loads.poId, poId));
+  if (poId) where.push(sql`${schema.loads.id} in (select ${schema.loadLines.loadId} from ${schema.loadLines} where ${schema.loadLines.poId} = ${poId})`);
   if (status === "draft" || status === "billed") where.push(eq(schema.loads.status, status));
   if (q) {
     const t = `%${q.toUpperCase().replace(/[\s-]+/g, "")}%`;
@@ -170,6 +142,7 @@ loadRoutes.get("/", can("load.read"), async (c) => {
     millName: schema.merchants.name,
     jinsCode: schema.jins.code,
     poNo: schema.purchaseOrders.poNo,
+    poDate: schema.purchaseOrders.poDate,
   })
     .from(schema.loads)
     .innerJoin(schema.merchants, eq(schema.merchants.id, schema.loads.merchantId))
@@ -180,16 +153,7 @@ loadRoutes.get("/", can("load.read"), async (c) => {
     .limit(500);
 
   const ids = rows.map((r) => r.l.id);
-  const agg = ids.length ? await db.select({
-    loadId: schema.purchaseSlips.loadId,
-    n: sql<number>`count(*)`,
-    net: sql<number>`sum(${schema.purchaseSlips.netGrams})`,
-    amount: sql<number>`sum(${schema.purchaseSlips.amountPaise})`,
-    pricedNet: sql<number>`sum(case when ${schema.purchaseSlips.ratePaisePerQtl} > 0 then ${schema.purchaseSlips.netGrams} else 0 end)`,
-    pricedValue: sql<number>`sum(case when ${schema.purchaseSlips.ratePaisePerQtl} > 0 then ${schema.purchaseSlips.netGrams} * ${schema.purchaseSlips.ratePaisePerQtl} else 0 end)`,
-  }).from(schema.purchaseSlips).where(inArray(schema.purchaseSlips.loadId, ids)).groupBy(schema.purchaseSlips.loadId) : [];
-  const byLoad = new Map(agg.map((a) => [a.loadId, a]));
-
+  const lines = ids.length ? await linesWithWeights(inArray(schema.loadLines.loadId, ids)) : [];
   const parchas = ids.length ? await db.select({
     loadId: schema.parchas.loadId, id: schema.parchas.id, parchaNo: schema.parchas.parchaNo,
     version: schema.parchas.version, grandTotalPaise: schema.parchas.grandTotalPaise,
@@ -197,16 +161,12 @@ loadRoutes.get("/", can("load.read"), async (c) => {
   const parchaByLoad = new Map(parchas.map((p) => [p.loadId, p]));
 
   return c.json(rows.map((r) => {
-    const a = byLoad.get(r.l.id);
-    const slipNet = a?.net ?? 0;
+    const mine = lines.filter((x) => x.loadId === r.l.id);
     return {
       ...r.l,
-      millCode: r.millCode, millName: r.millName, jinsCode: r.jinsCode, poNo: r.poNo,
-      slips: a?.n ?? 0,
-      slipNetGrams: slipNet,
-      slipAmountPaise: a?.amount ?? 0,
-      avgRatePaisePerQtl: a && a.pricedNet ? Math.floor(a.pricedValue / a.pricedNet + 0.5) : 0,
-      diffGrams: r.l.millNetGrams == null ? null : slipNet - r.l.millNetGrams,
+      millCode: r.millCode, millName: r.millName, jinsCode: r.jinsCode,
+      stockDates: [...new Set(mine.map((x) => x.stockDate))].sort(),
+      loadedGrams: mine.reduce((s, x) => s + x.weightGrams, 0),
       parcha: parchaByLoad.get(r.l.id) ?? null,
     };
   }));
@@ -220,58 +180,18 @@ loadRoutes.get("/:id", can("load.read"), async (c) => {
   return c.json(canSeeParcha ? s : { ...s, doc: null, approved: null, history: [] });
 });
 
-/** Slips that could go on this load: same commodity, not on any load yet. */
-loadRoutes.get("/:id/candidates", can("load.read"), async (c) => {
+/** The mill's stock by purchase day, for picking where a row's weight comes from. */
+loadRoutes.get("/:id/stock-days", can("load.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const l = await getLoad(biz, param(c, "id"));
-  const date = c.req.query("date");
-  const mill = c.req.query("mill") ?? "this"; // this | all | none
-  const where = [
-    eq(schema.purchaseSlips.businessId, biz),
-    eq(schema.purchaseSlips.jinsId, l.jinsId),
-    isNull(schema.purchaseSlips.loadId),
-  ];
-  if (date && ISO_DATE.test(date)) where.push(eq(schema.purchaseSlips.slipDate, date));
-  if (mill === "this") where.push(eq(schema.purchaseSlips.merchantId, l.merchantId));
-  if (mill === "none") where.push(isNull(schema.purchaseSlips.merchantId));
-
-  const rows = await db.select({
-    id: schema.purchaseSlips.id,
-    slipDate: schema.purchaseSlips.slipDate,
-    rstNo: schema.purchaseSlips.rstNo,
-    adatiNameHi: schema.adati.nameHi,
-    adatiNameHinglish: schema.adati.nameHinglish,
-    merchantId: schema.purchaseSlips.merchantId,
-    merchantCode: schema.merchants.code,
-    grossGrams: schema.purchaseSlips.grossGrams,
-    katautiUnits: schema.purchaseSlips.katautiUnits,
-    netGrams: schema.purchaseSlips.netGrams,
-    ratePaisePerQtl: schema.purchaseSlips.ratePaisePerQtl,
-    amountPaise: schema.purchaseSlips.amountPaise,
-  })
-    .from(schema.purchaseSlips)
-    .innerJoin(schema.adati, eq(schema.adati.id, schema.purchaseSlips.adatiId))
-    .leftJoin(schema.merchants, eq(schema.merchants.id, schema.purchaseSlips.merchantId))
-    .where(and(...where))
-    .orderBy(desc(schema.purchaseSlips.slipDate), asc(schema.purchaseSlips.createdAt))
-    .limit(1000);
-
-  // the days that have free slips, so the picker can offer them
-  const days = await db.select({
-    slipDate: schema.purchaseSlips.slipDate,
-    n: sql<number>`count(*)`,
-  }).from(schema.purchaseSlips)
-    .where(and(eq(schema.purchaseSlips.businessId, biz), eq(schema.purchaseSlips.jinsId, l.jinsId), isNull(schema.purchaseSlips.loadId)))
-    .groupBy(schema.purchaseSlips.slipDate).orderBy(desc(schema.purchaseSlips.slipDate)).limit(60);
-
-  return c.json({ rows, days });
+  return c.json(await stockDays(biz, l.merchantId, l.jinsId, l.id));
 });
 
 /* ------------------------------------------------------------------- write */
 
 loadRoutes.post("/", can("load.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
-  const body = Header.extend({ slipIds: z.array(z.string()).optional() }).parse(await c.req.json());
+  const body = Header.extend({ stockDate: z.string().regex(ISO_DATE).optional() }).parse(await c.req.json());
   const refs = await checkHeaderRefs(biz, body);
 
   const id = newId();
@@ -289,13 +209,17 @@ loadRoutes.post("/", can("load.write"), async (c) => {
     createdBy: c.get("auth")!.user.id,
   };
   await db.insert(schema.loads).values(values);
-  let allocation = null;
-  if (body.slipIds?.length) allocation = await allocate(biz, { id, merchantId: body.merchantId, jinsId: body.jinsId }, body.slipIds);
+  // the first row: the whole mill net, from the day the owner picked (or the newest with stock)
+  const stockDate = body.stockDate ?? await defaultStockDate(biz, body.merchantId, body.jinsId, body.loadDate);
+  await db.insert(schema.loadLines).values({
+    id: newId(), businessId: biz, loadId: id, jinsId: body.jinsId, poId: body.poId ?? null,
+    stockDate, netGrams: null, ratePaisePerQtl: null, sort: 0,
+  });
   await audit({ actor: actor(c), action: "load.create", entity: "load", entityId: id,
     entityLabel: `${body.loadDate} ${refs.millCode} ${values.truckNo ?? ""}`.trim(),
-    after: { ...values, slipsAdded: allocation?.added ?? 0 } });
+    after: { ...values, stockDate } });
   await enqueueSync(biz, "load", id, "insert", values);
-  return c.json({ id, allocation });
+  return c.json({ id, stockDate });
 });
 
 loadRoutes.put("/:id", can("load.write"), async (c) => {
@@ -319,11 +243,10 @@ loadRoutes.put("/:id", can("load.write"), async (c) => {
   };
   const refs = await checkHeaderRefs(biz, header);
 
-  if (header.jinsId !== before.jinsId || header.merchantId !== before.merchantId) {
-    const [n] = await db.select({ n: sql<number>`count(*)` }).from(schema.purchaseSlips).where(eq(schema.purchaseSlips.loadId, id));
-    if (header.jinsId !== before.jinsId && n.n > 0) {
-      throw new HttpError(409, "Remove the slips before changing this load's commodity", "load_has_slips");
-    }
+  // rows follow the truck's commodity; a PO on a row must fit the new mill and commodity
+  if (header.merchantId !== before.merchantId || header.jinsId !== before.jinsId) {
+    await db.update(schema.loadLines).set({ poId: null, jinsId: header.jinsId, updatedAt: nowSec() })
+      .where(eq(schema.loadLines.loadId, id));
   }
 
   const pick = <K extends keyof typeof body>(k: K, cur: unknown) => (body[k] === undefined ? cur : (body[k] ?? null));
@@ -348,11 +271,6 @@ loadRoutes.put("/:id", can("load.write"), async (c) => {
   };
   await db.update(schema.loads).set(patch).where(eq(schema.loads.id, id));
 
-  // a changed mill moves every slip on the load with it (and re-derives katauti)
-  if (header.merchantId !== before.merchantId) {
-    const slips = await db.select({ id: schema.purchaseSlips.id }).from(schema.purchaseSlips).where(eq(schema.purchaseSlips.loadId, id));
-    if (slips.length) await allocate(biz, { id, merchantId: header.merchantId, jinsId: header.jinsId }, slips.map((s) => s.id));
-  }
   await refreshWeighment(id);
 
   const [after] = await db.select().from(schema.loads).where(eq(schema.loads.id, id)).limit(1);
@@ -362,30 +280,61 @@ loadRoutes.put("/:id", can("load.write"), async (c) => {
   return c.json({ ok: true });
 });
 
-loadRoutes.post("/:id/slips", can("load.write"), async (c) => {
+loadRoutes.post("/:id/lines", can("load.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const l = await getLoad(biz, param(c, "id"));
   assertDraft(l);
-  const { slipIds } = z.object({ slipIds: z.array(z.string()).min(1, "Pick at least one slip") }).parse(await c.req.json());
-  const r = await allocate(biz, l, slipIds);
-  await refreshWeighment(l.id);
-  await audit({ actor: actor(c), action: "load.add_slips", entity: "load", entityId: l.id,
-    entityLabel: `${l.loadDate} ${l.truckNo ?? ""}: +${r.added} slips`.trim(),
-    after: { slipIds, added: r.added, elsewhere: r.elsewhere } });
-  return c.json(r);
+  const body = LineBody.parse(await c.req.json());
+  await checkLinePo(biz, l, body.poId);
+  const [last] = await db.select({ n: sql<number>`coalesce(max(${schema.loadLines.sort}), -1)` })
+    .from(schema.loadLines).where(eq(schema.loadLines.loadId, l.id));
+  const lid = newId();
+  const values = {
+    id: lid, businessId: biz, loadId: l.id, jinsId: l.jinsId, poId: body.poId ?? null,
+    stockDate: body.stockDate, netGrams: body.netGrams ?? null, ratePaisePerQtl: body.ratePaisePerQtl ?? null,
+    sort: (last?.n ?? -1) + 1,
+  };
+  await db.insert(schema.loadLines).values(values);
+  await audit({ actor: actor(c), action: "load.add_line", entity: "load", entityId: l.id,
+    entityLabel: `${l.loadDate} ${l.truckNo ?? ""}: + ${body.stockDate}`.trim(), after: values });
+  return c.json({ id: lid });
 });
 
-loadRoutes.delete("/:id/slips", can("load.write"), async (c) => {
+loadRoutes.put("/:id/lines/:lineId", can("load.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const l = await getLoad(biz, param(c, "id"));
   assertDraft(l);
-  const { slipIds } = z.object({ slipIds: z.array(z.string()).min(1) }).parse(await c.req.json());
-  const r = db.update(schema.purchaseSlips).set({ loadId: null, updatedAt: nowSec() })
-    .where(and(eq(schema.purchaseSlips.loadId, l.id), inArray(schema.purchaseSlips.id, slipIds))).run();
-  await refreshWeighment(l.id);
-  await audit({ actor: actor(c), action: "load.remove_slips", entity: "load", entityId: l.id,
-    entityLabel: `${l.loadDate} ${l.truckNo ?? ""}: -${r.changes} slips`.trim(), after: { slipIds, removed: r.changes } });
-  return c.json({ removed: r.changes });
+  const lineId = param(c, "lineId");
+  const [before] = await db.select().from(schema.loadLines)
+    .where(and(eq(schema.loadLines.id, lineId), eq(schema.loadLines.loadId, l.id))).limit(1);
+  if (!before) throw notFound("That row is not on this truck");
+  const body = LineBody.partial().parse(await c.req.json());
+  if (body.poId !== undefined) await checkLinePo(biz, l, body.poId);
+  const patch = {
+    stockDate: body.stockDate ?? before.stockDate,
+    poId: body.poId === undefined ? before.poId : (body.poId ?? null),
+    netGrams: body.netGrams === undefined ? before.netGrams : (body.netGrams ?? null),
+    ratePaisePerQtl: body.ratePaisePerQtl === undefined ? before.ratePaisePerQtl : (body.ratePaisePerQtl ?? null),
+    updatedAt: nowSec(),
+  };
+  await db.update(schema.loadLines).set(patch).where(eq(schema.loadLines.id, lineId));
+  await audit({ actor: actor(c), action: "load.update_line", entity: "load", entityId: l.id,
+    entityLabel: `${l.loadDate} ${l.truckNo ?? ""}: ${patch.stockDate}`.trim(), before, after: { ...before, ...patch } });
+  return c.json({ ok: true });
+});
+
+loadRoutes.delete("/:id/lines/:lineId", can("load.write"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const l = await getLoad(biz, param(c, "id"));
+  assertDraft(l);
+  const lineId = param(c, "lineId");
+  const [before] = await db.select().from(schema.loadLines)
+    .where(and(eq(schema.loadLines.id, lineId), eq(schema.loadLines.loadId, l.id))).limit(1);
+  if (!before) throw notFound("That row is not on this truck");
+  await db.delete(schema.loadLines).where(eq(schema.loadLines.id, lineId));
+  await audit({ actor: actor(c), action: "load.remove_line", entity: "load", entityId: l.id,
+    entityLabel: `${l.loadDate} ${l.truckNo ?? ""}: − ${before.stockDate}`.trim(), before });
+  return c.json({ ok: true });
 });
 
 loadRoutes.delete("/:id", can("load.delete"), async (c) => {
@@ -393,14 +342,12 @@ loadRoutes.delete("/:id", can("load.delete"), async (c) => {
   const l = await getLoad(biz, param(c, "id"));
   assertDraft(l);
   const [p] = await db.select({ id: schema.parchas.id }).from(schema.parchas).where(eq(schema.parchas.loadId, l.id)).limit(1);
-  if (p) throw new HttpError(409, "This load has a voided parcha on record, so it is kept. Remove its slips instead.", "load_has_history");
-  const freed = db.update(schema.purchaseSlips).set({ loadId: null, updatedAt: nowSec() })
-    .where(eq(schema.purchaseSlips.loadId, l.id)).run();
+  if (p) throw new HttpError(409, "This load has a voided parcha on record, so it is kept.", "load_has_history");
   await db.delete(schema.loads).where(eq(schema.loads.id, l.id));
   await audit({ actor: actor(c), action: "load.delete", entity: "load", entityId: l.id,
-    entityLabel: `${l.loadDate} ${l.truckNo ?? ""}`.trim(), before: { ...l, slipsFreed: freed.changes } });
+    entityLabel: `${l.loadDate} ${l.truckNo ?? ""}`.trim(), before: l });
   await enqueueSync(biz, "load", l.id, "delete");
-  return c.json({ ok: true, slipsFreed: freed.changes });
+  return c.json({ ok: true });
 });
 
 /* ------------------------------------------------------------------ parcha */
@@ -434,12 +381,10 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
     }).run();
     tx.update(schema.loads).set({ status: "billed", invoiceDate: doc.invoiceDate, updatedAt: at })
       .where(eq(schema.loads.id, id)).run();
-    tx.update(schema.purchaseSlips).set({ status: "billed", updatedAt: at })
-      .where(eq(schema.purchaseSlips.loadId, id)).run();
   });
   await audit({ actor: actor(c), action: "parcha.approve", entity: "parcha", entityId: pid,
     entityLabel: `Parcha ${parchaNo}${version > 1 ? ` v${version}` : ""} — ${s.mill.code} ${l.truckNo ?? ""}`.trim(),
-    after: { parchaNo, version, grandTotalPaise: doc.result.grandTotalPaise, loadId: id, slips: doc.slips.count } });
+    after: { parchaNo, version, grandTotalPaise: doc.result.grandTotalPaise, loadId: id, rows: doc.lines.length } });
   await enqueueSync(biz, "parcha", pid, "insert", { id: pid, loadId: id, parchaNo, version });
   return c.json({ id: pid, parchaNo, version, grandTotalPaise: doc.result.grandTotalPaise });
 });
@@ -500,7 +445,6 @@ parchaRoutes.post("/:id/void", can("parcha.void"), async (c) => {
     tx.update(schema.parchas).set({ status: "void", voidedBy: auth.user.id, voidedAt: at, voidReason: reason })
       .where(eq(schema.parchas.id, id)).run();
     tx.update(schema.loads).set({ status: "draft", updatedAt: at }).where(eq(schema.loads.id, p.loadId)).run();
-    tx.update(schema.purchaseSlips).set({ status: "open", updatedAt: at }).where(eq(schema.purchaseSlips.loadId, p.loadId)).run();
   });
   await audit({ actor: actor(c), action: "parcha.void", entity: "parcha", entityId: id,
     entityLabel: `Parcha ${p.parchaNo}${p.version > 1 ? ` v${p.version}` : ""}`,

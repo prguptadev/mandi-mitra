@@ -27,7 +27,7 @@ const NAV: NavGroup[] = [
     { href: "/orders", labelKey: "nav.orders", icon: ClipboardList, perm: "po.read" },
     { href: "/loads", labelKey: "nav.loads", icon: Truck, perm: "load.read" },
     { href: "/parcha", labelKey: "nav.parcha", icon: FileText, perm: "parcha.read" },
-    { href: "/stock", labelKey: "nav.stock", icon: Boxes, perm: "stock.read", soon: true },
+    { href: "/stock", labelKey: "nav.stock", icon: Boxes, perm: "stock.read" },
   ] },
   { labelKey: "nav.masters", items: [
     { href: "/suppliers", labelKey: "nav.suppliers", icon: Users2, perm: "adati.read" },

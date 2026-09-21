@@ -1,10 +1,15 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, and, desc, sql, inArray } from "drizzle-orm";
+import { eq, and, desc, inArray } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, actor, param, notFound, bad, HttpError, type Env } from "../lib/http.ts";
+import { dmy } from "../lib/parchaLabels.ts";
+import { linesWithWeights } from "../lib/parcha.ts";
+
+/** How a PO is named where there is no number: by its date. */
+export const poLabel = (p: { poNo: string; poDate: string }) => (p.poNo ? `PO ${p.poNo}` : `PO of ${dmy(p.poDate)}`);
 
 /* Purchase orders: a mill asks for N quintals of a commodity. Loads are sent
    against them; the balance is what is still to go. Going over is flagged on
@@ -17,8 +22,9 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const Body = z.object({
   merchantId: z.string().min(1, "Pick a mill"),
   jinsId: z.string().min(1, "Pick a commodity"),
-  poNo: z.string().trim().min(1, "PO number is required").max(30),
-  poDate: z.string().regex(ISO_DATE, "Date must be YYYY-MM-DD"),
+  /** Optional: a mill often sends only a date. */
+  poNo: z.string().trim().max(30).optional().default(""),
+  poDate: z.string({ required_error: "PO date is required" }).regex(ISO_DATE, "PO date is required"),
   qtyGrams: z.number().int().min(1, "Quantity is required"),
   ratePaisePerQtl: z.number().int().min(0).nullish(),
   validTill: z.string().regex(ISO_DATE).nullish().or(z.literal("")),
@@ -26,20 +32,22 @@ const Body = z.object({
   notes: z.string().trim().max(500).nullish(),
 });
 
-/** Quantity each PO has had sent against it: the mill's net once weighed, else ours. */
+/** Quantity sent against each PO: the weight of every truck row that names it. */
 export async function dispatchedByPo(poIds: string[]) {
   const out = new Map<string, { grams: number; loads: number; billed: number }>();
   if (!poIds.length) return out;
-  const loads = await db.select({
-    id: schema.loads.id, poId: schema.loads.poId, millNetGrams: schema.loads.millNetGrams, status: schema.loads.status,
-    slipNet: sql<number>`(select coalesce(sum(${schema.purchaseSlips.netGrams}), 0) from ${schema.purchaseSlips} where ${schema.purchaseSlips.loadId} = ${schema.loads.id})`,
-  }).from(schema.loads).where(inArray(schema.loads.poId, poIds));
-  for (const l of loads) {
-    const cur = out.get(l.poId!) ?? { grams: 0, loads: 0, billed: 0 };
-    cur.grams += l.millNetGrams ?? l.slipNet;
-    cur.loads += 1;
-    if (l.status === "billed") cur.billed += 1;
-    out.set(l.poId!, cur);
+  const lines = await linesWithWeights(inArray(schema.loadLines.poId, poIds));
+  const seen = new Set<string>();
+  for (const x of lines) {
+    const cur = out.get(x.poId!) ?? { grams: 0, loads: 0, billed: 0 };
+    cur.grams += x.weightGrams;
+    const key = `${x.poId}:${x.loadId}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      cur.loads += 1;
+      if (x.status === "billed") cur.billed += 1;
+    }
+    out.set(x.poId!, cur);
   }
   return out;
 }
@@ -95,13 +103,15 @@ orderRoutes.post("/", can("po.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const body = Body.parse(await c.req.json());
   const refs = await checkRefs(biz, body.merchantId, body.jinsId);
-  const [dupe] = await db.select({ id: schema.purchaseOrders.id }).from(schema.purchaseOrders)
-    .where(and(
-      eq(schema.purchaseOrders.businessId, biz),
-      eq(schema.purchaseOrders.merchantId, body.merchantId),
-      eq(schema.purchaseOrders.poNo, body.poNo),
-    )).limit(1);
-  if (dupe) throw new HttpError(409, `PO ${body.poNo} already exists for ${refs.millCode}`, "duplicate");
+  if (body.poNo) {
+    const [dupe] = await db.select({ id: schema.purchaseOrders.id }).from(schema.purchaseOrders)
+      .where(and(
+        eq(schema.purchaseOrders.businessId, biz),
+        eq(schema.purchaseOrders.merchantId, body.merchantId),
+        eq(schema.purchaseOrders.poNo, body.poNo),
+      )).limit(1);
+    if (dupe) throw new HttpError(409, `PO ${body.poNo} already exists for ${refs.millCode}`, "duplicate");
+  }
 
   const id = newId();
   const values = {
@@ -116,7 +126,7 @@ orderRoutes.post("/", can("po.write"), async (c) => {
   };
   await db.insert(schema.purchaseOrders).values(values);
   await audit({ actor: actor(c), action: "po.create", entity: "purchase_order", entityId: id,
-    entityLabel: `${refs.millCode} PO ${body.poNo}`, after: values });
+    entityLabel: `${refs.millCode} ${poLabel(values)}`, after: values });
   await enqueueSync(biz, "purchase_order", id, "insert", values);
   return c.json({ id });
 });
@@ -124,7 +134,9 @@ orderRoutes.post("/", can("po.write"), async (c) => {
 orderRoutes.put("/:id", can("po.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const id = param(c, "id");
-  const body = Body.partial().parse(await c.req.json());
+  const json = await c.req.json();
+  const body = Body.partial().parse(json);
+  if (!("poNo" in json)) body.poNo = undefined;
   const [before] = await db.select().from(schema.purchaseOrders)
     .where(and(eq(schema.purchaseOrders.id, id), eq(schema.purchaseOrders.businessId, biz))).limit(1);
   if (!before) throw notFound("PO not found");
@@ -132,12 +144,12 @@ orderRoutes.put("/:id", can("po.write"), async (c) => {
   const merchantId = body.merchantId ?? before.merchantId;
   const jinsId = body.jinsId ?? before.jinsId;
   if (merchantId !== before.merchantId || jinsId !== before.jinsId) {
-    const [used] = await db.select({ id: schema.loads.id }).from(schema.loads).where(eq(schema.loads.poId, id)).limit(1);
+    const [used] = await db.select({ id: schema.loadLines.id }).from(schema.loadLines).where(eq(schema.loadLines.poId, id)).limit(1);
     if (used) throw new HttpError(409, "Loads are already sent against this PO, so its mill and commodity cannot change", "po_in_use");
   }
   const refs = await checkRefs(biz, merchantId, jinsId);
   const poNo = body.poNo ?? before.poNo;
-  if (poNo !== before.poNo || merchantId !== before.merchantId) {
+  if (poNo && (poNo !== before.poNo || merchantId !== before.merchantId)) {
     const [dupe] = await db.select({ id: schema.purchaseOrders.id }).from(schema.purchaseOrders)
       .where(and(
         eq(schema.purchaseOrders.businessId, biz),
@@ -160,7 +172,7 @@ orderRoutes.put("/:id", can("po.write"), async (c) => {
   await db.update(schema.purchaseOrders).set(patch).where(eq(schema.purchaseOrders.id, id));
   const after = { ...before, ...patch };
   await audit({ actor: actor(c), action: body.status && body.status !== before.status ? `po.${body.status === "closed" ? "close" : "reopen"}` : "po.update",
-    entity: "purchase_order", entityId: id, entityLabel: `${refs.millCode} PO ${poNo}`, before, after });
+    entity: "purchase_order", entityId: id, entityLabel: `${refs.millCode} ${poLabel(after)}`, before, after });
   await enqueueSync(biz, "purchase_order", id, "update", after);
   return c.json({ ok: true });
 });
@@ -171,11 +183,11 @@ orderRoutes.delete("/:id", can("po.write"), async (c) => {
   const [before] = await db.select().from(schema.purchaseOrders)
     .where(and(eq(schema.purchaseOrders.id, id), eq(schema.purchaseOrders.businessId, biz))).limit(1);
   if (!before) throw notFound("PO not found");
-  const [used] = await db.select({ id: schema.loads.id }).from(schema.loads).where(eq(schema.loads.poId, id)).limit(1);
+  const [used] = await db.select({ id: schema.loadLines.id }).from(schema.loadLines).where(eq(schema.loadLines.poId, id)).limit(1);
   if (used) throw new HttpError(409, "Loads are sent against this PO. Close it instead of deleting it.", "po_in_use");
   await db.delete(schema.purchaseOrders).where(eq(schema.purchaseOrders.id, id));
   await audit({ actor: actor(c), action: "po.delete", entity: "purchase_order", entityId: id,
-    entityLabel: `PO ${before.poNo}`, before });
+    entityLabel: poLabel(before), before });
   await enqueueSync(biz, "purchase_order", id, "delete");
   return c.json({ ok: true });
 });

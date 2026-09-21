@@ -122,7 +122,7 @@ export interface SlipRow {
   adatiId: string; adatiNameHi: string; adatiNameHinglish: string; adatiVillage: string | null;
   jinsId: string; jinsCode: string; jinsName: string; jinsNameHi: string | null;
   merchantId: string | null; merchantCode: string | null; merchantName: string | null;
-  loadId: string | null; loadTruckNo: string | null; loadStatus: "draft" | "billed" | null;
+
   grossGrams: number; katautiUnits: number; katautiOverride: boolean;
   bagsCount: number | null; netGrams: number;
   ratePaisePerQtl: number; amountPaise: number;
@@ -236,20 +236,31 @@ export interface OrderRow {
 }
 
 export interface LoadListRow {
-  id: string; loadDate: string; merchantId: string; jinsId: string; poId: string | null;
+  id: string; loadDate: string; merchantId: string; jinsId: string;
   truckNo: string | null; transporter: string | null; status: "draft" | "billed";
   millGrossGrams: number | null; millNetGrams: number | null; bags: number | null;
   invoiceNo: string | null;
-  millCode: string; millName: string; jinsCode: string; poNo: string | null;
-  slips: number; slipNetGrams: number; slipAmountPaise: number; avgRatePaisePerQtl: number;
-  diffGrams: number | null;
+  millCode: string; millName: string; jinsCode: string;
+  stockDates: string[]; loadedGrams: number;
   parcha: { id: string; parchaNo: string; version: number; grandTotalPaise: number } | null;
 }
 
-export interface CandidateSlip {
-  id: string; slipDate: string; rstNo: string; adatiNameHi: string; adatiNameHinglish: string;
-  merchantId: string | null; merchantCode: string | null;
-  grossGrams: number; katautiUnits: number; netGrams: number; ratePaisePerQtl: number; amountPaise: number;
+/** One purchase day of a mill's stock. */
+export interface StockDay {
+  date: string; slips: number; boughtNetGrams: number; avgRatePaisePerQtl: number; unpriced: number;
+  loadedGrams: number; leftGrams: number;
+}
+
+export interface StockRow {
+  merchantId: string | null; millCode: string | null; millName: string | null;
+  slips: number; boughtNet: number; boughtAmount: number; avgRatePaisePerQtl: number;
+  loadedNet: number; trucks: number; stockNet: number;
+}
+
+export interface StockMillDay {
+  date: string; slips: number; boughtNet: number; boughtAmount: number; avgRatePaisePerQtl: number; unpriced: number;
+  loadedNet: number; stockNet: number; runningNet: number;
+  trucks: { loadId: string; truckNo: string | null; loadDate: string; status: string; parchaNo: string | null; grams: number }[];
 }
 
 export interface ParchaRegisterRow {

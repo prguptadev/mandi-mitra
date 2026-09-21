@@ -241,7 +241,7 @@ export function explainGeminiError(status: number, message: string, apiKey?: str
     return "That model name is not available on this key. Pick a different model in Settings.";
   }
   if (status >= 500) {
-    return "Google's service had a problem. Try reading the sheet again in a moment.";
+    return "Google's Gemini service is overloaded or down at the moment.";
   }
   return message;
 }
@@ -277,6 +277,10 @@ export interface GeminiCallResult {
   /** Present when Google refused for quota; tells us whether retrying is pointless. */
   quota?: QuotaInfo;
   finishReason?: string;
+  /** HTTP status of Google's reply, when there was one. */
+  status?: number;
+  /** A failure that the same request may well not hit again: busy, network, a garbled reply. */
+  transient?: boolean;
 }
 
 export async function readSheet(opts: {
@@ -328,10 +332,13 @@ export async function readSheet(opts: {
     const finishReason: string | undefined = json?.candidates?.[0]?.finishReason;
 
     if (!res.ok) {
+      const quota = parseQuota(json) ?? undefined;
       return {
-        ok: false, model: opts.model, ms, tokensIn, tokensOut, raw: json,
+        ok: false, model: opts.model, ms, tokensIn, tokensOut, raw: json, status: res.status,
         error: explainGeminiError(res.status, json?.error?.message ?? `HTTP ${res.status}`, opts.apiKey, json),
-        quota: parseQuota(json) ?? undefined,
+        quota,
+        // busy (5xx) and per-minute limits pass; a daily limit or a bad key does not
+        transient: res.status >= 500 || (res.status === 429 && quota?.kind !== "per_day"),
       };
     }
 
@@ -344,6 +351,8 @@ export async function readSheet(opts: {
           : finishReason === "SAFETY" || finishReason === "PROHIBITED_CONTENT"
           ? "The image was refused by the model. Try a clearer scan."
           : `The model returned nothing${finishReason ? ` (${finishReason})` : ""}.`,
+        status: 200,
+        transient: finishReason !== "SAFETY" && finishReason !== "PROHIBITED_CONTENT",
       };
     }
 
@@ -360,6 +369,8 @@ export async function readSheet(opts: {
           error: finishReason === "MAX_TOKENS"
             ? "The reply was cut short before a single complete row. Scan one page at a time."
             : "The model's reply was not valid JSON.",
+          status: 200,
+          transient: finishReason !== "MAX_TOKENS",
         };
       }
       truncated = true;
@@ -379,10 +390,44 @@ export async function readSheet(opts: {
       tokensIn, tokensOut, truncated, finishReason,
     };
   } catch (err) {
+    const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
     return {
       ok: false, model: opts.model, ms: Date.now() - started,
-      error: err instanceof Error ? err.message : "Request failed",
+      error: timedOut ? "Google took too long to answer." : "Could not reach Google (network).",
+      transient: true,
     };
+  }
+}
+
+/** Waits between attempts after a busy or network failure: about 40 s in all. */
+export const RETRY_WAITS_MS = [4_000, 10_000, 25_000];
+
+/**
+ * readSheet, but a busy Google, a dropped connection or a per-minute limit
+ * does not fail the page: it waits and tries again (up to 4 times). A garbled
+ * reply gets one more try. A daily limit, a bad key or a refused image stop
+ * at once — retrying those only spends reads. Every attempt is recorded.
+ */
+export async function readSheetReliably(
+  opts: Parameters<typeof readSheet>[0],
+  record: (r: GeminiCallResult) => Promise<void>,
+  hooks: { onRetry?: (attempt: number, waitMs: number, r: GeminiCallResult) => Promise<void> | void; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<GeminiCallResult & { attempts: number }> {
+  const sleep = hooks.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  let attempt = 0;
+  for (;;) {
+    const r = await readSheet(opts);
+    attempt++;
+    await record(r);
+    if (r.ok || !r.transient) return { ...r, attempts: attempt };
+    // a garbled 200 reply is the model, not the service: one more try is enough
+    const max = r.status === 200 ? 2 : RETRY_WAITS_MS.length + 1;
+    if (attempt >= max) return { ...r, attempts: attempt };
+    const wait = r.quota?.retryAfterSec
+      ? Math.min(60_000, r.quota.retryAfterSec * 1000 + 500)
+      : RETRY_WAITS_MS[attempt - 1] + Math.floor(Math.random() * 1000);
+    await hooks.onRetry?.(attempt, wait, r);
+    await sleep(wait);
   }
 }
 

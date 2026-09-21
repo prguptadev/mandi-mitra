@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Settings2, RotateCcw, Monitor, User, Lock } from "lucide-react";
 import { useI18n } from "@/lib/i18n.tsx";
-import { usePrefs, DAILY_COLUMNS, LOCKED_COLUMNS, type DailyListPrefs } from "@/lib/prefs.tsx";
+import { usePrefs, DAILY_COLUMNS, LOCKED_COLUMNS, MILL_REPORT_COLUMNS, type DailyListPrefs } from "@/lib/prefs.tsx";
 import { Button, Dialog, Field, Select, Switch, Checkbox, Badge, Alert } from "@/components/ui/index.tsx";
 import { cn } from "@/lib/utils.ts";
 
@@ -19,8 +19,14 @@ export function DailyListSettings() {
   const set = <K extends keyof DailyListPrefs>(k: K, v: DailyListPrefs[K]) =>
     setDraft({ ...d, [k]: v });
 
-  const toggleCol = (group: "columns" | "exportColumns", key: string) => {
+  const toggleCol = (group: "columns" | "exportColumns" | "millReportColumns", key: string) => {
     if (group === "columns" && LOCKED_COLUMNS.includes(key as never)) return;
+    // a download has one "Adati name" column; it stands for both name keys
+    if (group === "exportColumns" && key === "adatiHi") {
+      const on = !(d.exportColumns.adatiHi || d.exportColumns.adatiLatin);
+      setDraft({ ...d, exportColumns: { ...d.exportColumns, adatiHi: on, adatiLatin: on } });
+      return;
+    }
     setDraft({ ...d, [group]: { ...d[group], [key]: !d[group][key] } });
   };
 
@@ -79,6 +85,8 @@ export function DailyListSettings() {
                 <option value="rstAsc">{t("dlp.sort.rstAsc")}</option>
                 <option value="rstDesc">{t("dlp.sort.rstDesc")}</option>
                 <option value="newestFirst">{t("dlp.sort.newestFirst")}</option>
+                <option value="nameAsc">{t("dlp.sort.nameAsc")}</option>
+                <option value="nameDesc">{t("dlp.sort.nameDesc")}</option>
               </Select>
             </Field>
             <Field label={t("dlp.density")}>
@@ -97,32 +105,52 @@ export function DailyListSettings() {
               label={t("dlp.showRunningTotal")} />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            {(["columns", "exportColumns"] as const).map((group) => (
-              <div key={group} className="rounded-lg border border-line p-3">
-                <p className="mb-2 text-[12px] font-semibold uppercase tracking-wide text-muted">
-                  {t(group === "columns" ? "dlp.uiColumns" : "dlp.exportColumns")}
-                </p>
-                <div className="space-y-1.5">
-                  {DAILY_COLUMNS.map((c) => {
-                    const locked = group === "columns" && LOCKED_COLUMNS.includes(c.key as never);
-                    return (
-                      <div key={c.key} className="flex items-center justify-between gap-2">
-                        <Checkbox
-                          checked={locked ? true : Boolean(d[group][c.key])}
-                          disabled={locked}
-                          onChange={() => toggleCol(group, c.key)}
-                          label={pick(c.en, c.hi)}
-                        />
-                        {locked && (
-                          <Badge title={t("dlp.locked")}><Lock className="h-2.5 w-2.5" /></Badge>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-lg border border-line p-3">
+              <p className="mb-2 text-[12px] font-semibold uppercase tracking-wide text-muted">{t("dlp.uiColumns")}</p>
+              <div className="space-y-1.5">
+                {DAILY_COLUMNS.map((c) => {
+                  const locked = LOCKED_COLUMNS.includes(c.key as never);
+                  return (
+                    <div key={c.key} className="flex items-center justify-between gap-2">
+                      <Checkbox checked={locked ? true : Boolean(d.columns[c.key])} disabled={locked}
+                        onChange={() => toggleCol("columns", c.key)} label={pick(c.en, c.hi)} />
+                      {locked && <Badge title={t("dlp.locked")}><Lock className="h-2.5 w-2.5" /></Badge>}
+                    </div>
+                  );
+                })}
               </div>
-            ))}
+            </div>
+
+            <div className="rounded-lg border border-line p-3">
+              <p className="mb-2 text-[12px] font-semibold uppercase tracking-wide text-muted">{t("dlp.exportColumns")}</p>
+              <div className="space-y-1.5">
+                {DAILY_COLUMNS.filter((c) => c.key !== "adatiLatin").map((c) => (
+                  <Checkbox key={c.key}
+                    checked={c.key === "adatiHi" ? Boolean(d.exportColumns.adatiHi || d.exportColumns.adatiLatin) : Boolean(d.exportColumns[c.key])}
+                    onChange={() => toggleCol("exportColumns", c.key)}
+                    label={c.key === "adatiHi" ? t("dlp.adatiName") : pick(c.en, c.hi)} />
+                ))}
+              </div>
+              <Field label={t("dlp.namesIn")} className="mt-3">
+                <Select value={d.exportNameLang} className="h-8 text-[13px]"
+                  onChange={(e) => set("exportNameLang", e.target.value as DailyListPrefs["exportNameLang"])}>
+                  <option value="hi">{t("common.hindi")}</option>
+                  <option value="latin">{t("common.hinglish")}</option>
+                </Select>
+              </Field>
+            </div>
+
+            <div className="rounded-lg border border-line p-3">
+              <p className="mb-1 text-[12px] font-semibold uppercase tracking-wide text-muted">{t("dlp.millReportColumns")}</p>
+              <p className="mb-2 text-[11px] leading-snug text-faint">{t("dlp.millReportHelp")}</p>
+              <div className="space-y-1.5">
+                {MILL_REPORT_COLUMNS.map((c) => (
+                  <Checkbox key={c.key} checked={Boolean(d.millReportColumns[c.key])}
+                    onChange={() => toggleCol("millReportColumns", c.key)} label={pick(c.en, c.hi)} />
+                ))}
+              </div>
+            </div>
           </div>
 
           <div className="rounded-lg border border-line bg-raised/40 p-3 text-[12px] leading-relaxed text-muted">

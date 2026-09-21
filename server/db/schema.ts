@@ -1,4 +1,5 @@
 import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 
 /* Money is stored in paise (integer). Weight is stored in grams (integer).
    Never store rupees/quintals as float — 310.74 qtl and 3413.45 rate must
@@ -267,7 +268,8 @@ export const purchaseOrders = sqliteTable(
     businessId: text("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
     merchantId: text("merchant_id").notNull().references(() => merchants.id),
     jinsId: text("jins_id").notNull().references(() => jins.id),
-    poNo: text("po_no").notNull(),
+    /** The mill's own number, when it gives one; "" when the PO is known only by its date. */
+    poNo: text("po_no").notNull().default(""),
     poDate: text("po_date").notNull(),
     qtyGrams: integer("qty_grams").notNull(),
     ratePaisePerQtl: integer("rate_paise_per_qtl"),
@@ -280,7 +282,8 @@ export const purchaseOrders = sqliteTable(
     createdAt: integer("created_at").notNull().$defaultFn(now),
     updatedAt: integer("updated_at").notNull().$defaultFn(now),
   },
-  (t) => ({ uq: uniqueIndex("po_uq").on(t.businessId, t.merchantId, t.poNo) }),
+  // a number, when there is one, is unique per mill; POs without one are told apart by date
+  (t) => ({ uq: uniqueIndex("po_uq").on(t.businessId, t.merchantId, t.poNo).where(sql`${t.poNo} <> ''`) }),
 );
 
 /** One truck to one mill. Slips are allocated to it; the mill's own
@@ -333,6 +336,33 @@ export const loads = sqliteTable(
  *  names, weights, rate, charge terms, every line — so a later change to a
  *  mill's terms or a slip can never alter a bill already sent. Voiding keeps
  *  the row; re-approving the same load makes version 2 with the same number. */
+/** What went on a truck: a weight taken from one purchase day's stock of
+ *  the load's mill, priced at that day's average rate (the "dara") unless a
+ *  rate is typed. These are the rows of the parcha's WEIGHT DETAILS table. */
+export const loadLines = sqliteTable(
+  "load_lines",
+  {
+    id: text("id").primaryKey(),
+    businessId: text("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    loadId: text("load_id").notNull().references(() => loads.id, { onDelete: "cascade" }),
+    poId: text("po_id").references(() => purchaseOrders.id),
+    jinsId: text("jins_id").notNull().references(() => jins.id),
+    /** The purchase day this weight is taken from; its average is the rate. */
+    stockDate: text("stock_date").notNull(),
+    /** null = whatever of the mill's net the other rows leave (one row only). */
+    netGrams: integer("net_grams"),
+    /** null = that day's weighted average for the mill. */
+    ratePaisePerQtl: integer("rate_paise_per_qtl"),
+    sort: integer("sort").notNull().default(0),
+    createdAt: integer("created_at").notNull().$defaultFn(now),
+    updatedAt: integer("updated_at").notNull().$defaultFn(now),
+  },
+  (t) => ({
+    loadIdx: index("load_line_load_idx").on(t.loadId),
+    stockIdx: index("load_line_stock_idx").on(t.businessId, t.stockDate),
+  }),
+);
+
 export const parchas = sqliteTable(
   "parchas",
   {

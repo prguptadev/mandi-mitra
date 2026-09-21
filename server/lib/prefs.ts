@@ -31,17 +31,39 @@ export const DEFAULT_EXPORT_COLUMNS = columnMap({ status: false });
 
 const ColumnsSchema = z.record(z.string(), z.boolean());
 
+/** The daily report sent to a mill ("dara"): its own column set, since the
+ *  mill wants less than the office does. */
+export const MILL_REPORT_COLUMNS = [
+  { key: "sr",      en: "Sr no",        hi: "क्र सं" },
+  { key: "date",    en: "Date",         hi: "दिनांक" },
+  { key: "rstNo",   en: "RST",          hi: "RST" },
+  { key: "adati",   en: "Adati name",   hi: "आढ़ती का नाम" },
+  { key: "jins",    en: "Commodity",    hi: "जिंस" },
+  { key: "gross",   en: "Kata",         hi: "कांटा" },
+  { key: "katauti", en: "Katauti",      hi: "कटौती" },
+  { key: "net",     en: "Net weight",   hi: "शुद्ध वज़न" },
+  { key: "rate",    en: "Rate",         hi: "दर" },
+  { key: "amount",  en: "Amount",       hi: "राशि" },
+] as const;
+export type MillReportColumnKey = (typeof MILL_REPORT_COLUMNS)[number]["key"];
+export const DEFAULT_MILL_REPORT_COLUMNS: Record<MillReportColumnKey, boolean> = {
+  sr: true, date: false, rstNo: false, adati: true, jins: true, gross: true, katauti: false, net: true, rate: true, amount: false,
+};
+
 export const DailyListPrefsSchema = z.object({
   /** Where the blank entry row sits. */
   newRowPosition: z.enum(["top", "bottom"]).default("bottom"),
   /** Newest slips first, or in the order they were entered. */
-  sortOrder: z.enum(["entry", "rstAsc", "rstDesc", "newestFirst"]).default("entry"),
+  sortOrder: z.enum(["entry", "rstAsc", "rstDesc", "newestFirst", "nameAsc", "nameDesc"]).default("entry"),
   density: z.enum(["compact", "normal"]).default("normal"),
   columns: ColumnsSchema.default(DEFAULT_UI_COLUMNS),
   exportColumns: ColumnsSchema.default(DEFAULT_EXPORT_COLUMNS),
   /** Repeat the supplier and rate from the row above when starting a new one. */
   carryRateForward: z.boolean().default(true),
   showRunningTotal: z.boolean().default(true),
+  /** Downloads carry one "Adati name" column, in this script. */
+  exportNameLang: z.enum(["hi", "latin"]).default("hi"),
+  millReportColumns: ColumnsSchema.default(DEFAULT_MILL_REPORT_COLUMNS),
 });
 
 export type DailyListPrefs = z.infer<typeof DailyListPrefsSchema>;

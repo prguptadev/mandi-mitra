@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, and, asc, desc, sql, inArray } from "drizzle-orm";
+import { eq, and, asc, desc, sql, inArray, gte, lte } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
@@ -79,20 +79,27 @@ export function deriveSlip(
 slipRoutes.get("/", can("slip.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const date = c.req.query("date");
+  const from = c.req.query("from");
+  const to = c.req.query("to");
   const merchantId = c.req.query("merchantId");
   const jinsId = c.req.query("jinsId");
   const adatiId = c.req.query("adatiId");
-  const unallocated = c.req.query("unallocated") === "1";
 
   const where = [eq(schema.purchaseSlips.businessId, biz)];
   if (date) {
     if (!ISO_DATE.test(date)) throw bad("Date must be YYYY-MM-DD");
     where.push(eq(schema.purchaseSlips.slipDate, date));
   }
+  // a range, for downloads that span several days
+  if (from || to) {
+    if ((from && !ISO_DATE.test(from)) || (to && !ISO_DATE.test(to))) throw bad("Date must be YYYY-MM-DD");
+    if (from && to && from > to) throw bad("The from date is after the to date", "bad_range");
+    if (from) where.push(gte(schema.purchaseSlips.slipDate, from));
+    if (to) where.push(lte(schema.purchaseSlips.slipDate, to));
+  }
   if (merchantId) where.push(eq(schema.purchaseSlips.merchantId, merchantId));
   if (jinsId) where.push(eq(schema.purchaseSlips.jinsId, jinsId));
   if (adatiId) where.push(eq(schema.purchaseSlips.adatiId, adatiId));
-  if (unallocated) where.push(sql`${schema.purchaseSlips.loadId} is null`);
 
   const rows = await db.select({
     id: schema.purchaseSlips.id,
@@ -109,9 +116,6 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     merchantId: schema.purchaseSlips.merchantId,
     merchantCode: schema.merchants.code,
     merchantName: schema.merchants.name,
-    loadId: schema.purchaseSlips.loadId,
-    loadTruckNo: schema.loads.truckNo,
-    loadStatus: schema.loads.status,
     grossGrams: schema.purchaseSlips.grossGrams,
     katautiUnits: schema.purchaseSlips.katautiUnits,
     katautiOverride: schema.purchaseSlips.katautiOverride,
@@ -132,7 +136,6 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     .innerJoin(schema.jins, eq(schema.jins.id, schema.purchaseSlips.jinsId))
     .leftJoin(schema.merchants, eq(schema.merchants.id, schema.purchaseSlips.merchantId))
     .leftJoin(schema.scanBatches, eq(schema.scanBatches.id, schema.purchaseSlips.scanBatchId))
-    .leftJoin(schema.loads, eq(schema.loads.id, schema.purchaseSlips.loadId))
     .where(and(...where))
     .orderBy(asc(schema.purchaseSlips.slipDate), asc(schema.purchaseSlips.createdAt));
 
@@ -179,7 +182,6 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     /** Over priced rows only. */
     weightedAvgRatePaise: weightedAvgRate(priced),
     pricedNetGrams: priced.reduce((s, r) => s + r.netGrams, 0),
-    allocatedRows: checked.filter((r) => r.loadId).length,
     mismatchRows: checked.filter((r) => !r.reconciles).length,
     ratePendingRows: checked.length - priced.length,
     bagWarningRows: checked.filter((r) => r.bagWarning).length,
@@ -319,21 +321,6 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
   const [before] = await db.select().from(schema.purchaseSlips)
     .where(and(eq(schema.purchaseSlips.id, id), eq(schema.purchaseSlips.businessId, biz))).limit(1);
   if (!before) throw notFound("Slip not found");
-  if (before.loadId) {
-    /* On a draft load the slip can still be corrected — the load recomputes
-       from it. Once the parcha is approved it is part of a bill and locked. */
-    const [ld] = await db.select({ status: schema.loads.status, merchantId: schema.loads.merchantId })
-      .from(schema.loads).where(eq(schema.loads.id, before.loadId)).limit(1);
-    if (ld?.status === "billed") {
-      throw new HttpError(409, "This slip is on an approved parcha. Void the parcha to change it.", "slip_locked");
-    }
-    if (body.merchantId !== undefined && body.merchantId !== ld?.merchantId) {
-      throw new HttpError(409, "This slip is on a load for another mill. Take it off the load to move it.", "slip_on_load");
-    }
-    if (body.jinsId !== undefined && body.jinsId !== before.jinsId) {
-      throw new HttpError(409, "This slip is on a load. Take it off the load to change its commodity.", "slip_on_load");
-    }
-  }
   assertRateAllowed(c, body.ratePaisePerQtl !== undefined && body.ratePaisePerQtl !== before.ratePaisePerQtl);
 
   if (body.rstNo && body.rstNo !== before.rstNo) {
@@ -386,9 +373,6 @@ slipRoutes.delete("/:id", can("slip.delete"), async (c) => {
   const [before] = await db.select().from(schema.purchaseSlips)
     .where(and(eq(schema.purchaseSlips.id, id), eq(schema.purchaseSlips.businessId, biz))).limit(1);
   if (!before) throw notFound("Slip not found");
-  if (before.loadId) {
-    throw new HttpError(409, "This slip is on a load. Remove it from the load first.", "slip_locked");
-  }
   await db.delete(schema.purchaseSlips).where(eq(schema.purchaseSlips.id, id));
   await audit({
     actor: actor(c), action: "slip.delete", entity: "purchase_slip", entityId: id,
@@ -410,10 +394,6 @@ slipRoutes.post("/reassign", can("slip.write"), async (c) => {
     .where(and(eq(schema.purchaseSlips.businessId, biz), inArray(schema.purchaseSlips.id, slipIds)));
   if (slips.length !== slipIds.length) throw bad("Some slips were not found", "missing");
 
-  const locked = slips.filter((s) => s.loadId);
-  if (locked.length) {
-    throw new HttpError(409, `${locked.length} of these are already on a load. Remove them from the load first.`, "slip_locked");
-  }
 
   let label = "no mill";
   if (merchantId) {

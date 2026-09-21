@@ -9,7 +9,7 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { decryptSecret } from "../lib/secrets.ts";
 import { GeminiConfigSchema, defaultGeminiConfig, DisplayConfigSchema, defaultDisplayConfig } from "../lib/display.ts";
 import { ChargeConfigSchema, KatautiSchema, type Katauti } from "../lib/charges.ts";
-import { readSheet, recordCall } from "../lib/gemini.ts";
+import { readSheetReliably, recordCall, type GeminiCallResult } from "../lib/gemini.ts";
 import { loadResolver } from "../lib/adatiResolve.ts";
 import { normKey, toHinglish } from "../lib/translit.ts";
 import {
@@ -298,7 +298,7 @@ async function performRead(opts: {
   const resolver = await loadResolver(biz);
   const knownSuppliers = resolver.candidateNames(300);
 
-  function weakness(r: Awaited<ReturnType<typeof readSheet>>): string | null {
+  function weakness(r: GeminiCallResult): string | null {
     if (!r.ok || !r.page) return "the first pass failed";
     const rows = r.page.rows;
     if (!rows.length) return null; // a blank page is not a weak read
@@ -324,27 +324,46 @@ async function performRead(opts: {
       mimeType: files[p].mimeType,
     }];
 
-    let result = await readSheet({
+    const record = (r: GeminiCallResult) => recordCall({ businessId: biz, apiKey, result: r });
+    // while Google is busy, say so on the scan instead of looking stuck
+    const onRetry = async (attempt: number, waitMs: number) => {
+      await db.update(schema.scanBatches).set({
+        warningText: `Google is busy — page ${p + 1}, trying again in ${Math.round(waitMs / 1000)} s (attempt ${attempt + 1})`,
+      }).where(eq(schema.scanBatches.id, id));
+    };
+    let result: GeminiCallResult & { attempts?: number } = await readSheetReliably({
       apiKey, model: wanted ?? cfg.model, images: image, knownSuppliers,
       maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
-    });
-    await recordCall({ businessId: biz, apiKey, result });
+    }, record, { onRetry });
+
+    /* Still busy after the retries: the other model runs on separate
+       capacity, so give it one go before giving up on the page. */
+    if (!result.ok && result.transient && !wanted && cfg.fallbackModel && cfg.fallbackModel !== cfg.model) {
+      const other = await readSheetReliably({
+        apiKey, model: cfg.fallbackModel, images: image, knownSuppliers,
+        maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
+      }, record, { onRetry, sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5_000))) });
+      if (other.ok) {
+        notes.push(`page ${p + 1} read on ${other.model} because ${cfg.model} was busy`);
+        result = other;
+      }
+    }
 
     /* The stronger model is for a page that was read badly, not for a page
        that could not be read. After a refusal (quota, key, network) a second
        request only spends another read and fails the same way. */
     const why = result.ok ? weakness(result) : null;
-    if (!wanted && why && cfg.fallbackModel && cfg.fallbackModel !== cfg.model) {
-      const second = await readSheet({
+    if (!wanted && why && cfg.fallbackModel && cfg.fallbackModel !== cfg.model && result.model !== cfg.fallbackModel) {
+      const second = await readSheetReliably({
         apiKey, model: cfg.fallbackModel, images: image, knownSuppliers,
         maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
-      });
-      await recordCall({ businessId: biz, apiKey, result: second });
+      }, record);
       if (second.ok && (!weakness(second) || !result.ok)) {
         result = second;
         notes.push(`page ${p + 1} read again on ${second.model} because ${why}`);
       }
     }
+    await db.update(schema.scanBatches).set({ warningText: null }).where(eq(schema.scanBatches.id, id));
 
     tokensIn += result.tokensIn ?? 0;
     tokensOut += result.tokensOut ?? 0;
@@ -366,21 +385,26 @@ async function performRead(opts: {
     }
 
     if (!result.ok || !result.page) {
-      // one bad page should not throw away the pages already read
-      if (collected.length === 0 && p === files.length - 1) {
-        await db.update(schema.scanBatches).set({
-          status: "failed", errorText: result.error ?? "Unknown error", warningText: null,
-          model: result.model, rawResponse: JSON.stringify(result.raw ?? null).slice(0, 40000),
-          tokensIn, tokensOut, pagesDone: p + 1,
-        }).where(eq(schema.scanBatches.id, id));
-        await audit({
-          actor: { ...opts.actorInfo, businessId: biz },
-          action: "scan.read.fail", entity: "scan_batch", entityId: id,
-          entityLabel: result.error ?? "failed",
-        });
-        return;
-      }
-      notes.push(`page ${p + 1} could not be read: ${result.error ?? "unknown error"}`);
+      /* Never skip a page: its rows would silently be missing from the list.
+         Stop here, keep the pages already read, and "Read again" carries on
+         from this page. */
+      const kept = p > 0 ? ` Page${p > 1 ? "s" : ""} 1${p > 1 ? `–${p}` : ""} ${p > 1 ? "are" : "is"} kept.` : "";
+      const tried = (result.attempts ?? 1) > 1 ? ` Tried ${result.attempts} times.` : "";
+      const next = ` Press "Read again" to continue from page ${p + 1}${files.length > 1 ? ` of ${files.length}` : ""}.`;
+      await db.update(schema.scanBatches).set({
+        status: "failed",
+        errorText: `${result.error ?? "Unknown error"}${tried}${kept}${next}`,
+        warningText: null,
+        parsedRows: collected.length ? JSON.stringify(collected) : null,
+        pagesDone: p, model: result.model, tokensIn, tokensOut,
+        rawResponse: JSON.stringify(result.raw ?? null).slice(0, 40000),
+      }).where(eq(schema.scanBatches.id, id));
+      await audit({
+        actor: { ...opts.actorInfo, businessId: biz },
+        action: "scan.read.fail", entity: "scan_batch", entityId: id,
+        entityLabel: `page ${p + 1} of ${files.length}: ${result.error ?? "failed"}`,
+      });
+      return;
     } else {
       modelUsed = result.model;
       if (result.truncated) notes.push(`page ${p + 1} reply was cut short; complete rows were kept`);

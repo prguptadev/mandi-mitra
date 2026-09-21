@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import {
   api, ApiError, apiStatus, type Merchant, type Jins, type OrderRow, type LoadListRow, type LoadState,
-  type CandidateSlip, type ParchaRegisterRow, type LoadBlocker, type LoadWarning, type ParchaDoc,
+  type ParchaRegisterRow, type LoadBlocker, type LoadWarning, type ParchaDoc, type StockDay, type StockMillDay,
 } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/index.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
-import { PoProgress } from "@/pages/Orders.tsx";
+import { PoProgress, poName } from "@/pages/Orders.tsx";
 
 const Q = 100_000;
 const CELL = "h-9 w-full rounded-lg border bg-surface px-2.5 text-sm text-ink focus:border-brand disabled:bg-raised disabled:opacity-70";
@@ -29,9 +29,14 @@ const NUMCELL = cn(CELL, "text-right tabular-nums");
 
 /* ------------------------------------------------------------ new load */
 
+/** A day of the mill's stock, as the pickers show it. */
+function dayLabel(f: ReturnType<typeof useFormat>, t: ReturnType<typeof useI18n>["t"], d: { date: string; leftGrams: number; avgRatePaisePerQtl: number }) {
+  return `${dmy(d.date)} — ${t("load.leftShort", { q: f.weight(d.leftGrams) })}${d.avgRatePaisePerQtl ? ` · ${t("load.avgShort", { r: f.rate(d.avgRatePaisePerQtl) })}` : ""}`;
+}
+
 export function NewLoadDialog({ open, onClose, preset }: {
   open: boolean; onClose: () => void;
-  preset?: { slipIds?: string[]; merchantId?: string | null; jinsId?: string; date?: string; netGrams?: number };
+  preset?: { merchantId?: string | null; jinsId?: string; stockDate?: string };
 }) {
   const { t, pick } = useI18n();
   const f = useFormat();
@@ -40,9 +45,10 @@ export function NewLoadDialog({ open, onClose, preset }: {
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
   const jins = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
   const [v, setV] = useState(() => ({
-    loadDate: preset?.date ?? todayISO(),
+    loadDate: todayISO(),
     merchantId: preset?.merchantId ?? "",
     jinsId: preset?.jinsId ?? "",
+    stockDate: preset?.stockDate ?? "",
     poId: "",
     truckNo: "", transporter: "", driverPhone: "",
   }));
@@ -52,7 +58,16 @@ export function NewLoadDialog({ open, onClose, preset }: {
     queryFn: () => api.get<OrderRow[]>(`/orders?merchantId=${v.merchantId}&status=open&jinsId=${jinsId}`),
     enabled: Boolean(v.merchantId && jinsId),
   });
-  // one open PO for this mill and commodity: that is almost certainly the one
+  const stock = useQuery({
+    queryKey: ["stock", v.merchantId, jinsId],
+    queryFn: () => api.get<{ days: StockMillDay[] }>(`/stock/${v.merchantId}?jinsId=${jinsId}`),
+    enabled: Boolean(v.merchantId && jinsId),
+  });
+  const days = (stock.data?.days ?? []).map((d) => ({ date: d.date, leftGrams: d.stockNet, avgRatePaisePerQtl: d.avgRatePaisePerQtl }));
+  // the newest day with stock left is almost always the one being loaded
+  useEffect(() => {
+    if (!v.stockDate && days.length) setV((p) => ({ ...p, stockDate: (days.find((d) => d.leftGrams > 0) ?? days[0]).date }));
+  }, [stock.data]);
   useEffect(() => {
     if (!v.poId && pos.data?.length === 1) setV((p) => ({ ...p, poId: pos.data![0].id }));
   }, [pos.data]);
@@ -61,12 +76,12 @@ export function NewLoadDialog({ open, onClose, preset }: {
   const create = useMutation({
     mutationFn: () => api.post<{ id: string }>("/loads", {
       loadDate: v.loadDate, merchantId: v.merchantId, jinsId, poId: v.poId || null,
+      stockDate: v.stockDate || undefined,
       truckNo: v.truckNo || null, transporter: v.transporter || null, driverPhone: v.driverPhone || null,
-      slipIds: preset?.slipIds,
     }),
     onSuccess: async (r) => {
       await qc.invalidateQueries({ queryKey: ["loads"] });
-      await qc.invalidateQueries({ queryKey: ["slips"] });
+      await qc.invalidateQueries({ queryKey: ["stock"] });
       onClose();
       navigate(`/loads/${r.id}`);
     },
@@ -74,10 +89,7 @@ export function NewLoadDialog({ open, onClose, preset }: {
   });
 
   return (
-    <Dialog open={open} onClose={onClose} title={t("load.new")}
-      sub={preset?.slipIds?.length
-        ? t("load.newWithSlips", { n: preset.slipIds.length, q: f.weight(preset.netGrams ?? 0) })
-        : t("load.newSub")}
+    <Dialog open={open} onClose={onClose} title={t("load.new")} sub={t("load.newSub")}
       footer={<>
         <Button onClick={onClose}>{t("common.cancel")}</Button>
         <Button variant="primary" loading={create.isPending} disabled={!v.merchantId || !jinsId}
@@ -93,14 +105,20 @@ export function NewLoadDialog({ open, onClose, preset }: {
             onChange={(e) => setV((p) => ({ ...p, truckNo: e.target.value.toUpperCase() }))} />
         </Field>
         <Field label={t("load.mill")} required>
-          <Select value={v.merchantId} onChange={(e) => setV((p) => ({ ...p, merchantId: e.target.value, poId: "" }))}>
+          <Select value={v.merchantId} onChange={(e) => setV((p) => ({ ...p, merchantId: e.target.value, poId: "", stockDate: "" }))}>
             <option value="">{t("load.pickMill")}</option>
             {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {m.name}</option>)}
           </Select>
         </Field>
         <Field label={t("load.jins")} required>
-          <Select value={jinsId} disabled={Boolean(preset?.jinsId)} onChange={(e) => setV((p) => ({ ...p, jinsId: e.target.value, poId: "" }))}>
+          <Select value={jinsId} onChange={(e) => setV((p) => ({ ...p, jinsId: e.target.value, poId: "", stockDate: "" }))}>
             {jins.data?.map((j) => <option key={j.id} value={j.id}>{j.code} — {pick(j.name, j.nameHi)}</option>)}
+          </Select>
+        </Field>
+        <Field label={t("load.fromDay")} hint={t("load.fromDayHelp")} className="sm:col-span-2">
+          <Select value={v.stockDate} disabled={!v.merchantId} onChange={(e) => setV((p) => ({ ...p, stockDate: e.target.value }))}>
+            {!days.length && <option value="">{v.merchantId ? t("load.noStockYet") : t("load.pickMill")}</option>}
+            {days.map((d) => <option key={d.date} value={d.date}>{dayLabel(f, t, d)}</option>)}
           </Select>
         </Field>
         <Field label={t("load.po")} hint={v.merchantId && pos.data && !pos.data.length ? t("load.noOpenPo") : t("common.optional")} className="sm:col-span-2">
@@ -108,7 +126,7 @@ export function NewLoadDialog({ open, onClose, preset }: {
             <option value="">{t("load.noPo")}</option>
             {pos.data?.map((o) => (
               <option key={o.id} value={o.id}>
-                PO {o.poNo} · {dmy(o.poDate)} · {t("po.balance")} {f.weight(o.balanceGrams)} {f.unit}
+                {o.poNo ? `PO ${o.poNo} · ${dmy(o.poDate)}` : poName(t, o)} · {t("po.balance")} {f.weight(o.balanceGrams)} {f.unit}
               </option>
             ))}
           </Select>
@@ -199,8 +217,7 @@ export function LoadsPage() {
             <thead>
               <tr>
                 <Th>{t("load.date")}</Th><Th>{t("load.truckNo")}</Th><Th>{t("load.mill")}</Th><Th>{t("load.jins")}</Th>
-                <Th>PO</Th><Th numeric>{t("load.slips")}</Th><Th numeric>{t("load.ourNet")}</Th>
-                <Th numeric>{t("load.millNet")}</Th><Th numeric>{t("load.diff")}</Th><Th numeric>{t("load.rate")}</Th>
+                <Th>{t("load.fromDays")}</Th><Th numeric>{t("load.loaded")}</Th><Th numeric>{t("load.millNet")}</Th>
                 <Th>{t("load.parchaNo")}</Th><Th numeric>{t("load.grandTotal")}</Th>
               </tr>
             </thead>
@@ -211,14 +228,9 @@ export function LoadsPage() {
                   <Td className="font-mono font-medium">{r.truckNo ?? <span className="text-faint">—</span>}</Td>
                   <Td><Badge tone="brand" className="num">{r.millCode}</Badge></Td>
                   <Td>{r.jinsCode}</Td>
-                  <Td className="font-mono text-muted">{r.poNo ?? "—"}</Td>
-                  <Td numeric>{r.slips}</Td>
-                  <Td numeric>{f.weight(r.slipNetGrams)}</Td>
+                  <Td className="whitespace-nowrap text-muted">{r.stockDates.map(dmy).join(", ") || "—"}</Td>
+                  <Td numeric>{r.loadedGrams ? f.weight(r.loadedGrams) : <span className="text-faint">—</span>}</Td>
                   <Td numeric>{r.millNetGrams == null ? <span className="text-faint">—</span> : f.weight(r.millNetGrams)}</Td>
-                  <Td numeric className={cn(r.diffGrams != null && Math.abs(r.diffGrams) >= r.slipNetGrams * 0.02 && "text-warn")}>
-                    {r.diffGrams == null ? <span className="text-faint">—</span> : f.weight(r.diffGrams)}
-                  </Td>
-                  <Td numeric>{r.avgRatePaisePerQtl ? f.rate(r.avgRatePaisePerQtl) : <span className="text-faint">—</span>}</Td>
                   <Td>
                     {r.parcha
                       ? <Badge tone="ok">#{r.parcha.parchaNo}{r.parcha.version > 1 ? ` v${r.parcha.version}` : ""}</Badge>
@@ -231,7 +243,7 @@ export function LoadsPage() {
             {billed.length > 0 && (
               <tfoot>
                 <tr className="bg-raised/50 text-[13px] font-medium">
-                  <td colSpan={11} className="px-3 py-2 text-right text-muted">{t("load.billedTotal", { n: billed.length })}</td>
+                  <td colSpan={8} className="px-3 py-2 text-right text-muted">{t("load.billedTotal", { n: billed.length })}</td>
                   <td className="num px-3 py-2 text-right">{f.money(totalBilled)}</td>
                 </tr>
               </tfoot>
@@ -298,124 +310,21 @@ function useLoadMessages() {
   const blocker = (b: LoadBlocker) => {
     switch (b.code) {
       case "invoice_taken": return t("load.b.invoice_taken", { truck: b.truckNo ?? "—" });
+      case "line_no_rate": return t("load.b.line_no_rate", { d: dmy(b.date) });
+      case "lines_mismatch": return t("load.b.lines_mismatch", { rows: f.weight(b.linesGrams), net: f.weight(b.millNetGrams) });
       default: return t(`load.b.${b.code}`);
     }
   };
   const warning = (w: LoadWarning) => {
     switch (w.code) {
-      case "rate_pending": return t("load.w.rate_pending", { n: w.n });
-      case "weight_diff": return w.grams > 0
-        ? t("load.w.weight_less", { q: f.weight(w.grams), pct: w.pct })
-        : t("load.w.weight_more", { q: f.weight(-w.grams), pct: -w.pct });
-      case "po_over": return t("load.w.po_over", { q: f.weight(w.overGrams) });
-      case "po_expired": return t("load.w.po_expired", { d: dmy(w.validTill) });
-      case "mixed_jins": return t("load.w.mixed_jins", { n: w.n });
+      case "stock_negative": return t("load.w.stock_negative", { d: dmy(w.date), q: f.weight(w.grams) });
+      case "po_over": return t("load.w.po_over", { po: w.po, q: f.weight(w.overGrams) });
+      case "po_closed": return t("load.w.po_closed", { po: w.po });
+      case "po_expired": return t("load.w.po_expired", { po: w.po, d: dmy(w.validTill) });
       default: return t(`load.w.${w.code}`);
     }
   };
   return { blocker, warning };
-}
-
-/* ------------------------------------------------------------ add slips */
-
-function AddSlipsDialog({ st, onClose }: { st: LoadState; onClose: () => void }) {
-  const { t } = useI18n();
-  const f = useFormat();
-  const qc = useQueryClient();
-  const [date, setDate] = useState<string>(st.load.loadDate);
-  const [mill, setMill] = useState<"this" | "all" | "none">("this");
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [err, setErr] = useState<string | null>(null);
-
-  const cand = useQuery({
-    queryKey: ["load", st.load.id, "candidates", date, mill],
-    queryFn: () => api.get<{ rows: CandidateSlip[]; days: { slipDate: string; n: number }[] }>(
-      `/loads/${st.load.id}/candidates?${new URLSearchParams({ date, mill })}`),
-  });
-  // the load's own date may have no free slips; fall back to the latest day that has some
-  useEffect(() => {
-    const days = cand.data?.days;
-    if (date && days?.length && !days.some((d) => d.slipDate === date) && cand.data?.rows.length === 0) setDate(days[0].slipDate);
-  }, [cand.data]);
-
-  const rows = cand.data?.rows ?? [];
-  const sel = rows.filter((r) => picked.has(r.id));
-  const allOn = rows.length > 0 && sel.length === rows.length;
-  const add = useMutation({
-    mutationFn: () => api.post<{ added: number; elsewhere: { rstNo: string; truckNo: string | null }[] }>(
-      `/loads/${st.load.id}/slips`, { slipIds: [...picked] }),
-    onSuccess: async (r) => {
-      await qc.invalidateQueries({ queryKey: ["load", st.load.id] });
-      await qc.invalidateQueries({ queryKey: ["loads"] });
-      await qc.invalidateQueries({ queryKey: ["slips"] });
-      if (r.elsewhere.length) setErr(t("load.alreadyElsewhere", { rst: r.elsewhere.map((e) => e.rstNo).join(", ") }));
-      else onClose();
-    },
-    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
-  });
-
-  return (
-    <Dialog open onClose={onClose} wide title={t("load.addSlips")} sub={t("load.addSlipsSub", { jins: st.jins.code, mill: st.mill.code })}
-      footer={<>
-        <span className="mr-auto text-[13px] text-muted">
-          {sel.length ? t("load.selected", { n: sel.length, q: f.weight(sel.reduce((s, r) => s + r.netGrams, 0)) }) : t("load.pickSlips")}
-        </span>
-        <Button onClick={onClose}>{t("common.cancel")}</Button>
-        <Button variant="primary" loading={add.isPending} disabled={!sel.length}
-          onClick={() => { setErr(null); add.mutate(); }}>{t("load.addN", { n: sel.length })}</Button>
-      </>}>
-      {err && <Alert tone="warn" className="mb-3">{err}</Alert>}
-      <div className="mb-3 flex flex-wrap items-end gap-3">
-        <Field label={t("load.slipDay")} className="w-52">
-          <Select value={date} onChange={(e) => { setDate(e.target.value); setPicked(new Set()); }} className="h-8 text-[13px]">
-            <option value="">{t("load.allDays")}</option>
-            {!cand.data?.days.some((d) => d.slipDate === date) && date && <option value={date}>{dmy(date)} (0)</option>}
-            {cand.data?.days.map((d) => <option key={d.slipDate} value={d.slipDate}>{dmy(d.slipDate)} ({d.n})</option>)}
-          </Select>
-        </Field>
-        <Field label={t("load.fromSheet")} className="w-56">
-          <Select value={mill} onChange={(e) => { setMill(e.target.value as typeof mill); setPicked(new Set()); }} className="h-8 text-[13px]">
-            <option value="this">{t("load.sheetThis", { mill: st.mill.code })}</option>
-            <option value="all">{t("load.sheetAll")}</option>
-            <option value="none">{t("load.sheetNone")}</option>
-          </Select>
-        </Field>
-      </div>
-      <div className="max-h-[52vh] overflow-y-auto rounded-lg border border-line">
-        {cand.isPending ? <SkeletonTable rows={6} /> : !rows.length ? (
-          <EmptyState title={t("load.noFreeSlips")} sub={t("load.noFreeSlipsSub")} />
-        ) : (
-          <Table>
-            <thead>
-              <tr>
-                <Th className="w-9"><Checkbox checked={allOn} onChange={(v) => setPicked(v ? new Set(rows.map((r) => r.id)) : new Set())} /></Th>
-                <Th>{t("daily.rst")}</Th><Th>{t("load.date")}</Th><Th>{t("daily.supplier")}</Th><Th>{t("load.sheet")}</Th>
-                <Th numeric>{t("daily.gross")}</Th><Th numeric>{t("load.net")}</Th><Th numeric>{t("load.rate")}</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <Tr key={r.id} className={cn(picked.has(r.id) && "bg-brand/5")}
-                  onClick={() => setPicked((p) => { const n = new Set(p); if (n.has(r.id)) n.delete(r.id); else n.add(r.id); return n; })}>
-                  <Td><Checkbox checked={picked.has(r.id)} onChange={() => { /* row click toggles */ }} /></Td>
-                  <Td className="font-mono">{r.rstNo}</Td>
-                  <Td className="whitespace-nowrap text-muted">{dmy(r.slipDate)}</Td>
-                  <Td className="whitespace-nowrap"><span lang="hi">{r.adatiNameHi}</span></Td>
-                  <Td>{r.merchantCode ? <Badge tone={r.merchantId === st.mill.id ? "brand" : "neutral"}>{r.merchantCode}</Badge> : <span className="text-faint">—</span>}</Td>
-                  <Td numeric>{f.weight(r.grossGrams)}</Td>
-                  <Td numeric>{f.weight(r.netGrams)}</Td>
-                  <Td numeric>{r.ratePaisePerQtl ? f.rate(r.ratePaisePerQtl) : <span className="text-warn">{t("load.noRate")}</span>}</Td>
-                </Tr>
-              ))}
-            </tbody>
-          </Table>
-        )}
-      </div>
-      {mill !== "this" && sel.some((r) => r.merchantId !== st.mill.id) && (
-        <p className="mt-2 text-[12px] text-muted">{t("load.willMove", { mill: st.mill.code })}</p>
-      )}
-    </Dialog>
-  );
 }
 
 /* ------------------------------------------------------------ print */
@@ -450,13 +359,12 @@ function PaperDialog({ doc, draft, loadId, onClose }: { doc: ParchaDoc; draft: b
 /* ------------------------------------------------------------ detail */
 
 export function LoadDetailPage({ id }: { id: string }) {
-  const { t, pick, lang } = useI18n();
+  const { t, pick } = useI18n();
   const f = useFormat();
   const { can } = useSession();
   const qc = useQueryClient();
   const [, navigate] = useLocation();
   const msg = useLoadMessages();
-  const [adding, setAdding] = useState(false);
   const [paper, setPaper] = useState(false);
   const [approving, setApproving] = useState(false);
   const [voiding, setVoiding] = useState(false);
@@ -474,29 +382,31 @@ export function LoadDetailPage({ id }: { id: string }) {
     queryFn: () => api.get<OrderRow[]>(`/orders?merchantId=${st!.load.merchantId}&jinsId=${st!.load.jinsId}`),
     enabled: Boolean(st),
   });
+  const days = useQuery({
+    queryKey: ["load", id, "stock-days", st?.load.merchantId, st?.load.jinsId],
+    queryFn: () => api.get<StockDay[]>(`/loads/${id}/stock-days`),
+    enabled: Boolean(st),
+  });
 
   const refresh = async () => {
     await qc.invalidateQueries({ queryKey: ["load", id] });
     await qc.invalidateQueries({ queryKey: ["loads"] });
     await qc.invalidateQueries({ queryKey: ["orders"] });
+    await qc.invalidateQueries({ queryKey: ["stock"] });
   };
-  const save = useMutation({
-    mutationFn: (patch: Record<string, unknown>) => api.put(`/loads/${id}`, patch),
-    onSuccess: refresh,
-    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
-  });
+  const onErr = (e: unknown) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong"));
+  const save = useMutation({ mutationFn: (patch: Record<string, unknown>) => api.put(`/loads/${id}`, patch), onSuccess: refresh, onError: onErr });
   const commit = (patch: Record<string, unknown>) => { setErr(null); save.mutate(patch); };
-
-  const removeSlips = useMutation({
-    mutationFn: (slipIds: string[]) => api.del(`/loads/${id}/slips`, { slipIds }),
-    onSuccess: async () => { await refresh(); await qc.invalidateQueries({ queryKey: ["slips"] }); },
-    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  const lineSave = useMutation({
+    mutationFn: ({ lineId, patch }: { lineId: string; patch: Record<string, unknown> }) => api.put(`/loads/${id}/lines/${lineId}`, patch),
+    onSuccess: refresh, onError: onErr,
   });
-
+  const lineAdd = useMutation({ mutationFn: (body: Record<string, unknown>) => api.post(`/loads/${id}/lines`, body), onSuccess: refresh, onError: onErr });
+  const lineDel = useMutation({ mutationFn: (lineId: string) => api.del(`/loads/${id}/lines/${lineId}`), onSuccess: refresh, onError: onErr });
   const del = useMutation({
     mutationFn: () => api.del(`/loads/${id}`),
-    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["loads"] }); await qc.invalidateQueries({ queryKey: ["slips"] }); navigate("/loads"); },
-    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["loads"] }); await qc.invalidateQueries({ queryKey: ["stock"] }); navigate("/loads"); },
+    onError: onErr,
   });
 
   // the invoice number the owner sees: typed, else the next in the series
@@ -510,12 +420,8 @@ export function LoadDetailPage({ id }: { id: string }) {
       if ((st!.load.invoiceNo ?? "") !== invoice.trim()) await api.put(`/loads/${id}`, { invoiceNo: invoice.trim() || null });
       return api.post<{ parchaNo: string; version: number }>(`/loads/${id}/approve`);
     },
-    onSuccess: async () => { setApproving(false); await refresh(); await qc.invalidateQueries({ queryKey: ["parchas"] }); await qc.invalidateQueries({ queryKey: ["slips"] }); },
-    onError: async (e) => {
-      setApproving(false);
-      await refresh();
-      setErr(e instanceof ApiError ? e.message : t("common.somethingWrong"));
-    },
+    onSuccess: async () => { setApproving(false); await refresh(); await qc.invalidateQueries({ queryKey: ["parchas"] }); },
+    onError: async (e) => { setApproving(false); await refresh(); onErr(e); },
   });
 
   if (q.isPending) return <div className="space-y-4"><SkeletonForm fields={4} /><SkeletonTable rows={6} /></div>;
@@ -540,6 +446,12 @@ export function LoadDetailPage({ id }: { id: string }) {
   const shownDoc = doc && !st.approved ? { ...doc, invoiceNo: invoice.trim() || doc.invoiceNo } : doc;
   const autoKatte = Math.round(w.katte * cfg.millBardanaKgPerBag * 1000);
   const autoBore = Math.round(w.bore * cfg.millBoreBardanaKgPerBag * 1000);
+  const linesTotal = st.lines.reduce((s, x) => s + x.weightGrams, 0);
+  const goodsTotal = st.lines.reduce((s, x) => s + x.amountPaise, 0);
+  const dayOptions = days.data ?? [];
+  const nextDay = dayOptions.find((d) => d.leftGrams > 0 && !st.lines.some((x) => x.stockDate === d.date))?.date
+    ?? dayOptions[0]?.date ?? l.loadDate;
+  const openPos = (pos.data ?? []).filter((o) => o.status === "open" || st.lines.some((x) => x.poId === o.id));
 
   return (
     <div>
@@ -569,7 +481,7 @@ export function LoadDetailPage({ id }: { id: string }) {
             )}
             {!billed && can("load.delete") && !st.history.length && (
               <Button variant="ghost" icon={<Trash2 className="h-4 w-4 text-bad" />}
-                onClick={() => { if (confirm(t("load.confirmDelete", { n: st.slips.length }))) del.mutate(); }}>
+                onClick={() => { if (confirm(t("load.confirmDelete"))) del.mutate(); }}>
                 {t("common.delete")}
               </Button>
             )}
@@ -598,20 +510,8 @@ export function LoadDetailPage({ id }: { id: string }) {
               </Field>
               <Field label={t("load.mill")}>
                 <select value={l.merchantId} disabled={!canEdit} className={CELL}
-                  onChange={(e) => {
-                    if (st.slips.length && !confirm(t("load.confirmMill", { n: st.slips.length }))) return;
-                    commit({ merchantId: e.target.value, poId: null });
-                  }}>
+                  onChange={(e) => { if (confirm(t("load.confirmMill"))) commit({ merchantId: e.target.value }); }}>
                   {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {m.name}</option>)}
-                </select>
-              </Field>
-              <Field label={t("load.po")}>
-                <select value={l.poId ?? ""} disabled={!canEdit} className={CELL}
-                  onChange={(e) => commit({ poId: e.target.value || null })}>
-                  <option value="">{t("load.noPo")}</option>
-                  {pos.data?.filter((o) => o.status === "open" || o.id === l.poId).map((o) => (
-                    <option key={o.id} value={o.id}>PO {o.poNo} · {dmy(o.poDate)} · {f.weight(o.qtyGrams)} {f.unit}</option>
-                  ))}
                 </select>
               </Field>
               <Field label={t("load.transporter")}>
@@ -623,78 +523,10 @@ export function LoadDetailPage({ id }: { id: string }) {
               <Field label={t("load.eway")} hint={t("common.optional")}>
                 <TextCell value={l.ewayBillNo} mono disabled={!canEdit} onCommit={(v) => commit({ ewayBillNo: v })} />
               </Field>
-              <Field label={t("adati.notes")}>
+              <Field label={t("adati.notes")} className="lg:col-span-2">
                 <TextCell value={l.notes} disabled={!canEdit} onCommit={(v) => commit({ notes: v })} />
               </Field>
             </div>
-            {st.po && (
-              <div className="flex flex-wrap items-center gap-3 border-t border-line px-4 py-2.5 text-[13px]">
-                <span className="text-muted">PO {st.po.poNo}</span>
-                <span>{t("po.ordered")} <b className="num">{f.weight(st.po.qtyGrams)}</b></span>
-                <span>{t("load.poOthers")} <b className="num">{f.weight(st.po.otherLoadsGrams)}</b></span>
-                <span>{t("load.poThis")} <b className="num">{f.weight(st.po.thisLoadGrams)}</b></span>
-                <span className={cn(st.po.balanceGrams < 0 && "text-warn font-medium")}>
-                  {st.po.balanceGrams < 0 ? t("po.over", { q: f.weight(-st.po.balanceGrams) }) : <>{t("po.balance")} <b className="num">{f.weight(st.po.balanceGrams)}</b></>}
-                </span>
-                <div className="w-32"><PoProgress sent={st.po.otherLoadsGrams + st.po.thisLoadGrams} qty={st.po.qtyGrams} /></div>
-              </div>
-            )}
-          </Card>
-
-          {/* slips */}
-          <Card>
-            <CardHeader
-              title={t("load.slipsOn", { n: st.slips.length })}
-              sub={t("load.slipsSub")}
-              action={canEdit && (
-                <Button size="sm" variant="primary" icon={<PackagePlus className="h-4 w-4" />} onClick={() => setAdding(true)}>{t("load.addSlips")}</Button>
-              )} />
-            {!st.slips.length ? (
-              <EmptyState icon={<PackagePlus className="h-5 w-5" />} title={t("load.noSlips")} sub={t("load.noSlipsSub")}
-                action={canEdit && <Button variant="primary" onClick={() => setAdding(true)}>{t("load.addSlips")}</Button>} />
-            ) : (
-              <Table>
-                <thead>
-                  <tr>
-                    <Th>{t("daily.rst")}</Th><Th>{t("load.date")}</Th><Th>{t("daily.supplier")}</Th>
-                    <Th numeric>{t("daily.gross")}</Th><Th numeric>{t("load.katauti")}</Th><Th numeric>{t("load.net")}</Th>
-                    <Th numeric>{t("load.rate")}</Th><Th numeric>{t("load.amount")}</Th>{canEdit && <Th className="w-10" />}
-                  </tr>
-                </thead>
-                <tbody>
-                  {st.slips.map((s) => (
-                    <Tr key={s.id}>
-                      <Td className="font-mono">{s.rstNo}</Td>
-                      <Td className="whitespace-nowrap text-muted">{dmy(s.slipDate)}</Td>
-                      <Td className="whitespace-nowrap">{lang === "hi" ? <span lang="hi">{s.adatiNameHi}</span> : s.adatiNameHinglish || s.adatiNameHi}</Td>
-                      <Td numeric>{f.weight(s.grossGrams)}</Td>
-                      <Td numeric className="text-muted">{s.katautiUnits}</Td>
-                      <Td numeric>{f.weight(s.netGrams)}</Td>
-                      <Td numeric>{s.ratePaisePerQtl ? f.rate(s.ratePaisePerQtl) : <span className="rounded border border-warn px-1 text-warn">{t("load.noRate")}</span>}</Td>
-                      <Td numeric>{f.amount(s.amountPaise)}</Td>
-                      {canEdit && (
-                        <Td className="text-right">
-                          <Button variant="ghost" size="icon" title={t("load.takeOff")} onClick={() => { setErr(null); removeSlips.mutate([s.id]); }}>
-                            <X className="h-3.5 w-3.5" />
-                          </Button>
-                        </Td>
-                      )}
-                    </Tr>
-                  ))}
-                </tbody>
-                <tfoot>
-                  <tr className="bg-raised/50 text-[13px] font-semibold">
-                    <td className="px-3 py-2" colSpan={3}>{t("load.total")}</td>
-                    <td className="num px-3 py-2 text-right">{f.weight(st.slipTotals.grossGrams)}</td>
-                    <td className="num px-3 py-2 text-right text-muted">{st.slipTotals.katautiUnits}</td>
-                    <td className="num px-3 py-2 text-right">{f.weight(st.slipTotals.netGrams)}</td>
-                    <td className="num px-3 py-2 text-right" title={t("load.avgRateHelp")}>{st.slipTotals.avgRatePaisePerQtl ? f.rate(st.slipTotals.avgRatePaisePerQtl) : "—"}</td>
-                    <td className="num px-3 py-2 text-right">{f.amount(st.slipTotals.amountPaise)}</td>
-                    {canEdit && <td />}
-                  </tr>
-                </tfoot>
-              </Table>
-            )}
           </Card>
 
           {/* mill weighbridge */}
@@ -705,12 +537,12 @@ export function LoadDetailPage({ id }: { id: string }) {
               <Field label={t("load.dharamKanta")}>
                 <NumCell value={l.millGrossGrams} scale={Q} decimals={2} disabled={!canEdit} placeholder="315.30"
                   onCommit={(v) => commit({ millGrossGrams: v })}
-                  className={cn(!l.millGrossGrams && st.slips.length > 0 && !billed && "border-warn")} />
+                  className={cn(!l.millGrossGrams && !billed && "border-warn")} />
               </Field>
               <Field label={t("load.katte")}>
                 <NumCell value={l.katteCount} scale={1} integer disabled={!canEdit} placeholder="800"
                   onCommit={(v) => commit({ katteCount: v })}
-                  className={cn(w.bags === 0 && st.slips.length > 0 && !billed && "border-warn")} />
+                  className={cn(w.bags === 0 && !billed && "border-warn")} />
               </Field>
               <Field label={t("load.bore")}>
                 <NumCell value={l.boreCount} scale={1} integer disabled={!canEdit} placeholder="0" onCommit={(v) => commit({ boreCount: v })} />
@@ -729,15 +561,105 @@ export function LoadDetailPage({ id }: { id: string }) {
                 </div>
               </Field>
             </div>
-            {w.netGrams != null && st.slipTotals.netGrams > 0 && (
-              <div className="border-t border-line px-4 py-2.5 text-[13px] text-muted">
-                {t("load.compare", {
-                  ours: f.weight(st.slipTotals.netGrams), mill: f.weight(w.netGrams),
-                  diff: f.weight(Math.abs(st.slipTotals.netGrams - w.netGrams)),
-                  dir: st.slipTotals.netGrams >= w.netGrams ? t("load.less") : t("load.more"),
-                })}
+          </Card>
+
+          {/* goods loaded: weight rows against the mill's stock */}
+          <Card>
+            <CardHeader
+              title={<span className="inline-flex items-center gap-1.5"><PackagePlus className="h-4 w-4 text-brand" />{t("load.goods")}</span>}
+              sub={t("load.goodsSub", { mill: st.mill.code })}
+              action={canEdit && (
+                <Button size="sm" icon={<Plus className="h-3.5 w-3.5" />} loading={lineAdd.isPending}
+                  onClick={() => { setErr(null); lineAdd.mutate({ stockDate: nextDay }); }}>{t("load.addRow")}</Button>
+              )} />
+            <Table>
+              <thead>
+                <tr>
+                  <Th>{t("load.fromDay")}</Th><Th>PO</Th><Th numeric>{t("load.weightQtl")}</Th>
+                  <Th numeric>{t("load.rate")}</Th><Th numeric>{t("load.amount")}</Th><Th numeric>{t("load.dayLeft")}</Th>
+                  {canEdit && <Th className="w-10" />}
+                </tr>
+              </thead>
+              <tbody>
+                {st.lines.map((x) => (
+                  <tr key={x.id} className="border-b border-line/70">
+                    <td className="px-2 py-1.5">
+                      <select value={x.stockDate} disabled={!canEdit} className={cn(CELL, "min-w-[210px]")}
+                        onChange={(e) => lineSave.mutate({ lineId: x.id, patch: { stockDate: e.target.value } })}>
+                        {!dayOptions.some((d) => d.date === x.stockDate) && <option value={x.stockDate}>{dmy(x.stockDate)}</option>}
+                        {dayOptions.map((d) => <option key={d.date} value={d.date}>{dayLabel(f, t, d)}</option>)}
+                      </select>
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <select value={x.poId ?? ""} disabled={!canEdit} className={cn(CELL, "min-w-[120px]")}
+                        onChange={(e) => lineSave.mutate({ lineId: x.id, patch: { poId: e.target.value || null } })}>
+                        <option value="">—</option>
+                        {openPos.map((o) => <option key={o.id} value={o.id}>{o.poNo ? `PO ${o.poNo}` : poName(t, o)}</option>)}
+                      </select>
+                    </td>
+                    <td className="w-36 px-2 py-1.5">
+                      <NumCell value={x.netGrams} scale={Q} decimals={2} disabled={!canEdit}
+                        placeholder={x.weightIsRest ? (x.weightGrams / Q).toFixed(2) : ""}
+                        onCommit={(v) => lineSave.mutate({ lineId: x.id, patch: { netGrams: v } })} />
+                      {x.weightIsRest && <p className="mt-0.5 text-right text-[10px] text-faint">{t("load.restOfNet")}</p>}
+                    </td>
+                    <td className="w-32 px-2 py-1.5">
+                      <NumCell value={x.ratePaisePerQtl} scale={100} decimals={2} disabled={!canEdit}
+                        placeholder={x.dayAvgRatePaisePerQtl ? (x.dayAvgRatePaisePerQtl / 100).toFixed(2) : "—"}
+                        onCommit={(v) => lineSave.mutate({ lineId: x.id, patch: { ratePaisePerQtl: v } })}
+                        className={cn(!x.ratePaisePerQtlUsed && !billed && "border-warn")} />
+                      <p className="mt-0.5 text-right text-[10px] text-faint">{x.rateTyped ? t("load.typed") : t("load.dayAverage")}</p>
+                    </td>
+                    <td className="num px-3 py-1.5 text-right">{f.amount(x.amountPaise)}</td>
+                    <td className={cn("num px-3 py-1.5 text-right", x.day.leftGrams < 0 && "font-medium text-warn")}
+                      title={t("load.dayLeftHelp", { bought: f.weight(x.day.boughtNetGrams), other: f.weight(x.day.otherTrucksGrams), mine: f.weight(x.day.thisTruckGrams) })}>
+                      {f.weight(x.day.leftGrams)}
+                    </td>
+                    {canEdit && (
+                      <td className="px-1 text-right">
+                        {st.lines.length > 1 && (
+                          <Button variant="ghost" size="icon" title={t("load.removeRow")} onClick={() => { setErr(null); lineDel.mutate(x.id); }}>
+                            <X className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-raised/50 text-[13px] font-semibold">
+                  <td className="px-3 py-2" colSpan={2}>{t("load.total")}</td>
+                  <td className={cn("num px-3 py-2 text-right", w.netGrams != null && linesTotal !== w.netGrams && "text-bad")}>
+                    {f.weight(linesTotal)}
+                    {w.netGrams != null && linesTotal !== w.netGrams && <span className="block text-[10px] font-normal">{t("load.millNetIs", { q: f.weight(w.netGrams) })}</span>}
+                  </td>
+                  <td className="num px-3 py-2 text-right">{linesTotal ? f.rate(Math.round((goodsTotal * Q) / linesTotal)) : "—"}</td>
+                  <td className="num px-3 py-2 text-right">{f.amount(goodsTotal)}</td>
+                  <td colSpan={canEdit ? 2 : 1} />
+                </tr>
+              </tfoot>
+            </Table>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line px-4 py-2.5 text-[13px]">
+              <span className="text-muted">{t("load.millStock", { mill: st.mill.code, jins: st.jins.code })}</span>
+              <span>{t("load.stockBought")} <b className="num">{f.weight(st.stock.boughtNetGrams)}</b></span>
+              <span>{t("load.stockOthers")} <b className="num">{f.weight(st.stock.otherTrucksGrams)}</b></span>
+              <span>{t("load.stockThis")} <b className="num">{f.weight(st.stock.thisTruckGrams)}</b></span>
+              <span className={cn(st.stock.leftGrams < 0 && "text-warn")}>{t("load.stockLeft")} <b className="num">{f.weight(st.stock.leftGrams)}</b></span>
+              <Link href={`/stock?mill=${st.mill.id}`} className="text-brand hover:underline">{t("load.seeStock")}</Link>
+            </div>
+            {st.pos.map((p) => (
+              <div key={p.id} className="flex flex-wrap items-center gap-3 border-t border-line px-4 py-2 text-[13px]">
+                <span className="text-muted">{p.poNo ? `PO ${p.poNo}` : poName(t, p)}</span>
+                <span>{t("po.ordered")} <b className="num">{f.weight(p.qtyGrams)}</b></span>
+                <span>{t("load.poOthers")} <b className="num">{f.weight(p.otherLoadsGrams)}</b></span>
+                <span>{t("load.poThis")} <b className="num">{f.weight(p.thisLoadGrams)}</b></span>
+                <span className={cn(p.balanceGrams < 0 && "font-medium text-warn")}>
+                  {p.balanceGrams < 0 ? t("po.over", { q: f.weight(-p.balanceGrams) }) : <>{t("po.balance")} <b className="num">{f.weight(p.balanceGrams)}</b></>}
+                </span>
+                <div className="w-32"><PoProgress sent={p.otherLoadsGrams + p.thisLoadGrams} qty={p.qtyGrams} /></div>
               </div>
-            )}
+            ))}
           </Card>
         </div>
 
@@ -829,7 +751,7 @@ export function LoadDetailPage({ id }: { id: string }) {
             {!billed && can("parcha.approve") && (
               <div className="border-t border-line p-4">
                 <Button variant="primary" className="w-full" icon={<CheckCircle2 className="h-4 w-4" />}
-                  disabled={blockers.length > 0 || !shownDoc || save.isPending}
+                  disabled={blockers.length > 0 || !shownDoc || save.isPending || lineSave.isPending}
                   onClick={() => setApproving(true)}>
                   {t("parcha.approve")}
                 </Button>
@@ -858,7 +780,6 @@ export function LoadDetailPage({ id }: { id: string }) {
         </div>
       </div>
 
-      {adding && <AddSlipsDialog st={st} onClose={() => setAdding(false)} />}
       {paper && shownDoc && <PaperDialog doc={shownDoc} draft={!billed} loadId={id} onClose={() => setPaper(false)} />}
       {approving && shownDoc && (
         <Dialog open onClose={() => setApproving(false)} title={t("parcha.approveTitle", { no: invoice.trim() })}
@@ -868,7 +789,7 @@ export function LoadDetailPage({ id }: { id: string }) {
               onClick={() => approve.mutate()}>{t("parcha.approveConfirm")}</Button>
           </>}>
           <p className="text-[14px]">{t("parcha.approveBody", {
-            total: f.money(shownDoc.result.grandTotalPaise), mill: st.mill.code, n: st.slips.length,
+            total: f.money(shownDoc.result.grandTotalPaise), mill: st.mill.code, q: f.weight(linesTotal),
           })}</p>
         </Dialog>
       )}

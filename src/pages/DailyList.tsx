@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Calendar, Trash2, Truck, AlertTriangle, Check,
   RefreshCw, Download, Keyboard, Lock, Plus, X, Image as ImageIcon, CheckSquare,
+  FileSpreadsheet,
 } from "lucide-react";
 import { api, ApiError, type Jins, type Merchant, type SlipRow, type SlipTotals, type SlipDay, type KatautiConfig } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -15,7 +16,8 @@ import { usePrefs, DAILY_COLUMNS, type DailyColumnKey } from "@/lib/prefs.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
-import { NewLoadDialog } from "@/pages/Loads.tsx";
+import { DownloadDialog } from "@/components/DownloadDialog.tsx";
+import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
 import {
   Button, Card, Select, Input, Badge, Alert, EmptyState, Dialog, Field, Spinner, Checkbox,
 } from "@/components/ui/index.tsx";
@@ -80,8 +82,9 @@ export function DailyListPage() {
   const f = useFormat();
   const qc = useQueryClient();
   const { can } = useSession();
-  const { prefs } = usePrefs();
+  const { prefs, setForSession } = usePrefs();
   const P = prefs.dailyList;
+  const [downloading, setDownloading] = useState<null | "list" | "dara">(null);
 
   const [date, setDate] = useState(todayISO);
   const [merchantId, setMerchantId] = useState<string>("");
@@ -229,80 +232,13 @@ export function DailyListPage() {
   const sheetTotalGrams = parseQtlToGrams(sheetTotal);
   const sheetDiff = sheetTotalGrams !== null && totals ? totals.netGrams - sheetTotalGrams : null;
 
-  const exportCsv = () => {
-    const cols = DAILY_COLUMNS.filter((c) => P.exportColumns[c.key] !== false);
-    const value = (c: DailyColumnKey, r: SlipRow, i: number): string | number => {
-      switch (c) {
-        case "sr": return i + 1;
-        case "rstNo": return r.rstNo;
-        case "adatiHi": return r.adatiNameHi;
-        case "adatiLatin": return r.adatiNameHinglish;
-        case "village": return r.adatiVillage ?? "";
-        case "mill": return r.merchantCode ?? "";
-        case "jins": return r.jinsCode;
-        case "gross": return (r.grossGrams / GRAMS_PER_QTL).toFixed(2);
-        case "katauti": return r.katautiUnits;
-        case "deduction": return (r.katautiGrams / GRAMS_PER_QTL).toFixed(2);
-        case "net": return (r.netGrams / GRAMS_PER_QTL).toFixed(2);
-        case "rate": return r.ratePending ? "" : (r.ratePaisePerQtl / 100).toFixed(2);
-        case "amount": return r.ratePending ? "" : (r.amountPaise / 100).toFixed(2);
-        case "bagsCount": return r.bagsCount ?? "";
-        case "status": return r.status;
-        default: return "";
-      }
-    };
-    const totalValue = (c: DailyColumnKey): string | number => {
-      if (!totals) return "";
-      switch (c) {
-        case "rstNo": return "TOTAL";
-        case "gross": return (totals.grossGrams / GRAMS_PER_QTL).toFixed(2);
-        case "katauti": return totals.katautiUnits;
-        case "deduction": return (totals.katautiGrams / GRAMS_PER_QTL).toFixed(2);
-        case "net": return (totals.netGrams / GRAMS_PER_QTL).toFixed(2);
-        case "rate": return (totals.weightedAvgRatePaise / 100).toFixed(2);
-        case "amount": return (totals.amountPaise / 100).toFixed(2);
-        case "bagsCount": return totals.bagsCount || "";
-        default: return "";
-      }
-    };
-    const header = cols.map((c) => c.en);
-    const esc = (v: unknown) => {
-      const s = String(v ?? "");
-      return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
-    };
-    const body = ordered.map((r, i) => cols.map((c) => value(c.key, r, i)));
-    const foot = totals ? [cols.map((c) => totalValue(c.key))] : [];
-    const csv = [header, ...body, ...foot].map((r) => r.map(esc).join(",")).join("\r\n");
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `daily-list-${date}${activeMill ? "-" + activeMill.code : ""}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  };
-
   const dayInfo = days.data?.find((x) => x.slipDate === date);
 
   /* ---------------------------------------------- column-driven rendering */
 
-  /* Rows already on a load are locked, so they can never be part of a bulk
-     action — select-all means "everything I am allowed to move". */
-  const selectableIds = rows.filter((r) => !r.loadId).map((r) => r.id);
+  /* Select-all means every row of the day. */
+  const selectableIds = rows.map((r) => r.id);
 
-  /* Selected slips straight onto a truck: one commodity per truck, and the
-     sheet's mill is the likely destination when they all share one. */
-  const [truckPreset, setTruckPreset] = useState<null | { slipIds: string[]; merchantId: string | null; jinsId: string; date: string; netGrams: number }>(null);
-  const putOnTruck = () => {
-    const sel = rows.filter((r) => selected.has(r.id) && !r.loadId);
-    const jinsIds = [...new Set(sel.map((r) => r.jinsId))];
-    if (jinsIds.length !== 1) { setErr(t("daily.mixedJins")); return; }
-    const mills = [...new Set(sel.map((r) => r.merchantId))];
-    setTruckPreset({
-      slipIds: sel.map((r) => r.id), jinsId: jinsIds[0],
-      merchantId: mills.length === 1 ? mills[0] : null,
-      date, netGrams: sel.reduce((s, r) => s + r.netGrams, 0),
-    });
-  };
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
   const someSelected = selected.size > 0;
 
@@ -315,13 +251,27 @@ export function DailyListPage() {
   const nameCol: DailyColumnKey = visibleCols.some((c) => c.key === "adatiHi") ? "adatiHi" : "adatiLatin";
   const PAD = P.density === "compact" ? "py-0.5" : "py-1";
 
-  const ordered = useMemo(() => {
-    const list = [...rows];
-    if (P.sortOrder === "rstAsc") list.sort((a, b) => (Number(a.rstNo) || 0) - (Number(b.rstNo) || 0));
-    else if (P.sortOrder === "rstDesc") list.sort((a, b) => (Number(b.rstNo) || 0) - (Number(a.rstNo) || 0));
-    else if (P.sortOrder === "newestFirst") list.sort((a, b) => b.createdAt - a.createdAt);
-    return list;
-  }, [rows, P.sortOrder]);
+  const ordered = useMemo(
+    () => sortSlips(rows, P.sortOrder, (r) => (nameCol === "adatiHi" ? r.adatiNameHi : r.adatiNameHinglish || r.adatiNameHi)),
+    [rows, P.sortOrder, nameCol],
+  );
+
+  /* Clicking the name or RST heading sorts by it: up, down, then back to
+     the order entered. The choice lasts for this browser, like the gear's. */
+  const SORT_CYCLE: Partial<Record<DailyColumnKey, [SlipSortOrder, SlipSortOrder]>> = {
+    adatiHi: ["nameAsc", "nameDesc"], adatiLatin: ["nameAsc", "nameDesc"], rstNo: ["rstAsc", "rstDesc"],
+  };
+  const sortBy = (key: DailyColumnKey) => {
+    const cyc = SORT_CYCLE[key];
+    if (!cyc) return;
+    const next: SlipSortOrder = P.sortOrder === cyc[0] ? cyc[1] : P.sortOrder === cyc[1] ? "entry" : cyc[0];
+    setForSession({ sortOrder: next });
+  };
+  const sortMark = (key: DailyColumnKey) => {
+    const cyc = SORT_CYCLE[key];
+    if (!cyc || (key !== nameCol && key !== "rstNo")) return null;
+    return P.sortOrder === cyc[0] ? "▲" : P.sortOrder === cyc[1] ? "▼" : null;
+  };
 
   const rstCount = useMemo(() => {
     const m = new Map<string, number>();
@@ -345,14 +295,6 @@ export function DailyListPage() {
             </Link>
           )}
           {r.ratePending && <Badge tone="warn">{t("daily.ratePending")}</Badge>}
-          {r.loadId && (
-            <Link href={`/loads/${r.loadId}`} title={r.loadStatus === "billed" ? t("daily.lockedRow") : t("daily.onTruckHelp")}>
-              <Badge tone={r.loadStatus === "billed" ? "ok" : "neutral"}>
-                {r.loadStatus === "billed" ? <Lock className="h-2.5 w-2.5" /> : <Truck className="h-2.5 w-2.5" />}
-                {r.loadTruckNo ?? t("daily.onLoad")}
-              </Badge>
-            </Link>
-          )}
         </span>
       );
       case "adatiLatin": return <span className="truncate text-[12px] text-muted">{r.adatiNameHinglish}</span>;
@@ -503,9 +445,15 @@ export function DailyListPage() {
             <Button size="sm" variant="ghost" icon={<Keyboard className="h-3.5 w-3.5" />} onClick={() => setShowHelp(true)} />
             <DailyListSettings />
             {can("export.data") && (
-              <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={exportCsv} disabled={!rows.length}>
-                CSV
-              </Button>
+              <>
+                <Button size="sm" icon={<FileSpreadsheet className="h-3.5 w-3.5" />} onClick={() => setDownloading("dara")}
+                  title={t("dl.dara")}>
+                  {t("dl.daraButton")}
+                </Button>
+                <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={() => setDownloading("list")}>
+                  {t("dl.button")}
+                </Button>
+              </>
             )}
           </div>
         }
@@ -592,11 +540,6 @@ export function DailyListPage() {
                 {t("daily.selectAllN", { n: selectableIds.length })}
               </Button>
             )}
-            {can("load.write") && (
-              <Button size="sm" variant="primary" icon={<Truck className="h-3.5 w-3.5" />} onClick={putOnTruck}>
-                {t("daily.putOnTruck")}
-              </Button>
-            )}
             <span className="text-[12px] text-muted">{t("daily.reassign")}:</span>
             {mills.data?.map((m) => (
               <Button key={m.id} size="sm" variant="secondary" loading={reassign.isPending}
@@ -625,13 +568,16 @@ export function DailyListPage() {
                 </th>
                 {visibleCols.map((c) => (
                   <th key={c.key}
-                    title={c.key === "katauti" ? t("daily.katautiAuto") : undefined}
+                    title={c.key === "katauti" ? t("daily.katautiAuto") : SORT_CYCLE[c.key] ? t("daily.clickToSort") : undefined}
+                    onClick={SORT_CYCLE[c.key] ? () => sortBy(c.key) : undefined}
                     className={cn(
                       "border-b border-line px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted",
                       NUMERIC.has(c.key) ? "text-right" : "text-left",
+                      SORT_CYCLE[c.key] && "cursor-pointer select-none hover:text-ink",
                       WIDTHS[c.key],
                     )}>
                     {pick(c.en, c.hi)}
+                    {sortMark(c.key) && <span className="ml-1 text-brand">{sortMark(c.key)}</span>}
                     {(c.key === "rate" || c.key === "amount") && f.symbol && (
                       <span className="ml-0.5 font-normal normal-case text-faint">{f.symbol}</span>
                     )}
@@ -651,8 +597,6 @@ export function DailyListPage() {
               {P.newRowPosition === "top" && entryRow}
 
               {!sheet.isLoading && ordered.map((r, i) => {
-                // on a draft truck a slip can still be corrected; an approved parcha locks it
-                const locked = r.loadStatus === "billed";
                 if (editing?.id === r.id) {
                   const ed = editing.draft;
                   const dd = derive(ed, r.katautiCfg);
@@ -680,10 +624,9 @@ export function DailyListPage() {
                   <tr key={r.id} className={cn(
                     "transition-colors hover:bg-raised/40",
                     !r.reconciles && "bg-bad-soft/60",
-                    locked && "opacity-75",
                   )}>
                     <td className={cn("border-b border-line/70 px-2", PAD)}>
-                      {!r.loadId && can("slip.write") && (
+                      {can("slip.write") && (
                         <Checkbox checked={selected.has(r.id)} onChange={(v) => {
                           const next = new Set(selected);
                           if (v) next.add(r.id); else next.delete(r.id);
@@ -701,7 +644,7 @@ export function DailyListPage() {
                     ))}
                     <td className={cn("border-b border-line/70 px-1", PAD)}>
                       <div className="flex items-center justify-end gap-0.5">
-                        {can("slip.write") && !locked && (
+                        {can("slip.write") && (
                           <Button size="icon" variant="ghost" className="h-7 w-7"
                             onClick={() => setEditing({
                               id: r.id,
@@ -715,7 +658,7 @@ export function DailyListPage() {
                             <RefreshCw className="h-3.5 w-3.5" />
                           </Button>
                         )}
-                        {can("slip.delete") && !r.loadId && (
+                        {can("slip.delete") && (
                           <Button size="icon" variant="ghost" className="h-7 w-7"
                             onClick={() => { if (confirm(t("daily.confirmDeleteRow", { rst: r.rstNo }))) remove.mutate(r.id); }}>
                             <Trash2 className="h-3.5 w-3.5 text-bad/80" />
@@ -820,9 +763,9 @@ export function DailyListPage() {
           <HindiInput value={newSupplierName ?? ""} autoFocus onChange={setNewSupplierName} />
         </Field>
       </Dialog>
-      {truckPreset && (
-        <NewLoadDialog open preset={truckPreset}
-          onClose={() => { setTruckPreset(null); setSelected(new Set()); }} />
+      {downloading && (
+        <DownloadDialog open date={date} merchantId={merchantId} mills={mills.data ?? []}
+          initial={downloading} onClose={() => setDownloading(null)} />
       )}
     </>
   );

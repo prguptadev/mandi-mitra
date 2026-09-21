@@ -17,6 +17,10 @@ import { dmy } from "@server/lib/parchaLabels.ts";
 
 const NUM = "h-9.5 w-full rounded-lg border bg-surface px-3 text-sm text-ink tabular-nums focus:border-brand disabled:opacity-60";
 
+/** A PO is named by its number, or by its date when the mill gave none. */
+export const poName = (t: (k: "po.ofDate", v?: Record<string, string>) => string, o: { poNo: string | null; poDate: string | null }) =>
+  o.poNo ? `PO ${o.poNo}` : t("po.ofDate", { d: o.poDate ? dmy(o.poDate) : "—" });
+
 /** Sent against ordered, as a bar that turns orange once the mill has had more than it asked for. */
 export function PoProgress({ sent, qty }: { sent: number; qty: number }) {
   const pct = qty > 0 ? Math.min(100, (sent / qty) * 100) : 0;
@@ -61,11 +65,11 @@ function OrderDialog({ open, onClose, editing }: { open: boolean; onClose: () =>
   });
 
   return (
-    <Dialog open={open} onClose={onClose} title={editing ? `${t("po.edit")} — ${editing.poNo}` : t("po.add")} sub={t("po.addSub")}
+    <Dialog open={open} onClose={onClose} title={editing ? `${t("po.edit")} — ${poName(t, editing)}` : t("po.add")} sub={t("po.addSub")}
       footer={<>
         <Button onClick={onClose}>{t("common.cancel")}</Button>
         <Button variant="primary" loading={save.isPending}
-          disabled={!f.merchantId || !jinsId || !f.poNo.trim() || !f.qtyQtl}
+          disabled={!f.merchantId || !jinsId || !f.poDate || !f.qtyQtl}
           onClick={() => { setErr(null); save.mutate(); }}>{t("common.save")}</Button>
       </>}>
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
@@ -81,8 +85,8 @@ function OrderDialog({ open, onClose, editing }: { open: boolean; onClose: () =>
             {jins.data?.map((j) => <option key={j.id} value={j.id}>{j.code} — {pick(j.name, j.nameHi)}</option>)}
           </Select>
         </Field>
-        <Field label={t("po.no")} required>
-          <Input value={f.poNo} mono onChange={(e) => setF((p) => ({ ...p, poNo: e.target.value }))} placeholder="1" />
+        <Field label={t("po.no")} hint={t("po.noHelp")}>
+          <Input value={f.poNo} mono onChange={(e) => setF((p) => ({ ...p, poNo: e.target.value }))} placeholder={t("common.optional")} />
         </Field>
         <Field label={t("po.date")} required>
           <Input type="date" value={f.poDate} onChange={(e) => setF((p) => ({ ...p, poDate: e.target.value }))} />
@@ -168,7 +172,7 @@ export function OrdersPage() {
             <tbody>
               {rows.map((o) => (
                 <Tr key={o.id}>
-                  <Td className="font-mono font-medium">{o.poNo}</Td>
+                  <Td className="font-mono font-medium">{o.poNo || <span className="font-sans font-normal text-faint">{t("po.noNumber")}</span>}</Td>
                   <Td className="whitespace-nowrap">{dmy(o.poDate)}</Td>
                   <Td className="whitespace-nowrap">
                     <Badge tone="brand" className="num">{o.millCode}</Badge>
@@ -198,7 +202,7 @@ export function OrdersPage() {
                         </Button>
                         {o.loads === 0 && (
                           <Button variant="ghost" size="icon" title={t("common.delete")}
-                            onClick={() => { if (confirm(t("po.confirmDelete", { no: o.poNo }))) { setErr(null); act.mutate({ id: o.id, kind: "delete" }); } }}>
+                            onClick={() => { if (confirm(t("po.confirmDelete", { no: poName(t, o) }))) { setErr(null); act.mutate({ id: o.id, kind: "delete" }); } }}>
                             <Trash2 className="h-3.5 w-3.5 text-bad" />
                           </Button>
                         )}

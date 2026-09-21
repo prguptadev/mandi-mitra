@@ -19,6 +19,7 @@ import { ScanReviewPage } from "@/pages/ScanReview.tsx";
 import { MillsPage } from "@/pages/Mills.tsx";
 import { OrdersPage } from "@/pages/Orders.tsx";
 import { LoadsPage, LoadDetailPage, ParchaRegisterPage } from "@/pages/Loads.tsx";
+import { StockPage } from "@/pages/Stock.tsx";
 import { UsersPage, RolesPage, AuditPage, CommoditiesPage, SettingsPage } from "@/pages/Admin.tsx";
 
 function AddBusinessDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -125,6 +126,7 @@ export default function App() {
           <Route path="/loads">{() => <Guard perm="load.read"><LoadsPage /></Guard>}</Route>
           <Route path="/loads/:id">{(p) => <Guard perm="load.read"><LoadDetailPage id={p.id} /></Guard>}</Route>
           <Route path="/parcha">{() => <Guard perm="parcha.read"><ParchaRegisterPage /></Guard>}</Route>
+          <Route path="/stock">{() => <Guard perm="stock.read"><StockPage /></Guard>}</Route>
           <Route path="/suppliers">{() => <Guard perm="adati.read"><SuppliersPage /></Guard>}</Route>
           <Route path="/mills">{() => <Guard perm="merchant.read"><MillsPage /></Guard>}</Route>
           <Route path="/commodities">{() => <Guard perm="jins.read"><CommoditiesPage /></Guard>}</Route>

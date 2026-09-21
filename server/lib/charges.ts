@@ -191,6 +191,8 @@ export interface ParchaInput {
   trucks?: number;
   advancePaise?: number;
   manualDaraPaise?: number;
+  /** When the goods are several rows at different rates: their summed amount. */
+  goodsPaise?: number;
 }
 
 export interface ParchaLine {
@@ -242,7 +244,7 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
 
   const lines: ParchaLine[] = [];
 
-  const goods = amountPaise(netGrams, input.ratePaisePerQtl);
+  const goods = input.goodsPaise ?? amountPaise(netGrams, input.ratePaisePerQtl);
   lines.push({
     key: "goods", label: "Goods value", labelHi: "माल मूल्य",
     detail: `${(netGrams / GRAMS_PER_QTL).toFixed(2)} qtl x ${(input.ratePaisePerQtl / 100).toFixed(2)}`,

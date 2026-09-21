@@ -406,6 +406,9 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
               {t("scan.readingPage", { n: Math.min(b.pagesDone + 1, b.pages.length), total: b.pages.length })}
             </p>
             <p className="max-w-sm text-[13px] text-muted">{t("scan.readingSub")}</p>
+            {b.warningText && (
+              <p className="max-w-sm rounded-lg border border-warn/40 bg-warn-soft px-3 py-1.5 text-[12px] text-warn">{b.warningText}</p>
+            )}
           </div>
         ) : rows.length === 0 ? (
           reading ? <div className="p-3"><SkeletonTable rows={8} cols={[{ w: "w-14" }, { w: "w-40" }, { w: "w-16", numeric: true }, { w: "w-16", numeric: true }, { w: "w-20", numeric: true }]} /></div>
