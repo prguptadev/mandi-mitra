@@ -191,11 +191,19 @@ export function LedgerPage() {
   });
 
   const nameOf = (r: { nameHi: string; nameHinglish: string }) => (lang === "hi" ? r.nameHi : r.nameHinglish || r.nameHi);
+  const [order, setOrder] = useState<"owed" | "name" | "recent" | "slips">(() => {
+    try { return (localStorage.getItem("mandi.sort.ledger-list") as "owed" | "name" | "recent" | "slips") || "owed"; } catch { return "owed"; }
+  });
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const all = list.data?.rows ?? [];
-    return needle ? all.filter((r) => r.nameHi.includes(q.trim()) || r.nameHinglish.toLowerCase().includes(needle) || (r.village ?? "").toLowerCase().includes(needle)) : all;
-  }, [list.data, q]);
+    const found = needle ? all.filter((r) => r.nameHi.includes(q.trim()) || r.nameHinglish.toLowerCase().includes(needle) || (r.village ?? "").toLowerCase().includes(needle)) : all;
+    const coll = new Intl.Collator(["hi", "en"], { sensitivity: "base", numeric: true });
+    return [...found].sort((a, b) => order === "name" ? coll.compare(nameOf(a), nameOf(b))
+      : order === "recent" ? (b.lastActivity ?? "").localeCompare(a.lastActivity ?? "")
+      : order === "slips" ? b.slips - a.slips
+      : b.balancePaise - a.balancePaise);
+  }, [list.data, q, order, lang]);
 
   const [voiding, setVoiding] = useState<{ id: string; amountPaise: number } | null>(null);
   const del = useMutation({
@@ -259,6 +267,13 @@ export function LedgerPage() {
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
               <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("ledger.search")} className="h-8 pl-8 text-[13px]" />
             </div>
+            <Select value={order} className="mt-2 h-8 text-[12px]"
+              onChange={(e) => { const v = e.target.value as typeof order; setOrder(v); try { localStorage.setItem("mandi.sort.ledger-list", v); } catch { /* ignore */ } }}>
+              <option value="owed">{t("ledger.sortOwed")}</option>
+              <option value="name">{t("ledger.sortName")}</option>
+              <option value="recent">{t("ledger.sortRecent")}</option>
+              <option value="slips">{t("ledger.sortSlips")}</option>
+            </Select>
           </div>
           {list.isPending ? <SkeletonTable rows={8} /> : !rows.length ? (
             <EmptyState icon={<BookOpen className="h-5 w-5" />} title={t("ledger.empty")} />

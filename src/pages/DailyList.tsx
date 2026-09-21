@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { api, ApiError, type Jins, type Merchant, type SlipRow, type SlipTotals, type SlipDay, type KatautiConfig } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
+import { useSort } from "@/lib/useSort.ts";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, parseLooseNumber, parseQtlToGrams, parseRupeesToPaise, GRAMS_PER_QTL } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
@@ -294,15 +295,29 @@ export function DailyListPage() {
   const SORT_CYCLE: Partial<Record<DailyColumnKey, [SlipSortOrder, SlipSortOrder]>> = {
     adatiHi: ["nameAsc", "nameDesc"], adatiLatin: ["nameAsc", "nameDesc"], rstNo: ["rstAsc", "rstDesc"],
   };
+  /* Every other column sorts on the screen only (up, down, off); name and
+     RST keep using the list's own order, which downloads follow too. */
+  const colSort = useSort(ordered, {
+    village: (r) => r.adatiVillage, mill: (r) => r.merchantCode, jins: (r) => r.jinsCode, gross: (r) => r.grossGrams,
+    katauti: (r) => r.katautiUnits, deduction: (r) => r.katautiGrams, net: (r) => r.netGrams,
+    rate: (r) => (r.ratePending ? null : r.ratePaisePerQtl), amount: (r) => (r.ratePending ? null : r.amountPaise),
+    bagsCount: (r) => r.bagsCount, status: (r) => r.status, sr: () => null,
+  }, { storageKey: "daily-cols" });
+  const shown = colSort.sorted;
   const sortBy = (key: DailyColumnKey) => {
     const cyc = SORT_CYCLE[key];
-    if (!cyc) return;
+    if (!cyc) {
+      if (key !== "sr") colSort.th(key).onSort();
+      return;
+    }
+    colSort.setSort(null);
     const next: SlipSortOrder = P.sortOrder === cyc[0] ? cyc[1] : P.sortOrder === cyc[1] ? "entry" : cyc[0];
     setForSession({ sortOrder: next });
   };
   const sortMark = (key: DailyColumnKey) => {
     const cyc = SORT_CYCLE[key];
-    if (!cyc || (key !== nameCol && key !== "rstNo")) return null;
+    if (!cyc) return colSort.sort?.key === key ? (colSort.sort.dir === "asc" ? "▲" : "▼") : null;
+    if (colSort.sort || (key !== nameCol && key !== "rstNo")) return null;
     return P.sortOrder === cyc[0] ? "▲" : P.sortOrder === cyc[1] ? "▼" : null;
   };
 
@@ -631,12 +646,12 @@ export function DailyListPage() {
                 </th>
                 {visibleCols.map((c) => (
                   <th key={c.key}
-                    title={c.key === "katauti" ? t("daily.katautiAuto") : SORT_CYCLE[c.key] ? t("daily.clickToSort") : undefined}
-                    onClick={SORT_CYCLE[c.key] ? () => sortBy(c.key) : undefined}
+                    title={c.key === "katauti" ? t("daily.katautiAuto") : c.key !== "sr" ? t("daily.clickToSort") : undefined}
+                    onClick={c.key !== "sr" ? () => sortBy(c.key) : undefined}
                     className={cn(
                       "border-b border-line px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted",
                       NUMERIC.has(c.key) ? "text-right" : "text-left",
-                      SORT_CYCLE[c.key] && "cursor-pointer select-none hover:text-ink",
+                      c.key !== "sr" && "cursor-pointer select-none hover:text-ink",
                       WIDTHS[c.key],
                     )}>
                     {pick(c.en, c.hi)}
@@ -659,7 +674,7 @@ export function DailyListPage() {
 
               {P.newRowPosition === "top" && entryRow}
 
-              {!sheet.isLoading && ordered.map((r, i) => {
+              {!sheet.isLoading && shown.map((r, i) => {
                 if (editing?.id === r.id) {
                   const ed = editing.draft;
                   const dd = derive(ed, r.katautiCfg);
