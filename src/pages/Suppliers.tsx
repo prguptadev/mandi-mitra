@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, Users2, Sparkles, Lock, Unlock, Trash2, Pencil, Tag, RefreshCw, BookOpen } from "lucide-react";
 import { Link } from "wouter";
@@ -253,6 +254,7 @@ function AliasPanel({ adatiId }: { adatiId: string }) {
 
 export function SuppliersPage() {
   const { t, lang } = useI18n();
+  const ask = useConfirm();
   const f = useFormat();
   const qc = useQueryClient();
   const { can } = useSession();
@@ -439,7 +441,7 @@ export function SuppliersPage() {
                       )}
                       {can("adati.delete") && (
                         <Button variant="ghost" size="icon" className="h-7 w-7"
-                          onClick={() => { if (confirm(t("adati.confirmDelete", { name: r.nameHi }))) del.mutate(r.id); }}
+                          onClick={async () => { if (await ask({ title: t("adati.confirmDelete", { name: r.nameHi }), danger: true, confirmLabel: t("confirm.yesDelete") })) del.mutate(r.id); }}
                           aria-label={t("common.delete")}>
                           <Trash2 className="h-3.5 w-3.5 text-bad/80" />
                         </Button>

@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils.ts";
 import { ApiError } from "@/lib/api.ts";
 import { SyncIndicator } from "@/components/SyncIndicator.tsx";
 import { MyPinDialog } from "@/components/MyPinDialog.tsx";
+import { toastError } from "@/components/Toaster.tsx";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useTheme } from "@/lib/theme.tsx";
 import { useSession } from "@/lib/session.tsx";
@@ -98,7 +99,7 @@ function BusinessSwitcher({ onAdd }: { onAdd: () => void }) {
                     const parts = location.split("/").filter(Boolean);
                     if (parts.length > 1) navigate(`/${parts[0]}`);
                   } catch (e) {
-                    window.alert(e instanceof ApiError ? e.message : t("common.somethingWrong"));
+                    toastError(e instanceof ApiError ? e.message : t("common.somethingWrong"));
                   }
                 }}
                 className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-raised"

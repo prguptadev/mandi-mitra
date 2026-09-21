@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, ClipboardList, Pencil, Trash2, Lock, LockOpen } from "lucide-react";
@@ -112,6 +113,7 @@ function OrderDialog({ open, onClose, editing }: { open: boolean; onClose: () =>
 
 export function OrdersPage() {
   const { t, pick } = useI18n();
+  const ask = useConfirm();
   const f = useFormat();
   const { can } = useSession();
   const qc = useQueryClient();
@@ -212,7 +214,7 @@ export function OrdersPage() {
                         </Button>
                         {o.loads === 0 && (
                           <Button variant="ghost" size="icon" title={t("common.delete")} disabled={act.isPending}
-                            onClick={() => { if (confirm(t("po.confirmDelete", { no: poName(t, o) }))) { setErr(null); act.mutate({ id: o.id, kind: "delete" }); } }}>
+                            onClick={async () => { if (await ask({ title: t("po.confirmDelete", { no: poName(t, o) }), danger: true, confirmLabel: t("confirm.yesDelete") })) { setErr(null); act.mutate({ id: o.id, kind: "delete" }); } }}>
                             <Trash2 className="h-3.5 w-3.5 text-bad" />
                           </Button>
                         )}

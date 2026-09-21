@@ -12,6 +12,7 @@ import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { NumCell } from "@/pages/Loads.tsx";
 import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select, Table, Td, Th, Tr } from "@/components/ui/index.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { cn, fmtQtl } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
@@ -56,6 +57,9 @@ function NoteCell({ value, onCommit, disabled }: { value: string; onCommit: (v: 
 export function ChallanPage() {
   const { t, pick } = useI18n();
   const f = useFormat();
+  const ask = useConfirm();
+  /** Bumped when a cut is not confirmed, so the box shows the saved figure again. */
+  const [undo, setUndo] = useState(0);
   const { can } = useSession();
   const qc = useQueryClient();
   const [merchantId, setMerchantId] = useState("");
@@ -183,8 +187,23 @@ export function ChallanPage() {
                     <Td numeric>{f.amount(r.goodsPaise)}</Td>
                     <Td numeric className="w-28">
                       {editable ? (
-                        <NumCell value={r.deductionGrams || null} scale={GRAMS_PER_QTL} decimals={2} placeholder="0.00" className="h-8 w-24 text-[13px]"
-                          onCommit={(v) => save.mutate({ loadId: r.loadId, deductionGrams: v ?? 0, note: r.deductionNote })} />
+                        <NumCell key={`${r.loadId}-${undo}`} value={r.deductionGrams || null} scale={GRAMS_PER_QTL} decimals={2} placeholder="0.00" className="h-8 w-24 text-[13px]"
+                          onCommit={async (v) => {
+                            const cut = v ?? 0;
+                            // a cut changes what the mill owes: say how much before saving
+                            const ok = await ask({
+                              title: t("ch.confirmTitle"),
+                              rows: [
+                                { label: t("load.truckNo"), value: `${r.truckNo ?? "—"} · ${r.millCode}` },
+                                ...(r.parchaNo ? [{ label: t("parcha.no"), value: `#${r.parchaNo}` }] : []),
+                                { label: t("ch.cutWas"), value: f.weight(r.deductionGrams, { unit: true }) },
+                                { label: t("ch.cutNow"), value: f.weight(cut, { unit: true }), big: true },
+                                ...(r.ratePaisePerQtl ? [{ label: t("ch.cutOffBill"), value: f.money(Math.round(cut * r.ratePaisePerQtl / GRAMS_PER_QTL)) }] : []),
+                              ],
+                            });
+                            if (ok) save.mutate({ loadId: r.loadId, deductionGrams: cut, note: r.deductionNote });
+                            else setUndo((n) => n + 1);
+                          }} />
                       ) : r.deductionGrams ? f.weight(r.deductionGrams) : "—"}
                     </Td>
                     <Td>

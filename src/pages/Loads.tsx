@@ -21,6 +21,7 @@ import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Checkbox, Textarea,
 } from "@/components/ui/index.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 import { PoProgress, poName } from "@/pages/Orders.tsx";
@@ -429,7 +430,7 @@ export function LoadDetailPage({ id }: { id: string }) {
   const msg = useLoadMessages();
   const [paper, setPaper] = useState(false);
   const [viewing, setViewing] = useState<string | null>(null);
-  const [approving, setApproving] = useState(false);
+  const ask = useConfirm();
   const [voiding, setVoiding] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -485,9 +486,9 @@ export function LoadDetailPage({ id }: { id: string }) {
       invoiceNo: invoice.trim() || undefined,
       expectedGrandTotalPaise: (st!.approved?.doc ?? st!.doc)?.result.grandTotalPaise,
     }),
-    onSuccess: async () => { setApproving(false); await refresh(); await qc.invalidateQueries({ queryKey: ["parchas"] }); },
+    onSuccess: async () => { await refresh(); await qc.invalidateQueries({ queryKey: ["parchas"] }); },
     onError: async (e) => {
-      setApproving(false); await refresh();
+      await refresh();
       if (e instanceof ApiError && e.code === "offline") { setErr(t("parcha.needsInternet")); return; }
       if (e instanceof ApiError && e.code === "number_taken") { setErr(t("parcha.numberTaken", { no: invoice.trim() })); return; }
       onErr(e);
@@ -551,7 +552,7 @@ export function LoadDetailPage({ id }: { id: string }) {
             )}
             {!billed && can("load.delete") && !st.history.length && (
               <Button variant="ghost" icon={<Trash2 className="h-4 w-4 text-bad" />}
-                onClick={() => { if (confirm(t("load.confirmDelete"))) del.mutate(); }}>
+                onClick={async () => { if (await ask({ title: t("load.confirmDelete"), rows: [{ label: t("load.truckNo"), value: l.truckNo ?? "—" }, { label: t("load.mill"), value: st.mill.code }, { label: t("load.date"), value: dmy(l.loadDate) }], danger: true, confirmLabel: t("confirm.yesDelete") })) del.mutate(); }}>
                 {t("common.delete")}
               </Button>
             )}
@@ -588,7 +589,11 @@ export function LoadDetailPage({ id }: { id: string }) {
               </Field>
               <Field label={t("load.mill")}>
                 <select value={l.merchantId} disabled={!canEdit} className={CELL}
-                  onChange={(e) => { if (confirm(t("load.confirmMill"))) commit({ merchantId: e.target.value }); }}>
+                  onChange={async (e) => {
+                    const to = e.target.value;
+                    const m = mills.data?.find((x) => x.id === to);
+                    if (await ask({ title: t("load.confirmMillTitle"), message: t("load.confirmMill"), rows: [{ label: t("load.mill"), value: `${st.mill.code} → ${m?.code ?? "?"}` }] })) commit({ merchantId: to });
+                  }}>
                   {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
                 </select>
               </Field>
@@ -696,7 +701,8 @@ export function LoadDetailPage({ id }: { id: string }) {
                     {canEdit && (
                       <td className="px-1 text-right">
                         {st.lines.length > 1 && (
-                          <Button variant="ghost" size="icon" title={t("load.removeRow")} aria-label={t("load.removeRow")} disabled={lineDel.isPending} onClick={() => { setErr(null); lineDel.mutate(x.id); }}>
+                          <Button variant="ghost" size="icon" title={t("load.removeRow")} aria-label={t("load.removeRow")} disabled={lineDel.isPending}
+                            onClick={async () => { if (await ask({ title: t("load.removeRowTitle"), rows: [{ label: t("load.stockDate"), value: dmy(x.stockDate) }, { label: t("parcha.confirmNet"), value: f.weight(x.weightGrams, { unit: true }) }], danger: true, confirmLabel: t("confirm.yesDelete") })) { setErr(null); lineDel.mutate(x.id); } }}>
                             <X className="h-3.5 w-3.5" />
                           </Button>
                         )}
@@ -829,7 +835,33 @@ export function LoadDetailPage({ id }: { id: string }) {
               <div className="border-t border-line p-4">
                 <Button variant="primary" className="w-full" icon={<CheckCircle2 className="h-4 w-4" />}
                   disabled={blockers.length > 0 || !shownDoc || save.isPending || lineSave.isPending}
-                  onClick={() => setApproving(true)}>
+                  loading={approve.isPending}
+                  onClick={async () => {
+                    if (!shownDoc) return;
+                    const d = shownDoc;
+                    const days = [...new Set(d.lines.map((x) => dmy(x.date)))].join(", ");
+                    const ok = await ask({
+                      title: t("parcha.approveTitle", { no: invoice.trim() }),
+                      message: t("parcha.approveCheck"),
+                      rows: [
+                        { label: t("parcha.no"), value: invoice.trim() || "—" },
+                        { label: t("parcha.date"), value: dmy(d.invoiceDate) },
+                        { label: t("load.mill"), value: `${st.mill.code} — ${pick(st.mill.name, st.mill.nameHi)}` },
+                        { label: t("daily.jins"), value: pick(st.jins.name, st.jins.nameHi) },
+                        { label: t("load.truckNo"), value: l.truckNo ?? "—" },
+                        { label: t("parcha.confirmLines"), value: t("parcha.confirmLinesOf", { n: d.lines.length, days }) },
+                        { label: t("parcha.confirmBags"), value: `${f.int(d.weights.katte)}${d.weights.bore ? ` + ${f.int(d.weights.bore)}` : ""}` },
+                        { label: t("parcha.confirmNet"), value: f.weight(d.totals.netGrams, { unit: true }) },
+                        { label: t("parcha.confirmRate"), value: f.rate(d.totals.ratePaisePerQtl) },
+                        { label: t("parcha.confirmGoods"), value: f.money(d.totals.goodsPaise) },
+                        ...(d.result.advancePaise ? [{ label: t("parcha.confirmAdvance"), value: f.money(d.result.advancePaise) }] : []),
+                        { label: t("parcha.confirmGrand"), value: f.money(d.result.grandTotalPaise), big: true },
+                      ],
+                      warnings: [t("parcha.approveLocks"), ...(!l.truckNo ? [t("parcha.warnNoTruck")] : []), ...st.warnings.map((wn) => msg.warning(wn))],
+                      confirmLabel: t("parcha.approveConfirm"),
+                    });
+                    if (ok) { setErr(null); approve.mutate(); }
+                  }}>
                   {t("parcha.approve")}
                 </Button>
                 {blockers.length > 0 && <p className="mt-1.5 text-center text-[11px] text-faint">{t("parcha.approveBlocked", { n: blockers.length })}</p>}
@@ -862,18 +894,6 @@ export function LoadDetailPage({ id }: { id: string }) {
 
       {paper && shownDoc && <PaperDialog doc={shownDoc} draft={!billed} loadId={id} onClose={() => setPaper(false)} />}
       {viewing && <ParchaVersionDialog parchaId={viewing} onClose={() => setViewing(null)} />}
-      {approving && shownDoc && (
-        <Dialog open onClose={() => setApproving(false)} title={t("parcha.approveTitle", { no: invoice.trim() })}
-          footer={<>
-            <Button onClick={() => setApproving(false)}>{t("common.cancel")}</Button>
-            <Button variant="primary" loading={approve.isPending} icon={<CheckCircle2 className="h-4 w-4" />}
-              onClick={() => approve.mutate()}>{t("parcha.approveConfirm")}</Button>
-          </>}>
-          <p className="text-[14px]">{t("parcha.approveBody", {
-            total: f.money(shownDoc.result.grandTotalPaise), mill: st.mill.code, q: f.weight(linesTotal),
-          })}</p>
-        </Dialog>
-      )}
       {voiding && st.approved && (
         <VoidDialog parchaId={st.approved.id} no={st.approved.parchaNo} onClose={() => setVoiding(false)} onDone={refresh} />
       )}

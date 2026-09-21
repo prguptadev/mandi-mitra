@@ -28,11 +28,10 @@ function flagFor(r: ScanRow, f: Field, t: (k: never, v?: Record<string, string |
   const conf = r.ocr.confidence ?? 1;
 
   if (f === "rst") {
-    // the kanta slip no. can repeat or be unreadable — highlight, never block
-    if (done) return null;
+    // colour only, never a tick and never a block: red = already entered or twice on the sheet, yellow = may be misread
+    if (has("rst_exists")) return { level: "bad", why: t("issue.rst_exists" as never, { rst: r.rstNo }) };
+    if (has("rst_dupe")) return { level: "bad", why: t("issue.rst_dupe" as never, { rst: r.rstNo }) };
     if (has("rst_missing")) return { level: "doubt", why: t("scan.fix.rstMissing" as never) };
-    if (has("rst_dupe")) return { level: "doubt", why: t("issue.rst_dupe" as never, { rst: r.rstNo }) };
-    if (has("rst_exists")) return { level: "bad", why: t("issue.rst_exists" as never, { rst: r.rstNo }), confirmable: true };
     if (conf < LOW) return { level: "doubt", why: t("issue.low_confidence" as never) };
   }
   if (f === "name") {
@@ -169,7 +168,6 @@ export function ScanGrid({
 
                 <td className="border-b border-line/70 px-1 py-1">
                   <div className="relative">
-                    {!dead && <Accept flag={fl.rst} label={t("scan.acceptValue")} onAccept={() => onPatch(r.id, {}, "rst")} />}
                     <input value={r.rstNo} disabled={dead} placeholder="RST" title={fl.rst?.why}
                       onChange={(e) => onPatch(r.id, { rstNo: e.target.value.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "") })}
                       className={cn(CELL, "text-left", cellClass(fl.rst))} />

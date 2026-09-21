@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError } from "./lib/api.ts";
 import { Toaster, toastError } from "./components/Toaster.tsx";
+import { ConfirmProvider } from "./components/Confirm.tsx";
 import App from "./App.tsx";
 import { ThemeProvider } from "./lib/theme.tsx";
 import { I18nProvider } from "./lib/i18n.tsx";
@@ -36,8 +37,10 @@ createRoot(document.getElementById("root")!).render(
           <SessionProvider>
             <FormatProvider>
               <PrefsProvider>
-                <App />
-                <Toaster />
+                <ConfirmProvider>
+                  <App />
+                  <Toaster />
+                </ConfirmProvider>
               </PrefsProvider>
             </FormatProvider>
           </SessionProvider>

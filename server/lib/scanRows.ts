@@ -185,10 +185,8 @@ export function checkRow(
   }
 
   if (!row.rstNo) issues.push({ code: "rst_missing", level: "warn", message: "RST number could not be read" });
-  else if (opts.existingRst.has(row.rstNo)) {
-    // the same sheet added twice would double every purchase on it
-    issues.push({ code: "rst_exists", level: confirmedField(row, "rst") ? "warn" : "error", message: `RST ${row.rstNo} is already entered for this date — confirm it is a different slip`, params: { rst: row.rstNo } });
-  }
+  // shown red on the screen, and counted in the "are you sure" box before saving; never blocks
+  else if (opts.existingRst.has(row.rstNo)) issues.push({ code: "rst_exists", level: "warn", message: `RST ${row.rstNo} is already entered for this date`, params: { rst: row.rstNo } });
   else if (opts.dupeInBatch.has(row.rstNo)) issues.push({ code: "rst_dupe", level: "warn", message: `RST ${row.rstNo} appears twice on this sheet`, params: { rst: row.rstNo } });
 
   if (row.adatiId && !chosen) {

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { BookOpen, Wallet, Plus, Pencil, Ban, Download, Printer, Search } from "lucide-react";
-import { api, ApiError } from "@/lib/api.ts";
+import { api, ApiError, type Adati } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat } from "@/lib/format.tsx";
@@ -16,6 +16,7 @@ import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Textarea, Checkbox,
 } from "@/components/ui/index.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { cn, todayISO, fmtQtl } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
@@ -79,6 +80,7 @@ export function PaymentDialog({ onClose, editing, adatiId: presetAdati, adatiLab
   const { t } = useI18n();
   const f = useFormat();
   const qc = useQueryClient();
+  const ask = useConfirm();
   const [v, setV] = useState(() => ({
     adatiId: editing?.adatiId ?? presetAdati ?? null as string | null,
     payDate: editing?.payDate ?? todayISO(),
@@ -111,7 +113,21 @@ export function PaymentDialog({ onClose, editing, adatiId: presetAdati, adatiLab
       footer={<>
         <Button onClick={onClose}>{t("common.cancel")}</Button>
         <Button variant="primary" loading={save.isPending} disabled={!v.adatiId || !v.payDate || amountPaise <= 0}
-          onClick={() => { setErr(null); save.mutate(); }}>{t("common.save")}</Button>
+          onClick={async () => {
+            setErr(null);
+            // money leaves the business: say exactly what, to whom, before it is written
+            const who = await qc.fetchQuery({ queryKey: ["adati", "one", v.adatiId], queryFn: () => api.get<Adati>(`/adati/${v.adatiId}`), staleTime: 60_000 }).catch(() => null);
+            if (await ask({
+              title: editing ? t("pay.confirmEditTitle") : t("pay.confirmTitle"),
+              rows: [
+                { label: t("daily.supplier"), value: <span lang="hi">{who?.nameHi ?? adatiLabel?.nameHi ?? "—"}</span> },
+                { label: t("pay.date"), value: v.payDate.split("-").reverse().join("-") },
+                { label: t("pay.mode"), value: t(`pay.mode.${v.mode}` as "pay.mode.cash") },
+                ...(v.reference.trim() ? [{ label: t("pay.reference"), value: v.reference.trim() }] : []),
+                { label: t("pay.amount"), value: f.money(amountPaise), big: true },
+              ],
+            })) save.mutate();
+          }}>{t("common.save")}</Button>
       </>}>
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
       <div className="grid gap-4 sm:grid-cols-2">

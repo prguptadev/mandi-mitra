@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import {
   Plus, UserCog, Pencil, ShieldCheck, ScrollText, Search, KeyRound, Unlock,
@@ -211,6 +212,7 @@ export function UsersPage() {
 
 export function RolesPage() {
   const { t, pick } = useI18n();
+  const ask = useConfirm();
   const qc = useQueryClient();
   const [selected, setSelected] = useState<string | null>(null);
   const [draft, setDraft] = useState<Set<string> | null>(null);
@@ -257,9 +259,9 @@ export function RolesPage() {
           <div className="p-1.5">
             {roles.data?.map((r) => (
               <button key={r.id} type="button"
-                onClick={() => {
+                onClick={async () => {
                   // unsaved ticks on this role would vanish silently: ask first
-                  if (draft && r.id !== selected && !confirm(t("roles.discardChanges"))) return;
+                  if (draft && r.id !== selected && !(await ask({ title: t("roles.discardChanges"), confirmLabel: t("roles.discardYes"), danger: true }))) return;
                   setSelected(r.id); setDraft(null); setErr(null);
                 }}
                 className={cn(

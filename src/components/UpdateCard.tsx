@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Download, ExternalLink, RefreshCw, ShieldAlert, ShieldCheck } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
@@ -17,6 +18,7 @@ interface UpdateState {
 
 export function UpdateCard() {
   const { t } = useI18n();
+  const ask = useConfirm();
   const { can } = useSession();
   const qc = useQueryClient();
   const basic = useQuery({ queryKey: ["app"], queryFn: () => api.get<{ version: string; desktop: boolean }>("/app") });
@@ -62,7 +64,7 @@ export function UpdateCard() {
               {u.found.verified === false && <Alert tone="warn">{t("upd.notVerifiedHelp")}</Alert>}
               {u.desktop ? (
                 <Button variant="primary" loading={install.isPending} disabled={Boolean(installing) || u.found.verified === false} icon={<Download className="h-4 w-4" />}
-                  onClick={() => { if (confirm(t("upd.confirm", { v: u.found!.version }))) install.mutate(u.found!.name); }}>
+                  onClick={async () => { if (await ask({ title: t("upd.install", { v: u.found!.version }), message: t("upd.confirm", { v: u.found!.version }), confirmLabel: t("upd.install", { v: u.found!.version }) })) install.mutate(u.found!.name); }}>
                   {t("upd.install", { v: u.found.version })}
                 </Button>
               ) : <p className="text-[12px] text-muted">{t("upd.desktopOnly")}</p>}

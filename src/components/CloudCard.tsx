@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Cloud, CloudDownload, ExternalLink, Laptop, RefreshCw, Unplug, AlertTriangle } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
@@ -23,6 +24,7 @@ interface Clash { id: number; at: string; tbl: string; row_id: string; kept: str
 
 export function CloudCard() {
   const { t, lang } = useI18n();
+  const ask = useConfirm();
   const { can } = useSession();
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["cloud"], queryFn: () => api.get<CloudView>("/cloud"), enabled: can("backup.manage"), refetchInterval: 15_000 });
@@ -128,7 +130,7 @@ export function CloudCard() {
               <Button size="sm" variant="primary" loading={sync.isPending || c.syncing} icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => sync.mutate()}>{t("sync.now")}</Button>
               <Button size="sm" variant="secondary" icon={<CloudDownload className="h-3.5 w-3.5" />} onClick={() => { setTyped(""); setRestoring(true); }}>{t("cloud.restore")}</Button>
               <Button size="sm" variant="ghost" icon={<Unplug className="h-3.5 w-3.5" />} loading={connect.isPending}
-                onClick={() => { if (confirm(t("sync.offConfirm"))) connect.mutate(null); }}>{t("cloud.turnOff")}</Button>
+                onClick={async () => { if (await ask({ title: t("cloud.turnOff"), message: t("sync.offConfirm"), danger: true, confirmLabel: t("cloud.turnOff") })) connect.mutate(null); }}>{t("cloud.turnOff")}</Button>
             </div>
           </>
         ) : (

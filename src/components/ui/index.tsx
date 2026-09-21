@@ -229,20 +229,26 @@ export function EmptyState({ icon, title, sub, action }: { icon?: ReactNode; tit
 
 /* ------------------------------------------------------------------ Dialog */
 
+/** Boxes open now, oldest first: a box opened over another answers Escape alone. */
+const openDialogs: number[] = [];
+let dialogSeq = 0;
+
 export function Dialog({
   open, onClose, title, sub, children, footer, wide,
 }: {
   open: boolean; onClose: () => void; title: ReactNode; sub?: ReactNode;
   children: ReactNode; footer?: ReactNode; wide?: boolean;
 }) {
-  // Escape closes, as the × does (a picker open inside keeps its own Escape)
+  // Escape closes the top box only, as its × does (a picker open inside keeps its own Escape)
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeRef.current(); };
+    const id = ++dialogSeq;
+    openDialogs.push(id);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && openDialogs[openDialogs.length - 1] === id) closeRef.current(); };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => { window.removeEventListener("keydown", onKey); openDialogs.splice(openDialogs.indexOf(id), 1); };
   }, [open]);
   if (!open) return null;
   /* Drawn at the page's top level: inside a bar with a blur or transform, a

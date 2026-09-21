@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Check, AlertTriangle, Eye, Trash2, Zap, ExternalLink } from "lucide-react";
 import { api, ApiError, type GeminiSettings } from "@/lib/api.ts";
@@ -175,6 +176,7 @@ export function NumberFormatCard() {
 
 export function GeminiCard() {
   const { t, lang } = useI18n();
+  const ask = useConfirm();
   const qc = useQueryClient();
   const { can } = useSession();
   const [apiKey, setApiKey] = useState("");
@@ -264,7 +266,7 @@ export function GeminiCard() {
                 <Button size="sm" onClick={() => setEntering(true)}>{t("settings.replaceKey")}</Button>
                 <Button size="sm" variant="ghost" icon={<Trash2 className="h-3.5 w-3.5 text-bad" />}
                   loading={save.isPending}
-                  onClick={() => { if (confirm(t("settings.removeKey") + "?")) save.mutate({ clearKey: true }); }} />
+                  onClick={async () => { if (await ask({ title: t("settings.removeKey") + "?", message: t("settings.removeKeyWarn"), danger: true, confirmLabel: t("confirm.yesDelete") })) save.mutate({ clearKey: true }); }} />
               </>
             )}
           </div>

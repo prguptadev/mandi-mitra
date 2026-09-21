@@ -15,6 +15,7 @@ import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { ScanGrid, type Field as GridField } from "@/components/ScanGrid.tsx";
 import { SplitPane } from "@/components/SplitPane.tsx";
 import { GeminiUsageBar } from "@/components/GeminiUsage.tsx";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { TryModelsButton } from "@/components/GeminiModels.tsx";
 import {
   Button, Card, CardHeader, Select, Input, Badge, Alert, Dialog, Field, Spinner, EmptyState, Tabs,
@@ -188,6 +189,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   const f = useFormat();
   const qc = useQueryClient();
   const { can } = useSession();
+  const ask = useConfirm();
   const [, navigate] = useLocation();
 
   const [draft, setDraft] = useState<ScanRow[] | null>(null);
@@ -254,7 +256,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
       } catch (e) {
         // the server asks whenever a read would replace rows (and the edits on them)
         if (e instanceof ApiError && e.code === "confirm_reread") {
-          if (!confirm(t("scan.confirmReread"))) return null;
+          if (!(await ask({ title: t("scan.rereadTitle"), message: t("scan.confirmReread"), confirmLabel: t("scan.readAgain"), danger: true }))) return null;
           return api.post(`/scans/${scanId}/run`, { ...body, force: true });
         }
         throw e;
@@ -338,6 +340,38 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   useEffect(() => {
     if (apiStatus(batch.error) === 404 && !whereis.isFetched) void whereis.refetch();
   }, [batch.error, whereis.isFetched]);
+
+  /** Before the sheet goes onto the daily list: everything that will be saved, to check against the paper. */
+  const confirmCommit = async () => {
+    const b0 = batch.data;
+    if (!b0 || !summary) return;
+    const live = rows.filter((r) => !r.excluded);
+    const mill = mills.data?.find((m) => m.id === b0.merchantId);
+    const jins = jinsList.data?.find((j) => j.id === b0.jinsId);
+    const count = (code: string) => live.filter((r) => r.issues.some((i) => i.code === code)).length;
+    const noRate = live.filter((r) => !r.ratePaisePerQtl).length;
+    const ok = await ask({
+      title: t("scan.confirmCommitTitle"),
+      message: t("scan.confirmCommitSub"),
+      rows: [
+        { label: t("daily.date"), value: b0.slipDate ? dmyIso(b0.slipDate) : "—" },
+        { label: t("daily.mill"), value: mill ? `${mill.code} — ${pick(mill.name, mill.nameHi)}` : t("daily.noMill") },
+        { label: t("daily.jins"), value: jins ? pick(jins.name, jins.nameHi) : "—" },
+        { label: t("scan.confirmLines"), value: t("scan.confirmLinesOf", { n: live.length, pages: b0.pages.length, left: rows.length - live.length }) },
+        { label: t("daily.gross"), value: f.weight(live.reduce((x, r) => x + (r.grossGrams ?? 0), 0), { unit: true }) },
+        { label: t("daily.net"), value: f.weight(summary.totalNetGrams, { unit: true }), big: true },
+        { label: t("daily.amount"), value: f.money(summary.totalAmountPaise), big: true },
+      ],
+      warnings: [
+        count("rst_exists") ? t("scan.warnRstExists", { n: count("rst_exists") }) : "",
+        count("rst_dupe") ? t("scan.warnRstDupe", { n: count("rst_dupe") }) : "",
+        noRate ? t("scan.warnNoRate", { n: noRate }) : "",
+        !mill ? t("scan.warnNoMill") : "",
+      ],
+      confirmLabel: t("scan.confirmCommitGo"),
+    });
+    if (ok) commit.mutate();
+  };
 
   /** Names with nothing close in the master — genuinely new suppliers. */
   const missingNames = new Set(
@@ -498,7 +532,15 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
           </div>
           {missingNames > 0 && can("adati.write") && (
             <Button variant="secondary" loading={createSuppliers.isPending} icon={<UserPlus className="h-3.5 w-3.5" />}
-              onClick={() => { setErr(null); createSuppliers.mutate(); }}>
+              onClick={async () => {
+                setErr(null);
+                const names = [...new Set(rows.filter((r) => !r.excluded && !r.chosen && !r.match && r.suggestions.length === 0 && r.adatiRawText.trim()).map((r) => r.adatiRawText.trim()))];
+                if (await ask({
+                  title: t("scan.confirmNewSuppliersTitle", { n: names.length }),
+                  message: <span lang="hi" className="text-[15px]">{names.join(" · ")}</span>,
+                  warnings: [t("scan.confirmNewSuppliersWarn")],
+                })) createSuppliers.mutate();
+              }}>
               {t("scan.createMissing", { n: missingNames })}
             </Button>
           )}
@@ -506,7 +548,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
           <Button variant="primary" size="lg" loading={commit.isPending}
             disabled={summary.blocking > 0 || (summary.pagesBlocking ?? 0) > 0 || needDate || needJins || summary.included === 0 || save.isPending}
             icon={<Check className="h-4 w-4" />}
-            onClick={() => { setErr(null); commit.mutate(); }}>
+            onClick={() => { setErr(null); void confirmCommit(); }}>
             {needDate ? t("scan.needDate")
               : needJins ? t("scan.needJins")
               : (summary.pagesBlocking ?? 0) > 0 ? t("scan.checkPagesFirst", { n: summary.pagesBlocking ?? 0 })
@@ -527,7 +569,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
             {!locked && (
               <>
                 <Button size="sm" variant="ghost" icon={<Trash2 className="h-3.5 w-3.5 text-bad" />}
-                  onClick={() => { if (confirm(t("scan.confirmDelete"))) remove.mutate(); }} title={t("common.delete")} aria-label={t("common.delete")} />
+                  onClick={async () => { if (await ask({ title: t("scan.confirmDelete"), danger: true, confirmLabel: t("confirm.yesDelete") })) remove.mutate(); }} title={t("common.delete")} aria-label={t("common.delete")} />
                 <Button size="sm" variant="secondary" loading={run.isPending}
                   icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => run.mutate(undefined)}>
                   {t("scan.tryAgain")}

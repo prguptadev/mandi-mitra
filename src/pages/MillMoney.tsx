@@ -15,6 +15,7 @@ import {
   Alert, Badge, Button, Card, CardHeader, Checkbox, Dialog, EmptyState, Field, Input, Select, Table, Tabs, Td, Textarea, Th, Tr,
 } from "@/components/ui/index.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { cn, todayISO, fmtQtl } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
@@ -92,6 +93,7 @@ export function ReceiptDialog({ onClose, merchantId: presetMill, loadId: presetL
   const { t, pick } = useI18n();
   const f = useFormat();
   const qc = useQueryClient();
+  const ask = useConfirm();
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
   const [v, setV] = useState(() => ({
     merchantId: editing?.merchantId ?? presetMill ?? "",
@@ -136,7 +138,21 @@ export function ReceiptDialog({ onClose, merchantId: presetMill, loadId: presetL
         <Button onClick={onClose}>{t("common.cancel")}</Button>
         <Button variant="primary" loading={save.isPending}
           disabled={!v.merchantId || !v.receiptDate || amountPaise < 0 || heldPaise < 0 || amountPaise + heldPaise <= 0}
-          onClick={() => { setErr(null); save.mutate(); }}>{t("common.save")}</Button>
+          onClick={async () => {
+            setErr(null);
+            const m = mills.data?.find((x) => x.id === v.merchantId);
+            if (await ask({
+              title: editing ? t("mm.confirmEditTitle") : t("mm.confirmTitle"),
+              rows: [
+                { label: t("load.mill"), value: m ? `${m.code} — ${pick(m.name, m.nameHi)}` : "—" },
+                { label: t("pay.date"), value: v.receiptDate.split("-").reverse().join("-") },
+                { label: t("pay.mode"), value: t(`mm.mode.${v.mode}` as "mm.mode.bank") },
+                ...(bill ? [{ label: t("parcha.no"), value: `#${bill.parchaNo}${bill.truckNo ? ` · ${bill.truckNo}` : ""}` }] : []),
+                ...(heldPaise ? [{ label: t("mm.heldShort"), value: f.money(heldPaise) }] : []),
+                { label: t("mm.amountIn"), value: f.money(amountPaise), big: true },
+              ],
+            })) save.mutate();
+          }}>{t("common.save")}</Button>
       </>}>
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
       <div className="grid gap-4 sm:grid-cols-2">

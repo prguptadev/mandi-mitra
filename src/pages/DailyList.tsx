@@ -18,6 +18,7 @@ import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
 import { DownloadDialog } from "@/components/DownloadDialog.tsx";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
 import {
   Button, Card, Select, Input, Badge, Alert, EmptyState, Dialog, Field, Spinner, Checkbox,
@@ -85,6 +86,7 @@ export function DailyListPage() {
   const f = useFormat();
   const qc = useQueryClient();
   const { can } = useSession();
+  const ask = useConfirm();
   const { prefs, setForSession } = usePrefs();
   const P = prefs.dailyList;
   const [downloading, setDownloading] = useState<null | "list" | "dara">(null);
@@ -158,6 +160,15 @@ export function DailyListPage() {
   const d = derive(draft, katautiCfg);
   const rows = sheet.data?.rows ?? [];
   const totals = sheet.data?.totals;
+  /** What the ticked rows add up to, for the "are you sure" box. */
+  const pickedSummary = () => {
+    const picked = rows.filter((r) => selected.has(r.id));
+    return [
+      { label: t("scan.confirmLines"), value: String(picked.length) },
+      { label: t("daily.net"), value: f.weight(picked.reduce((x, r) => x + r.netGrams, 0), { unit: true }) },
+      { label: t("daily.amount"), value: f.money(picked.reduce((x, r) => x + r.amountPaise, 0)) },
+    ];
+  };
 
   const rstTaken = useMemo(
     () => draft.rstNo.trim() !== "" && rows.some((r) => r.rstNo === draft.rstNo.trim()),
@@ -603,7 +614,8 @@ export function DailyListPage() {
             </span>
             {can("slip.write") && (
               <Button size="sm" variant="secondary" loading={recompute.isPending}
-                icon={<RefreshCw className="h-3.5 w-3.5" />} onClick={() => recompute.mutate()}>
+                icon={<RefreshCw className="h-3.5 w-3.5" />}
+                onClick={async () => { if (await ask({ title: t("daily.recompute"), message: t("daily.confirmRecompute", { n: totals?.mismatchRows ?? 0 }) })) recompute.mutate(); }}>
                 {t("daily.recompute")}
               </Button>
             )}
@@ -624,7 +636,11 @@ export function DailyListPage() {
             <span className="text-[12px] text-muted">{t("daily.reassign")}:</span>
             {mills.data?.map((m) => (
               <Button key={m.id} size="sm" variant="secondary" loading={reassign.isPending}
-                icon={<Truck className="h-3.5 w-3.5" />} onClick={() => reassign.mutate(m.id)}>
+                icon={<Truck className="h-3.5 w-3.5" />}
+                onClick={async () => {
+                  if (await ask({ title: t("daily.confirmMoveTitle", { mill: m.code }), message: t("daily.confirmMoveSub"),
+                    rows: [{ label: t("daily.mill"), value: `${m.code} — ${pick(m.name, m.nameHi)}`, big: true }, ...pickedSummary()] })) reassign.mutate(m.id);
+                }}>
                 {m.code}
               </Button>
             ))}
@@ -633,7 +649,10 @@ export function DailyListPage() {
                 <span className="ml-2 text-[12px] text-muted">{t("daily.setJins")}:</span>
                 {jinsList.data!.map((j) => (
                   <Button key={j.id} size="sm" variant="secondary" loading={setJins.isPending}
-                    onClick={() => setJins.mutate(j.id)} title={pick(j.name, j.nameHi)}>
+                    onClick={async () => {
+                      if (await ask({ title: t("daily.confirmJinsTitle", { code: j.code }),
+                        rows: [{ label: t("daily.jins"), value: pick(j.name, j.nameHi), big: true }, ...pickedSummary()] })) setJins.mutate(j.id);
+                    }} title={pick(j.name, j.nameHi)}>
                     {j.code}
                   </Button>
                 ))}
@@ -754,7 +773,10 @@ export function DailyListPage() {
                         )}
                         {can("slip.delete") && (
                           <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.delete")} aria-label={t("common.delete")}
-                            onClick={() => { if (confirm(t("daily.confirmDeleteRow", { rst: r.rstNo }))) remove.mutate(r.id); }}>
+                            onClick={async () => {
+                              if (await ask({ title: t("daily.confirmDeleteRow", { rst: r.rstNo }), danger: true, confirmLabel: t("confirm.yesDelete"),
+                                rows: [{ label: t("daily.supplier"), value: <span lang="hi">{r.adatiNameHi}</span> }, { label: t("daily.net"), value: f.weight(r.netGrams, { unit: true }) }, { label: t("daily.amount"), value: f.money(r.amountPaise) }] })) remove.mutate(r.id);
+                            }}>
                             <Trash2 className="h-3.5 w-3.5 text-bad/80" />
                           </Button>
                         )}

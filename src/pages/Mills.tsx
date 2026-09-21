@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useConfirm } from "@/components/Confirm.tsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Factory, Pencil, Trash2, Calculator, Info } from "lucide-react";
 import { api, ApiError, type Merchant, type ChargeConfig, type ParchaResult, type PctBase } from "@/lib/api.ts";
@@ -433,6 +434,7 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
 
 export function MillsPage() {
   const { t, pick } = useI18n();
+  const ask = useConfirm();
   const f = useFormat();
   const qc = useQueryClient();
   const { can } = useSession();
@@ -529,7 +531,7 @@ export function MillsPage() {
                       )}
                       {can("merchant.delete") && (
                         <Button variant="ghost" size="icon" className="h-7 w-7"
-                          onClick={() => { if (confirm(t("merchant.confirmDelete", { name: `${m.code} — ${m.name}` }))) del.mutate(m.id); }}
+                          onClick={async () => { if (await ask({ title: t("merchant.confirmDelete", { name: `${m.code} — ${m.name}` }), danger: true, confirmLabel: t("confirm.yesDelete") })) del.mutate(m.id); }}
                           aria-label={t("common.delete")}>
                           <Trash2 className="h-3.5 w-3.5 text-bad/80" />
                         </Button>
