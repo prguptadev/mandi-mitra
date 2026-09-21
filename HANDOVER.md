@@ -311,6 +311,29 @@ scripts/
   itself. `npm run desktop:pack` / `.github/workflows/desktop.yml` builds the
   NSIS installer on windows-latest and runs the packaged app with
   `--smoke-test`. **Not yet installed on the owner's PC.**
+- **Cloud copy (Supabase)** — `server/lib/cloud.ts`. The PC stays the real
+  database; every 5 min changed rows are upserted into one Postgres table
+  `mm_rows (tbl, row_id, business_id, data jsonb, deleted)`; deletes are
+  marked, not removed. Never sent: sessions, sync_outbox, migrations, the
+  Gemini key, scan_batches.raw_response, images. Connection string
+  encrypted (secrets.ts); push state in `data/cloud-state.db`. Restore
+  (type RESTORE) backs up first, replaces all tables, checks foreign keys,
+  signs everyone out; refused if the copy is from a newer app version.
+  Sizing: ~0.8 MB for the first 3 days incl. setup; est. 100–200 MB a year.
+  Tested against PGlite (real Postgres in-process), `scripts/fake-postgres.ts`.
+- **Updates** — `server/lib/updater.ts`. Settings › App version and updates
+  finds the newest `MandiMitra-Setup-x.y.z.exe` in a folder (Downloads by
+  default), checks its SHA-256 against GitHub's release asset digest, backs
+  up, runs it with `/S --force-run` and exits; the installer reopens the app.
+  Releases: `git tag vX.Y.Z && git push origin vX.Y.Z` (must equal
+  package.json version) → desktop.yml builds, smoke-tests and publishes to
+  https://github.com/prguptadev/mandi-mitra/releases (the repo is PUBLIC).
+- **Permissions** — owner always has all; money features have their own
+  permissions (millledger.read, millreceipt.write, challan.write,
+  backup.manage, app.update). `server/lib/rbacSync.ts` grants permissions
+  new since the last start to the stock roles whose preset has them, never
+  re-grants one the owner removed (settings `rbac.known`), never touches
+  custom roles. Tested per role in `scripts/e2e-rbac.ts`.
 - **Money audit** — `scripts/money-check.ts <copy.db>` re-works every figure
   from raw rows; it runs at the end of `test:e2e` and passed on a copy of the
   real database on 21-09 (122 slips, 3 parchas, 2 mills).
@@ -604,11 +627,12 @@ Never run a data-writing script against the dev server by hand again.
 
 1. **Install on the owner's Windows PC** and try the Canon scanner there —
    both are built and tested on stand-ins only.
-2. **Auto-update** for the desktop app (electron-updater + GitHub releases).
-3. **Cloud sync** — needs the owner's decision (where the data lives, who
-   pays). Until then the backup folder can be a Google Drive / OneDrive
-   folder, which keeps a copy off the PC. `sync_outbox` is already filled.
-4. Restore from a backup inside the app (today: replace `mandi.db` by hand).
+2. The owner makes the Supabase project and pastes its connection string in
+   Settings › Cloud copy (nobody else can create the account).
+3. Restore from a local backup file inside the app (today: replace
+   `mandi.db` by hand; cloud restore is in the app).
+4. Two computers working at once would need two-way sync; today the cloud
+   is a one-way copy from one PC.
 
 ### Smaller gaps
 
