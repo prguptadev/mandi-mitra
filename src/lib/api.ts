@@ -35,7 +35,7 @@ export const api = {
   get: <T>(p: string) => request<T>("GET", p),
   post: <T>(p: string, b?: unknown) => request<T>("POST", p, b ?? {}),
   put: <T>(p: string, b?: unknown) => request<T>("PUT", p, b ?? {}),
-  del: <T>(p: string) => request<T>("DELETE", p),
+  del: <T>(p: string, b?: unknown) => request<T>("DELETE", p, b),
 };
 
 /* ------------------------------------------------------------------- types */
@@ -78,41 +78,15 @@ export interface Merchant {
   chargeConfig: ChargeConfig;
 }
 
-export interface ChargeConfig {
-  katauti: KatautiConfig;
-  millBardanaKgPerBag: number;
-  adat: { enabled: boolean; pct: number; label: string };
-  labour1: { enabled: boolean; perBagRupees: number; label: string };
-  labour2: { enabled: boolean; perBagRupees: number; label: string };
-  sutli: { enabled: boolean; perBagRupees: number; label: string };
-  gaushala: { enabled: boolean; perQtlRupees: number; base: "gross" | "net"; label: string };
-  mandiTax: { enabled: boolean; pct: number; base: PctBase; label: string };
-  commission: { enabled: boolean; pct: number; base: PctBase; label: string };
-  gatePass: { enabled: boolean; perTruckRupees: number; label: string };
-  extraCharges: { key: string; label: string; labelHi?: string; kind: "per_bag" | "per_qtl" | "per_truck" | "pct" | "flat"; value: number; base?: PctBase; weightBase?: "gross" | "net"; sign: "add" | "subtract" }[];
-  dara: { mode: "none" | "per_bag" | "per_qtl" | "pct" | "manual"; value: number; weightBase: "gross" | "net"; includeInGrandTotal: boolean; label: string; labelHi: string };
-  advance: { treatment: "add" | "subtract" | "exclude"; label: string };
-  grandTotalRounding: "none" | "nearest_rupee" | "up_rupee" | "nearest_ten";
-  parcha: { title: string; titleHi: string; numberPrefix: string; showBoreColumns: boolean; showDaraRow: boolean; footerNote: string; footerNoteHi: string };
-  paymentTermsDays: number;
-  notes: string;
-}
+/* Charge terms and parcha results come straight from the server's own
+   types (type-only imports, erased from the browser bundle), so the two
+   sides cannot drift apart. */
+import type { ChargeConfig } from "@server/lib/charges.ts";
+export type { ChargeConfig };
+export type { ParchaResult, ParchaLine } from "@server/lib/charges.ts";
+export type { ParchaDoc, Blocker as LoadBlocker, Warning as LoadWarning, LoadState } from "@server/lib/parcha.ts";
 
 export type PctBase = "amount" | "amount_plus_adat" | "total_before_charge";
-
-export interface ParchaLine {
-  key: string; label: string; labelHi?: string; detail?: string;
-  amountPaise: number; kind: "goods" | "charge" | "subtotal" | "total" | "info" | "adjust";
-  sign?: "add" | "subtract";
-}
-
-export interface ParchaResult {
-  grossGrams: number; bardanaGrams: number; netGrams: number; bags: number;
-  ratePaisePerQtl: number; goodsAmountPaise: number; adatPaise: number;
-  subtotalPaise: number; chargesPaise: number; totalPaise: number;
-  advancePaise: number; daraPaise: number; grandTotalPaise: number;
-  lines: ParchaLine[];
-}
 
 export interface Jins {
   id: string; code: string; name: string; nameHi: string | null;
@@ -148,7 +122,7 @@ export interface SlipRow {
   adatiId: string; adatiNameHi: string; adatiNameHinglish: string; adatiVillage: string | null;
   jinsId: string; jinsCode: string; jinsName: string; jinsNameHi: string | null;
   merchantId: string | null; merchantCode: string | null; merchantName: string | null;
-  loadId: string | null;
+  loadId: string | null; loadTruckNo: string | null; loadStatus: "draft" | "billed" | null;
   grossGrams: number; katautiUnits: number; katautiOverride: boolean;
   bagsCount: number | null; netGrams: number;
   ratePaisePerQtl: number; amountPaise: number;
@@ -251,4 +225,36 @@ export interface GeminiUsage {
   dailyLimit?: number | null;
   exhausted?: boolean;
   resetsAt?: string;
+}
+
+export interface OrderRow {
+  id: string; merchantId: string; jinsId: string; poNo: string; poDate: string;
+  qtyGrams: number; ratePaisePerQtl: number | null; validTill: string | null;
+  status: "open" | "closed"; notes: string | null;
+  millCode: string; millName: string; jinsCode: string; jinsName: string; jinsNameHi: string | null;
+  sentGrams: number; loads: number; billedLoads: number; balanceGrams: number;
+}
+
+export interface LoadListRow {
+  id: string; loadDate: string; merchantId: string; jinsId: string; poId: string | null;
+  truckNo: string | null; transporter: string | null; status: "draft" | "billed";
+  millGrossGrams: number | null; millNetGrams: number | null; bags: number | null;
+  invoiceNo: string | null;
+  millCode: string; millName: string; jinsCode: string; poNo: string | null;
+  slips: number; slipNetGrams: number; slipAmountPaise: number; avgRatePaisePerQtl: number;
+  diffGrams: number | null;
+  parcha: { id: string; parchaNo: string; version: number; grandTotalPaise: number } | null;
+}
+
+export interface CandidateSlip {
+  id: string; slipDate: string; rstNo: string; adatiNameHi: string; adatiNameHinglish: string;
+  merchantId: string | null; merchantCode: string | null;
+  grossGrams: number; katautiUnits: number; netGrams: number; ratePaisePerQtl: number; amountPaise: number;
+}
+
+export interface ParchaRegisterRow {
+  id: string; loadId: string; parchaNo: string; version: number; invoiceDate: string | null;
+  grandTotalPaise: number; status: "approved" | "void"; approvedAt: number | null;
+  voidedAt: number | null; voidReason: string | null;
+  truckNo: string | null; millCode: string; millName: string;
 }

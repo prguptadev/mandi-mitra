@@ -15,6 +15,7 @@ import { usePrefs, DAILY_COLUMNS, type DailyColumnKey } from "@/lib/prefs.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
+import { NewLoadDialog } from "@/pages/Loads.tsx";
 import {
   Button, Card, Select, Input, Badge, Alert, EmptyState, Dialog, Field, Spinner, Checkbox,
 } from "@/components/ui/index.tsx";
@@ -287,6 +288,21 @@ export function DailyListPage() {
   /* Rows already on a load are locked, so they can never be part of a bulk
      action — select-all means "everything I am allowed to move". */
   const selectableIds = rows.filter((r) => !r.loadId).map((r) => r.id);
+
+  /* Selected slips straight onto a truck: one commodity per truck, and the
+     sheet's mill is the likely destination when they all share one. */
+  const [truckPreset, setTruckPreset] = useState<null | { slipIds: string[]; merchantId: string | null; jinsId: string; date: string; netGrams: number }>(null);
+  const putOnTruck = () => {
+    const sel = rows.filter((r) => selected.has(r.id) && !r.loadId);
+    const jinsIds = [...new Set(sel.map((r) => r.jinsId))];
+    if (jinsIds.length !== 1) { setErr(t("daily.mixedJins")); return; }
+    const mills = [...new Set(sel.map((r) => r.merchantId))];
+    setTruckPreset({
+      slipIds: sel.map((r) => r.id), jinsId: jinsIds[0],
+      merchantId: mills.length === 1 ? mills[0] : null,
+      date, netGrams: sel.reduce((s, r) => s + r.netGrams, 0),
+    });
+  };
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
   const someSelected = selected.size > 0;
 
@@ -329,7 +345,14 @@ export function DailyListPage() {
             </Link>
           )}
           {r.ratePending && <Badge tone="warn">{t("daily.ratePending")}</Badge>}
-          {Boolean(r.loadId) && <Badge tone="warn"><Lock className="h-2.5 w-2.5" />{t("daily.onLoad")}</Badge>}
+          {r.loadId && (
+            <Link href={`/loads/${r.loadId}`} title={r.loadStatus === "billed" ? t("daily.lockedRow") : t("daily.onTruckHelp")}>
+              <Badge tone={r.loadStatus === "billed" ? "ok" : "neutral"}>
+                {r.loadStatus === "billed" ? <Lock className="h-2.5 w-2.5" /> : <Truck className="h-2.5 w-2.5" />}
+                {r.loadTruckNo ?? t("daily.onLoad")}
+              </Badge>
+            </Link>
+          )}
         </span>
       );
       case "adatiLatin": return <span className="truncate text-[12px] text-muted">{r.adatiNameHinglish}</span>;
@@ -569,6 +592,11 @@ export function DailyListPage() {
                 {t("daily.selectAllN", { n: selectableIds.length })}
               </Button>
             )}
+            {can("load.write") && (
+              <Button size="sm" variant="primary" icon={<Truck className="h-3.5 w-3.5" />} onClick={putOnTruck}>
+                {t("daily.putOnTruck")}
+              </Button>
+            )}
             <span className="text-[12px] text-muted">{t("daily.reassign")}:</span>
             {mills.data?.map((m) => (
               <Button key={m.id} size="sm" variant="secondary" loading={reassign.isPending}
@@ -623,7 +651,8 @@ export function DailyListPage() {
               {P.newRowPosition === "top" && entryRow}
 
               {!sheet.isLoading && ordered.map((r, i) => {
-                const locked = Boolean(r.loadId);
+                // on a draft truck a slip can still be corrected; an approved parcha locks it
+                const locked = r.loadStatus === "billed";
                 if (editing?.id === r.id) {
                   const ed = editing.draft;
                   const dd = derive(ed, r.katautiCfg);
@@ -654,7 +683,7 @@ export function DailyListPage() {
                     locked && "opacity-75",
                   )}>
                     <td className={cn("border-b border-line/70 px-2", PAD)}>
-                      {!locked && can("slip.write") && (
+                      {!r.loadId && can("slip.write") && (
                         <Checkbox checked={selected.has(r.id)} onChange={(v) => {
                           const next = new Set(selected);
                           if (v) next.add(r.id); else next.delete(r.id);
@@ -686,7 +715,7 @@ export function DailyListPage() {
                             <RefreshCw className="h-3.5 w-3.5" />
                           </Button>
                         )}
-                        {can("slip.delete") && !locked && (
+                        {can("slip.delete") && !r.loadId && (
                           <Button size="icon" variant="ghost" className="h-7 w-7"
                             onClick={() => { if (confirm(t("daily.confirmDeleteRow", { rst: r.rstNo }))) remove.mutate(r.id); }}>
                             <Trash2 className="h-3.5 w-3.5 text-bad/80" />
@@ -791,6 +820,10 @@ export function DailyListPage() {
           <HindiInput value={newSupplierName ?? ""} autoFocus onChange={setNewSupplierName} />
         </Field>
       </Dialog>
+      {truckPreset && (
+        <NewLoadDialog open preset={truckPreset}
+          onClose={() => { setTruckPreset(null); setSelected(new Set()); }} />
+      )}
     </>
   );
 }

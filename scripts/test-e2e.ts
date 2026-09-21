@@ -37,6 +37,7 @@ try {
   run("server/db/seed.ts");
   run("scripts/e2e-daily-list.ts");
   run("scripts/e2e-scan-review.ts");
+  run("scripts/e2e-loads.ts");
 } finally {
   server.kill();
   fs.rmSync(DATA, { recursive: true, force: true });

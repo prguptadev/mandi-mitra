@@ -11,7 +11,8 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
-    proxy: { "/api": { target: "http://localhost:8787", changeOrigin: true } },
+    port: Number(process.env.VITE_PORT ?? 5173),
+    // a second copy against a test API: MANDI_API_PORT=8798 VITE_PORT=5174 npx vite
+    proxy: { "/api": { target: `http://localhost:${process.env.MANDI_API_PORT ?? 8787}`, changeOrigin: true } },
   },
 });

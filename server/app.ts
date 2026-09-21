@@ -10,6 +10,8 @@ import { businessRoutes, auditRoutes } from "./routes/system.ts";
 import { settingsRoutes } from "./routes/settings.ts";
 import { slipRoutes } from "./routes/slips.ts";
 import { scanRoutes } from "./routes/scans.ts";
+import { orderRoutes } from "./routes/orders.ts";
+import { loadRoutes, parchaRoutes } from "./routes/loads.ts";
 
 /** The whole API. Electron imports this same object — no second implementation. */
 export function createApp() {
@@ -30,6 +32,9 @@ export function createApp() {
   app.route("/api/settings", settingsRoutes);
   app.route("/api/slips", slipRoutes);
   app.route("/api/scans", scanRoutes);
+  app.route("/api/orders", orderRoutes);
+  app.route("/api/loads", loadRoutes);
+  app.route("/api/parchas", parchaRoutes);
 
   app.onError((err, c) => {
     if (err instanceof HttpError) {

@@ -8,3 +8,5 @@ scans/
 data/scans/
 data/.secret.key
 data-test/
+data/backups/
+data-uitest/

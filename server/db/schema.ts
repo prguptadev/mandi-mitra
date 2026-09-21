@@ -258,6 +258,8 @@ export const purchaseSlips = sqliteTable(
   }),
 );
 
+/** A mill's order to us: how much of which commodity to send. The parcha
+ *  rate comes from the slips, not from here; ratePaisePerQtl is for reference. */
 export const purchaseOrders = sqliteTable(
   "purchase_orders",
   {
@@ -269,13 +271,20 @@ export const purchaseOrders = sqliteTable(
     poDate: text("po_date").notNull(),
     qtyGrams: integer("qty_grams").notNull(),
     ratePaisePerQtl: integer("rate_paise_per_qtl"),
+    /** Last day the mill will take deliveries against it, if it says. */
+    validTill: text("valid_till"),
+    /** open | closed */
     status: text("status").notNull().default("open"),
+    notes: text("notes"),
+    createdBy: text("created_by").references(() => users.id),
     createdAt: integer("created_at").notNull().$defaultFn(now),
     updatedAt: integer("updated_at").notNull().$defaultFn(now),
   },
   (t) => ({ uq: uniqueIndex("po_uq").on(t.businessId, t.merchantId, t.poNo) }),
 );
 
+/** One truck to one mill. Slips are allocated to it; the mill's own
+ *  weighbridge reading is what gets billed on the kaccha parcha. */
 export const loads = sqliteTable(
   "loads",
   {
@@ -288,21 +297,42 @@ export const loads = sqliteTable(
     truckNo: text("truck_no"),
     transporter: text("transporter"),
     driverPhone: text("driver_phone"),
-    /** Weighbridge reading at the destination mill. */
+    /** Weighbridge reading at the destination mill (the parcha's DHARAM KANTA). */
     millGrossGrams: integer("mill_gross_grams"),
+    /** Total bardana; kept for older rows. New rows split it into katte + bore. */
     millBardanaGrams: integer("mill_bardana_grams"),
     millNetGrams: integer("mill_net_grams"),
+    /** katte + bore */
     bags: integer("bags"),
+    /** Plastic (PP) bags and jute (bore) bags weigh differently empty. */
+    katteCount: integer("katte_count"),
+    boreCount: integer("bore_count"),
+    /** Set only when the operator typed a bardana weight instead of bags x kg. */
+    katteBardanaGrams: integer("katte_bardana_grams"),
+    boreBardanaGrams: integer("bore_bardana_grams"),
     advancePaise: integer("advance_paise").notNull().default(0),
     daraPaise: integer("dara_paise").notNull().default(0),
+    /** Chosen before approval; the parcha row takes it over once approved. */
+    invoiceNo: text("invoice_no"),
+    invoiceDate: text("invoice_date"),
+    ewayBillNo: text("eway_bill_no"),
+    /** draft | billed */
     status: text("status").notNull().default("draft"),
     notes: text("notes"),
+    createdBy: text("created_by").references(() => users.id),
     createdAt: integer("created_at").notNull().$defaultFn(now),
     updatedAt: integer("updated_at").notNull().$defaultFn(now),
   },
-  (t) => ({ dateIdx: index("load_date_idx").on(t.businessId, t.loadDate) }),
+  (t) => ({
+    dateIdx: index("load_date_idx").on(t.businessId, t.loadDate),
+    poIdx: index("load_po_idx").on(t.poId),
+  }),
 );
 
+/** An approved kaccha parcha. The snapshot freezes everything printed —
+ *  names, weights, rate, charge terms, every line — so a later change to a
+ *  mill's terms or a slip can never alter a bill already sent. Voiding keeps
+ *  the row; re-approving the same load makes version 2 with the same number. */
 export const parchas = sqliteTable(
   "parchas",
   {
@@ -311,15 +341,22 @@ export const parchas = sqliteTable(
     loadId: text("load_id").notNull().references(() => loads.id, { onDelete: "cascade" }),
     parchaNo: text("parcha_no").notNull(),
     version: integer("version").notNull().default(1),
-    /** Frozen copy of merchant.chargeConfig + every computed line. */
+    invoiceDate: text("invoice_date"),
     snapshot: text("snapshot").notNull(),
     grandTotalPaise: integer("grand_total_paise").notNull(),
-    status: text("status").notNull().default("draft"),
+    /** approved | void */
+    status: text("status").notNull().default("approved"),
     approvedBy: text("approved_by").references(() => users.id),
     approvedAt: integer("approved_at"),
+    voidedBy: text("voided_by").references(() => users.id),
+    voidedAt: integer("voided_at"),
+    voidReason: text("void_reason"),
     createdAt: integer("created_at").notNull().$defaultFn(now),
   },
-  (t) => ({ uq: uniqueIndex("parcha_no_uq").on(t.businessId, t.parchaNo, t.version) }),
+  (t) => ({
+    uq: uniqueIndex("parcha_no_uq").on(t.businessId, t.parchaNo, t.version),
+    loadIdx: index("parcha_load_idx").on(t.loadId),
+  }),
 );
 
 export const payments = sqliteTable(

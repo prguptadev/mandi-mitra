@@ -144,6 +144,8 @@ merchantRoutes.post("/preview", can("merchant.read"), async (c) => {
     chargeConfig: ChargeConfigSchema,
     grossQtl: z.number().default(315.3),
     bags: z.number().int().default(800),
+    katte: z.number().int().optional(),
+    bore: z.number().int().optional(),
     bardanaQtl: z.number().optional(),
     netQtl: z.number().optional(),
     rate: z.number().default(3413.45),
@@ -155,6 +157,8 @@ merchantRoutes.post("/preview", can("merchant.read"), async (c) => {
   const result = computeParcha(body.chargeConfig, {
     grossGrams: qtlToGrams(body.grossQtl),
     bags: body.bags,
+    katte: body.katte,
+    bore: body.bore,
     bardanaGrams: body.bardanaQtl !== undefined ? qtlToGrams(body.bardanaQtl) : undefined,
     netGrams: body.netQtl !== undefined ? qtlToGrams(body.netQtl) : undefined,
     ratePaisePerQtl: rupeesToPaise(body.rate),

@@ -43,6 +43,13 @@
       "when": 1789968184331,
       "tag": "0005_gemini_calls",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1789982583799,
+      "tag": "0006_loads_po_parcha",
+      "breakpoints": true
     }
   ]
 }

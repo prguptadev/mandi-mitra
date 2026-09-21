@@ -31,7 +31,7 @@ const SlipBody = z.object({
 });
 
 /** Katauti terms come from the mill on the sheet header, else the business default. */
-async function katautiCfg(businessId: string, merchantId?: string | null): Promise<Katauti> {
+export async function katautiCfg(businessId: string, merchantId?: string | null): Promise<Katauti> {
   if (merchantId) {
     const [m] = await db.select({ cfg: schema.merchants.chargeConfig }).from(schema.merchants)
       .where(and(eq(schema.merchants.id, merchantId), eq(schema.merchants.businessId, businessId))).limit(1);
@@ -110,6 +110,8 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     merchantCode: schema.merchants.code,
     merchantName: schema.merchants.name,
     loadId: schema.purchaseSlips.loadId,
+    loadTruckNo: schema.loads.truckNo,
+    loadStatus: schema.loads.status,
     grossGrams: schema.purchaseSlips.grossGrams,
     katautiUnits: schema.purchaseSlips.katautiUnits,
     katautiOverride: schema.purchaseSlips.katautiOverride,
@@ -130,6 +132,7 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     .innerJoin(schema.jins, eq(schema.jins.id, schema.purchaseSlips.jinsId))
     .leftJoin(schema.merchants, eq(schema.merchants.id, schema.purchaseSlips.merchantId))
     .leftJoin(schema.scanBatches, eq(schema.scanBatches.id, schema.purchaseSlips.scanBatchId))
+    .leftJoin(schema.loads, eq(schema.loads.id, schema.purchaseSlips.loadId))
     .where(and(...where))
     .orderBy(asc(schema.purchaseSlips.slipDate), asc(schema.purchaseSlips.createdAt));
 
@@ -317,7 +320,19 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
     .where(and(eq(schema.purchaseSlips.id, id), eq(schema.purchaseSlips.businessId, biz))).limit(1);
   if (!before) throw notFound("Slip not found");
   if (before.loadId) {
-    throw new HttpError(409, "This slip is already on a load. Remove it from the load before changing it.", "slip_locked");
+    /* On a draft load the slip can still be corrected — the load recomputes
+       from it. Once the parcha is approved it is part of a bill and locked. */
+    const [ld] = await db.select({ status: schema.loads.status, merchantId: schema.loads.merchantId })
+      .from(schema.loads).where(eq(schema.loads.id, before.loadId)).limit(1);
+    if (ld?.status === "billed") {
+      throw new HttpError(409, "This slip is on an approved parcha. Void the parcha to change it.", "slip_locked");
+    }
+    if (body.merchantId !== undefined && body.merchantId !== ld?.merchantId) {
+      throw new HttpError(409, "This slip is on a load for another mill. Take it off the load to move it.", "slip_on_load");
+    }
+    if (body.jinsId !== undefined && body.jinsId !== before.jinsId) {
+      throw new HttpError(409, "This slip is on a load. Take it off the load to change its commodity.", "slip_on_load");
+    }
   }
   assertRateAllowed(c, body.ratePaisePerQtl !== undefined && body.ratePaisePerQtl !== before.ratePaisePerQtl);
 

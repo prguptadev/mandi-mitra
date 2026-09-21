@@ -21,6 +21,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.38.2",
+    "exceljs": "^4.4.0",
     "hono": "^4.6.14",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",

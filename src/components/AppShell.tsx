@@ -5,6 +5,7 @@ import {
   Factory, Wheat, BookOpen, Wallet, UserCog, ShieldCheck, ScrollText, Settings,
   Menu, X, Sun, Moon, Languages, ChevronDown, LogOut, Building2, Check, Plus,
   PanelLeftClose, PanelLeftOpen,
+  ClipboardList,
 } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -23,8 +24,9 @@ const NAV: NavGroup[] = [
   { labelKey: "nav.operations", items: [
     { href: "/daily", labelKey: "nav.dailyList", icon: ListOrdered, perm: "slip.read" },
     { href: "/scan", labelKey: "nav.scan", icon: ScanLine, perm: "scan.create" },
-    { href: "/loads", labelKey: "nav.loads", icon: Truck, perm: "load.read", soon: true },
-    { href: "/parcha", labelKey: "nav.parcha", icon: FileText, perm: "parcha.read", soon: true },
+    { href: "/orders", labelKey: "nav.orders", icon: ClipboardList, perm: "po.read" },
+    { href: "/loads", labelKey: "nav.loads", icon: Truck, perm: "load.read" },
+    { href: "/parcha", labelKey: "nav.parcha", icon: FileText, perm: "parcha.read" },
     { href: "/stock", labelKey: "nav.stock", icon: Boxes, perm: "stock.read", soon: true },
   ] },
   { labelKey: "nav.masters", items: [

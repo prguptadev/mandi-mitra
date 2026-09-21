@@ -54,6 +54,21 @@ function BaseSelect({ value, onChange }: { value: PctBase; onChange: (v: PctBase
   );
 }
 
+type BagKind = ChargeConfig["labour1"]["appliesTo"];
+function BagKindSelect({ value, onChange }: { value: BagKind; onChange: (v: BagKind) => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="min-w-[140px]">
+      <label className="mb-1 block text-[11px] text-faint">{t("merchant.appliesTo")}</label>
+      <Select value={value} onChange={(e) => onChange(e.target.value as BagKind)} className="h-8 text-[13px]">
+        <option value="all">{t("merchant.bagKind.all")}</option>
+        <option value="katte">{t("merchant.bagKind.katte")}</option>
+        <option value="bore">{t("merchant.bagKind.bore")}</option>
+      </Select>
+    </div>
+  );
+}
+
 function NumBox({ value, onChange, width = "w-24", label }: { value: number; onChange: (v: number) => void; width?: string; label?: string }) {
   return (
     <div className={width}>
@@ -68,13 +83,13 @@ function NumBox({ value, onChange, width = "w-24", label }: { value: number; onC
 function ParchaPreview({ cfg }: { cfg: ChargeConfig }) {
   const { t, pick } = useI18n();
   const f = useFormat();
-  const [sample, setSample] = useState({ grossQtl: 315.3, bags: 800, rate: 3413.45, bardanaQtl: 4.56, netQtl: 310.74, advanceRupees: 10000, manualDaraRupees: 3597.38 });
+  const [sample, setSample] = useState({ grossQtl: 315.3, katte: 800, bore: 0, rate: 3413.45, advanceRupees: 10000, manualDaraRupees: 3597.38 });
   const [res, setRes] = useState<ParchaResult | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     const id = setTimeout(() => {
-      api.post<ParchaResult>("/merchants/preview", { chargeConfig: cfg, ...sample })
+      api.post<ParchaResult>("/merchants/preview", { chargeConfig: cfg, ...sample, bags: sample.katte + sample.bore })
         .then((r) => { if (!cancelled) setRes(r); })
         .catch(() => { /* preview only */ });
     }, 220);
@@ -87,9 +102,9 @@ function ParchaPreview({ cfg }: { cfg: ChargeConfig }) {
         sub={t("merchant.previewSub")} />
       <div className="grid grid-cols-3 gap-2 border-b border-line p-3">
         <NumBox label={t("merchant.previewGross")} width="" value={sample.grossQtl} onChange={(v) => setSample((p) => ({ ...p, grossQtl: v }))} />
-        <NumBox label={t("merchant.previewBags")} width="" value={sample.bags} onChange={(v) => setSample((p) => ({ ...p, bags: v }))} />
+        <NumBox label={t("merchant.previewKatte")} width="" value={sample.katte} onChange={(v) => setSample((p) => ({ ...p, katte: Math.round(v) }))} />
+        <NumBox label={t("merchant.previewBore")} width="" value={sample.bore} onChange={(v) => setSample((p) => ({ ...p, bore: Math.round(v) }))} />
         <NumBox label={t("merchant.previewRate")} width="" value={sample.rate} onChange={(v) => setSample((p) => ({ ...p, rate: v }))} />
-        <NumBox label={t("merchant.previewNet")} width="" value={sample.netQtl} onChange={(v) => setSample((p) => ({ ...p, netQtl: v }))} />
         <NumBox label={t("merchant.previewAdvance")} width="" value={sample.advanceRupees} onChange={(v) => setSample((p) => ({ ...p, advanceRupees: v }))} />
         <NumBox label={t("merchant.previewDara")} width="" value={sample.manualDaraRupees} onChange={(v) => setSample((p) => ({ ...p, manualDaraRupees: v }))} />
       </div>
@@ -122,7 +137,7 @@ function ParchaPreview({ cfg }: { cfg: ChargeConfig }) {
             </tbody>
           </table>
           <p className="mt-2.5 border-t border-line pt-2 text-[11px] leading-relaxed text-faint">
-            {f.weight(res.netGrams, { unit: true })} net · {f.int(res.bags)} bags · bardana {f.weight(res.bardanaGrams, { unit: true })}
+            {f.weight(res.netGrams, { unit: true })} net · {f.int(res.katte)} katte{res.bore ? ` + ${f.int(res.bore)} bore` : ""} · bardana {f.weight(res.bardanaGrams, { unit: true })}
             {f.words(res.grandTotalPaise) && <> · {f.words(res.grandTotalPaise)}</>}
           </p>
         </div>
@@ -262,6 +277,11 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
                     onValueChange={(n) => patch("millBardanaKgPerBag", n ?? 0)}
                     className="h-8 w-full rounded-lg border bg-surface px-3 text-[13px] text-ink focus:border-brand" />
                 </Field>
+                <Field label={t("merchant.boreBardana")} hint={t("merchant.boreBardanaHelp")}>
+                  <NumberInput value={cfg.millBoreBardanaKgPerBag} emptyValue={0}
+                    onValueChange={(n) => patch("millBoreBardanaKgPerBag", n ?? 0)}
+                    className="h-8 w-full rounded-lg border bg-surface px-3 text-[13px] text-ink focus:border-brand" />
+                </Field>
               </div>
             </div>
 
@@ -273,16 +293,19 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
             <ChargeRow label={t("merchant.labour1")} enabled={cfg.labour1.enabled}
               onEnabled={(v) => patch("labour1", { ...cfg.labour1, enabled: v })} unit={t("common.perBag")}>
               <NumBox value={cfg.labour1.perBagRupees} onChange={(v) => patch("labour1", { ...cfg.labour1, perBagRupees: v })} />
+              <BagKindSelect value={cfg.labour1.appliesTo} onChange={(v) => patch("labour1", { ...cfg.labour1, appliesTo: v })} />
             </ChargeRow>
 
             <ChargeRow label={t("merchant.labour2")} enabled={cfg.labour2.enabled}
               onEnabled={(v) => patch("labour2", { ...cfg.labour2, enabled: v })} unit={t("common.perBag")}>
               <NumBox value={cfg.labour2.perBagRupees} onChange={(v) => patch("labour2", { ...cfg.labour2, perBagRupees: v })} />
+              <BagKindSelect value={cfg.labour2.appliesTo} onChange={(v) => patch("labour2", { ...cfg.labour2, appliesTo: v })} />
             </ChargeRow>
 
             <ChargeRow label={t("merchant.sutli")} enabled={cfg.sutli.enabled}
               onEnabled={(v) => patch("sutli", { ...cfg.sutli, enabled: v })} unit={t("common.perBag")}>
               <NumBox value={cfg.sutli.perBagRupees} onChange={(v) => patch("sutli", { ...cfg.sutli, perBagRupees: v })} />
+              <BagKindSelect value={cfg.sutli.appliesTo} onChange={(v) => patch("sutli", { ...cfg.sutli, appliesTo: v })} />
             </ChargeRow>
 
             <ChargeRow label={t("merchant.gaushala")} enabled={cfg.gaushala.enabled}

@@ -129,4 +129,10 @@ body {
 @media print {
   .no-print { display: none !important; }
   body { background: #fff; color: #000; }
+  /* printing a parcha: only the paper, at the top of an A4 page */
+  @page { size: A4 portrait; margin: 10mm; }
+  body.print-parcha * { visibility: hidden !important; }
+  body.print-parcha .print-area, body.print-parcha .print-area * { visibility: visible !important; }
+  body.print-parcha .print-area { position: fixed; left: 0; top: 0; width: 100%; border: 0 !important; overflow: visible !important; }
+  body.print-parcha .parcha-paper { padding: 0; max-width: none; }
 }
