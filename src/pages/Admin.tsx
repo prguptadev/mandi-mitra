@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { SupplierChargesCard } from "@/components/SupplierChargesCard.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import {
@@ -639,6 +640,7 @@ export function SettingsPage() {
         </Card>
 
         <div className="space-y-4">
+          <SupplierChargesCard />
           <NumberFormatCard />
           <GeminiCard />
           <BackupCard />

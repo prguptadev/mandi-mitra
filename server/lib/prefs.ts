@@ -15,6 +15,9 @@ export const DAILY_COLUMNS = [
   { key: "net",         en: "Net weight",       hi: "शुद्ध वज़न",       always: true  },
   { key: "rate",        en: "Rate",             hi: "दर",              always: true  },
   { key: "amount",      en: "Amount",           hi: "राशि",            always: true  },
+  { key: "commission",  en: "Commission",       hi: "कमीशन",          always: false },
+  { key: "gaushala",    en: "Gaushala",         hi: "गौशाला",          always: false },
+  { key: "payable",     en: "Net amount",       hi: "कुल देय",         always: false },
   { key: "bagsCount",   en: "Bags",             hi: "बोरे",            always: false },
   { key: "status",      en: "Status",           hi: "स्थिति",          always: false },
 ] as const;

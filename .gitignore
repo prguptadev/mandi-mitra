@@ -17,3 +17,6 @@ data/scanner-wia.ps1
 data/cloud.json
 data/cloud-state.db
 data/update.json
+
+data-test-*/
+data-perftest/

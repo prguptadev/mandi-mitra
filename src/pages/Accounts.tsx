@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/index.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
+import { defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
 import { cn, todayISO, fmtQtl } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
@@ -30,11 +31,12 @@ type Mode = (typeof MODES)[number];
 interface LedgerRow {
   id: string; nameHi: string; nameHinglish: string; village: string | null; phone: string | null;
   openingBalancePaise: number; slips: number; netGrams: number; unpriced: number;
+  goodsPaise: number; commissionPaise: number; gaushalaPaise: number;
   purchasesPaise: number; paymentsPaise: number; balancePaise: number; lastActivity: string | null;
 }
 interface LedgerList {
   rows: LedgerRow[];
-  totals: { openingPaise: number; purchasesPaise: number; paymentsPaise: number; balancePaise: number; toPayPaise: number; paidAheadPaise: number };
+  totals: { openingPaise: number; goodsPaise: number; commissionPaise: number; gaushalaPaise: number; purchasesPaise: number; paymentsPaise: number; balancePaise: number; toPayPaise: number; paidAheadPaise: number };
 }
 interface Entry {
   kind: "purchase" | "payment"; id: string; date: string;
@@ -43,11 +45,13 @@ interface Entry {
   mode?: Mode; reference?: string | null; notes?: string | null;
   voided?: boolean; voidReason?: string | null;
   creditPaise: number; debitPaise: number; balancePaise: number; amountPaise?: number;
+  /** A purchase: goods value and what the supplier adds; creditPaise is their sum. */
+  goodsPaise?: number; commissionPaise?: number; gaushalaPaise?: number;
 }
 interface Statement {
   supplier: { id: string; nameHi: string; nameHinglish: string; village: string | null; phone: string | null; accountNo: string | null; ifsc: string | null; openingBalancePaise: number };
   from: string | null; to: string | null; broughtForwardPaise: number; entries: Entry[];
-  totals: { purchasesPaise: number; paymentsPaise: number; netGrams: number; grossGrams: number; katautiUnits: number; avgRatePaisePerQtl: number; slips: number; unpriced: number; closingPaise: number };
+  totals: { goodsPaise: number; commissionPaise: number; gaushalaPaise: number; purchasesPaise: number; paymentsPaise: number; netGrams: number; grossGrams: number; katautiUnits: number; avgRatePaisePerQtl: number; slips: number; unpriced: number; closingPaise: number };
 }
 interface PaymentRow {
   id: string; adatiId: string; payDate: string; amountPaise: number; mode: Mode; reference: string | null; notes: string | null;
@@ -160,6 +164,15 @@ export function PaymentDialog({ onClose, editing, adatiId: presetAdati, adatiLab
           <div><p className="text-[11px] text-faint">{t("pay.owedNow")}</p><Balance paise={now} /></div>
           <div><p className="text-[11px] text-faint">{t("pay.thisPayment")}</p><span className="num">− {f.money(amountPaise)}</span></div>
           <div><p className="text-[11px] text-faint">{t("pay.owedAfter")}</p><Balance paise={now - amountPaise} className="font-semibold" /></div>
+          {row && (
+            /* where "owed now" comes from, part by part */
+            <p className="num col-span-3 border-t border-line pt-2 text-[11px] leading-relaxed text-muted">
+              {t("pay.owedMadeOf", {
+                opening: f.money(row.openingBalancePaise), amount: f.money(row.goodsPaise), commission: f.money(row.commissionPaise),
+                gaushala: f.money(row.gaushalaPaise), paid: f.money(row.paymentsPaise - (editing && editing.adatiId === v.adatiId ? editing.amountPaise : 0)),
+              })}
+            </p>
+          )}
         </div>
       )}
     </Dialog>
@@ -185,8 +198,11 @@ function save(text: string, name: string) {
 }
 
 export function LedgerPage() {
-  const { t, lang } = useI18n();
+  const { t, lang, pick } = useI18n();
   const f = useFormat();
+  // the names of the supplier-charge columns, as set in Settings
+  const scq = useQuery({ queryKey: ["settings", "supplier-charges"], queryFn: () => api.get<SupplierCharges>("/settings/supplier-charges") });
+  const L = (scq.data ?? defaultSupplierCharges()).labels;
   const { can } = useSession();
   const qc = useQueryClient();
   const search = new URLSearchParams(useSearch());
@@ -236,18 +252,22 @@ export function LedgerPage() {
       [`Ledger: ${s.supplier.nameHinglish || s.supplier.nameHi} (${s.supplier.nameHi})`],
       [s.from || s.to ? `Period: ${s.from ? dmy(s.from) : "start"} to ${s.to ? dmy(s.to) : "today"}` : "All time"],
       [],
-      ["Date", "Particulars", "Net qtl", "Rate", "Purchase", "Paid", "Balance"],
-      ["", s.from ? "Brought forward" : "Opening balance", "", "", "", "", (s.broughtForwardPaise / 100).toFixed(2)],
+      ["Date", "Particulars", "Net qtl", "Rate", "Amount", L.commission, L.gaushala, L.payable, "Paid", "Balance"],
+      ["", s.from ? "Brought forward" : "Opening balance", "", "", "", "", "", "", "", (s.broughtForwardPaise / 100).toFixed(2)],
       ...s.entries.map((e) => [
         dmy(e.date),
         e.kind === "purchase" ? `RST ${e.rstNo} · ${e.jinsCode}${e.millCode ? ` · ${e.millCode}` : ""}` : `Payment · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
         e.netGrams != null ? fmtQtl(e.netGrams) : "",
         e.ratePaisePerQtl ? (e.ratePaisePerQtl / 100).toFixed(2) : "",
+        e.kind === "purchase" && e.ratePaisePerQtl ? ((e.goodsPaise ?? 0) / 100).toFixed(2) : "",
+        e.kind === "purchase" && e.ratePaisePerQtl ? ((e.commissionPaise ?? 0) / 100).toFixed(2) : "",
+        e.kind === "purchase" && e.ratePaisePerQtl ? ((e.gaushalaPaise ?? 0) / 100).toFixed(2) : "",
         e.creditPaise ? (e.creditPaise / 100).toFixed(2) : "",
         e.debitPaise ? (e.debitPaise / 100).toFixed(2) : "",
         (e.balancePaise / 100).toFixed(2),
       ]),
-      ["", "Total", fmtQtl(s.totals.netGrams), "", (s.totals.purchasesPaise / 100).toFixed(2), (s.totals.paymentsPaise / 100).toFixed(2), (s.totals.closingPaise / 100).toFixed(2)],
+      ["", "Total", fmtQtl(s.totals.netGrams), "", (s.totals.goodsPaise / 100).toFixed(2), (s.totals.commissionPaise / 100).toFixed(2), (s.totals.gaushalaPaise / 100).toFixed(2),
+        (s.totals.purchasesPaise / 100).toFixed(2), (s.totals.paymentsPaise / 100).toFixed(2), (s.totals.closingPaise / 100).toFixed(2)],
     ];
     save(csvOf(lines), `ledger-${(s.supplier.nameHinglish || "supplier").replace(/\s+/g, "-")}${s.from ? `-${s.from}` : ""}${s.to ? `-to-${s.to}` : ""}.csv`);
   };
@@ -269,11 +289,21 @@ export function LedgerPage() {
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
 
       {list.data && (
-        <div className="mb-4 grid gap-3 sm:grid-cols-3">
-          <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.totalToPay")}</p><p className="num text-lg font-semibold">{f.money(list.data.totals.toPayPaise)}</p></Card>
-          <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.totalPaidAhead")}</p><p className="num text-lg font-semibold text-warn">{f.money(list.data.totals.paidAheadPaise)}</p></Card>
-          <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.proof")}</p>
-            <p className="num text-[13px]">{f.money(list.data.totals.openingPaise)} + {f.money(list.data.totals.purchasesPaise)} − {f.money(list.data.totals.paymentsPaise)} = <b>{f.money(list.data.totals.balancePaise)}</b></p></Card>
+        <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.totalToPay")}</p><p className="num break-all text-lg font-semibold">{f.money(list.data.totals.toPayPaise)}</p></Card>
+          <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.totalPaidAhead")}</p><p className="num break-all text-lg font-semibold text-warn">{f.money(list.data.totals.paidAheadPaise)}</p></Card>
+          {/* the sum written out line by line: large figures stay readable on any screen */}
+          <Card className="p-3 sm:col-span-2 xl:col-span-1">
+            <p className="mb-1 text-[12px] text-muted">{t("ledger.proof")}</p>
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[13px]">
+              <dt className="text-muted">{t("ledger.opening")}</dt><dd className="num break-all text-right">{f.money(list.data.totals.openingPaise)}</dd>
+              <dt className="text-muted">+ {t("ledger.purchaseTotal")}</dt><dd className="num break-all text-right">{f.money(list.data.totals.purchasesPaise)}</dd>
+              <dt className="text-muted">− {t("ledger.payments")}</dt><dd className="num break-all text-right">{f.money(list.data.totals.paymentsPaise)}</dd>
+              <dt className="border-t border-line pt-0.5 font-semibold text-ink">= {t("ledger.closing")}</dt>
+              <dd className="num break-all border-t border-line pt-0.5 text-right font-semibold">{f.money(list.data.totals.balancePaise)}</dd>
+            </dl>
+            <p className="num mt-1.5 break-words text-[11px] leading-snug text-faint">{t("sc.purchasesAre", { amount: f.money(list.data.totals.goodsPaise), commission: f.money(list.data.totals.commissionPaise), gaushala: f.money(list.data.totals.gaushalaPaise) })}</p>
+          </Card>
         </div>
       )}
 
@@ -347,7 +377,10 @@ export function LedgerPage() {
                 <div className="grid grid-cols-2 gap-px border-b border-line bg-line 2xl:grid-cols-4">
                   {[
                     [s.from ? t("ledger.broughtForward") : t("ledger.opening"), <Balance key="a" paise={s.broughtForwardPaise} />],
-                    [t("ledger.purchases", { n: s.totals.slips }), <span key="b" className="num">{f.money(s.totals.purchasesPaise)}</span>],
+                    [t("ledger.purchases", { n: s.totals.slips }), <span key="b" className="num" title={t("sc.madeOf", { amount: f.money(s.totals.goodsPaise), commission: f.money(s.totals.commissionPaise), gaushala: f.money(s.totals.gaushalaPaise) })}>
+                      {f.money(s.totals.purchasesPaise)}
+                      <span className="block text-[11px] font-normal text-faint">{t("sc.madeOf", { amount: f.money(s.totals.goodsPaise), commission: f.money(s.totals.commissionPaise), gaushala: f.money(s.totals.gaushalaPaise) })}</span>
+                    </span>],
                     [t("ledger.payments"), <span key="c" className="num">{f.money(s.totals.paymentsPaise)}</span>],
                     [t("ledger.closing"), <Balance key="d" paise={s.totals.closingPaise} className="font-semibold" />],
                   ].map(([label, value], i) => (
@@ -363,7 +396,9 @@ export function LedgerPage() {
                     <tr>
                       <Th>{t("daily.date")}</Th><Th>{t("daily.rst")}</Th><Th>{t("load.mill")}</Th><Th>{t("load.jins")}</Th>
                       <Th numeric>{t("daily.gross")}</Th><Th numeric>{t("load.katauti")}</Th><Th numeric>{t("load.net")}</Th>
-                      <Th numeric>{t("load.rate")}</Th><Th numeric>{t("ledger.purchase")}</Th><Th numeric>{t("ledger.paid")}</Th>
+                      <Th numeric>{t("load.rate")}</Th><Th numeric>{t("daily.amount")}</Th>
+                      <Th numeric>{pick(L.commission, L.commissionHi)}</Th><Th numeric>{pick(L.gaushala, L.gaushalaHi)}</Th>
+                      <Th numeric>{pick(L.payable, L.payableHi)}</Th><Th numeric>{t("ledger.paid")}</Th>
                       <Th numeric>{t("ledger.balance")}</Th><Th className="no-print w-16" />
                     </tr>
                   </thead>
@@ -371,7 +406,7 @@ export function LedgerPage() {
                     <tr className="border-b border-line/70 bg-raised/30 text-[13px]">
                       <td className="px-3 py-1.5" />
                       <td className="px-3 py-1.5 text-muted" colSpan={3}>{s.from ? t("ledger.broughtForward") : t("ledger.opening")}</td>
-                      <td colSpan={6} />
+                      <td colSpan={9} />
                       <td className="px-3 py-1.5 text-right"><Balance paise={s.broughtForwardPaise} /></td>
                       <td className="no-print" />
                     </tr>
@@ -387,9 +422,12 @@ export function LedgerPage() {
                             <Td numeric className="text-muted">{e.katautiUnits ?? ""}</Td>
                             <Td numeric>{e.netGrams != null ? f.weight(e.netGrams) : ""}</Td>
                             <Td numeric>{e.ratePaisePerQtl ? f.rate(e.ratePaisePerQtl) : ""}</Td>
+                            <Td numeric>{e.ratePaisePerQtl ? f.amount(e.goodsPaise ?? 0) : ""}</Td>
+                            <Td numeric className="text-muted">{e.ratePaisePerQtl ? f.amount(e.commissionPaise ?? 0) : ""}</Td>
+                            <Td numeric className="text-muted">{e.ratePaisePerQtl ? f.amount(e.gaushalaPaise ?? 0) : ""}</Td>
                           </>
                         ) : (
-                          <Td className={cn("whitespace-nowrap text-ok", e.voided && "line-through")} colSpan={7}>
+                          <Td className={cn("whitespace-nowrap text-ok", e.voided && "line-through")} colSpan={10}>
                             {t("ledger.payment")} · {t(`pay.mode.${e.mode ?? "cash"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}
                             {e.notes ? <span className="text-faint"> · {e.notes}</span> : null}
                             {e.voided && <span className="ml-2 text-[11px] text-bad">{t("money.cancelledBecause", { why: e.voidReason ?? "" })}</span>}
@@ -424,6 +462,9 @@ export function LedgerPage() {
                       <td className="num px-3 py-2 text-right text-muted">{s.totals.katautiUnits}</td>
                       <td className="num px-3 py-2 text-right">{f.weight(s.totals.netGrams)}</td>
                       <td className="num px-3 py-2 text-right" title={t("load.avgRateHelp")}>{s.totals.avgRatePaisePerQtl ? f.rate(s.totals.avgRatePaisePerQtl) : ""}</td>
+                      <td className="num px-3 py-2 text-right">{f.amount(s.totals.goodsPaise)}</td>
+                      <td className="num px-3 py-2 text-right text-muted">{f.amount(s.totals.commissionPaise)}</td>
+                      <td className="num px-3 py-2 text-right text-muted">{f.amount(s.totals.gaushalaPaise)}</td>
                       <td className="num px-3 py-2 text-right">{f.amount(s.totals.purchasesPaise)}</td>
                       <td className="num px-3 py-2 text-right">{f.amount(s.totals.paymentsPaise)}</td>
                       <td className="px-3 py-2 text-right"><Balance paise={s.totals.closingPaise} /></td>

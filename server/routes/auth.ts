@@ -11,7 +11,8 @@ import { defaultChargeConfig } from "../lib/charges.ts";
 import { COOKIE, HttpError, bad, requireAuth, actor, type Env } from "../lib/http.ts";
 import { toHinglish } from "../lib/translit.ts";
 import { toDevanagari, looksLatin, hasLatin } from "../lib/devanagari.ts";
-import { PrefsSchema, parsePrefs, defaultPrefs, DAILY_COLUMNS } from "../lib/prefs.ts";
+import { PrefsSchema, parsePrefs, defaultPrefs, DAILY_COLUMNS, DailyListPrefsSchema } from "../lib/prefs.ts";
+import { readDevicePrefs, writeDevicePrefs } from "../lib/devicePrefs.ts";
 
 export const authRoutes = new Hono<Env>();
 
@@ -262,6 +263,18 @@ authRoutes.post("/prefs/reset", requireAuth, async (c) => {
   await db.update(schema.users).set({ prefs: null, updatedAt: nowSec() })
     .where(eq(schema.users.id, auth.user.id));
   return c.json(defaultPrefs());
+});
+
+/** The daily-list layout this person chose on this computer (see lib/devicePrefs.ts). */
+authRoutes.get("/device-prefs", requireAuth, (c) => c.json({ dailyList: readDevicePrefs(c.get("auth")!.user.id) }));
+authRoutes.put("/device-prefs", requireAuth, async (c) => {
+  const { dailyList } = z.object({ dailyList: DailyListPrefsSchema }).parse(await c.req.json());
+  writeDevicePrefs(c.get("auth")!.user.id, dailyList);
+  return c.json({ dailyList });
+});
+authRoutes.delete("/device-prefs", requireAuth, (c) => {
+  writeDevicePrefs(c.get("auth")!.user.id, null);
+  return c.json({ dailyList: null });
 });
 
 /** Utility the UI calls while typing a Hindi name. */

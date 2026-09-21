@@ -117,7 +117,7 @@ async function flags(biz: string, jinsId: string | null, opts: { all: TruckSumma
   if (opts.canLedger) {
   const suppliers = await db.select({ id: schema.adati.id, nameHi: schema.adati.nameHi, nameHinglish: schema.adati.nameHinglish, opening: schema.adati.openingBalancePaise })
     .from(schema.adati).where(eq(schema.adati.businessId, biz));
-  const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.amountPaise})` }).from(S).where(eq(S.businessId, biz)).groupBy(S.adatiId);
+  const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.payablePaise})` }).from(S).where(eq(S.businessId, biz)).groupBy(S.adatiId);
   const paid = await db.select({ adatiId: schema.payments.adatiId, p: sql<number>`sum(${schema.payments.amountPaise})` })
     .from(schema.payments).where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt))).groupBy(schema.payments.adatiId);
   const ahead = suppliers.map((s) => ({ s, bal: s.opening + (bought.find((b) => b.adatiId === s.id)?.p ?? 0) - (paid.find((p) => p.adatiId === s.id)?.p ?? 0) }))
@@ -324,7 +324,7 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
   // suppliers, as of `to`
   const sup = await db.select({ opening: sql<number>`coalesce(sum(${schema.adati.openingBalancePaise}), 0)` })
     .from(schema.adati).where(eq(schema.adati.businessId, biz));
-  const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.amountPaise})` }).from(S)
+  const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.payablePaise})` }).from(S)
     .where(and(eq(S.businessId, biz), ...(f.to ? [lte(S.slipDate, f.to)] : []))).groupBy(S.adatiId);
   const paidBy = await db.select({ adatiId: P.adatiId, p: sql<number>`sum(${P.amountPaise})` }).from(P)
     .where(and(eq(P.businessId, biz), isNull(P.voidedAt), ...(f.to ? [lte(P.payDate, f.to)] : []))).groupBy(P.adatiId);
@@ -333,7 +333,7 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
 
   // flows in the period
   const inPeriod = <T,>(col: T) => [...(f.from ? [gte(col as never, f.from)] : []), ...(f.to ? [lte(col as never, f.to)] : [])];
-  const [purchases] = await db.select({ p: sql<number>`coalesce(sum(${S.amountPaise}), 0)`, n: sql<number>`count(*)` })
+  const [purchases] = await db.select({ p: sql<number>`coalesce(sum(${S.payablePaise}), 0)`, n: sql<number>`count(*)` })
     .from(S).where(and(eq(S.businessId, biz), ...inPeriod(S.slipDate)));
   const [paid] = await db.select({ p: sql<number>`coalesce(sum(${P.amountPaise}), 0)`, n: sql<number>`count(*)` })
     .from(P).where(and(eq(P.businessId, biz), isNull(P.voidedAt), ...inPeriod(P.payDate)));

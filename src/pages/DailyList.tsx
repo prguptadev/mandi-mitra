@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Calendar, Trash2, Truck, AlertTriangle, Check,
   RefreshCw, Download, Keyboard, Lock, Plus, X, Image as ImageIcon, CheckSquare,
-  FileSpreadsheet, Pencil,
+  FileSpreadsheet, Pencil, ArrowUp, ArrowDown,
 } from "lucide-react";
 import { api, ApiError, type Jins, type Merchant, type SlipRow, type SlipTotals, type SlipDay, type KatautiConfig } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -19,6 +19,7 @@ import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
 import { DownloadDialog } from "@/components/DownloadDialog.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
+import { slipCharges, defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
 import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
 import {
   Button, Card, Select, Input, Badge, Alert, EmptyState, Dialog, Field, Spinner, Checkbox,
@@ -72,11 +73,11 @@ function derive(draft: Draft, cfg: KatautiConfig) {
   return { grossGrams, katautiUnits, suggested, overridden: typed !== null, katautiGrams, netGrams, ratePaise, amountPaise };
 }
 
-const NUMERIC = new Set<string>(["sr", "gross", "katauti", "deduction", "net", "rate", "amount", "bagsCount"]);
+const NUMERIC = new Set<string>(["sr", "gross", "katauti", "deduction", "net", "rate", "amount", "commission", "gaushala", "payable", "bagsCount"]);
 const WIDTHS: Record<string, string> = {
   sr: "w-10", rstNo: "w-20", adatiHi: "min-w-[170px]", adatiLatin: "min-w-[140px]",
   village: "w-28", mill: "w-16", jins: "w-24", gross: "w-24", katauti: "w-20",
-  deduction: "w-20", net: "w-24", rate: "w-24", amount: "w-32", bagsCount: "w-16", status: "w-20",
+  deduction: "w-20", net: "w-24", rate: "w-24", amount: "w-32", commission: "w-24", gaushala: "w-24", payable: "w-32", bagsCount: "w-16", status: "w-20",
 };
 
 const CELL = "h-8 w-full rounded-md border border-line bg-surface px-2 text-[13px] text-ink num text-right placeholder:text-faint focus:border-brand disabled:opacity-60";
@@ -87,7 +88,7 @@ export function DailyListPage() {
   const qc = useQueryClient();
   const { can } = useSession();
   const ask = useConfirm();
-  const { prefs, setForSession } = usePrefs();
+  const { prefs, save: savePrefs } = usePrefs();
   const P = prefs.dailyList;
   const [downloading, setDownloading] = useState<null | "list" | "dara">(null);
 
@@ -126,6 +127,17 @@ export function DailyListPage() {
 
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
   const jinsList = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
+  /** Commission and gaushala each supplier adds, and what the columns are called (Settings). */
+  const sc = useQuery({ queryKey: ["settings", "supplier-charges"], queryFn: () => api.get<SupplierCharges>("/settings/supplier-charges") });
+  const terms = sc.data ?? defaultSupplierCharges();
+  const colLabel = (c: { key: string; en: string; hi: string }) =>
+    c.key === "commission" ? pick(terms.labels.commission, terms.labels.commissionHi)
+    : c.key === "gaushala" ? pick(terms.labels.gaushala, terms.labels.gaushalaHi)
+    : c.key === "payable" ? pick(terms.labels.payable, terms.labels.payableHi)
+    : pick(c.en, c.hi);
+  /** A row being typed: what the supplier will add, worked out exactly as the server will. */
+  const preview = (amountPaise: number | null, netGrams: number | null, ratePaise: number | null) =>
+    amountPaise === null || netGrams === null || ratePaise === null ? null : slipCharges(amountPaise, netGrams, ratePaise, terms);
   const days = useQuery({ queryKey: ["slips", "days"], queryFn: () => api.get<SlipDay[]>("/slips/days") });
 
   const sheet = useQuery({
@@ -326,6 +338,8 @@ export function DailyListPage() {
     village: (r) => r.adatiVillage, mill: (r) => r.merchantCode, jins: (r) => r.jinsCode, gross: (r) => r.grossGrams,
     katauti: (r) => r.katautiUnits, deduction: (r) => r.katautiGrams, net: (r) => r.netGrams,
     rate: (r) => (r.ratePending ? null : r.ratePaisePerQtl), amount: (r) => (r.ratePending ? null : r.amountPaise),
+    commission: (r) => (r.ratePending ? null : r.commissionPaise), gaushala: (r) => (r.ratePending ? null : r.gaushalaPaise),
+    payable: (r) => (r.ratePending ? null : r.payablePaise),
     bagsCount: (r) => r.bagsCount, status: (r) => r.status, sr: () => null,
   }, { storageKey: "daily-cols" });
   const shown = colSort.sorted;
@@ -337,7 +351,7 @@ export function DailyListPage() {
     }
     colSort.setSort(null);
     const next: SlipSortOrder = P.sortOrder === cyc[0] ? cyc[1] : P.sortOrder === cyc[1] ? "entry" : cyc[0];
-    setForSession({ sortOrder: next });
+    void savePrefs({ ...P, sortOrder: next }).catch(() => undefined);
   };
   const sortMark = (key: DailyColumnKey) => {
     const cyc = SORT_CYCLE[key];
@@ -392,6 +406,11 @@ export function DailyListPage() {
       case "amount": return r.ratePending
         ? <span className="text-faint">—</span>
         : <span className="font-semibold">{f.amount(r.amountPaise)}</span>;
+      case "commission": return r.ratePending ? <span className="text-faint">—</span> : f.amount(r.commissionPaise);
+      case "gaushala": return r.ratePending ? <span className="text-faint">—</span> : f.amount(r.gaushalaPaise);
+      case "payable": return r.ratePending
+        ? <span className="text-faint">—</span>
+        : <span className="font-semibold text-ink">{f.amount(r.payablePaise)}</span>;
       case "bagsCount": return r.bagsCount != null ? f.int(r.bagsCount) : <span className="text-faint">—</span>;
       case "status": return <span className="text-[11px] text-muted">{t(`slip.status.${r.status}` as "slip.status.open")}</span>;
       default: return null;
@@ -427,6 +446,10 @@ export function DailyListPage() {
           if (e.key === "Escape") setEditing(null);
         }} />;
       case "amount": return <span className="num font-semibold">{dd.amountPaise === null ? "—" : f.amount(dd.amountPaise)}</span>;
+      case "commission": case "gaushala": case "payable": {
+        const p = preview(dd.amountPaise, dd.netGrams, dd.ratePaise);
+        return <span className="num text-muted">{p ? f.amount(key === "commission" ? p.commissionPaise : key === "gaushala" ? p.gaushalaPaise : p.payablePaise) : "—"}</span>;
+      }
       case "jins": return (
         <select className={cn(CELL, "min-w-[5.5rem] px-1 text-left")} value={ed.jinsId ?? r.jinsId} title={t("daily.jins")}
           onChange={(e) => upd({ jinsId: e.target.value })}>
@@ -451,11 +474,15 @@ export function DailyListPage() {
         </span>
       );
       case "amount": return <span className="text-[14px] text-brand">{f.amount(totals.amountPaise)}</span>;
+      case "commission": return f.amount(totals.commissionPaise);
+      case "gaushala": return f.amount(totals.gaushalaPaise);
+      case "payable": return <span className="text-[14px] text-ink">{f.amount(totals.payablePaise)}</span>;
       case "bagsCount": return totals.bagsCount ? f.int(totals.bagsCount) : null;
       default: return null;
     }
   }
 
+  const draftCharges = preview(d.amountPaise, d.netGrams, d.ratePaise);
   const entryRow = can("slip.write") ? (
     <tr className="bg-brand/[0.04]">
       <td className="border-b border-line px-2 py-1.5 text-center">
@@ -499,6 +526,8 @@ export function DailyListPage() {
                 onKeyDown={step("save")} />
             ) : c.key === "amount" ? (
               <span className="num font-semibold text-brand">{d.amountPaise === null ? "—" : f.amount(d.amountPaise)}</span>
+            ) : c.key === "commission" || c.key === "gaushala" || c.key === "payable" ? (
+              <span className="num text-muted">{draftCharges ? f.amount(c.key === "commission" ? draftCharges.commissionPaise : c.key === "gaushala" ? draftCharges.gaushalaPaise : draftCharges.payablePaise) : "—"}</span>
             ) : c.key === "mill" ? (
               activeMill ? <Badge tone="neutral" className="num">{activeMill.code}</Badge> : <span className="text-faint">—</span>
             ) : c.key === "jins" ? (
@@ -663,6 +692,24 @@ export function DailyListPage() {
         </Card>
       )}
 
+      {/* on a long day: straight to the new row at the bottom, or back to the top */}
+      {rows.length > 12 && (
+        <div className="no-print fixed bottom-5 right-5 z-30 flex flex-col gap-2">
+          <Button size="icon" variant="secondary" className="h-10 w-10 rounded-full shadow-pop" title={t("daily.jumpTop")} aria-label={t("daily.jumpTop")}
+            onClick={() => document.querySelector("main")?.scrollTo({ top: 0, behavior: "smooth" })}>
+            <ArrowUp className="h-4 w-4" />
+          </Button>
+          <Button size="icon" variant="primary" className="h-10 w-10 rounded-full shadow-pop" title={t("daily.jumpBottom")} aria-label={t("daily.jumpBottom")}
+            onClick={() => {
+              const main = document.querySelector("main");
+              main?.scrollTo({ top: main.scrollHeight, behavior: "smooth" });
+              // the new row sits at the bottom: ready to type the next RST
+              if (P.newRowPosition === "bottom") setTimeout(() => rstRef.current?.focus({ preventScroll: true }), 450);
+            }}>
+            <ArrowDown className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
       <Card className="overflow-visible">
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-[13px]">
@@ -687,9 +734,9 @@ export function DailyListPage() {
                       c.key !== "sr" && "cursor-pointer select-none hover:text-ink",
                       WIDTHS[c.key],
                     )}>
-                    {pick(c.en, c.hi)}
+                    <span title={c.key === "commission" ? t("sc.commissionTip", { pct: terms.commissionPct }) : c.key === "gaushala" ? t("sc.gaushalaTip", { r: terms.gaushalaPerQtl }) : c.key === "payable" ? t("sc.payableTip") : undefined}>{colLabel(c)}</span>
                     {sortMark(c.key) && <span className="ml-1 text-brand">{sortMark(c.key)}</span>}
-                    {(c.key === "rate" || c.key === "amount") && f.symbol && (
+                    {(c.key === "rate" || c.key === "amount" || c.key === "commission" || c.key === "gaushala" || c.key === "payable") && f.symbol && (
                       <span className="ml-0.5 font-normal normal-case text-faint">{f.symbol}</span>
                     )}
                   </th>
@@ -843,6 +890,13 @@ export function DailyListPage() {
                   {t("daily.pricedNet")}: {f.weight(totals.pricedNetGrams, { unit: true })}
                 </p>
               )}
+              {/* what the day's slips put on the suppliers' accounts */}
+              {totals.payablePaise !== totals.amountPaise && (
+                <p className="mt-1 text-[12px] text-muted">
+                  {t("sc.daySummary", { amount: f.money(totals.amountPaise), commission: f.money(totals.commissionPaise), gaushala: f.money(totals.gaushalaPaise) })}
+                  {" = "}<b className="num text-ink">{f.money(totals.payablePaise)}</b>
+                </p>
+              )}
               {f.words(totals.amountPaise) && (
                 <p className="text-[11px] text-faint">{f.words(totals.amountPaise)}</p>
               )}
@@ -880,6 +934,8 @@ export function DailyListPage() {
           <HindiInput value={newSupplierName ?? ""} autoFocus onChange={setNewSupplierName} />
         </Field>
       </Dialog>
+      {/* room under the last line, so the round jump buttons never sit on the totals */}
+      {rows.length > 12 && <div className="h-24" aria-hidden />}
       {downloading && (
         <DownloadDialog open date={date} merchantId={merchantId} mills={mills.data ?? []} jinsId={filterJins} jinsList={jinsList.data ?? []}
           initial={downloading} onClose={() => setDownloading(null)} />

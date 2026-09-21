@@ -55,6 +55,8 @@ check("the parcha register shows it no money received or due", opReg.every((p) =
 const opDash = (await op.req("GET", "/dashboard")).json;
 check("the dashboard shows it no mill balances", opDash.kpis.toReceivePaise === null && opDash.mills.every((m: any) => m.owedPaise === null));
 check("can still scan", (await op.req("GET", "/scanner")).status === 200);
+check("can read the supplier charges (for the daily list)", (await op.req("GET", "/settings/supplier-charges")).status === 200);
+check("cannot change them", (await op.req("PUT", "/settings/supplier-charges", { commissionPct: 0, gaushalaPerQtl: 0 })).status === 403);
 
 console.log("\nAccountant (Accounts)");
 check("sees mill accounts and the money picture", (await acc.req("GET", "/mill-ledger")).status === 200 && (await acc.req("GET", "/dashboard/money")).status === 200);

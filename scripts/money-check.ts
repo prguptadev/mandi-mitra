@@ -31,7 +31,8 @@ for (const biz of all<{ id: string; name: string }>("select id, name from busine
 
   // 1. every slip re-worked: katauti, net, amount
   console.log("\n 1. Slips (daily list)");
-  const slips = all<{ id: string; rst_no: string; slip_date: string; adati_id: string; merchant_id: string | null; jins_id: string; gross_grams: number; katauti_units: number; katauti_override: number; net_grams: number; rate_paise_per_qtl: number; amount_paise: number; katauti_terms?: string | null }>(
+  const slips = all<{ id: string; rst_no: string; slip_date: string; adati_id: string; merchant_id: string | null; jins_id: string; gross_grams: number; katauti_units: number; katauti_override: number; net_grams: number; rate_paise_per_qtl: number; amount_paise: number; katauti_terms?: string | null;
+    commission_paise?: number; gaushala_paise?: number; payable_paise?: number; supplier_terms?: string | null }>(
     "select * from purchase_slips where business_id = ?", biz.id);
   // slips with no mill: the business's own katauti setting (Settings), else the built-in default
   const disp = all<{ value: string }>("select value from settings where business_id = ? and key = 'display'", biz.id)[0];
@@ -57,6 +58,28 @@ for (const biz of all<{ id: string; name: string }>("select id, name from busine
     }
   }
   if (!slipBad) ok(`${slips.length} slips: every katauti, net weight and amount re-works exactly`);
+
+  // 1b. what each supplier adds — worked out here on its own, not with the app's code:
+  //     commission = amount × pct / 100 and gaushala = net qtl × ₹/qtl, each half up to the paisa
+  if (slips.some((x) => x.payable_paise !== undefined)) {
+    let chBad = 0;
+    for (const s of slips) {
+      let t = { commissionPct: 0, gaushalaPerQtl: 0 };
+      try { t = { ...t, ...JSON.parse(s.supplier_terms ?? "{}") }; } catch { /* none */ }
+      const priced = s.rate_paise_per_qtl > 0;
+      const commission = priced ? Number((BigInt(s.amount_paise) * BigInt(Math.round(t.commissionPct * 1000)) + 50_000n) / 100_000n) : 0;
+      const gaushala = priced ? Number((BigInt(s.net_grams) * BigInt(Math.round(t.gaushalaPerQtl * 1000)) + 500_000n) / 1_000_000n) : 0;
+      const payable = s.amount_paise + commission + gaushala;
+      if (commission !== s.commission_paise || gaushala !== s.gaushala_paise || payable !== s.payable_paise) {
+        chBad++;
+        bad(`${s.slip_date} RST ${s.rst_no}: stored commission ${rs(s.commission_paise ?? 0)} gaushala ${rs(s.gaushala_paise ?? 0)} net amount ${rs(s.payable_paise ?? 0)}; re-worked ${rs(commission)} / ${rs(gaushala)} / ${rs(payable)}`);
+      }
+    }
+    const sum = (k: "commission_paise" | "gaushala_paise" | "payable_paise") => slips.reduce((x, s) => x + (s[k] ?? 0), 0);
+    if (!chBad) ok(`${slips.length} slips: commission ₹${rs(sum("commission_paise"))} + gaushala ₹${rs(sum("gaushala_paise"))} re-work exactly; net amount ₹${rs(sum("payable_paise"))} = amount ₹${rs(slips.reduce((x, s) => x + s.amount_paise, 0))} + both`);
+  }
+  // what a slip puts on the supplier's account: its net amount (goods + commission + gaushala)
+  const owedFor = (x: { amount_paise: number; payable_paise?: number }) => x.payable_paise ?? x.amount_paise;
   const unpriced = slips.filter((s) => !s.rate_paise_per_qtl);
   if (unpriced.length) console.log(`   ! ${unpriced.length} slip(s) have no rate yet and count as ₹0 until priced`);
 
@@ -65,10 +88,10 @@ for (const biz of all<{ id: string; name: string }>("select id, name from busine
   const sup = all<{ id: string; opening_balance_paise: number }>("select id, opening_balance_paise from adati where business_id = ?", biz.id);
   const pays = all<{ adati_id: string; amount_paise: number; voided_at: number | null }>("select adati_id, amount_paise, voided_at from payments where business_id = ?", biz.id);
   const opening = sup.reduce((s, a) => s + a.opening_balance_paise, 0);
-  const purchases = slips.reduce((s, x) => s + x.amount_paise, 0);
+  const purchases = slips.reduce((s, x) => s + owedFor(x), 0);
   const paid = pays.filter((p) => p.voided_at == null).reduce((s, p) => s + p.amount_paise, 0);
   const cancelled = pays.filter((p) => p.voided_at != null);
-  const bal = sup.map((a) => a.opening_balance_paise + slips.filter((x) => x.adati_id === a.id).reduce((s, x) => s + x.amount_paise, 0)
+  const bal = sup.map((a) => a.opening_balance_paise + slips.filter((x) => x.adati_id === a.id).reduce((s, x) => s + owedFor(x), 0)
     - pays.filter((p) => p.adati_id === a.id && p.voided_at == null).reduce((s, p) => s + p.amount_paise, 0));
   const toPay = bal.filter((b) => b > 0).reduce((s, b) => s + b, 0);
   const ahead = bal.filter((b) => b < 0).reduce((s, b) => s - b, 0);

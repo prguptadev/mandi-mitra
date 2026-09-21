@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api.ts";
 
@@ -16,6 +16,9 @@ export const DAILY_COLUMNS = [
   { key: "net",        en: "Net weight",       hi: "शुद्ध वज़न" },
   { key: "rate",       en: "Rate",             hi: "दर" },
   { key: "amount",     en: "Amount",           hi: "राशि" },
+  { key: "commission", en: "Commission",       hi: "कमीशन" },
+  { key: "gaushala",   en: "Gaushala",         hi: "गौशाला" },
+  { key: "payable",    en: "Net amount",       hi: "कुल देय" },
   { key: "bagsCount",  en: "Bags",             hi: "बोरे" },
   { key: "status",     en: "Status",           hi: "स्थिति" },
 ] as const;
@@ -61,25 +64,15 @@ export const DEFAULT_PREFS: Prefs = {
   },
 };
 
-const SESSION_KEY = "mandi.prefs.session";
-
-function readSession(): Partial<Prefs> | null {
-  try {
-    const raw = localStorage.getItem(SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
-}
+/** Where settings were kept before v0.3.2 (this browser only); moved to the computer once. */
+const OLD_BROWSER_KEY = "mandi.prefs.session";
 
 interface Ctx {
   prefs: Prefs;
-  /** True when a session-only override is masking the saved preferences. */
-  sessionOverride: boolean;
-  /** Apply for this browser only; nothing is written to the server. */
-  setForSession: (patch: Partial<DailyListPrefs>) => void;
-  /** Persist against the signed-in user, everywhere they sign in. */
-  setForUser: (patch: Partial<DailyListPrefs>) => Promise<void>;
-  clearSession: () => void;
-  resetAll: () => Promise<void>;
+  /** Keep this layout on this computer, for the person signed in. */
+  save: (dailyList: DailyListPrefs) => Promise<void>;
+  /** Back to the standard layout. */
+  reset: () => Promise<void>;
   saving: boolean;
 }
 
@@ -87,58 +80,53 @@ const PrefsCtx = createContext<Ctx | null>(null);
 
 export function PrefsProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
-  const [session, setSession] = useState<Partial<Prefs> | null>(readSession);
-
-  const q = useQuery({
-    queryKey: ["prefs"],
-    queryFn: () => api.get<{ prefs: Prefs }>("/auth/prefs"),
-    staleTime: 60_000,
-    retry: 1,
-  });
+  // what the person saved to their login before v0.3.2 still counts, under this computer's choice
+  const q = useQuery({ queryKey: ["prefs"], queryFn: () => api.get<{ prefs: Prefs }>("/auth/prefs"), staleTime: 60_000, retry: 1 });
+  const dev = useQuery({ queryKey: ["prefs", "device"], queryFn: () => api.get<{ dailyList: DailyListPrefs | null }>("/auth/device-prefs"), staleTime: 60_000, retry: 1 });
 
   const saveM = useMutation({
-    mutationFn: (patch: Partial<DailyListPrefs>) => api.put<Prefs>("/auth/prefs", { dailyList: patch }),
+    mutationFn: (dailyList: DailyListPrefs) => api.put("/auth/device-prefs", { dailyList }),
+    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["prefs"] }); },
+  });
+  const resetM = useMutation({
+    mutationFn: async () => { await api.del("/auth/device-prefs"); await api.post("/auth/prefs/reset"); },
     onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["prefs"] }); },
   });
 
-  const resetM = useMutation({
-    mutationFn: () => api.post<Prefs>("/auth/prefs/reset"),
-    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["prefs"] }); },
-  });
+  // settings kept in this browser by older versions move to the computer, once
+  const moved = useRef(false);
+  useEffect(() => {
+    if (moved.current || !dev.isSuccess || dev.data.dailyList) return;
+    moved.current = true;
+    try {
+      const raw = localStorage.getItem(OLD_BROWSER_KEY);
+      const old = raw ? (JSON.parse(raw) as Partial<Prefs>).dailyList : null;
+      if (old) {
+        const full = { ...DEFAULT_PREFS.dailyList, ...(q.data?.prefs.dailyList ?? {}), ...old } as DailyListPrefs;
+        void saveM.mutateAsync(full).then(() => localStorage.removeItem(OLD_BROWSER_KEY)).catch(() => undefined);
+      }
+    } catch { /* nothing to move */ }
+  }, [dev.isSuccess, dev.data]);
 
   const saved = q.data?.prefs ?? DEFAULT_PREFS;
+  const here = dev.data?.dailyList ?? null;
 
   const prefs: Prefs = useMemo(() => ({
     dailyList: {
       ...DEFAULT_PREFS.dailyList,
       ...saved.dailyList,
-      ...(session?.dailyList ?? {}),
-      columns: { ...DEFAULT_PREFS.dailyList.columns, ...saved.dailyList?.columns, ...(session?.dailyList?.columns ?? {}) },
-      exportColumns: { ...DEFAULT_PREFS.dailyList.exportColumns, ...saved.dailyList?.exportColumns, ...(session?.dailyList?.exportColumns ?? {}) },
-      millReportColumns: { ...DEFAULT_PREFS.dailyList.millReportColumns, ...saved.dailyList?.millReportColumns, ...(session?.dailyList?.millReportColumns ?? {}) },
+      ...(here ?? {}),
+      // a column added in a later version shows as its default until chosen
+      columns: { ...DEFAULT_PREFS.dailyList.columns, ...saved.dailyList?.columns, ...(here?.columns ?? {}) },
+      exportColumns: { ...DEFAULT_PREFS.dailyList.exportColumns, ...saved.dailyList?.exportColumns, ...(here?.exportColumns ?? {}) },
+      millReportColumns: { ...DEFAULT_PREFS.dailyList.millReportColumns, ...saved.dailyList?.millReportColumns, ...(here?.millReportColumns ?? {}) },
     },
-  }), [saved, session]);
-
-  const setForSession = (patch: Partial<DailyListPrefs>) => {
-    const next: Partial<Prefs> = {
-      dailyList: { ...(session?.dailyList ?? {}), ...patch } as DailyListPrefs,
-    };
-    setSession(next);
-    try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-  };
-
-  const clearSession = () => {
-    setSession(null);
-    try { localStorage.removeItem(SESSION_KEY); } catch { /* ignore */ }
-  };
+  }), [saved, here]);
 
   const value: Ctx = {
     prefs,
-    sessionOverride: session !== null,
-    setForSession,
-    setForUser: async (patch) => { clearSession(); await saveM.mutateAsync(patch); },
-    clearSession,
-    resetAll: async () => { clearSession(); await resetM.mutateAsync(); },
+    save: async (dailyList) => { await saveM.mutateAsync(dailyList); },
+    reset: async () => { await resetM.mutateAsync(); },
     saving: saveM.isPending || resetM.isPending,
   };
 

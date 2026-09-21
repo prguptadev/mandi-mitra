@@ -257,6 +257,16 @@ export const purchaseSlips = sqliteTable(
      * mill or an explicit "recompute" applies the new terms.
      */
     katautiTerms: text("katauti_terms"),
+    /**
+     * What the supplier adds to their receipt (server/lib/supplierCharges.ts):
+     * commission on the amount and gaushala on the net weight, and the net
+     * amount we owe = amount + commission + gaushala. The terms (JSON) they
+     * were worked out with stay on the slip, like the katauti terms.
+     */
+    commissionPaise: integer("commission_paise").notNull().default(0),
+    gaushalaPaise: integer("gaushala_paise").notNull().default(0),
+    payablePaise: integer("payable_paise").notNull().default(0),
+    supplierTerms: text("supplier_terms"),
     enteredBy: text("entered_by").references(() => users.id),
     createdAt: integer("created_at").notNull().$defaultFn(now),
     updatedAt: integer("updated_at").notNull().$defaultFn(now),

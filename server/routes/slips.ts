@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { slipCharges, supplierChargesOf, supplierTermsOf, termsOnly } from "../lib/supplierCharges.ts";
 import { z } from "zod";
 import { eq, and, asc, desc, sql, inArray, gte, lte } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
@@ -150,6 +151,10 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     netGrams: schema.purchaseSlips.netGrams,
     ratePaisePerQtl: schema.purchaseSlips.ratePaisePerQtl,
     amountPaise: schema.purchaseSlips.amountPaise,
+    commissionPaise: schema.purchaseSlips.commissionPaise,
+    gaushalaPaise: schema.purchaseSlips.gaushalaPaise,
+    payablePaise: schema.purchaseSlips.payablePaise,
+    supplierTerms: schema.purchaseSlips.supplierTerms,
     status: schema.purchaseSlips.status,
     ocrConfidence: schema.purchaseSlips.ocrConfidence,
     scanBatchId: schema.purchaseSlips.scanBatchId,
@@ -168,6 +173,7 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
 
   // recompute every row server-side and report any that no longer reconcile
   const cfgCache = new Map<string, Katauti>();
+  const bizTerms = termsOnly(await supplierChargesOf(biz));
   const checked = [];
   for (const r of rows) {
     const cacheKey = r.merchantId ?? "-";
@@ -175,6 +181,8 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     const cfg = termsOf(r, cfgCache.get(cacheKey)!);
     const d = deriveSlip(r.grossGrams, cfg, r.ratePaisePerQtl, r.katautiOverride ? r.katautiUnits : null);
     const suggested = deriveSlip(r.grossGrams, cfg, r.ratePaisePerQtl, null);
+    // what the supplier adds, on the slip's own terms
+    const ch = slipCharges(d.amountPaise, d.netGrams, r.ratePaisePerQtl, supplierTermsOf(r, bizTerms));
     // kg per physical bag, only when a bag count was actually recorded
     const avgBagKg = r.bagsCount && r.bagsCount > 0 ? (r.netGrams / 1000) / r.bagsCount : null;
     checked.push({
@@ -187,7 +195,9 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
       expectedAmountPaise: d.amountPaise,
       netMismatchGrams: r.netGrams - d.netGrams,
       amountMismatchPaise: r.amountPaise - d.amountPaise,
-      reconciles: r.netGrams === d.netGrams && r.amountPaise === d.amountPaise,
+      expectedPayablePaise: ch.payablePaise,
+      reconciles: r.netGrams === d.netGrams && r.amountPaise === d.amountPaise
+        && r.commissionPaise === ch.commissionPaise && r.gaushalaPaise === ch.gaushalaPaise && r.payablePaise === ch.payablePaise,
       /** Weight entered, rate still to be agreed. Excluded from the average. */
       ratePending: r.ratePaisePerQtl === 0,
       avgBagKg,
@@ -206,6 +216,10 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     katautiGrams: checked.reduce((s, r) => s + r.katautiGrams, 0),
     netGrams: checked.reduce((s, r) => s + r.netGrams, 0),
     amountPaise: checked.reduce((s, r) => s + r.amountPaise, 0),
+    commissionPaise: checked.reduce((s, r) => s + r.commissionPaise, 0),
+    gaushalaPaise: checked.reduce((s, r) => s + r.gaushalaPaise, 0),
+    /** What we owe the suppliers for these rows: amount + commission + gaushala. */
+    payablePaise: checked.reduce((s, r) => s + r.payablePaise, 0),
     /** Over priced rows only. */
     weightedAvgRatePaise: weightedAvgRate(priced),
     pricedNetGrams: priced.reduce((s, r) => s + r.netGrams, 0),
@@ -305,8 +319,11 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
   if (d.netGrams <= 0) throw bad("Net weight works out to zero or less — check the gross weight", "bad_net");
 
   const id = newId();
+  const terms = termsOnly(await supplierChargesOf(biz));
+  const ch = slipCharges(d.amountPaise, d.netGrams, body.ratePaisePerQtl, terms);
   const values = {
     id, businessId: biz, katautiTerms: JSON.stringify(cfg),
+    supplierTerms: JSON.stringify(terms), ...ch,
     slipDate: body.slipDate, rstNo: body.rstNo,
     adatiId: body.adatiId, jinsId: body.jinsId,
     merchantId: body.merchantId ?? null,
@@ -333,6 +350,7 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
     id,
     netGrams: d.netGrams,
     amountPaise: d.amountPaise,
+    ...ch,
     katautiUnits: d.katautiUnits,
     katautiGrams: d.katautiGrams,
     /** Set when the sheet's own net differs from the formula. */
@@ -374,13 +392,18 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
   const cfg = reweighed ? current : termsOf(before, current);
   const d = deriveSlip(merged.grossGrams, cfg, merged.ratePaisePerQtl, override);
   if (d.netGrams <= 0) throw bad("Net weight works out to zero or less — check the gross weight", "bad_net");
+  // the supplier's charges follow the new weight or rate, on the terms the slip was made with
+  const sTerms = supplierTermsOf(before, termsOnly(await supplierChargesOf(biz)));
+  const ch = slipCharges(d.amountPaise, d.netGrams, merged.ratePaisePerQtl, sTerms);
 
   await db.update(schema.purchaseSlips).set({
     ...merged,
     katautiTerms: JSON.stringify(cfg),
     katautiUnits: d.katautiUnits,
     katautiOverride: override != null,
-    netGrams: d.netGrams, amountPaise: d.amountPaise, updatedAt: nowSec(),
+    netGrams: d.netGrams, amountPaise: d.amountPaise,
+    supplierTerms: JSON.stringify(sTerms), ...ch,
+    updatedAt: nowSec(),
   }).where(eq(schema.purchaseSlips.id, id));
 
   const [after] = await db.select().from(schema.purchaseSlips).where(eq(schema.purchaseSlips.id, id)).limit(1);
@@ -395,7 +418,7 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
     { merchantId: before.merchantId, jinsId: before.jinsId, date: before.slipDate },
     { merchantId: merged.merchantId, jinsId: merged.jinsId, date: merged.slipDate },
   ]) : [];
-  return c.json({ ok: true, netGrams: d.netGrams, amountPaise: d.amountPaise, katautiUnits: d.katautiUnits, katautiGrams: d.katautiGrams, approvedParchas });
+  return c.json({ ok: true, netGrams: d.netGrams, amountPaise: d.amountPaise, ...ch, katautiUnits: d.katautiUnits, katautiGrams: d.katautiGrams, approvedParchas });
 });
 
 slipRoutes.delete("/:id", can("slip.delete"), async (c) => {
@@ -436,15 +459,19 @@ slipRoutes.post("/reassign", can("slip.write"), async (c) => {
 
   // katauti terms can differ per mill, so net and amount are re-derived per slip
   const cfg = await katautiCfg(biz, merchantId);
-  const moved = slips.map((s) => ({ s, d: deriveSlip(s.grossGrams, cfg, s.ratePaisePerQtl, s.katautiOverride ? s.katautiUnits : null) }));
+  const bizTerms = termsOnly(await supplierChargesOf(biz));
+  const moved = slips.map((s) => {
+    const d = deriveSlip(s.grossGrams, cfg, s.ratePaisePerQtl, s.katautiOverride ? s.katautiUnits : null);
+    return { s, d, ch: slipCharges(d.amountPaise, d.netGrams, s.ratePaisePerQtl, supplierTermsOf(s, bizTerms)) };
+  });
   const bad0 = moved.find((x) => x.d.netGrams <= 0);
   if (bad0) throw bad(`RST ${bad0.s.rstNo}: with that mill's katauti the net works out to zero or less`, "bad_net");
   // every slip moves, or none does
   db.transaction((tx) => {
-    for (const { s, d } of moved) {
+    for (const { s, d, ch } of moved) {
       tx.update(schema.purchaseSlips).set({
         merchantId, katautiUnits: d.katautiUnits, katautiTerms: JSON.stringify(cfg),
-        netGrams: d.netGrams, amountPaise: d.amountPaise, updatedAt: nowSec(),
+        netGrams: d.netGrams, amountPaise: d.amountPaise, ...ch, updatedAt: nowSec(),
       }).where(eq(schema.purchaseSlips.id, s.id)).run();
     }
   });
@@ -504,17 +531,20 @@ slipRoutes.post("/recompute", can("slip.write"), async (c) => {
   // change to a mill's katauti does not reach back into old slips
   const cfgCache = new Map<string, Katauti>();
   let changed = 0;
-  const fixes: { rstNo: string; before: { net: number; amount: number }; after: { net: number; amount: number } }[] = [];
+  const fixes: { rstNo: string; before: { net: number; amount: number; payable: number }; after: { net: number; amount: number; payable: number } }[] = [];
+  const bizTerms = termsOnly(await supplierChargesOf(biz));
   for (const r of rows) {
     const key = r.merchantId ?? "-";
     if (!cfgCache.has(key)) cfgCache.set(key, await katautiCfg(biz, r.merchantId));
     const d = deriveSlip(r.grossGrams, termsOf(r, cfgCache.get(key)!), r.ratePaisePerQtl, r.katautiOverride ? r.katautiUnits : null);
-    if (d.netGrams !== r.netGrams || d.amountPaise !== r.amountPaise || d.katautiUnits !== r.katautiUnits) {
-      fixes.push({ rstNo: r.rstNo, before: { net: r.netGrams, amount: r.amountPaise }, after: { net: d.netGrams, amount: d.amountPaise } });
+    const ch = slipCharges(d.amountPaise, d.netGrams, r.ratePaisePerQtl, supplierTermsOf(r, bizTerms));
+    if (d.netGrams !== r.netGrams || d.amountPaise !== r.amountPaise || d.katautiUnits !== r.katautiUnits
+      || ch.commissionPaise !== r.commissionPaise || ch.gaushalaPaise !== r.gaushalaPaise || ch.payablePaise !== r.payablePaise) {
+      fixes.push({ rstNo: r.rstNo, before: { net: r.netGrams, amount: r.amountPaise, payable: r.payablePaise }, after: { net: d.netGrams, amount: d.amountPaise, payable: ch.payablePaise } });
       await db.update(schema.purchaseSlips)
-        .set({ katautiUnits: d.katautiUnits, netGrams: d.netGrams, amountPaise: d.amountPaise, updatedAt: nowSec() })
+        .set({ katautiUnits: d.katautiUnits, netGrams: d.netGrams, amountPaise: d.amountPaise, ...ch, updatedAt: nowSec() })
         .where(eq(schema.purchaseSlips.id, r.id));
-      await enqueueSync(biz, "purchase_slip", r.id, "update", { katautiUnits: d.katautiUnits, netGrams: d.netGrams, amountPaise: d.amountPaise });
+      await enqueueSync(biz, "purchase_slip", r.id, "update", { katautiUnits: d.katautiUnits, netGrams: d.netGrams, amountPaise: d.amountPaise, ...ch });
       changed++;
     }
   }

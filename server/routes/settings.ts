@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { SupplierChargesSchema, supplierChargesOf } from "../lib/supplierCharges.ts";
 import { z } from "zod";
 import { eq, and } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
@@ -51,6 +52,29 @@ settingsRoutes.put("/display", can("settings.write"), async (c) => {
     actor: actor(c), action: "settings.display.update", entity: "settings",
     entityId: "display", entityLabel: "Number & currency format",
     before: before ? JSON.parse(before) : defaultDisplayConfig(), after: next,
+  });
+  return c.json(next);
+});
+
+/* -------------------------------------------------------- supplier charges */
+
+/** Commission and gaushala each supplier adds, and what the columns are called. Everyone who sees slips reads it. */
+settingsRoutes.get("/supplier-charges", async (c) => {
+  const biz = c.get("auth")?.businessId;
+  if (!biz) throw new HttpError(401, "Please sign in", "no_session");
+  return c.json(await supplierChargesOf(biz));
+});
+
+/** New slips take these; slips already entered keep the terms they were made with. */
+settingsRoutes.put("/supplier-charges", can("settings.write"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const next = SupplierChargesSchema.parse(await c.req.json());
+  const before = await supplierChargesOf(biz);
+  await writeSetting(biz, "supplierCharges", JSON.stringify(next));
+  await audit({
+    actor: actor(c), action: "settings.supplier_charges.update", entity: "settings",
+    entityId: "supplierCharges", entityLabel: `Supplier charges: commission ${next.commissionPct}%, gaushala ₹${next.gaushalaPerQtl}/qtl`,
+    before, after: next,
   });
   return c.json(next);
 });

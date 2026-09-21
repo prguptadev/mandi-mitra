@@ -33,7 +33,12 @@ async function sums(businessId: string, opts: { before?: string; upTo?: string; 
     adatiId: S.adatiId,
     slips: sql<number>`count(*)`,
     netGrams: sql<number>`sum(${S.netGrams})`,
-    amountPaise: sql<number>`sum(${S.amountPaise})`,
+    /** Goods value (net × rate). */
+    goodsPaise: sql<number>`sum(${S.amountPaise})`,
+    commissionPaise: sql<number>`sum(${S.commissionPaise})`,
+    gaushalaPaise: sql<number>`sum(${S.gaushalaPaise})`,
+    /** What we owe for them: goods + commission + gaushala. */
+    amountPaise: sql<number>`sum(${S.payablePaise})`,
     unpriced: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then 0 else 1 end)`,
     last: sql<string>`max(${S.slipDate})`,
   }).from(S).where(and(...sw)).groupBy(S.adatiId);
@@ -67,6 +72,10 @@ ledgerRoutes.get("/", can("ledger.read"), async (c) => {
       slips: b?.slips ?? 0,
       netGrams: b?.netGrams ?? 0,
       unpriced: b?.unpriced ?? 0,
+      goodsPaise: b?.goodsPaise ?? 0,
+      commissionPaise: b?.commissionPaise ?? 0,
+      gaushalaPaise: b?.gaushalaPaise ?? 0,
+      /** goods + commission + gaushala: what the purchases put on the supplier's account */
       purchasesPaise: purchases,
       paymentsPaise: payments,
       balancePaise: s.openingBalancePaise + purchases - payments,
@@ -76,6 +85,9 @@ ledgerRoutes.get("/", can("ledger.read"), async (c) => {
   rows.sort((a, b) => b.balancePaise - a.balancePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
   const totals = {
     openingPaise: rows.reduce((s, r) => s + r.openingBalancePaise, 0),
+    goodsPaise: rows.reduce((s, r) => s + r.goodsPaise, 0),
+    commissionPaise: rows.reduce((s, r) => s + r.commissionPaise, 0),
+    gaushalaPaise: rows.reduce((s, r) => s + r.gaushalaPaise, 0),
     purchasesPaise: rows.reduce((s, r) => s + r.purchasesPaise, 0),
     paymentsPaise: rows.reduce((s, r) => s + r.paymentsPaise, 0),
     balancePaise: rows.reduce((s, r) => s + r.balancePaise, 0),
@@ -115,7 +127,8 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
   const slips = await db.select({
     id: S.id, date: S.slipDate, rstNo: S.rstNo, netGrams: S.netGrams, ratePaisePerQtl: S.ratePaisePerQtl,
     grossGrams: S.grossGrams, katautiUnits: S.katautiUnits,
-    amountPaise: S.amountPaise, createdAt: S.createdAt, jinsCode: schema.jins.code, millCode: schema.merchants.code,
+    amountPaise: S.amountPaise, commissionPaise: S.commissionPaise, gaushalaPaise: S.gaushalaPaise, payablePaise: S.payablePaise,
+    createdAt: S.createdAt, jinsCode: schema.jins.code, millCode: schema.merchants.code,
   }).from(S)
     .innerJoin(schema.jins, eq(schema.jins.id, S.jinsId))
     .leftJoin(schema.merchants, eq(schema.merchants.id, S.merchantId))
@@ -131,6 +144,8 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
     kind: "purchase" | "payment"; id: string; date: string; at: number; voided?: boolean; voidReason?: string | null;
     rstNo?: string; jinsCode?: string; millCode?: string | null; netGrams?: number; ratePaisePerQtl?: number;
     grossGrams?: number; katautiUnits?: number;
+    /** A purchase: goods value, and what the supplier adds to it. The credit is their sum. */
+    goodsPaise?: number; commissionPaise?: number; gaushalaPaise?: number;
     mode?: string; reference?: string | null; notes?: string | null;
     creditPaise: number; debitPaise: number; balancePaise?: number;
   };
@@ -139,7 +154,8 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
       kind: "purchase" as const, id: x.id, date: x.date, at: x.createdAt,
       rstNo: x.rstNo, jinsCode: x.jinsCode, millCode: x.millCode, netGrams: x.netGrams, ratePaisePerQtl: x.ratePaisePerQtl,
       grossGrams: x.grossGrams, katautiUnits: x.katautiUnits,
-      creditPaise: x.amountPaise, debitPaise: 0,
+      goodsPaise: x.amountPaise, commissionPaise: x.commissionPaise, gaushalaPaise: x.gaushalaPaise,
+      creditPaise: x.payablePaise, debitPaise: 0,
     })),
     ...pays.map((p) => ({
       kind: "payment" as const, id: p.id, date: p.payDate, at: p.createdAt,
@@ -164,6 +180,9 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
     broughtForwardPaise: broughtForward,
     entries,
     totals: {
+      goodsPaise: slips.reduce((x, e) => x + e.amountPaise, 0),
+      commissionPaise: slips.reduce((x, e) => x + e.commissionPaise, 0),
+      gaushalaPaise: slips.reduce((x, e) => x + e.gaushalaPaise, 0),
       purchasesPaise: purchases,
       paymentsPaise: payments,
       netGrams: entries.reduce((x, e) => x + (e.netGrams ?? 0), 0),

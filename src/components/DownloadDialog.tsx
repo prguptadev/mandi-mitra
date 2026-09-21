@@ -1,4 +1,5 @@
 import { fmtQtl } from "@/lib/utils.ts";
+import { defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
 import { useState } from "react";
 import { Download, FileSpreadsheet } from "lucide-react";
 import { api, ApiError, type Merchant, type SlipRow, type SlipTotals, type Jins } from "@/lib/api.ts";
@@ -75,6 +76,9 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
     const nameOf = (r: SlipRow) => (names === "latin" ? r.adatiNameHinglish || r.adatiNameHi : r.adatiNameHi);
     const rows = sortSlips(data.rows, sort, nameOf);
     const tot = data.totals;
+    // the supplier-charge columns carry the names set in Settings
+    const sc = await api.get<SupplierCharges>("/settings/supplier-charges").catch(() => defaultSupplierCharges());
+    const named: Partial<Record<DailyColumnKey, string>> = { commission: sc.labels.commission, gaushala: sc.labels.gaushala, payable: sc.labels.payable };
 
     // one "Adati name" column where either name column was chosen; a date column when several days
     type Col = { key: DailyColumnKey | "date" | "adati"; label: string };
@@ -86,7 +90,7 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
         continue;
       }
       if (P.exportColumns[c.key] === false) continue;
-      cols.push({ key: c.key, label: c.en });
+      cols.push({ key: c.key, label: named[c.key] ?? c.en });
       if (c.key === "sr" && f0 !== t0) cols.push({ key: "date", label: "Date" });
     }
     if (f0 !== t0 && !cols.some((c) => c.key === "date")) cols.unshift({ key: "date", label: "Date" });
@@ -106,6 +110,9 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
         case "net": return fmtQtl(r.netGrams);
         case "rate": return r.ratePending ? "" : (r.ratePaisePerQtl / 100).toFixed(2);
         case "amount": return r.ratePending ? "" : (r.amountPaise / 100).toFixed(2);
+        case "commission": return r.ratePending ? "" : (r.commissionPaise / 100).toFixed(2);
+        case "gaushala": return r.ratePending ? "" : (r.gaushalaPaise / 100).toFixed(2);
+        case "payable": return r.ratePending ? "" : (r.payablePaise / 100).toFixed(2);
         case "bagsCount": return r.bagsCount ?? "";
         case "status": return r.status;
         default: return "";
@@ -120,6 +127,9 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
         case "net": return fmtQtl(tot.netGrams);
         case "rate": return (tot.weightedAvgRatePaise / 100).toFixed(2);
         case "amount": return (tot.amountPaise / 100).toFixed(2);
+        case "commission": return (tot.commissionPaise / 100).toFixed(2);
+        case "gaushala": return (tot.gaushalaPaise / 100).toFixed(2);
+        case "payable": return (tot.payablePaise / 100).toFixed(2);
         case "bagsCount": return tot.bagsCount || "";
         default: return "";
       }

@@ -129,6 +129,8 @@ export interface SlipRow {
   grossGrams: number; katautiUnits: number; katautiOverride: boolean;
   bagsCount: number | null; netGrams: number;
   ratePaisePerQtl: number; amountPaise: number;
+  /** What the supplier adds: commission on the amount, gaushala on the net; payable = amount + both. */
+  commissionPaise: number; gaushalaPaise: number; payablePaise: number;
   status: string; ocrConfidence: number | null; scanBatchId: string | null;
   scanStatus: string | null; scanPages: number;
   katautiGrams: number; katautiCfg: KatautiConfig; suggestedKatautiUnits: number;
@@ -146,6 +148,7 @@ export interface KatautiConfig {
 export interface SlipTotals {
   rows: number; grossGrams: number; katautiUnits: number; bagsCount: number; katautiGrams: number;
   netGrams: number; amountPaise: number; weightedAvgRatePaise: number;
+  commissionPaise: number; gaushalaPaise: number; payablePaise: number;
   pricedNetGrams: number; allocatedRows: number; mismatchRows: number;
   ratePendingRows: number; bagWarningRows: number;
 }

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { slipCharges, supplierChargesOf, termsOnly } from "../lib/supplierCharges.ts";
 import { z } from "zod";
 import { eq, and, desc, asc, inArray, sql, gte, lte, like } from "drizzle-orm";
 import fs from "node:fs";
@@ -881,6 +882,8 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
 
   // work everything out first, then write it all or nothing
   const slipRows: (typeof schema.purchaseSlips.$inferInsert)[] = [];
+  // what each supplier adds to their receipt: today's terms, kept on every slip
+  const sTerms = termsOnly(await supplierChargesOf(biz));
   const aliasOps: { raw: string; adatiId: string; corrected: boolean }[] = [];
   for (const r of toWrite) {
     const adatiId = (r.adatiId ?? r.match?.adatiId)!;
@@ -895,6 +898,8 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
       katautiUnits: d.katautiUnits,
       katautiOverride: r.katautiOverride != null,
       katautiTerms: JSON.stringify(katauti),
+      supplierTerms: JSON.stringify(sTerms),
+      ...slipCharges(d.amountPaise, d.netGrams, r.ratePaisePerQtl ?? 0, sTerms),
       netGrams: d.netGrams,
       ratePaisePerQtl: r.ratePaisePerQtl ?? 0,
       amountPaise: d.amountPaise,
