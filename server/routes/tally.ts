@@ -368,7 +368,19 @@ tallyRoutes.post("/export", guard, async (c) => {
 tallyRoutes.post("/mark", guard, async (c) => {
   const auth = c.get("auth")!;
   const biz = auth.businessId!;
-  const { entries } = z.object({ entries: z.array(z.object({ kind: z.enum(KINDS), id: z.string(), fp: z.string() })).max(100_000) }).parse(await c.req.json());
+  const { entries: asked } = z.object({ entries: z.array(z.object({ kind: z.enum(KINDS), id: z.string(), fp: z.string() })).max(100_000) }).parse(await c.req.json());
+  // only this business's own entries can be marked as sent
+  const own = new Set<string>();
+  const tables = { slip: schema.purchaseSlips, payment: schema.payments, parcha: schema.parchas, receipt: schema.millReceipts, cut: schema.loads } as const;
+  for (const k of KINDS) {
+    const T = tables[k];
+    const ids = [...new Set(asked.filter((e) => e.kind === k).map((e) => e.id))];
+    for (let i = 0; i < ids.length; i += 500) {
+      const part = ids.slice(i, i + 500);
+      for (const r of await db.select({ id: T.id }).from(T).where(and(eq(T.businessId, biz), inArray(T.id, part)))) own.add(`${k}|${r.id}`);
+    }
+  }
+  const entries = asked.filter((e) => own.has(`${e.kind}|${e.id}`));
   const at = nowSec();
   db.transaction((tx) => {
     for (const e of entries) {
@@ -377,7 +389,7 @@ tallyRoutes.post("/mark", guard, async (c) => {
     }
   });
   await audit({ actor: actor(c), action: "tally.mark", entity: "settings", entityId: "tally", entityLabel: `${entries.length} entries marked as in Tally` });
-  return c.json({ marked: entries.length });
+  return c.json({ marked: entries.length, notThisBusiness: asked.length - entries.length });
 });
 
 /** A changed entry was put right in Tally by hand: it now matches (or, if gone here, is forgotten). */

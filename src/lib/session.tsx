@@ -26,7 +26,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const switchM = useMutation({
     mutationFn: (businessId: string) => api.post("/auth/switch-business", { businessId }),
-    onSuccess: async () => { await qc.invalidateQueries(); },
+    // nothing of the old business may show, even for a moment: every answer held
+    // for it is dropped (screens show "loading" instead), then loaded afresh
+    onSuccess: async () => {
+      await qc.resetQueries({ predicate: (q) => q.queryKey[0] !== "me" });
+      await qc.invalidateQueries({ queryKey: ["me"] });
+    },
   });
 
   const logoutM = useMutation({

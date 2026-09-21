@@ -473,6 +473,32 @@ written net matching our arithmetic      : 30 / 30
 mean confidence                          : 0.90
 ```
 
+### v0.3.4 — day close, mill follow-up, Tally by day, two firms kept apart
+
+- **Day close** (`server/routes/days.ts`, `server/lib/dayClose.ts`, table
+  `day_closes`): every write dated on a closed day is refused with code
+  `day_closed` — slips (also scan add, move, recompute), payments, trucks and
+  their rows, parcha approve/void, money from mills. The challan weight cut is
+  deliberately NOT locked (mills send it days later). Nothing closes by
+  itself; "close up to" also closes empty days so nothing is back-dated.
+  Reopen needs `day.reopen` and a reason (audit).
+- **Mill follow-up** (`server/routes/millFollowup.ts`, table `mill_followups`):
+  money against a truck pays that truck's parcha; the rest pays the oldest
+  first. Unpaid parts − paid ahead = the Mill accounts balance (tested).
+- **Tally**: party filter (one supplier or one mill), `/tally/days`,
+  `/tally/flags` (the T✓ / T! row marks); `/tally/mark` accepts only the
+  current business's own entries.
+- **Year picker** (`src/lib/fy.tsx`): current year on every start, never a
+  future year, switches itself on 1 April.
+- **Server messages in Hindi**: `src/lib/serverHi.ts`, applied in `api.ts`
+  when `<html lang="hi">`. A message not in the table shows in English.
+- **Two businesses are two sets of books**: `scripts/e2e-isolation.ts` records
+  everything business A shows, does a day of work in business B (same names,
+  codes, RST and parcha numbers), and requires A to be byte-for-byte the same
+  and every cross-business id to be refused. Switching business clears every
+  cached answer (`session.tsx`), so nothing of the other firm shows even for
+  a moment.
+
 ---
 
 ## 5. Setup
