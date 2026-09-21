@@ -35,8 +35,11 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
   disabled?: boolean;
   placeholder?: string;
   className?: string;
+  autoFocus?: boolean;
+  /** Fired when the box loses focus with nothing picked. */
+  onBlurEmpty?: () => void;
 }>(function SupplierPicker(
-  { suppliers, selectedLabel, value, onChange, onCommit, onCreate, invalid, disabled, placeholder, className }, ref,
+  { suppliers, selectedLabel, value, onChange, onCommit, onCreate, invalid, disabled, placeholder, className, autoFocus, onBlurEmpty }, ref,
 ) {
   const { t, lang } = useI18n();
   const [query, setQuery] = useState("");
@@ -139,9 +142,24 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
           setQuery(e.target.value);
           setOpen(true);
         }}
+        autoFocus={autoFocus}
         onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 120)}
+        onBlur={() => setTimeout(() => {
+          setOpen(false);
+          if (!value) onBlurEmpty?.();
+        }, 120)}
         onKeyDown={(e) => {
+          /* Space finishes a word: "amit trading " becomes "अमित ट्रेडिंग " in
+             this same box. The search then runs on the Hindi, which is how
+             the master is written. */
+          if (e.key === " " && !selected && /[a-zA-Z]/.test(query) && !DEVANAGARI.test(query) && !query.endsWith(" ")) {
+            e.preventDefault();
+            const current = query;
+            api.post<{ hindi: string; converted: boolean }>("/adati/to-devanagari", { text: current })
+              .then((r) => setQuery(r.converted && r.hindi ? r.hindi + " " : current + " "))
+              .catch(() => setQuery(current + " "));
+            return;
+          }
           if (e.key === "ArrowDown") {
             e.preventDefault(); setOpen(true);
             setActive((i) => Math.min(i + 1, matches.length - 1));

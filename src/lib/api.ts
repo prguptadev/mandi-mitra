@@ -202,7 +202,9 @@ export interface ScanRow {
   ratePaisePerQtl: number | null;
   excluded: boolean;
   nameCorrected: boolean;
-  match: { adatiId: string; nameHi: string; nameHinglish: string; confidence: number; via: "alias" | "normkey" | "fuzzy" } | null;
+  modelPick?: string | null;
+  confirmed?: string[];
+  match: { adatiId: string; nameHi: string; nameHinglish: string; confidence: number; via: "alias" | "normkey" | "model" | "fuzzy" } | null;
   chosen: { adatiId: string; nameHi: string; nameHinglish: string } | null;
   suggestions: { adatiId: string; nameHi: string; nameHinglish: string; village: string | null; confidence: number }[];
   derivedKatautiUnits: number | null;
@@ -228,6 +230,7 @@ export interface ScanBatch {
   tokensIn: number | null; tokensOut: number | null;
   createdAt: number; reviewedAt: number | null;
   running: boolean;
+  pagesDone: number;
   pages: { index: number; name: string; mimeType: string; bytes: number }[];
   rows: ScanRow[];
   summary: ScanSummary | null;

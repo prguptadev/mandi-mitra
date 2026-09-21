@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { normKey, similarity } from "./translit.ts";
 
@@ -9,7 +9,7 @@ export interface AdatiSuggestion {
 
 export interface AdatiMatch {
   adatiId: string; nameHi: string; nameHinglish: string;
-  confidence: number; via: "alias" | "normkey" | "fuzzy";
+  confidence: number; via: "alias" | "normkey" | "model" | "fuzzy";
 }
 
 /** Auto-accept at or above this; below it the operator picks from suggestions. */
@@ -18,8 +18,15 @@ const SUGGEST_FLOOR = 0.6;
 
 /** Loaded once per batch so a 30-row sheet does not hit the DB 30 times. */
 export async function loadResolver(businessId: string) {
-  const suppliers = await db.select().from(schema.adati)
+  const all = await db.select().from(schema.adati)
     .where(and(eq(schema.adati.businessId, businessId), eq(schema.adati.active, true)));
+  const usage = await db.select({ id: schema.purchaseSlips.adatiId, n: sql<number>`count(*)`.as("n") })
+    .from(schema.purchaseSlips)
+    .where(eq(schema.purchaseSlips.businessId, businessId))
+    .groupBy(schema.purchaseSlips.adatiId);
+  const used = new Map(usage.map((u) => [u.id, u.n]));
+  const suppliers = all.sort((a, b) => (used.get(b.id) ?? 0) - (used.get(a.id) ?? 0)
+    || a.nameHi.localeCompare(b.nameHi, "hi"));
   const aliases = await db.select().from(schema.adatiAliases)
     .where(eq(schema.adatiAliases.businessId, businessId));
 
@@ -45,8 +52,32 @@ export async function loadResolver(businessId: string) {
       const a = byId.get(id);
       return a ? { adatiId: a.id, nameHi: a.nameHi, nameHinglish: a.nameHinglish } : null;
     },
-    resolve(raw: string): { match: AdatiMatch | null; suggestions: AdatiSuggestion[] } {
+    /** Supplier names to show the model, most-used first, capped for prompt size. */
+    candidateNames(limit = 300): string[] {
+      return suppliers.slice(0, limit).map((s) => s.nameHi);
+    },
+    resolve(raw: string, modelPick?: string | null): { match: AdatiMatch | null; suggestions: AdatiSuggestion[] } {
       const text = (raw ?? "").trim();
+      /* The model saw the handwriting beside the real list. If what it picked
+         is an exact supplier name, that beats any string comparison we can do
+         on its transcription after the fact. An exact alias hit still wins,
+         because that is the operator's own earlier correction. */
+      const pickId = modelPick ? byRaw.get(modelPick.trim()) : undefined;
+      const aliasId = text ? byRaw.get(text) : undefined;
+      if (aliasId && byId.has(aliasId)) {
+        const a = byId.get(aliasId)!;
+        return {
+          match: { adatiId: a.id, nameHi: a.nameHi, nameHinglish: a.nameHinglish, confidence: 1, via: "alias" },
+          suggestions: [],
+        };
+      }
+      if (pickId && byId.has(pickId)) {
+        const a = byId.get(pickId)!;
+        return {
+          match: { adatiId: a.id, nameHi: a.nameHi, nameHinglish: a.nameHinglish, confidence: 0.97, via: "model" },
+          suggestions: [],
+        };
+      }
       if (!text) return { match: null, suggestions: [] };
 
       const exact = byRaw.get(text);

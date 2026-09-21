@@ -360,6 +360,8 @@ export const scanBatches = sqliteTable(
     errorText: text("error_text"),
     /** Non-fatal: the read succeeded but something is worth saying. */
     warningText: text("warning_text"),
+    /** Pages read so far; pages are read one at a time and shown as they land. */
+    pagesDone: integer("pages_done").notNull().default(0),
     reviewedBy: text("reviewed_by").references(() => users.id),
     reviewedAt: integer("reviewed_at"),
     createdBy: text("created_by").references(() => users.id),

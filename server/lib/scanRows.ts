@@ -34,6 +34,10 @@ export const ReviewRowSchema = z.object({
   excluded: z.boolean().default(false),
   /** Set once the operator picks a name for an unresolved reading. */
   nameCorrected: z.boolean().default(false),
+  /** The model's pick from the known-supplier list, exactly as it wrote it. */
+  modelPick: z.string().nullable().default(null),
+  /** Fields the operator has looked at and accepted or changed — no longer doubtful. */
+  confirmed: z.array(z.string()).default([]),
 });
 
 export type ReviewRow = z.infer<typeof ReviewRowSchema>;
@@ -81,6 +85,8 @@ export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
     ratePaisePerQtl: r.rate == null ? null : Math.round(r.rate * 100),
     excluded: r.struckThrough === true,
     nameCorrected: false,
+    modelPick: r.supplierMatch?.trim() || null,
+    confirmed: [],
   };
 }
 
@@ -88,7 +94,7 @@ export function checkRow(
   row: ReviewRow,
   opts: {
     katauti: Katauti;
-    resolve: (raw: string) => { match: AdatiMatch | null; suggestions: AdatiSuggestion[] };
+    resolve: (raw: string, modelPick?: string | null) => { match: AdatiMatch | null; suggestions: AdatiSuggestion[] };
     byId: (id: string) => { adatiId: string; nameHi: string; nameHinglish: string } | null;
     /** RST numbers already in the database for this date. */
     existingRst: Set<string>;
@@ -101,7 +107,7 @@ export function checkRow(
   const issues: Issue[] = [];
   const resolved = row.adatiId
     ? { match: null as AdatiMatch | null, suggestions: [] as AdatiSuggestion[] }
-    : opts.resolve(row.adatiRawText);
+    : opts.resolve(row.adatiRawText, row.modelPick);
   const chosen = row.adatiId ? opts.byId(row.adatiId) : null;
 
   let derivedKatautiUnits: number | null = null;

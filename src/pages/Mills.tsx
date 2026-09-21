@@ -6,6 +6,7 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
+import { NumberInput } from "@/components/NumberInput.tsx";
 import { SkeletonTable, SkeletonForm } from "@/components/Skeletons.tsx";
 import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge,
@@ -57,8 +58,8 @@ function NumBox({ value, onChange, width = "w-24", label }: { value: number; onC
   return (
     <div className={width}>
       {label && <label className="mb-1 block text-[11px] text-faint">{label}</label>}
-      <Input mono value={String(value)} inputMode="decimal" className="h-8 text-[13px]"
-        onChange={(e) => onChange(Number(e.target.value) || 0)} />
+      <NumberInput value={value} emptyValue={0} onValueChange={(n) => onChange(n ?? 0)}
+        className="h-8 w-full rounded-lg border bg-surface px-3 text-[13px] text-ink focus:border-brand" />
     </div>
   );
 }
@@ -251,13 +252,15 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
                       <option value="per_quintal_exact">{t("merchant.katautiMode.per_quintal_exact")}</option>
                       <option value="none">{t("merchant.katautiMode.none")}</option>
                     </Select>
-                    <Input mono value={String(cfg.katauti.kgPerUnit)} inputMode="decimal" className="h-8 w-20 text-[13px]"
-                      onChange={(e) => patch("katauti", { ...cfg.katauti, kgPerUnit: Number(e.target.value) || 0 })} />
+                    <NumberInput value={cfg.katauti.kgPerUnit} emptyValue={0}
+                      onValueChange={(n) => patch("katauti", { ...cfg.katauti, kgPerUnit: n ?? 0 })}
+                      className="h-8 w-20 rounded-lg border bg-surface px-3 text-[13px] text-ink focus:border-brand" />
                   </div>
                 </Field>
                 <Field label={t("merchant.millBardana")} hint={t("merchant.millBardanaHelp")}>
-                  <Input mono value={String(cfg.millBardanaKgPerBag)} inputMode="decimal" className="h-8 text-[13px]"
-                    onChange={(e) => patch("millBardanaKgPerBag", Number(e.target.value) || 0)} />
+                  <NumberInput value={cfg.millBardanaKgPerBag} emptyValue={0}
+                    onValueChange={(n) => patch("millBardanaKgPerBag", n ?? 0)}
+                    className="h-8 w-full rounded-lg border bg-surface px-3 text-[13px] text-ink focus:border-brand" />
                 </Field>
               </div>
             </div>
@@ -377,8 +380,9 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
               <HindiInput value={cfg.parcha.titleHi} onChange={(v) => patch("parcha", { ...cfg.parcha, titleHi: v })} />
             </Field>
             <Field label={t("merchant.paymentTerms")}>
-              <Input mono value={String(cfg.paymentTermsDays)} inputMode="numeric"
-                onChange={(e) => patch("paymentTermsDays", Number(e.target.value) || 0)} />
+              <NumberInput integer value={cfg.paymentTermsDays} emptyValue={0}
+                onValueChange={(n) => patch("paymentTermsDays", n ?? 0)}
+                className="h-9.5 w-full rounded-lg border bg-surface px-3 text-sm text-ink focus:border-brand" />
             </Field>
           </div>
           <div className="space-y-3 rounded-lg border border-line p-3">

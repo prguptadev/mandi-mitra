@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, and, desc, inArray, sql, gte, lte, like } from "drizzle-orm";
+import { eq, and, desc, asc, inArray, sql, gte, lte, like } from "drizzle-orm";
 import fs from "node:fs";
 import path from "node:path";
 import { db, schema } from "../db/client.ts";
@@ -145,7 +145,9 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   }
 
   const dupeInBatch = findDupes(rows);
-  const checked: CheckedRow[] = rows.map((r) => checkRow(r, {
+  // page, then position on the page — the same order everywhere
+  const ordered = [...rows].sort((a, b) => (a.page ?? 1) - (b.page ?? 1) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
+  const checked: CheckedRow[] = ordered.map((r) => checkRow(r, {
     katauti, resolve: resolver.resolve, byId: resolver.byId, existingRst, dupeInBatch,
     rateFloorPaise: 200_000, rateCeilPaise: 600_000,
   }));
@@ -228,7 +230,22 @@ scanRoutes.post("/", can("scan.create"), async (c) => {
   const slipDate = typeof body["slipDate"] === "string" && ISO_DATE.test(body["slipDate"])
     ? body["slipDate"] : null;
   const merchantId = typeof body["merchantId"] === "string" && body["merchantId"] ? body["merchantId"] : null;
-  const jinsId = typeof body["jinsId"] === "string" && body["jinsId"] ? body["jinsId"] : null;
+  /* An empty commodity silently blocked approval, with nothing on screen
+     saying why. Default to what this business buys most, then 1509. */
+  let jinsId = typeof body["jinsId"] === "string" && body["jinsId"] ? body["jinsId"] : null;
+  if (!jinsId) {
+    const [top] = await db.select({ id: schema.purchaseSlips.jinsId, n: sql<number>`count(*)`.as("n") })
+      .from(schema.purchaseSlips)
+      .where(eq(schema.purchaseSlips.businessId, biz))
+      .groupBy(schema.purchaseSlips.jinsId)
+      .orderBy(desc(sql`n`))
+      .limit(1);
+    const [fallback] = await db.select({ id: schema.jins.id }).from(schema.jins)
+      .where(and(eq(schema.jins.businessId, biz), eq(schema.jins.active, true)))
+      .orderBy(sql`case when ${schema.jins.code} = '1509' then 0 else 1 end`, asc(schema.jins.code))
+      .limit(1);
+    jinsId = top?.id ?? fallback?.id ?? null;
+  }
   const sourceKind = typeof body["sourceKind"] === "string" ? body["sourceKind"] : "upload";
 
   /* A sidecar so the folder means something when browsed in Finder or
@@ -257,7 +274,15 @@ scanRoutes.post("/", can("scan.create"), async (c) => {
 
 /* --------------------------------------------------------------------- run */
 
-/** Does the actual reading. Never awaited by the request handler. */
+/**
+ * Does the actual reading. Never awaited by the request handler.
+ *
+ * Pages are read ONE AT A TIME, in the order the operator set, and each page's
+ * rows are saved as soon as it lands. Two reasons. The page number is ours —
+ * image N is page N — rather than something the model has to infer across
+ * several images, which is how page 3 ended up above page 1. And the grid can
+ * fill in page by page while the rest is still being read.
+ */
 async function performRead(opts: {
   biz: string; id: string; apiKey: string;
   cfg: ReturnType<typeof defaultGeminiConfig>; wanted?: string;
@@ -267,114 +292,120 @@ async function performRead(opts: {
   const batch = await loadBatch(biz, id);
   const files: { name: string; mimeType: string }[] = JSON.parse(batch.filePaths);
   const dir = path.join(SCAN_DIR, id);
-  const images = files.map((f) => ({
-    base64: fs.readFileSync(path.join(dir, f.name)).toString("base64"),
-    mimeType: f.mimeType,
-  }));
 
-  let result = await readSheet({
-    apiKey, model: wanted ?? cfg.model, images,
-    maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
-  });
+  const resolver = await loadResolver(biz);
+  const knownSuppliers = resolver.candidateNames(300);
 
-  /* A weak first pass is read again on the stronger model. "Weak" is not just
-     a low average: a page can average 0.9 and still have a handful of rows the
-     reader clearly struggled with, or come back with names and weights
-     missing. Any of those is worth the second call. */
-  function weakness(r: typeof result): { weak: boolean; why: string } | null {
-    if (!r.ok || !r.page) return { weak: true, why: "the first pass failed" };
+  function weakness(r: Awaited<ReturnType<typeof readSheet>>): string | null {
+    if (!r.ok || !r.page) return "the first pass failed";
     const rows = r.page.rows;
-    if (!rows.length) return { weak: true, why: "no rows came back" };
+    if (!rows.length) return null; // a blank page is not a weak read
     const mean = rows.reduce((a, x) => a + (x.confidence ?? 0), 0) / rows.length;
-    if (mean < cfg.fallbackBelowConfidence) return { weak: true, why: `average confidence ${mean.toFixed(2)}` };
+    if (mean < cfg.fallbackBelowConfidence) return `average confidence ${mean.toFixed(2)}`;
     const shaky = rows.filter((x) => (x.confidence ?? 1) < 0.6).length;
-    if (shaky / rows.length > 0.15) return { weak: true, why: `${shaky} rows read poorly` };
+    if (shaky / rows.length > 0.15) return `${shaky} rows read poorly`;
     const missingName = rows.filter((x) => !x.adatiName?.trim()).length;
-    if (missingName / rows.length > 0.1) return { weak: true, why: `${missingName} names not read` };
-    const missingGross = rows.filter((x) => x.grossQtl == null).length;
-    if (missingGross / rows.length > 0.1) return { weak: true, why: `${missingGross} weights not read` };
-    if (r.truncated) return { weak: true, why: "the reply was cut short" };
+    if (missingName / rows.length > 0.1) return `${missingName} names not read`;
+    if (rows.filter((x) => x.grossQtl == null).length / rows.length > 0.1) return "weights not read";
+    if (r.truncated) return "the reply was cut short";
     return null;
   }
 
-  let usedFallback = false;
-  let fallbackReason: string | null = null;
-  const weak = weakness(result);
-  if (!wanted && weak && cfg.fallbackModel && cfg.fallbackModel !== cfg.model) {
-    const second = await readSheet({
-      apiKey, model: cfg.fallbackModel, images,
+  const collected: ReviewRow[] = [];
+  const notes: string[] = [];
+  let tokensIn = 0, tokensOut = 0;
+  let modelUsed = wanted ?? cfg.model;
+
+  for (let p = 0; p < files.length; p++) {
+    const image = [{
+      base64: fs.readFileSync(path.join(dir, files[p].name)).toString("base64"),
+      mimeType: files[p].mimeType,
+    }];
+
+    let result = await readSheet({
+      apiKey, model: wanted ?? cfg.model, images: image, knownSuppliers,
       maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
     });
-    // only keep the retry if it is genuinely no worse
-    if (second.ok && !weakness(second)) {
-      result = second; usedFallback = true; fallbackReason = weak.why;
-    } else if (second.ok && !result.ok) {
-      result = second; usedFallback = true; fallbackReason = weak.why;
+
+    const why = weakness(result);
+    if (!wanted && why && cfg.fallbackModel && cfg.fallbackModel !== cfg.model) {
+      const second = await readSheet({
+        apiKey, model: cfg.fallbackModel, images: image, knownSuppliers,
+        maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
+      });
+      if (second.ok && (!weakness(second) || !result.ok)) {
+        result = second;
+        notes.push(`page ${p + 1} read again on ${second.model} because ${why}`);
+      }
     }
-  }
 
-  if (!result.ok || !result.page) {
+    tokensIn += result.tokensIn ?? 0;
+    tokensOut += result.tokensOut ?? 0;
+
+    if (!result.ok || !result.page) {
+      // one bad page should not throw away the pages already read
+      if (collected.length === 0 && p === files.length - 1) {
+        await db.update(schema.scanBatches).set({
+          status: "failed", errorText: result.error ?? "Unknown error", warningText: null,
+          model: result.model, rawResponse: JSON.stringify(result.raw ?? null).slice(0, 40000),
+          tokensIn, tokensOut, pagesDone: p + 1,
+        }).where(eq(schema.scanBatches.id, id));
+        await audit({
+          actor: { ...opts.actorInfo, businessId: biz },
+          action: "scan.read.fail", entity: "scan_batch", entityId: id,
+          entityLabel: result.error ?? "failed",
+        });
+        return;
+      }
+      notes.push(`page ${p + 1} could not be read: ${result.error ?? "unknown error"}`);
+    } else {
+      modelUsed = result.model;
+      if (result.truncated) notes.push(`page ${p + 1} reply was cut short; complete rows were kept`);
+      const offset = collected.length;
+      for (const [i, r] of result.page.rows.entries()) {
+        // the page is the image's position — never the model's guess
+        collected.push(ocrToReviewRow({ ...r, page: p + 1 }, offset + i));
+      }
+    }
+
+    // save after every page so the grid fills in while the rest is read
     await db.update(schema.scanBatches).set({
-      status: "failed", errorText: result.error ?? "Unknown error", warningText: null,
-      model: result.model, rawResponse: JSON.stringify(result.raw ?? null).slice(0, 40000),
-      tokensIn: result.tokensIn ?? null, tokensOut: result.tokensOut ?? null,
+      parsedRows: JSON.stringify(collected),
+      pagesDone: p + 1,
+      model: modelUsed,
+      tokensIn, tokensOut,
     }).where(eq(schema.scanBatches.id, id));
-    await audit({
-      actor: { ...opts.actorInfo, businessId: biz },
-      action: "scan.read.fail", entity: "scan_batch", entityId: id,
-      entityLabel: result.error ?? "failed",
-    });
-    return;
   }
 
-  /* Someone will upload a photo of something else — a parcha, a bill, a
-     thumb over the lens. Say so plainly instead of presenting an empty grid
-     and letting them wonder whether the reader is broken. */
-  const usable = result.page.rows.filter(
-    (r) => (r.rstNo && r.rstNo.trim()) || r.grossQtl != null || (r.adatiName && r.adatiName.trim()),
+  const usable = collected.filter(
+    (r) => r.rstNo || r.grossGrams !== null || r.adatiRawText,
   );
   if (usable.length === 0) {
     await db.update(schema.scanBatches).set({
       status: "failed",
-      errorText: result.page.rows.length === 0
-        ? "Nothing on this image looks like a daily list. Check it is the purchase register page, right way up and in focus."
-        : "This image was read, but none of the rows carry an RST number, a supplier or a weight. It may not be a daily list page.",
-      model: result.model,
-      rawResponse: JSON.stringify(result.raw ?? null).slice(0, 40000),
-      tokensIn: result.tokensIn ?? null, tokensOut: result.tokensOut ?? null,
+      errorText: "Nothing on these pages looks like a daily list. Check they are the purchase register pages, right way up and in focus.",
     }).where(eq(schema.scanBatches.id, id));
     await audit({
       actor: { ...opts.actorInfo, businessId: biz },
       action: "scan.read.empty", entity: "scan_batch", entityId: id,
-      entityLabel: `${result.model} found no usable rows`,
+      entityLabel: `${modelUsed} found no usable rows`,
     });
     return;
   }
 
-  const rows: ReviewRow[] = result.page.rows.map(ocrToReviewRow);
-  const warning = result.truncated
-    ? `The reply was cut short, so ${rows.length} complete rows were recovered. Check the bottom of the sheet for any row that did not come through.`
-    : usedFallback
-    ? `Read again on ${result.model} because ${fallbackReason}.`
-    : null;
   await db.update(schema.scanBatches).set({
     status: "review",
-    warningText: warning,
-    model: result.model,
-    parsedRows: JSON.stringify(rows),
-    rawResponse: JSON.stringify(result.raw).slice(0, 200000),
-    tokensIn: result.tokensIn ?? null,
-    tokensOut: result.tokensOut ?? null,
+    warningText: notes.length ? notes.join(". ") + "." : null,
     errorText: null,
-    // keep whatever the header said, without overwriting an explicit choice
     slipDate: batch.slipDate,
   }).where(eq(schema.scanBatches.id, id));
+  await refreshScanMeta(biz, id);
 
   await audit({
     actor: { ...opts.actorInfo, businessId: biz },
     action: "scan.read", entity: "scan_batch", entityId: id,
-    entityLabel: `${rows.length} rows via ${result.model}${usedFallback ? " (fallback)" : ""}${result.truncated ? " (recovered from a truncated reply)" : ""} in ${result.ms} ms`,
-    after: { rows: rows.length, model: result.model, ms: result.ms, tokensIn: result.tokensIn, tokensOut: result.tokensOut },
+    entityLabel: `${collected.length} rows from ${files.length} page(s) via ${modelUsed}`,
+    after: { rows: collected.length, pages: files.length, model: modelUsed, tokensIn, tokensOut, notes },
   });
 }
 
@@ -396,7 +427,7 @@ scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
   const actorInfo = { userId: c.get("auth")!.user.id, userName: c.get("auth")!.user.name };
 
   await db.update(schema.scanBatches)
-    .set({ status: "reading", errorText: null, warningText: null })
+    .set({ status: "reading", errorText: null, warningText: null, pagesDone: 0, parsedRows: null })
     .where(eq(schema.scanBatches.id, id));
 
   inFlight.add(id);
@@ -425,6 +456,7 @@ scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
     slipDate: batch.slipDate, merchantId: batch.merchantId, jinsId: batch.jinsId,
     model: batch.model, errorText: batch.errorText, warningText: batch.warningText,
     running: inFlight.has(batch.id),
+    pagesDone: batch.pagesDone,
     tokensIn: batch.tokensIn, tokensOut: batch.tokensOut,
     createdAt: batch.createdAt, reviewedAt: batch.reviewedAt,
     pages: files.map((f, i) => ({ index: i, name: f.name, mimeType: f.mimeType, bytes: f.bytes })),

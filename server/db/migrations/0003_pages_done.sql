@@ -1,0 +1,1 @@
+ALTER TABLE `scan_batches` ADD `pages_done` integer DEFAULT 0 NOT NULL;

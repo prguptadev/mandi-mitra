@@ -405,7 +405,7 @@ export function DailyListPage() {
           {c.key === "sr" ? <span className="num text-[11px] text-faint">{rows.length + 1}</span>
             : c.key === "rstNo" ? (
               <input ref={rstRef} className={cn(CELL, "text-left", rstTaken && "border-bad")}
-                value={draft.rstNo} placeholder={nextRst.data?.rstNo ?? "626"}
+                value={draft.rstNo} placeholder={t("daily.rstPlaceholder")}
                 onChange={(e) => setDraft((p) => ({ ...p, rstNo: e.target.value }))}
                 onKeyDown={step("adati")} />
             ) : c.key === "adatiHi" ? (

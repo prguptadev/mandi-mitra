@@ -6,6 +6,7 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, DEFAULT_DISPLAY, type DisplayConfig } from "@/lib/format.tsx";
 import { SkeletonForm } from "@/components/Skeletons.tsx";
+import { NumberInput } from "@/components/NumberInput.tsx";
 import {
   Button, Card, CardHeader, Field, Input, Select, Switch, Alert, Badge,
 } from "@/components/ui/index.tsx";
@@ -152,8 +153,9 @@ export function NumberFormatCard() {
                 <option value="per_quintal_exact">{t("merchant.katautiMode.per_quintal_exact")}</option>
                 <option value="none">{t("merchant.katautiMode.none")}</option>
               </Select>
-              <Input value={String(cfg.katautiKgPerUnit)} mono inputMode="decimal" disabled={!editable}
-                className="w-20" onChange={(e) => set("katautiKgPerUnit", Number(e.target.value) || 0)} />
+              <NumberInput value={cfg.katautiKgPerUnit} emptyValue={0} disabled={!editable}
+                onValueChange={(n) => set("katautiKgPerUnit", n ?? 0)}
+                className="h-9.5 w-20 rounded-lg border bg-surface px-3 text-sm text-ink focus:border-brand" />
             </div>
           </Field>
         </div>

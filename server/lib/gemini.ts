@@ -16,6 +16,8 @@ export const OcrRowSchema = z.object({
   rstNo: z.string().nullable().optional(),
   /** Exactly as written, in Devanagari. No transliteration, no correction. */
   adatiName: z.string().nullable().optional(),
+  /** The known supplier the model thinks this is, copied exactly from the list. */
+  supplierMatch: z.string().nullable().optional(),
   /** DHARAM KANTA column, in quintal. */
   grossQtl: z.number().nullable().optional(),
   /** KATAUTI column, as written. */
@@ -59,6 +61,7 @@ const RESPONSE_SCHEMA = {
           srNo: { type: "INTEGER", nullable: true },
           rstNo: { type: "STRING", nullable: true },
           adatiName: { type: "STRING", nullable: true },
+          supplierMatch: { type: "STRING", nullable: true, description: "Exact name from KNOWN SUPPLIERS, or null" },
           grossQtl: { type: "NUMBER", nullable: true },
           katauti: { type: "NUMBER", nullable: true },
           netQtl: { type: "NUMBER", nullable: true },
@@ -82,14 +85,14 @@ const PROMPT = `You are reading a handwritten daily purchase register from a gra
 
 Read the table and return one object per data row, in the order they appear.
 
-You may be given more than one image. They are the pages of ONE sheet, already in the right order: image 1 is page 1, image 2 is page 2, and so on. Read them in that order, as one continuous list. Set "page" on every row to the number of the image it came from. Do not repeat a row that appears on two images.
+You are given ONE page of the sheet. Read every handwritten row on it, top to bottom. Set "page" to 1 on every row.
 
 Columns, left to right:
 - SR NO — printed row number.
 - ADATI NAME — the supplier's name, handwritten in Hindi. Always return it in Devanagari, never in Latin letters. Copy the spelling as written; do not correct it.
   One exception: a trailing "T.C", "ट.C", "टी.सी" or "TC" is the abbreviation for Trading Company. Write it out as "ट्रेडिंग कंपनी". For example "शिवम T.C" becomes "शिवम ट्रेडिंग कंपनी".
   This column is never blank on a real row. If the name is hard to read, give your best reading in Devanagari and lower the confidence for that row rather than returning null.
-- RST NO — a 3 or 4 digit slip number.
+- RST NO — the weighbridge (dharam kanta) slip number. It is NOT a row count and is not in sequence. It can be 3 or 4 digits, and one sheet often mixes both, e.g. 626, 627, 1474, 629, 1471. Read every digit; do not drop a leading "1" or "14".
 - DHARAM KANTA — gross weight in quintal, normally two decimal places (e.g. 19.20, 46.95).
 - KATAUTI — a whole number, normally close to the gross weight rounded off.
 - NET WEIGHT — weight in quintal, slightly less than the gross. Always copy this column; it is how the entry is checked. If the column is blank on the paper, return null.
@@ -185,6 +188,23 @@ export function explainGeminiError(status: number, message: string, apiKey?: str
   return message;
 }
 
+/**
+ * Builds the known-supplier block. Seeing the real candidates next to the
+ * handwriting lets the model tell "फूलसिंह वर्मा" from a guess like "डोलार राम",
+ * which fuzzy matching after the fact cannot do — it only ever sees the guess.
+ */
+export function knownSuppliersBlock(names: string[]): string {
+  if (!names.length) return "";
+  return `
+
+KNOWN SUPPLIERS — this business already buys from these, so the handwritten name is very likely one of them:
+${names.map((n, i) => `${i + 1}. ${n}`).join("\n")}
+
+For every row:
+- set "adatiName" to what is actually written, in Devanagari, as above;
+- set "supplierMatch" to the name from this list, copied EXACTLY character for character, that the handwriting most likely is. Only use null if it is clearly none of them. A trailing T.C / ट्रेडिंग कंपनी on the paper matches a listed name ending in ट्रेडिंग.`;
+}
+
 export interface GeminiCallResult {
   ok: boolean;
   page?: OcrPage;
@@ -206,6 +226,8 @@ export async function readSheet(opts: {
   maxOutputTokens?: number;
   temperature?: number;
   signal?: AbortSignal;
+  /** Supplier names already in the master, offered to the model as candidates. */
+  knownSuppliers?: string[];
 }): Promise<GeminiCallResult> {
   /* A 30-row sheet needs roughly 5–6k tokens of JSON. Gemini 2.5 also spends
      "thinking" tokens out of the same budget, which is what truncated the
@@ -213,7 +235,7 @@ export async function readSheet(opts: {
      thinking is switched off and the ceiling raised. */
   const maxOutputTokens = Math.max(opts.maxOutputTokens ?? 32768, 32768);
   const started = Date.now();
-  const parts: unknown[] = [{ text: PROMPT }];
+  const parts: unknown[] = [{ text: PROMPT + knownSuppliersBlock(opts.knownSuppliers ?? []) }];
   for (const img of opts.images) {
     parts.push({ inlineData: { mimeType: img.mimeType, data: img.base64 } });
   }

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
@@ -41,6 +41,13 @@ export function ScanListPage() {
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
   const jinsList = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
   const counts = useQuery({ queryKey: ["scans", "counts"], queryFn: () => api.get<Record<string, number>>("/scans/counts") });
+
+  // preselect 1509 so a scan never arrives without a commodity
+  useEffect(() => {
+    if (!upJins && jinsList.data?.length) {
+      setUpJins(jinsList.data.find((j) => j.code === "1509")?.id ?? jinsList.data[0].id);
+    }
+  }, [jinsList.data]);
 
   const list = useQuery({
     // poll while any scan is still being read, so the list never looks stuck

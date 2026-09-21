@@ -226,6 +226,19 @@ Three-tier supplier matching, each verified:
 
 Suggestions are capped at the **three closest**; more is noise on a 30-row sheet.
 
+**The model is given the supplier list.** Fuzzy matching after the fact only
+ever sees the model's transcription — if it wrote "डोलार राम" for फूलसिंह वर्मा,
+no string comparison recovers that. Now up to 300 known names (most-used first)
+go into the prompt, and the model returns both what is written and which listed
+supplier it most likely is. An exact pick from the list resolves as `model`;
+the operator's own earlier corrections (aliases) still take priority.
+
+Review cells: an **orange border** means worth a look (low confidence, the
+paper's net disagreeing with the gross, katauti mismatch, rate out of range)
+and disappears as soon as the operator edits that cell. A **red border** means
+approval is blocked, and the reason is written under the cell. No stars, no
+bracketed numbers.
+
 | Tier | Example | Confidence |
 |---|---|---|
 | Exact alias | `फूलसिंह वर्मा` | 1.00 |
@@ -327,6 +340,10 @@ the Windows Credential Store is an Electron-era task.
   if the database is lost. Every slip created from a scan keeps its
   `scanBatchId`, and the daily list shows a small image icon linking back to the
   original. `data/scans/` is gitignored.
+- **The scan and the grid share a draggable divider**, remembered per device
+  in localStorage (`mandi.split.scanReview`); double-click resets it.
+- **RST is the weighbridge slip number**, not a row count and not sequential.
+  The daily list no longer suggests "last + 1" for it.
 - **Multi-page scans are ordered before they are read.** Several pages stop at
   an order step; the model then reads them as one list and tags each row with
   its page. The review shows every page stacked in one scroll, and the grid
@@ -361,6 +378,10 @@ the Windows Credential Store is an Electron-era task.
 | "Scan not found" was a dead end | a scan belongs to one business; the link was opened from another | `/scans/:id/whereis` names the business (only ones the user belongs to) and offers a one-click switch |
 | `<button>` nested inside `<button>` in the scan list | the whole row was a button and carried action buttons | the row is a `role="link"` div with keyboard handling |
 | Hand-picked suppliers showed as empty on the scan review; "only the top one works" | every pick saved correctly, but the grid only named rows that were auto-matched. The supplier list had been removed from that screen for scale, and nothing replaced it for hand-picked ids | the server returns `chosen` beside `match`; the grid shows either. **Verification now asserts what the screen shows, not only the server state** — the earlier check passed because it looked at the wrong layer |
+| Could only change the last digit of a weight; RST 626 ended up as 19.008 | the cell was `value={n.toFixed(2)}`, reformatted on every keystroke. Delete the `2` from `19.20` and it was redrawn as `19.00` with the cursor at the end, so typing `8` gave `19.008`. Earlier this was wrongly put down to stray keystrokes. `Number(x) \|\| 0` on the Mills screen was worse — `1.` became `1`, so 1.5% could not be typed | `NumberInput`: shows exactly what is typed while focused, tidies on blur. Replaced all seven affected fields. Verified with real editor operations on middle and decimal digits |
+| Approve stayed grey with no reason | a blank commodity from the upload box, and 8 blocking rows whose reasons had been removed from the screen | commodity defaults to the business's most-used, then 1509; red cells carry a short reason underneath |
+| Page 3's rows appeared above page 1 | all pages went in one Gemini call and the model inferred which page each row came from | pages are read **one per call**; the page number is the image's position, not the model's guess, and rows save as each page lands |
+| Duplicate slip numbers that could not be cleared | real misreads — 1471 read as 671, 1473 as 633 — but the only explanation was a tooltip on a disabled star | red box plus "same slip no. as row N" underneath; prompt now warns that slips mix 3- and 4-digit numbers and not to drop a leading 14 |
 | "Add missing suppliers" would have created duplicates | it created "धरमपाल" beside the existing "धर्मपाल सिंह", splitting that supplier's ledger | rows with a close suggestion are left to pick; only names with nothing close are created |
 | Approve stuck disabled on a fresh business | every OCR name was unmatched because the master was empty, and picking 29 one by one is not a reasonable ask | "Add the N missing suppliers" creates them from the sheet and links the rows — 29 blocking to 0 in one action |
 
