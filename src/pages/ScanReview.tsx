@@ -79,14 +79,25 @@ function PageViewer({ scanId, pages, onPage }: {
               <iframe title={p.name} src={`/api/scans/${scanId}/page/${i}`}
                 className="h-[70vh] w-full rounded border border-line bg-white" />
             ) : (
-              <img src={`/api/scans/${scanId}/page/${i}`} alt={t("scan.page", { n: i + 1 })}
-                style={{ width: `${zoom * 100}%` }} loading="lazy"
-                className="mx-auto rounded border border-line bg-white" />
+              <PageImage src={`/api/scans/${scanId}/page/${i}`} alt={t("scan.page", { n: i + 1 })} zoom={zoom} />
             )}
           </div>
         ))}
       </div>
     </Card>
+  );
+}
+
+/** One page's picture — or, for a sheet scanned on another computer, why it is not here. */
+function PageImage({ src, alt, zoom }: { src: string; alt: string; zoom: number }) {
+  const { t } = useI18n();
+  const [missing, setMissing] = useState(false);
+  if (missing) {
+    return <p className="rounded border border-dashed border-line bg-surface p-4 text-center text-[12px] text-muted">{t("scan.imageElsewhere")}</p>;
+  }
+  return (
+    <img src={src} alt={alt} style={{ width: `${zoom * 100}%` }} loading="lazy" onError={() => setMissing(true)}
+      className="mx-auto rounded border border-line bg-white" />
   );
 }
 

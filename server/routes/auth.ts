@@ -5,7 +5,7 @@ import { eq, and, asc } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { hashPin, verifyPin, weakPin, createSession, destroySession, registerFailure, clearFailures, lockRemaining } from "../lib/auth.ts";
-import { ROLE_PRESETS } from "../lib/rbac.ts";
+import { seedRoles, seedJins } from "../lib/businessSetup.ts";
 import { audit } from "../lib/audit.ts";
 import { defaultChargeConfig } from "../lib/charges.ts";
 import { COOKIE, HttpError, bad, requireAuth, actor, type Env } from "../lib/http.ts";
@@ -18,37 +18,6 @@ export const authRoutes = new Hono<Env>();
 const cookieOpts = { httpOnly: true, sameSite: "Lax", path: "/", maxAge: 30 * 86400 } as const;
 
 /** Seed the five stock roles for a new business. */
-async function seedRoles(businessId: string) {
-  const map: Record<string, string> = {};
-  for (const preset of ROLE_PRESETS) {
-    const roleId = newId();
-    await db.insert(schema.roles).values({
-      id: roleId, businessId, key: preset.key, label: preset.label,
-      labelHi: preset.labelHi, isSystem: true, rank: preset.rank,
-    });
-    for (const p of preset.permissions) {
-      await db.insert(schema.rolePermissions).values({ id: newId(), roleId, permission: p });
-    }
-    map[preset.key] = roleId;
-  }
-  return map;
-}
-
-/** Give a fresh business the commodities that actually move through Etah. */
-async function seedJins(businessId: string) {
-  const rows = [
-    { code: "1509", name: "Paddy 1509", nameHi: "धान 1509", crop: "paddy" },
-    { code: "1121", name: "Paddy 1121", nameHi: "धान 1121", crop: "paddy" },
-    { code: "1718", name: "Paddy 1718", nameHi: "धान 1718", crop: "paddy" },
-    { code: "SARBATI", name: "Paddy Sarbati", nameHi: "धान सरबती", crop: "paddy" },
-    { code: "WHEAT", name: "Wheat", nameHi: "गेहूँ", crop: "wheat" },
-    { code: "MAIZE", name: "Maize", nameHi: "मक्का", crop: "maize" },
-  ];
-  for (const r of rows) {
-    await db.insert(schema.jins).values({ id: newId(), businessId, ...r });
-  }
-}
-
 /** True only before the very first user exists. */
 authRoutes.get("/bootstrap", async (c) => {
   const [u] = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
@@ -211,9 +180,8 @@ authRoutes.post("/switch-business", requireAuth, async (c) => {
 /** Add a second business (V C Enterprise alongside Vijay Laxmi). */
 authRoutes.post("/businesses", requireAuth, async (c) => {
   const auth = c.get("auth")!;
-  if (!auth.user.isRoot && !auth.permissions.has("business.write")) {
-    throw new HttpError(403, "You cannot add a business", "forbidden");
-  }
+  // a new business carries install-wide powers (backups, cloud, updates): only the Admin adds one
+  if (!auth.user.isRoot) throw new HttpError(403, "Only the Admin can add a business", "forbidden");
   const body = z.object({
     name: z.string().trim().min(2),
     nameHi: z.string().trim().optional(),

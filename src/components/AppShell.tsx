@@ -7,6 +7,7 @@ import {
   PanelLeftClose, PanelLeftOpen,
   ClipboardList, Landmark, ClipboardCheck } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
+import { SyncIndicator } from "@/components/SyncIndicator.tsx";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useTheme } from "@/lib/theme.tsx";
 import { useSession } from "@/lib/session.tsx";
@@ -98,14 +99,14 @@ function BusinessSwitcher({ onAdd }: { onAdd: () => void }) {
                 {b.businessId === me.activeBusinessId && <Check className="h-4 w-4 shrink-0 text-brand" />}
               </button>
             ))}
-            <div className="border-t border-line">
+            {me.user.isRoot && <div className="border-t border-line">
               <button
                 type="button" onClick={() => { setOpen(false); onAdd(); }}
                 className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[13px] font-medium text-brand transition-colors hover:bg-raised"
               >
                 <Plus className="h-4 w-4" /> {t("biz.add")}
               </button>
-            </div>
+            </div>}
           </div>
         </>
       )}
@@ -281,6 +282,8 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
           </div>
 
           <div className="flex-1" />
+
+          <SyncIndicator />
 
           <Button
             variant="ghost" size="sm" onClick={() => setLang(lang === "en" ? "hi" : "en")}

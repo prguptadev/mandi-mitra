@@ -142,7 +142,44 @@ export function SignupPage() {
           </Button>
         </form>
       </Card>
+      <JoinFromCloud />
     </AuthChrome>
+  );
+}
+
+/** A second or third computer joins the office's cloud instead of starting a new business. */
+function JoinFromCloud() {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [conn, setConn] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const join = useMutation({
+    mutationFn: () => api.post<{ records: number }>("/cloud/join-fresh", { connection: conn.trim() }),
+    onSuccess: () => { window.location.href = "/"; },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+  return (
+    <Card className="mt-3">
+      <div className="space-y-3 p-4">
+        {!open ? (
+          <button type="button" className="w-full text-left text-[13px] text-brand hover:underline" onClick={() => setOpen(true)}>
+            {t("sync.joinFresh")}
+          </button>
+        ) : (
+          <>
+            <p className="text-[13px] font-medium text-ink">{t("sync.joinFreshTitle")}</p>
+            <p className="text-[12px] leading-snug text-muted">{t("sync.joinFreshSub")}</p>
+            {err && <Alert tone="bad">{err}</Alert>}
+            <Field label={t("cloud.conn")}>
+              <Input type="password" autoComplete="off" value={conn} className="num text-[13px]" onChange={(e) => setConn(e.target.value)}
+                placeholder="postgresql://postgres.xxxx:password@aws-0-ap-south-1.pooler.supabase.com:6543/postgres" />
+            </Field>
+            <Button variant="primary" className="w-full justify-center" loading={join.isPending} disabled={conn.trim().length < 20}
+              onClick={() => { setErr(null); join.mutate(); }}>{t("sync.joinFreshGo")}</Button>
+          </>
+        )}
+      </div>
+    </Card>
   );
 }
 

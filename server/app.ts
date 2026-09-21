@@ -21,6 +21,7 @@ import { challanRoutes } from "./routes/challan.ts";
 import { backupRoutes } from "./routes/backup.ts";
 import { scannerRoutes } from "./routes/scanner.ts";
 import { cloudRoutes } from "./routes/cloud.ts";
+import { syncSoon } from "./lib/cloud.ts";
 import { appRoutes } from "./routes/appUpdate.ts";
 import { dashboardRoutes } from "./routes/dashboard.ts";
 
@@ -29,6 +30,11 @@ export function createApp() {
   const app = new Hono<Env>();
 
   app.use("/api/*", withSession);
+  // with sync on, a change made here goes up within a couple of seconds
+  app.use("/api/*", async (c, next) => {
+    await next();
+    if (c.req.method !== "GET" && c.res.status < 400) syncSoon();
+  });
 
   app.get("/api/health", (c) => c.json({ ok: true, at: Date.now() }));
 

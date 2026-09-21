@@ -30,8 +30,11 @@ const inFlight = new Set<string>();
 
 /** A process restart leaves reads orphaned; nothing is running for them. */
 export function recoverInterruptedScans() {
+  // only reads this computer was doing: with sync, another computer's scan
+  // shows "reading" here while it is being read there
   const stale = db.select({ id: schema.scanBatches.id }).from(schema.scanBatches)
-    .where(eq(schema.scanBatches.status, "reading")).all();
+    .where(eq(schema.scanBatches.status, "reading")).all()
+    .filter((s) => fs.existsSync(path.join(SCAN_DIR, s.id)));
   if (!stale.length) return 0;
   for (const s of stale) {
     const b = db.select({ pagesDone: schema.scanBatches.pagesDone }).from(schema.scanBatches).where(eq(schema.scanBatches.id, s.id)).get();

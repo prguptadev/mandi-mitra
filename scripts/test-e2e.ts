@@ -18,24 +18,36 @@ const env = {
   // a real Postgres in-process, standing in for Supabase
   MANDI_FAKE_PG: "postgresql://postgres:test-only@127.0.0.1:8796/postgres",
   MANDI_NO_GITHUB: "1",
+  // A is set up by sign-up below, like the first computer before v0.3
+  MANDI_NO_SEED: "1",
+  // two more "computers" for the sync test: B is a new install (Admin / 7747),
+  // C an empty one that joins from the first screen
+  MANDI_API_B: "http://localhost:8802/api", MANDI_DATA_DIR_B: path.resolve("data-test-b"),
+  MANDI_API_C: "http://localhost:8803/api", MANDI_DATA_DIR_C: path.resolve("data-test-c"),
 };
 // its own process: execFileSync below blocks this one while each test runs
 const fake = spawn("npx", ["tsx", "scripts/fake-gemini.ts", String(FAKE_GEMINI)], { stdio: "ignore" });
 const fakePg = spawn("npx", ["tsx", "scripts/fake-postgres.ts", "8796"], { stdio: "ignore" });
 
-fs.rmSync(DATA, { recursive: true, force: true });
-fs.mkdirSync(DATA, { recursive: true });
+const OTHERS = [env.MANDI_DATA_DIR_B, env.MANDI_DATA_DIR_C];
+for (const d of [DATA, ...OTHERS]) { fs.rmSync(d, { recursive: true, force: true }); fs.mkdirSync(d, { recursive: true }); }
 fs.writeFileSync(FAKE_PAGE, Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==", "base64"));
 // the scans need a real-sized sheet image; copy one if the owner has any, else use a placeholder
 const server = spawn("npx", ["tsx", "server/index.ts"], { env, stdio: ["ignore", "pipe", "pipe"] });
 let log = "";
 server.stdout.on("data", (d) => { log += d; });
 server.stderr.on("data", (d) => { log += d; });
+const others = [
+  spawn("npx", ["tsx", "server/index.ts"], { env: { ...env, MANDI_DATA_DIR: env.MANDI_DATA_DIR_B, PORT: "8802", MANDI_NO_SEED: "0" }, stdio: ["ignore", "pipe", "pipe"] }),
+  spawn("npx", ["tsx", "server/index.ts"], { env: { ...env, MANDI_DATA_DIR: env.MANDI_DATA_DIR_C, PORT: "8803" }, stdio: ["ignore", "pipe", "pipe"] }),
+];
+for (const o of others) { o.stdout!.on("data", (d) => { log += d; }); o.stderr!.on("data", (d) => { log += d; }); }
 
 async function up() {
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 120; i++) {
     try {
-      if ((await fetch(`${env.MANDI_API}/health`)).ok && (await fetch(`${env.MANDI_GEMINI_BASE}/__calls`)).ok) return;
+      if ((await fetch(`${env.MANDI_API}/health`)).ok && (await fetch(`${env.MANDI_GEMINI_BASE}/__calls`)).ok
+        && (await fetch(`${env.MANDI_API_B}/health`)).ok && (await fetch(`${env.MANDI_API_C}/health`)).ok) return;
     } catch { /* not yet */ }
     await new Promise((r) => setTimeout(r, 250));
   }
@@ -68,15 +80,19 @@ try {
   run("scripts/e2e-update.ts");
   run("scripts/e2e-cloud.ts");
   // last: every stored figure the tests produced, re-worked independently
-  execFileSync("sqlite3", [path.join(DATA, "mandi.db"), `.backup ${path.join(DATA, "audit-copy.db")}`]);
-  run2("scripts/money-check.ts", path.join(DATA, "audit-copy.db"));
+  // on every computer: the synced copies must add up exactly like the first
+  for (const d of [DATA, ...OTHERS]) {
+    execFileSync("sqlite3", [path.join(d, "mandi.db"), `.backup ${path.join(d, "audit-copy.db")}`]);
+    run2("scripts/money-check.ts", path.join(d, "audit-copy.db"));
+  }
 } finally {
   // a failing run shows the test server's own last words
   if (failed) console.log("\n--- test server log (last 40 lines) ---\n" + log.trim().split("\n").slice(-40).join("\n"));
   server.kill();
+  for (const o of others) o.kill();
   fake.kill();
   fakePg.kill();
-  fs.rmSync(DATA, { recursive: true, force: true });
+  for (const d of [DATA, ...OTHERS]) fs.rmSync(d, { recursive: true, force: true });
 }
 console.log(failed === 0 ? "\nAll end-to-end checks passed (test database, discarded)." : `\n${failed} end-to-end script(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

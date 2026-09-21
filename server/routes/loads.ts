@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, and, desc, asc, sql, inArray, isNull, gte, lte, like, or } from "drizzle-orm";
+import { eq, and, desc, asc, sql, inArray, isNull, gte, lte, like, or, ne } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
@@ -8,6 +8,7 @@ import { ChargeConfigSchema } from "../lib/charges.ts";
 import { loadState, storedWeighment, stockDays, linesWithWeights, type ParchaDoc } from "../lib/parcha.ts";
 import { parchaXlsx } from "../lib/parchaXlsx.ts";
 import { poLabel } from "./orders.ts";
+import { claimParchaNumber, CloudError } from "../lib/cloud.ts";
 import { can, actor, param, notFound, bad, HttpError, attachment, isoDay, LIMIT, type Env } from "../lib/http.ts";
 
 /* A load is one truck to one mill, loaded by weight from that mill's stock:
@@ -378,10 +379,25 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
     return c.json({ error: "The parcha changed since you looked at it (someone edited the truck or a slip). Check the new total and approve again.", code: "changed" }, 409);
   }
   const parchaNo = s.doc.invoiceNo!;
+  // one number, one truck: a number billed to another truck (even if voided) is not reused
+  const [other] = await db.select({ loadId: schema.parchas.loadId }).from(schema.parchas)
+    .where(and(eq(schema.parchas.businessId, biz), eq(schema.parchas.parchaNo, parchaNo), ne(schema.parchas.loadId, id))).limit(1);
+  if (other) {
+    return c.json({ error: `Parcha #${parchaNo} is already used for another truck. Change the parcha number to the next one and approve again.`, code: "number_taken", parchaNo }, 409);
+  }
   const [last] = await db.select({ v: sql<number>`max(${schema.parchas.version})` }).from(schema.parchas)
     .where(and(eq(schema.parchas.businessId, biz), eq(schema.parchas.parchaNo, parchaNo)));
   const version = (last?.v ?? 0) + 1;
   const doc: ParchaDoc = { ...s.doc, version };
+
+  // with sync on, the number is claimed in the cloud first (needs the internet)
+  try {
+    await claimParchaNumber(biz, parchaNo, id);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Could not reserve the parcha number";
+    const code = e instanceof CloudError && e.offline ? "offline" : /already used/.test(msg) ? "number_taken" : "cloud";
+    return c.json({ error: msg, code, parchaNo }, 409);
+  }
 
   const pid = newId();
   const at = nowSec();

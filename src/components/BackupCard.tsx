@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { DatabaseBackup, Download, FolderSync } from "lucide-react";
+import { DatabaseBackup, Download, FolderSync, FolderOpen } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
@@ -12,6 +12,7 @@ import { Alert, Badge, Button, Card, CardHeader, Field, Input } from "@/componen
 
 interface BackupState {
   folder: string | null; lastAt: string | null; lastError: string | null; copiedAt: string | null;
+  folders?: { data: string; db: string; scans: string; backups: string };
   backups: { name: string; kind: "auto" | "before-update" | "manual"; bytes: number; at: string }[];
 }
 
@@ -68,6 +69,19 @@ export function BackupCard() {
                     <Button size="icon" variant="ghost"><Download className="h-3.5 w-3.5" /></Button>
                   </a>
                 </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {b?.folders && (
+          <div className="rounded-lg border border-line bg-raised/40 p-3">
+            <p className="mb-2 text-[12px] font-medium text-ink">{t("backup.whereTitle")}</p>
+            {([["data", b.folders.db, "backup.whereDb"], ["scans", b.folders.scans, "backup.whereScans"], ["backups", b.folders.backups, "backup.whereBackups"]] as const).map(([which, p, label]) => (
+              <div key={which} className="flex items-center gap-2 py-1">
+                <span className="w-24 shrink-0 text-[11px] text-muted">{t(label)}</span>
+                <code className="min-w-0 flex-1 select-all break-all text-[11px] text-ink">{p}</code>
+                <Button size="sm" variant="ghost" icon={<FolderOpen className="h-3.5 w-3.5" />}
+                  onClick={() => void api.post("/backup/open-folder", { which }).catch(() => undefined)}>{t("backup.open")}</Button>
               </div>
             ))}
           </div>

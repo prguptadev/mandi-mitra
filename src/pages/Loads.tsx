@@ -484,7 +484,12 @@ export function LoadDetailPage({ id }: { id: string }) {
       expectedGrandTotalPaise: (st!.approved?.doc ?? st!.doc)?.result.grandTotalPaise,
     }),
     onSuccess: async () => { setApproving(false); await refresh(); await qc.invalidateQueries({ queryKey: ["parchas"] }); },
-    onError: async (e) => { setApproving(false); await refresh(); onErr(e); },
+    onError: async (e) => {
+      setApproving(false); await refresh();
+      if (e instanceof ApiError && e.code === "offline") { setErr(t("parcha.needsInternet")); return; }
+      if (e instanceof ApiError && e.code === "number_taken") { setErr(t("parcha.numberTaken", { no: invoice.trim() })); return; }
+      onErr(e);
+    },
   });
 
   if (q.isPending) return <div className="space-y-4"><SkeletonForm fields={4} /><SkeletonTable rows={6} /></div>;
