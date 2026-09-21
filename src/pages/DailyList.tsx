@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Link } from "wouter";
+import { Link, useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Calendar, Trash2, Truck, AlertTriangle, Check,
@@ -86,7 +86,12 @@ export function DailyListPage() {
   const P = prefs.dailyList;
   const [downloading, setDownloading] = useState<null | "list" | "dara">(null);
 
-  const [date, setDate] = useState(todayISO);
+  // a link like /daily?date=2026-09-20 (from the dashboard's flags) opens that day
+  const search = useSearch();
+  const [date, setDate] = useState(() => {
+    const d = new URLSearchParams(search).get("date");
+    return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : todayISO();
+  });
   const [merchantId, setMerchantId] = useState<string>("");
   const [jinsId, setJinsId] = useState<string>("");
   const [draft, setDraft] = useState<Draft>(emptyDraft);

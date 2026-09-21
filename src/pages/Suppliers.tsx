@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search, Users2, Sparkles, Lock, Unlock, Trash2, Pencil, Tag, RefreshCw } from "lucide-react";
+import { Plus, Search, Users2, Sparkles, Lock, Unlock, Trash2, Pencil, Tag, RefreshCw, BookOpen } from "lucide-react";
+import { Link } from "wouter";
 import { api, ApiError, type Adati, type AdatiAlias } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
@@ -410,6 +411,13 @@ export function SuppliersPage() {
                   </Td>
                   <Td>
                     <div className="flex items-center justify-end gap-0.5">
+                      {can("ledger.read") && (
+                        <Link href={`/ledger?adati=${r.id}`} title={t("ledger.title")}>
+                          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={t("ledger.title")}>
+                            <BookOpen className="h-3.5 w-3.5" />
+                          </Button>
+                        </Link>
+                      )}
                       {can("adati.write") && (
                         <Button variant="ghost" size="icon" className="h-7 w-7"
                           onClick={() => setDialog({ open: true, editing: r })} aria-label={t("common.edit")}>

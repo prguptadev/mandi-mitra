@@ -35,13 +35,14 @@ interface LedgerList {
 interface Entry {
   kind: "purchase" | "payment"; id: string; date: string;
   rstNo?: string; jinsCode?: string; millCode?: string | null; netGrams?: number; ratePaisePerQtl?: number;
+  grossGrams?: number; katautiUnits?: number;
   mode?: Mode; reference?: string | null; notes?: string | null;
   creditPaise: number; debitPaise: number; balancePaise: number;
 }
 interface Statement {
   supplier: { id: string; nameHi: string; nameHinglish: string; village: string | null; phone: string | null; accountNo: string | null; ifsc: string | null; openingBalancePaise: number };
   from: string | null; to: string | null; broughtForwardPaise: number; entries: Entry[];
-  totals: { purchasesPaise: number; paymentsPaise: number; netGrams: number; slips: number; unpriced: number; closingPaise: number };
+  totals: { purchasesPaise: number; paymentsPaise: number; netGrams: number; grossGrams: number; katautiUnits: number; avgRatePaisePerQtl: number; slips: number; unpriced: number; closingPaise: number };
 }
 interface PaymentRow {
   id: string; adatiId: string; payDate: string; amountPaise: number; mode: Mode; reference: string | null; notes: string | null;
@@ -323,7 +324,8 @@ export function LedgerPage() {
                 <Table>
                   <thead>
                     <tr>
-                      <Th>{t("daily.date")}</Th><Th>{t("ledger.particulars")}</Th><Th numeric>{t("load.net")}</Th>
+                      <Th>{t("daily.date")}</Th><Th>{t("daily.rst")}</Th><Th>{t("load.mill")}</Th><Th>{t("load.jins")}</Th>
+                      <Th numeric>{t("daily.gross")}</Th><Th numeric>{t("load.katauti")}</Th><Th numeric>{t("load.net")}</Th>
                       <Th numeric>{t("load.rate")}</Th><Th numeric>{t("ledger.purchase")}</Th><Th numeric>{t("ledger.paid")}</Th>
                       <Th numeric>{t("ledger.balance")}</Th><Th className="no-print w-16" />
                     </tr>
@@ -331,22 +333,30 @@ export function LedgerPage() {
                   <tbody>
                     <tr className="border-b border-line/70 bg-raised/30 text-[13px]">
                       <td className="px-3 py-1.5" />
-                      <td className="px-3 py-1.5 text-muted">{s.from ? t("ledger.broughtForward") : t("ledger.opening")}</td>
-                      <td colSpan={4} />
+                      <td className="px-3 py-1.5 text-muted" colSpan={3}>{s.from ? t("ledger.broughtForward") : t("ledger.opening")}</td>
+                      <td colSpan={6} />
                       <td className="px-3 py-1.5 text-right"><Balance paise={s.broughtForwardPaise} /></td>
                       <td className="no-print" />
                     </tr>
                     {s.entries.map((e) => (
                       <Tr key={`${e.kind}-${e.id}`}>
                         <Td className="whitespace-nowrap">{dmy(e.date)}</Td>
-                        <Td className="whitespace-nowrap">
-                          {e.kind === "purchase"
-                            ? <span>RST <span className="font-mono">{e.rstNo}</span> <span className="text-muted">· {e.jinsCode}{e.millCode ? ` · ${e.millCode}` : ""}</span>
-                                {!e.ratePaisePerQtl && <Badge tone="warn" className="ml-1.5">{t("daily.ratePending")}</Badge>}</span>
-                            : <span className="text-ok">{t("ledger.payment")} · {t(`pay.mode.${e.mode ?? "cash"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}</span>}
-                        </Td>
-                        <Td numeric>{e.netGrams != null ? f.weight(e.netGrams) : ""}</Td>
-                        <Td numeric>{e.ratePaisePerQtl ? f.rate(e.ratePaisePerQtl) : ""}</Td>
+                        {e.kind === "purchase" ? (
+                          <>
+                            <Td className="whitespace-nowrap font-mono">{e.rstNo}{!e.ratePaisePerQtl && <Badge tone="warn" className="ml-1.5 font-sans">{t("daily.ratePending")}</Badge>}</Td>
+                            <Td>{e.millCode ? <Badge className="num">{e.millCode}</Badge> : <span className="text-faint">—</span>}</Td>
+                            <Td className="text-muted">{e.jinsCode}</Td>
+                            <Td numeric>{e.grossGrams != null ? f.weight(e.grossGrams) : ""}</Td>
+                            <Td numeric className="text-muted">{e.katautiUnits ?? ""}</Td>
+                            <Td numeric>{e.netGrams != null ? f.weight(e.netGrams) : ""}</Td>
+                            <Td numeric>{e.ratePaisePerQtl ? f.rate(e.ratePaisePerQtl) : ""}</Td>
+                          </>
+                        ) : (
+                          <Td className="whitespace-nowrap text-ok" colSpan={7}>
+                            {t("ledger.payment")} · {t(`pay.mode.${e.mode ?? "cash"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}
+                            {e.notes ? <span className="text-faint"> · {e.notes}</span> : null}
+                          </Td>
+                        )}
                         <Td numeric>{e.creditPaise ? f.amount(e.creditPaise) : ""}</Td>
                         <Td numeric className="text-ok">{e.debitPaise ? f.amount(e.debitPaise) : ""}</Td>
                         <Td numeric><Balance paise={e.balancePaise} /></Td>
@@ -370,9 +380,11 @@ export function LedgerPage() {
                   </tbody>
                   <tfoot>
                     <tr className="bg-raised/50 text-[13px] font-semibold">
-                      <td className="px-3 py-2" colSpan={2}>{t("load.total")}</td>
+                      <td className="px-3 py-2" colSpan={4}>{t("load.total")} · {s.totals.slips} {t("ledger.slips")}</td>
+                      <td className="num px-3 py-2 text-right">{f.weight(s.totals.grossGrams)}</td>
+                      <td className="num px-3 py-2 text-right text-muted">{s.totals.katautiUnits}</td>
                       <td className="num px-3 py-2 text-right">{f.weight(s.totals.netGrams)}</td>
-                      <td />
+                      <td className="num px-3 py-2 text-right" title={t("load.avgRateHelp")}>{s.totals.avgRatePaisePerQtl ? f.rate(s.totals.avgRatePaisePerQtl) : ""}</td>
                       <td className="num px-3 py-2 text-right">{f.amount(s.totals.purchasesPaise)}</td>
                       <td className="num px-3 py-2 text-right">{f.amount(s.totals.paymentsPaise)}</td>
                       <td className="px-3 py-2 text-right"><Balance paise={s.totals.closingPaise} /></td>

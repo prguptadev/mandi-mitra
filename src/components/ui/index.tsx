@@ -271,21 +271,41 @@ export function Table({ children, className }: { children: ReactNode; className?
   );
 }
 
-export function Th({ children, className, align = "left", numeric }: { children?: ReactNode; className?: string; align?: "left" | "right" | "center"; numeric?: boolean }) {
+export function Th({ children, className, align = "left", numeric, sortDir, onSort, title }: {
+  children?: ReactNode; className?: string; align?: "left" | "right" | "center"; numeric?: boolean;
+  /** Set with onSort to make the heading sort the table (see lib/useSort). */
+  sortDir?: "asc" | "desc" | null; onSort?: () => void; title?: string;
+}) {
+  const right = align === "right" || numeric;
   return (
-    <th className={cn(
-      "sticky top-0 z-10 bg-raised/90 backdrop-blur px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted border-b border-line whitespace-nowrap",
-      align === "right" || numeric ? "text-right" : align === "center" ? "text-center" : "text-left",
-      className,
-    )}>
-      {children}
+    <th
+      onClick={onSort}
+      title={title}
+      aria-sort={sortDir === "asc" ? "ascending" : sortDir === "desc" ? "descending" : undefined}
+      className={cn(
+        "sticky top-0 z-10 bg-raised/90 backdrop-blur px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted border-b border-line whitespace-nowrap",
+        right ? "text-right" : align === "center" ? "text-center" : "text-left",
+        onSort && "group cursor-pointer select-none hover:text-ink",
+        sortDir && "text-ink",
+        className,
+      )}>
+      <span className={cn("inline-flex items-center gap-1", right && "flex-row-reverse")}>
+        <span>{children}</span>
+        {onSort && (
+          <span className={cn("text-[10px] leading-none", sortDir ? "text-brand" : "text-faint opacity-0 group-hover:opacity-100")}>
+            {sortDir === "asc" ? "▲" : sortDir === "desc" ? "▼" : "↕"}
+          </span>
+        )}
+      </span>
     </th>
   );
 }
 
-export function Td({ children, className, align = "left", numeric }: { children?: ReactNode; className?: string; align?: "left" | "right" | "center"; numeric?: boolean }) {
+export function Td({ children, className, align = "left", numeric, colSpan, title }: {
+  children?: ReactNode; className?: string; align?: "left" | "right" | "center"; numeric?: boolean; colSpan?: number; title?: string;
+}) {
   return (
-    <td className={cn(
+    <td colSpan={colSpan} title={title} className={cn(
       "px-3 py-2 border-b border-line/70 align-middle",
       numeric && "num tabular-nums",
       align === "right" || numeric ? "text-right" : align === "center" ? "text-center" : "text-left",

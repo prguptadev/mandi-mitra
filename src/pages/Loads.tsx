@@ -646,7 +646,7 @@ export function LoadDetailPage({ id }: { id: string }) {
               <span>{t("load.stockOthers")} <b className="num">{f.weight(st.stock.otherTrucksGrams)}</b></span>
               <span>{t("load.stockThis")} <b className="num">{f.weight(st.stock.thisTruckGrams)}</b></span>
               <span className={cn(st.stock.leftGrams < 0 && "text-warn")}>{t("load.stockLeft")} <b className="num">{f.weight(st.stock.leftGrams)}</b></span>
-              <Link href={`/stock?mill=${st.mill.id}`} className="text-brand hover:underline">{t("load.seeStock")}</Link>
+              <Link href={`/stock/${st.mill.id}`} className="text-brand hover:underline">{t("load.seeStock")}</Link>
             </div>
             {st.pos.map((p) => (
               <div key={p.id} className="flex flex-wrap items-center gap-3 border-t border-line px-4 py-2 text-[13px]">

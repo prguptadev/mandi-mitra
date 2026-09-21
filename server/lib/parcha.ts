@@ -126,6 +126,7 @@ export async function linesWithWeights(where: SQL | undefined) {
     id: schema.loadLines.id, loadId: schema.loadLines.loadId, poId: schema.loadLines.poId,
     jinsId: schema.loadLines.jinsId, stockDate: schema.loadLines.stockDate,
     netGrams: schema.loadLines.netGrams, sort: schema.loadLines.sort, createdAt: schema.loadLines.createdAt,
+    ratePaisePerQtl: schema.loadLines.ratePaisePerQtl,
     merchantId: schema.loads.merchantId, millNetGrams: schema.loads.millNetGrams,
     status: schema.loads.status, truckNo: schema.loads.truckNo, loadDate: schema.loads.loadDate,
   })

@@ -112,6 +112,7 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
   if (to) sw.push(lte(S.slipDate, to));
   const slips = await db.select({
     id: S.id, date: S.slipDate, rstNo: S.rstNo, netGrams: S.netGrams, ratePaisePerQtl: S.ratePaisePerQtl,
+    grossGrams: S.grossGrams, katautiUnits: S.katautiUnits,
     amountPaise: S.amountPaise, createdAt: S.createdAt, jinsCode: schema.jins.code, millCode: schema.merchants.code,
   }).from(S)
     .innerJoin(schema.jins, eq(schema.jins.id, S.jinsId))
@@ -127,6 +128,7 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
   type Entry = {
     kind: "purchase" | "payment"; id: string; date: string; at: number;
     rstNo?: string; jinsCode?: string; millCode?: string | null; netGrams?: number; ratePaisePerQtl?: number;
+    grossGrams?: number; katautiUnits?: number;
     mode?: string; reference?: string | null; notes?: string | null;
     creditPaise: number; debitPaise: number; balancePaise?: number;
   };
@@ -134,6 +136,7 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
     ...slips.map((x) => ({
       kind: "purchase" as const, id: x.id, date: x.date, at: x.createdAt,
       rstNo: x.rstNo, jinsCode: x.jinsCode, millCode: x.millCode, netGrams: x.netGrams, ratePaisePerQtl: x.ratePaisePerQtl,
+      grossGrams: x.grossGrams, katautiUnits: x.katautiUnits,
       creditPaise: x.amountPaise, debitPaise: 0,
     })),
     ...pays.map((p) => ({
@@ -160,6 +163,13 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
       purchasesPaise: purchases,
       paymentsPaise: payments,
       netGrams: entries.reduce((x, e) => x + (e.netGrams ?? 0), 0),
+      grossGrams: slips.reduce((x, e) => x + e.grossGrams, 0),
+      katautiUnits: slips.reduce((x, e) => x + e.katautiUnits, 0),
+      avgRatePaisePerQtl: (() => {
+        const priced = slips.filter((x) => x.ratePaisePerQtl > 0);
+        const n = priced.reduce((a, x) => a + x.netGrams, 0);
+        return n ? Math.floor(priced.reduce((a, x) => a + x.netGrams * x.ratePaisePerQtl, 0) / n + 0.5) : 0;
+      })(),
       slips: slips.length,
       unpriced: slips.filter((x) => !x.ratePaisePerQtl).length,
       closingPaise: broughtForward + purchases - payments,
