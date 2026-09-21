@@ -367,6 +367,29 @@ the Windows Credential Store is an Electron-era task.
 
 ---
 
+## 7a. DATA LOSS INCIDENT — read this before running anything
+
+On 2026-09-21 the end-to-end scripts deleted the owner's real data. Both
+scripts cleared "their" date before running — `e2e-daily-list.ts` every slip on
+2026-09-20, `e2e-scan-review.ts` every slip and scan on 2026-09-21 — and both
+pointed at the live dev database, which the owner was using for real work.
+Every check run wiped the owner's entries for those days.
+
+Recovered: 29 slips of the 20-09 G.R.M sheet, from the audit log's full-row
+copies. Not recoverable as rows: 43 slips on 21-09, deleted by direct SQL with
+no audit copy — but their scan images survived on disk, and both scans were
+re-registered in "uploaded" state so the owner can read them again.
+
+**The rule now:** nothing that writes or deletes data may touch `data/`.
+- `npm run test:e2e` starts its own server on :8799 with its own database in
+  `data-test/`, runs every end-to-end check, and deletes that database.
+- Every script that writes data imports `scripts/_guard.ts`, which exits unless
+  `MANDI_DATA_DIR` names a test directory and the API is not :8787.
+- Verified: the real database's row counts, total net weight and scan image
+  checksums are identical before and after a full test run.
+
+Never run a data-writing script against the dev server by hand again.
+
 ## 7. Bugs already found and fixed — context for the next session
 
 | Symptom | Cause | Fix |

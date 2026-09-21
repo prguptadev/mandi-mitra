@@ -2,8 +2,9 @@
  * so the review screen can be exercised without spending a Gemini call.
  * Usage: npx tsx scripts/dev-make-review-scan.ts
  */
+import "./_guard.ts";
 import { sqlite } from "../server/db/client.ts";
-const BASE = "http://localhost:8787/api";
+const BASE = process.env.MANDI_API!;
 let cookie = "";
 async function call(m: string, p: string, b?: unknown) {
   const r = await fetch(BASE + p, { method: m, headers: { "Content-Type": "application/json", ...(cookie?{cookie}:{}) }, body: b===undefined?undefined:JSON.stringify(b) });

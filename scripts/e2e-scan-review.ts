@@ -6,11 +6,12 @@
  *
  * Usage: npx tsx scripts/e2e-scan-review.ts [PIN]
  */
+import "./_guard.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { sqlite } from "../server/db/client.ts";
 
-const BASE = "http://localhost:8787/api";
+const BASE = process.env.MANDI_API!;
 const PIN = process.argv[2] ?? process.env.MANDI_PIN ?? "482915";
 const DATE = "2026-09-21"; // a clear date, so nothing collides with the L.B run
 let cookie = "";
@@ -212,7 +213,7 @@ try {
    leaving a 1x1 test image behind means the owner clicks a row in the daily
    list and gets a green square. */
 {
-  const dir = path.resolve("data/scans", scanId);
+  const dir = path.resolve(process.env.MANDI_DATA_DIR!, "scans", scanId);
   sqlite.prepare("delete from purchase_slips where scan_batch_id = ?").run(scanId);
   sqlite.prepare("delete from purchase_slips where slip_date = ?").run(DATE);
   sqlite.prepare("delete from scan_batches where id = ?").run(scanId);

@@ -3,7 +3,7 @@ import { z } from "zod";
 /** Which columns the daily list can show, in the order they appear. */
 export const DAILY_COLUMNS = [
   { key: "sr",          en: "Sr no",            hi: "क्र सं",          always: false },
-  { key: "rstNo",       en: "RST no",           hi: "RST नं",          always: true  },
+  { key: "rstNo",       en: "Kanta slip (RST)",           hi: "कांटा पर्ची (RST)",          always: true  },
   { key: "adatiHi",     en: "Adati (Hindi)",    hi: "आढ़ती (हिन्दी)",   always: false },
   { key: "adatiLatin",  en: "Adati (Hinglish)", hi: "आढ़ती (हिंग्लिश)", always: false },
   { key: "village",     en: "Village",          hi: "गाँव",            always: false },

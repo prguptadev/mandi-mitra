@@ -10,7 +10,8 @@
     "build": "tsc -b && vite build",
     "db:push": "tsx server/db/migrate.ts",
     "db:seed": "tsx server/db/seed.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "tsx scripts/test-e2e.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

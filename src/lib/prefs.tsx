@@ -4,7 +4,7 @@ import { api } from "./api.ts";
 
 export const DAILY_COLUMNS = [
   { key: "sr",         en: "Sr no",            hi: "क्र सं" },
-  { key: "rstNo",      en: "RST no",           hi: "RST नं" },
+  { key: "rstNo",      en: "Kanta slip (RST)",           hi: "कांटा पर्ची (RST)" },
   { key: "adatiHi",    en: "Adati (Hindi)",    hi: "आढ़ती (हिन्दी)" },
   { key: "adatiLatin", en: "Adati (Hinglish)", hi: "आढ़ती (हिंग्लिश)" },
   { key: "village",    en: "Village",          hi: "गाँव" },

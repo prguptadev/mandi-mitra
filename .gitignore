@@ -7,3 +7,4 @@ data/*.db-*
 scans/
 data/scans/
 data/.secret.key
+data-test/

@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
   ZoomIn, ZoomOut, Maximize2, Check, X, AlertTriangle, AlertCircle, Sparkles,
-  ArrowRight, Trash2, RotateCcw, ScanLine, ChevronLeft, ChevronRight, Equal,
+  ArrowRight, Trash2, RotateCcw, ScanLine, ChevronLeft, ChevronRight,
   PanelRightClose, PanelRightOpen, UserPlus, FileText,
 } from "lucide-react";
 import { api, ApiError, apiStatus, type ScanBatch, type ScanRow, type ScanIssue, type Jins, type Merchant } from "@/lib/api.ts";

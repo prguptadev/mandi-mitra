@@ -1,7 +1,8 @@
+import "./_guard.ts";
 /* Rebuilds a usable dev database from nothing: owner signup, then the seed.
  * Usage: rm -f data/mandi.db* && npm run db:push && npx tsx scripts/dev-bootstrap.ts
  */
-const BASE = "http://localhost:8787/api";
+const BASE = process.env.MANDI_API!;
 const PIN = process.env.MANDI_PIN ?? "482915";
 
 const res = await fetch(`${BASE}/auth/bootstrap`).then((r) => r.json());

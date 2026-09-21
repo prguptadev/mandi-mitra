@@ -2,6 +2,7 @@
  * order step ("uploaded") or the grouped grid ("review").
  * Usage: npx tsx scripts/dev-two-page-scan.ts [uploaded|review]
  */
+import "./_guard.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { uuidv7 } from "uuidv7";
@@ -14,7 +15,7 @@ const j = (sqlite.prepare("select id from jins where business_id=? and code='150
 const src = "data/scans/01a0bf73-255a-7bb8-88c4-70e2b80daefa/00.jpg";
 
 const id = uuidv7();
-const dir = path.resolve("data/scans", id);
+const dir = path.resolve(process.env.MANDI_DATA_DIR!, "scans", id);
 fs.mkdirSync(dir, { recursive: true });
 fs.copyFileSync(src, path.join(dir, "00.jpg"));
 fs.copyFileSync(src, path.join(dir, "01.jpg"));

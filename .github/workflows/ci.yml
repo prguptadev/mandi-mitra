@@ -25,5 +25,7 @@ jobs:
         run: npx tsx src/lib/format.check.ts
       - name: Hinglish to Hindi check
         run: npx tsx src/lib/devanagari.check.ts
+      - name: End-to-end (isolated test database)
+        run: npm run test:e2e
       - name: Build web bundle
         run: npm run build

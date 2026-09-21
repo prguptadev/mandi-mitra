@@ -1,3 +1,4 @@
+import "./_guard.ts";
 /* End-to-end check against a RUNNING dev server: enters the real L.B daily
  * list of 20-09-2026 through the HTTP API and asserts the day totals match
  * the paper (331.05 qtl net, 3413.45 weighted average).
@@ -5,7 +6,7 @@
  * Needs: npm run dev, and a signed-up owner. Usage:
  *   npx tsx scripts/e2e-daily-list.ts [PIN]
  */
-const BASE = "http://localhost:8787/api";
+const BASE = process.env.MANDI_API!;
 let cookie = "";
 const DATE = "2026-09-20";
 
