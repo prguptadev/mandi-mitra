@@ -327,6 +327,12 @@ the Windows Credential Store is an Electron-era task.
   if the database is lost. Every slip created from a scan keeps its
   `scanBatchId`, and the daily list shows a small image icon linking back to the
   original. `data/scans/` is gitignored.
+- **Multi-page scans are ordered before they are read.** Several pages stop at
+  an order step; the model then reads them as one list and tags each row with
+  its page. The review shows every page stacked in one scroll, and the grid
+  groups rows under a header per page that scrolls the scan to that page.
+  Reordering is refused once a sheet has been read, since page numbers come
+  from the read itself.
 - **Reads run detached from the request.** `POST /scans/:id/run` returns
   immediately; the work continues server-side and the browser polls. Switching
   tabs, opening the daily list or reloading loses nothing. A process restart
@@ -354,6 +360,8 @@ the Windows Credential Store is an Electron-era task.
 | A scan URL showed a bare "something went wrong" | TanStack Query v5's `isLoading` is `isPending && isFetching`, so it drops to false during retry backoff — no data, no error — and the guard fell through to the failure screen | gate on `isPending`, and never retry a 404 |
 | "Scan not found" was a dead end | a scan belongs to one business; the link was opened from another | `/scans/:id/whereis` names the business (only ones the user belongs to) and offers a one-click switch |
 | `<button>` nested inside `<button>` in the scan list | the whole row was a button and carried action buttons | the row is a `role="link"` div with keyboard handling |
+| Hand-picked suppliers showed as empty on the scan review; "only the top one works" | every pick saved correctly, but the grid only named rows that were auto-matched. The supplier list had been removed from that screen for scale, and nothing replaced it for hand-picked ids | the server returns `chosen` beside `match`; the grid shows either. **Verification now asserts what the screen shows, not only the server state** — the earlier check passed because it looked at the wrong layer |
+| "Add missing suppliers" would have created duplicates | it created "धरमपाल" beside the existing "धर्मपाल सिंह", splitting that supplier's ledger | rows with a close suggestion are left to pick; only names with nothing close are created |
 | Approve stuck disabled on a fresh business | every OCR name was unmatched because the master was empty, and picking 29 one by one is not a reasonable ask | "Add the N missing suppliers" creates them from the sheet and links the rows — 29 blocking to 0 in one action |
 
 ---

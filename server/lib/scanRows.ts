@@ -10,6 +10,8 @@ import type { AdatiSuggestion, AdatiMatch } from "./adatiResolve.ts";
 
 export const ReviewRowSchema = z.object({
   id: z.string(),
+  /** 1-based page of the scan this row was read from. */
+  page: z.number().int().min(1).default(1),
   /** Untouched copy of what the model read. */
   ocr: z.object({
     rstNo: z.string().nullable(),
@@ -60,6 +62,7 @@ export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
   const gross = r.grossQtl ?? null;
   return {
     id: `r${i}`,
+    page: r.page ?? 1,
     ocr: {
       rstNo: r.rstNo ?? null,
       adatiName: r.adatiName ?? null,

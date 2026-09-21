@@ -10,6 +10,8 @@ import { z } from "zod";
  */
 
 export const OcrRowSchema = z.object({
+  /** 1-based: which of the images this row was read from. */
+  page: z.number().int().min(1).nullable().optional(),
   srNo: z.number().nullable().optional(),
   rstNo: z.string().nullable().optional(),
   /** Exactly as written, in Devanagari. No transliteration, no correction. */
@@ -53,6 +55,7 @@ const RESPONSE_SCHEMA = {
       items: {
         type: "OBJECT",
         properties: {
+          page: { type: "INTEGER", description: "1-based number of the image this row is on" },
           srNo: { type: "INTEGER", nullable: true },
           rstNo: { type: "STRING", nullable: true },
           adatiName: { type: "STRING", nullable: true },
@@ -68,7 +71,7 @@ const RESPONSE_SCHEMA = {
            we rely on but never compute from: the written net is the arithmetic
            cross-check, and a struck-through row must not silently become a
            purchase. Left optional, the model skips them to save tokens. */
-        required: ["rstNo", "adatiName", "grossQtl", "katauti", "netQtl", "rate", "confidence", "struckThrough"],
+        required: ["page", "rstNo", "adatiName", "grossQtl", "katauti", "netQtl", "rate", "confidence", "struckThrough"],
       },
     },
   },
@@ -78,6 +81,8 @@ const RESPONSE_SCHEMA = {
 const PROMPT = `You are reading a handwritten daily purchase register from a grain commission agent (arhtiya) in Uttar Pradesh, India. The form is printed in English; every entry is handwritten, mostly in Devanagari with some Latin digits.
 
 Read the table and return one object per data row, in the order they appear.
+
+You may be given more than one image. They are the pages of ONE sheet, already in the right order: image 1 is page 1, image 2 is page 2, and so on. Read them in that order, as one continuous list. Set "page" on every row to the number of the image it came from. Do not repeat a row that appears on two images.
 
 Columns, left to right:
 - SR NO — printed row number.

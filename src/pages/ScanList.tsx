@@ -75,9 +75,10 @@ export function ScanListPage() {
     onSuccess: async (r) => {
       setErr(null);
       await qc.invalidateQueries({ queryKey: ["scans"] });
-      // straight to the review screen; the read runs on the server and the
-      // review screen polls, so leaving this page cannot interrupt it
-      if (gemini.data?.configured) {
+      /* One page reads straight away. Several pages stop at the order step
+         first — the model reads them as one list, so the order has to be
+         right before it starts. */
+      if (gemini.data?.configured && r.pages === 1) {
         api.post(`/scans/${r.id}/run`, {}).catch(() => { /* the review screen reports it */ });
       }
       navigate(`/scan/${r.id}`);

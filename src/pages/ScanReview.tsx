@@ -4,7 +4,7 @@ import { useLocation } from "wouter";
 import {
   ZoomIn, ZoomOut, Maximize2, Check, X, AlertTriangle, AlertCircle, Sparkles,
   ArrowRight, Trash2, RotateCcw, ScanLine, ChevronLeft, ChevronRight, Equal,
-  PanelRightClose, PanelRightOpen, UserPlus,
+  PanelRightClose, PanelRightOpen, UserPlus, FileText,
 } from "lucide-react";
 import { api, ApiError, apiStatus, type ScanBatch, type ScanRow, type ScanIssue, type Jins, type Merchant } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -32,29 +32,28 @@ function Stat({ label, value, tone, title }: { label: string; value: string | nu
   );
 }
 
-/** The scanned page, with zoom, so the operator can read faint digits. */
-function PageViewer({ scanId, pages }: { scanId: string; pages: ScanBatch["pages"] }) {
+/**
+ * Every page of the sheet, one after another in a single scroll, so the grid
+ * beside it can be read top to bottom against the paper. Zoom applies to all.
+ */
+function PageViewer({ scanId, pages, onPage }: {
+  scanId: string;
+  pages: ScanBatch["pages"];
+  /** Scroll a given page into view; the grid's page headers call this. */
+  onPage?: (fn: (page: number) => void) => void;
+}) {
   const { t } = useI18n();
-  const [page, setPage] = useState(0);
   const [zoom, setZoom] = useState(1);
-  const boxRef = useRef<HTMLDivElement>(null);
-  const current = pages[page];
+  const refs = useRef<(HTMLDivElement | null)[]>([]);
 
-  if (!current) return null;
-  const isPdf = current.mimeType === "application/pdf";
+  useEffect(() => {
+    onPage?.((page) => refs.current[page - 1]?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }, [onPage]);
 
   return (
     <Card className="flex h-full flex-col overflow-hidden">
       <div className="flex items-center gap-1 border-b border-line px-2 py-1.5">
-        {pages.length > 1 && (
-          <>
-            <Button size="icon" variant="ghost" className="h-7 w-7" disabled={page === 0}
-              onClick={() => setPage((p) => p - 1)}><ChevronLeft className="h-3.5 w-3.5" /></Button>
-            <span className="num text-[12px] text-muted">{t("scan.page", { n: page + 1 })} / {pages.length}</span>
-            <Button size="icon" variant="ghost" className="h-7 w-7" disabled={page === pages.length - 1}
-              onClick={() => setPage((p) => p + 1)}><ChevronRight className="h-3.5 w-3.5" /></Button>
-          </>
-        )}
+        <span className="text-[12px] text-muted">{t("scan.pages", { n: pages.length })}</span>
         <div className="flex-1" />
         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))} title={t("scan.zoomOut")}>
           <ZoomOut className="h-3.5 w-3.5" />
@@ -67,17 +66,99 @@ function PageViewer({ scanId, pages }: { scanId: string; pages: ScanBatch["pages
           <Maximize2 className="h-3.5 w-3.5" />
         </Button>
       </div>
-      <div ref={boxRef} className="flex-1 overflow-auto bg-raised/40 p-2">
-        {isPdf ? (
-          <iframe title={current.name} src={`/api/scans/${scanId}/page/${page}`} className="h-full min-h-[600px] w-full rounded border border-line bg-white" />
-        ) : (
-          <img
-            src={`/api/scans/${scanId}/page/${page}`}
-            alt={current.name}
-            style={{ width: `${zoom * 100}%` }}
-            className="mx-auto rounded border border-line bg-white"
-          />
+      <div className="flex-1 space-y-3 overflow-auto bg-raised/40 p-2">
+        {pages.map((p, i) => (
+          <div key={`${p.name}-${i}`} ref={(el) => { refs.current[i] = el; }}>
+            <p className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-muted">
+              <FileText className="h-3 w-3" /> {t("scan.page", { n: i + 1 })}
+            </p>
+            {p.mimeType === "application/pdf" ? (
+              <iframe title={p.name} src={`/api/scans/${scanId}/page/${i}`}
+                className="h-[70vh] w-full rounded border border-line bg-white" />
+            ) : (
+              <img src={`/api/scans/${scanId}/page/${i}`} alt={t("scan.page", { n: i + 1 })}
+                style={{ width: `${zoom * 100}%` }} loading="lazy"
+                className="mx-auto rounded border border-line bg-white" />
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/** Before reading: put the pages in the order they belong. */
+function PageOrderer({ scanId, pages, onRead, reading }: {
+  scanId: string; pages: ScanBatch["pages"]; onRead: () => void; reading: boolean;
+}) {
+  const { t } = useI18n();
+  const qc = useQueryClient();
+  const [order, setOrder] = useState(() => pages.map((_, i) => i));
+  const [err, setErr] = useState<string | null>(null);
+
+  const save = useMutation({
+    mutationFn: (o: number[]) => api.put(`/scans/${scanId}/order`, { order: o }),
+    onSuccess: async () => { setOrder(pages.map((_, i) => i)); await qc.invalidateQueries({ queryKey: ["scan", scanId] }); },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+
+  const move = (from: number, to: number) => {
+    if (to < 0 || to >= order.length) return;
+    const next = [...order];
+    const [x] = next.splice(from, 1);
+    next.splice(to, 0, x);
+    setOrder(next);
+  };
+  const changed = order.some((v, i) => v !== i);
+
+  return (
+    <Card>
+      <CardHeader title={t("scan.orderTitle")} sub={t("scan.orderSub")} />
+      {err && <Alert tone="bad" className="m-3">{err}</Alert>}
+      <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3">
+        {order.map((pageIndex, pos) => {
+          const p = pages[pageIndex];
+          return (
+            <div key={pageIndex} className="overflow-hidden rounded-lg border border-line bg-surface">
+              <div className="flex items-center gap-1 border-b border-line bg-raised/50 px-2 py-1">
+                <span className="num grid h-5 min-w-5 place-items-center rounded bg-brand px-1 text-[11px] font-bold text-brand-ink">
+                  {pos + 1}
+                </span>
+                <span className="flex-1 truncate text-[11px] text-faint">{p.name}</span>
+                <Button size="icon" variant="ghost" className="h-6 w-6" disabled={pos === 0}
+                  onClick={() => move(pos, pos - 1)} title={t("scan.moveUp")}>
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </Button>
+                <Button size="icon" variant="ghost" className="h-6 w-6" disabled={pos === order.length - 1}
+                  onClick={() => move(pos, pos + 1)} title={t("scan.moveDown")}>
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              {p.mimeType === "application/pdf" ? (
+                <div className="grid h-40 place-items-center text-[12px] text-faint">PDF</div>
+              ) : (
+                <img src={`/api/scans/${scanId}/page/${pageIndex}`} alt="" loading="lazy"
+                  className="h-40 w-full object-cover object-top" />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 border-t border-line p-3">
+        <p className="text-[12px] text-muted">{t("scan.orderHint")}</p>
+        <div className="flex-1" />
+        {changed && (
+          <Button onClick={() => setOrder(pages.map((_, i) => i))}>{t("common.cancel")}</Button>
         )}
+        <Button variant="primary" size="lg" loading={save.isPending || reading}
+          icon={<ScanLine className="h-4 w-4" />}
+          onClick={async () => {
+            setErr(null);
+            if (changed) await save.mutateAsync(order);
+            onRead();
+          }}>
+          {t("scan.readInOrder")}
+        </Button>
       </div>
     </Card>
   );
@@ -185,8 +266,13 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
     if (apiStatus(batch.error) === 404 && !whereis.isFetched) void whereis.refetch();
   }, [batch.error, whereis.isFetched]);
 
-  /** Every row stays on screen and editable until it is approved. */
-  const visible = rows;
+  /** Every row stays on screen and editable until it is approved, in page order. */
+  const visible = useMemo(
+    () => [...rows].sort((a, b) => (a.page ?? 1) - (b.page ?? 1)),
+    [rows],
+  );
+  const multiPage = (b_pages_len: number) => b_pages_len > 1;
+  const scrollToPage = useRef<((page: number) => void) | null>(null);
 
   /* A number that no longer matches what was read — whether corrected on
      purpose or knocked by a stray keystroke — should say so and offer the
@@ -271,6 +357,18 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
             </div>
           </Card>
         </div>
+      </>
+    );
+  }
+
+  if (b.status === "uploaded" && b.pages.length > 1) {
+    return (
+      <>
+        <PageHeader title={t("scan.review")} sub={t("scan.reviewSub")} />
+        {b.warningText && <Alert tone="warn" className="mb-3">{b.warningText}</Alert>}
+        {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
+        <PageOrderer scanId={scanId} pages={b.pages} reading={run.isPending}
+          onRead={() => run.mutate(undefined)} />
       </>
     );
   }
@@ -387,7 +485,8 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
       <div className={cn("grid gap-3", showScan && "xl:grid-cols-[minmax(300px,0.8fr)_minmax(0,2fr)]")}>
         {showScan && (
           <div className="h-[45vh] xl:sticky xl:top-4 xl:h-[calc(100vh-8rem)]">
-            <PageViewer scanId={scanId} pages={b.pages} />
+            <PageViewer scanId={scanId} pages={b.pages}
+              onPage={(fn) => { scrollToPage.current = fn; }} />
           </div>
         )}
 
@@ -434,10 +533,26 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
               <tbody>
                 {visible.map((r, i) => {
                   const locked = r.excluded || b.status === "committed";
+                  const startsPage = multiPage(b.pages.length) && (i === 0 || (visible[i - 1].page ?? 1) !== (r.page ?? 1));
                   // hand-picked or auto-matched, the name shows the same way
                   const name = r.chosen ?? r.match;
                   return (
                     <Fragment key={r.id}>
+                      {startsPage && (
+                        <tr>
+                          <td colSpan={11} className="border-b border-line bg-raised/70 px-2 py-1">
+                            <button type="button"
+                              onClick={() => { setShowScan(true); scrollToPage.current?.(r.page ?? 1); }}
+                              className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted hover:text-brand">
+                              <FileText className="h-3 w-3" />
+                              {t("scan.page", { n: r.page ?? 1 })}
+                              <span className="font-normal normal-case text-faint">
+                                · {t("scan.rowsOnPage", { n: visible.filter((x) => (x.page ?? 1) === (r.page ?? 1)).length })}
+                              </span>
+                            </button>
+                          </td>
+                        </tr>
+                      )}
                       <tr className={cn(
                         "transition-colors hover:bg-raised/30",
                         r.excluded && "bg-raised/50 opacity-55",

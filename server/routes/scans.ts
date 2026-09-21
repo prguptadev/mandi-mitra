@@ -583,6 +583,39 @@ scanRoutes.post("/:id/commit", can("scan.review", "slip.write"), async (c) => {
 });
 
 /**
+ * Put the pages in the right order before they are read. The order matters:
+ * the model reads them as one continuous list, and the daily list keeps that
+ * order. Only allowed before reading, since the row-to-page mapping comes from
+ * the read itself.
+ */
+scanRoutes.put("/:id/order", can("scan.create"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const id = param(c, "id");
+  const batch = await loadBatch(biz, id);
+  if (!["uploaded", "failed"].includes(batch.status)) {
+    throw new HttpError(409, "Pages can only be reordered before the sheet is read", "already_read");
+  }
+  const files: { name: string; mimeType: string; bytes: number }[] = JSON.parse(batch.filePaths);
+  const { order } = z.object({ order: z.array(z.number().int().min(0)) }).parse(await c.req.json());
+
+  const valid = order.length === files.length
+    && new Set(order).size === files.length
+    && order.every((i) => i < files.length);
+  if (!valid) throw bad("The new order must list every page exactly once", "bad_order");
+
+  const next = order.map((i) => files[i]);
+  await db.update(schema.scanBatches).set({ filePaths: JSON.stringify(next) })
+    .where(eq(schema.scanBatches.id, id));
+  await refreshScanMeta(biz, id);
+  await audit({
+    actor: actor(c), action: "scan.reorder", entity: "scan_batch", entityId: id,
+    entityLabel: `pages reordered`,
+    before: files.map((f) => f.name), after: next.map((f) => f.name),
+  });
+  return c.json({ ok: true, pages: next.map((f, i) => ({ index: i, name: f.name, mimeType: f.mimeType, bytes: f.bytes })) });
+});
+
+/**
  * Create suppliers for the names this scan read but the master does not have.
  * On a new business that is every row, and picking them one by one is not a
  * reasonable ask — the names are already on the paper.

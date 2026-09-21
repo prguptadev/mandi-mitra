@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, ListOrdered, ScanLine, Truck, FileText, Boxes, Users2,
@@ -122,6 +122,45 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
     try { return localStorage.getItem(SIDEBAR_KEY) === "1"; } catch { return false; }
   });
 
+  /* Collapsed, the menu is still one flick of the mouse away: pointing at the
+     left edge slides it over the page without pushing the grid around, and
+     moving off it tucks it away again. */
+  const [peek, setPeek] = useState(false);
+  const peekTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openPeek = () => {
+    if (peekTimer.current) clearTimeout(peekTimer.current);
+    setPeek(true);
+  };
+  const closePeek = () => {
+    if (peekTimer.current) clearTimeout(peekTimer.current);
+    peekTimer.current = setTimeout(() => setPeek(false), 180);
+  };
+
+  /* Pointer-leave alone is not enough: alt-tab, the pointer leaving the window,
+     or a touchpad jump can skip it and leave the menu stuck over the page. */
+  useEffect(() => {
+    if (!peek) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setPeek(false); };
+    const onDown = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (!el?.closest("[data-sidebar-peek]")) setPeek(false);
+    };
+    const onBlur = () => setPeek(false);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("blur", onBlur);
+    document.addEventListener("mouseleave", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("blur", onBlur);
+      document.removeEventListener("mouseleave", onBlur);
+    };
+  }, [peek]);
+
+  // following a link from the overlay should put it away
+  useEffect(() => { setPeek(false); }, [location]);
+
   const toggleSidebar = () => {
     setCollapsed((v) => {
       const next = !v;
@@ -178,6 +217,35 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
       )}>
         {!collapsed && sidebar}
       </aside>
+
+      {/* hover strip and overlay, only while collapsed */}
+      {collapsed && (
+        <>
+          <div
+            aria-hidden
+            onMouseEnter={openPeek}
+            className="fixed inset-y-0 left-0 z-40 hidden w-2 lg:block"
+          />
+          <aside
+            data-sidebar-peek
+            onMouseEnter={openPeek}
+            onMouseLeave={closePeek}
+            className={cn(
+              "fixed inset-y-0 left-0 z-50 hidden w-60 border-r border-line bg-surface shadow-pop",
+              "transition-transform duration-200 ease-out lg:block",
+              peek ? "translate-x-0" : "-translate-x-full",
+            )}
+          >
+            <div className="flex items-center justify-end border-b border-line px-2 py-1.5">
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setPeek(false); toggleSidebar(); }}
+                title={t("nav.pinSidebar")} aria-label={t("nav.pinSidebar")}>
+                <PanelLeftOpen className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            {sidebar}
+          </aside>
+        </>
+      )}
 
       {mobileOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">

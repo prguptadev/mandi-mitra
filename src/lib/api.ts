@@ -188,6 +188,7 @@ export interface ScanIssue { code: string; level: "error" | "warn"; message: str
 
 export interface ScanRow {
   id: string;
+  page?: number;
   ocr: {
     rstNo: string | null; adatiName: string | null; grossQtl: number | null;
     katauti: number | null; netQtl: number | null; rate: number | null;
