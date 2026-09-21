@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Printer, ScanLine, Play, Plus } from "lucide-react";
+import { Printer, ScanLine, Play, Plus, RefreshCw } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { Alert, Badge, Button, Field, Select, Spinner } from "@/components/ui/index.tsx";
@@ -52,10 +52,13 @@ export function ScannerPanel({ slipDate, merchantId, jinsId }: { slipDate: strin
         <Printer className="h-4 w-4 text-brand" />
         <p className="text-[13px] font-semibold text-ink">{t("scanner.title")}</p>
         {devices.isFetching && <Spinner className="h-3.5 w-3.5" />}
+        {/* plugged in, or joined the Wi-Fi, after the page opened */}
+        <Button size="sm" variant="ghost" className="ml-auto" disabled={devices.isFetching} icon={<RefreshCw className="h-3.5 w-3.5" />}
+          onClick={() => void devices.refetch()}>{t("scanner.lookAgain")}</Button>
       </div>
       {err && <Alert tone="bad">{err}</Alert>}
       {devices.isError && <Alert tone="bad">{devices.error instanceof ApiError ? devices.error.message : t("common.somethingWrong")}</Alert>}
-      {devices.data && !list.length && <Alert tone="warn">{t("scanner.none")}</Alert>}
+      {devices.data && !list.length && !devices.isFetching && <Alert tone="warn">{t("scanner.none")}</Alert>}
       {list.length > 0 && (
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label={t("scanner.device")}>
