@@ -93,7 +93,11 @@ check("every table comes back with the same rows", diff.length === 0, diff.map((
 check("the deleted slip stays deleted", !(sqlite.prepare("select 1 from purchase_slips where id = ?").get(victim.id)));
 check("everyone signs in again", (await raw("GET", "/auth/me")).status === 401);
 await login();
-check("after a restore there is nothing to push", (await call("POST", "/cloud/sync")).pushed <= 2);
+const slipsUp = async () => Number((await cloud<{ n: string }>("select count(*) as n from mm_rows where tbl = 'purchase_slips' and not deleted"))[0].n);
+const slipsBefore = await slipsUp();
+const afterRestore = (await call("POST", "/cloud/sync")).pushed;
+// signing in again writes the user's last sign-in and an audit line; nothing else may go up
+check("after a restore only the sign-in itself goes up", afterRestore < 10 && (await slipsUp()) === slipsBefore, afterRestore);
 const off = await call("PUT", "/cloud", { connection: null });
 check("the cloud copy can be turned off", off.configured === false);
 
