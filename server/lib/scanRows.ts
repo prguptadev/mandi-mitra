@@ -62,6 +62,10 @@ export interface CheckedRow extends ReviewRow {
 
 export function qtlToGrams(q: number) { return Math.round(q * GRAMS_PER_QTL); }
 
+/** "६२६" or "6 26" → "626": RST numbers compare as the weighbridge prints them. */
+export const normRst = (v: string | null | undefined) =>
+  String(v ?? "").replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "");
+
 export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
   const gross = r.grossQtl ?? null;
   return {
@@ -77,7 +81,7 @@ export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
       confidence: r.confidence ?? null,
       struckThrough: r.struckThrough ?? null,
     },
-    rstNo: (r.rstNo ?? "").trim(),
+    rstNo: normRst(r.rstNo),
     adatiId: null,
     adatiRawText: (r.adatiName ?? "").trim(),
     grossGrams: gross === null ? null : qtlToGrams(gross),
@@ -89,6 +93,9 @@ export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
     confirmed: [],
   };
 }
+
+/** The operator accepted this field as read (one click), or edited it. */
+const confirmedField = (row: { confirmed?: string[] }, f: string) => (row.confirmed ?? []).includes(f);
 
 export function checkRow(
   row: ReviewRow,
@@ -157,12 +164,16 @@ export function checkRow(
 
   if (row.grossGrams === null) issues.push({ code: "gross_missing", level: "error", message: "Gross weight could not be read" });
   else if (derivedNetGrams !== null && derivedNetGrams <= 0) issues.push({ code: "net_nonpositive", level: "error", message: "Net weight works out to zero or less" });
-  else if (row.grossGrams > 200 * GRAMS_PER_QTL) issues.push({ code: "gross_large", level: "warn", message: "Gross weight looks very large for one slip" });
+  else if (row.grossGrams > 100 * GRAMS_PER_QTL) {
+    // likely a lost decimal point (1920 for 19.20): must be confirmed or fixed
+    issues.push({ code: "gross_large", level: confirmedField(row, "gross") ? "warn" : "error", message: "Gross weight looks very large for one slip — confirm it or fix it" });
+  }
   else if (row.grossGrams < GRAMS_PER_QTL) issues.push({ code: "gross_small", level: "warn", message: "Gross weight is under one quintal — check the decimal point" });
 
   if (netAgrees === false) {
     issues.push({
-      code: "net_mismatch", level: "warn",
+      // the sheet's own net disagrees: the surest sign of a misread digit
+      code: "net_mismatch", level: confirmedField(row, "gross") ? "warn" : "error",
       message: `The sheet's net weight differs from the calculation by ${((netDiffGrams ?? 0) / GRAMS_PER_QTL).toFixed(2)} qtl`,
       params: { diff: ((netDiffGrams ?? 0) / GRAMS_PER_QTL).toFixed(2) },
     });
@@ -177,8 +188,9 @@ export function checkRow(
   }
 
   if (row.ratePaisePerQtl === null) issues.push({ code: "rate_missing", level: "warn", message: "Rate could not be read — it can be filled in later" });
-  else if (row.ratePaisePerQtl < opts.rateFloorPaise || row.ratePaisePerQtl > opts.rateCeilPaise) {
-    issues.push({ code: "rate_range", level: "warn", message: "Rate is outside the usual range — check it" });
+  else if (row.ratePaisePerQtl < 0) issues.push({ code: "rate_negative", level: "error", message: "Rate cannot be negative" });
+  else if (row.ratePaisePerQtl > 0 && (row.ratePaisePerQtl < opts.rateFloorPaise || row.ratePaisePerQtl > opts.rateCeilPaise)) {
+    issues.push({ code: "rate_range", level: confirmedField(row, "rate") ? "warn" : "error", message: "Rate is outside the usual range — confirm it or fix it" });
   }
 
   if ((row.ocr.confidence ?? 1) < 0.6) {

@@ -28,6 +28,10 @@ export const defaultDisplayConfig = (): DisplayConfig => DisplayConfigSchema.par
 export const GeminiConfigSchema = z.object({
   model: z.string().default("gemini-2.5-flash"),
   fallbackModel: z.string().default("gemini-2.5-pro"),
+  /** Tried in order when a model's free reads for the day are used up (or it
+   *  is not free on this key). Each model has its own daily allowance, so a
+   *  short list multiplies the pages that can be read in a day. */
+  backupModels: z.array(z.string().min(1).max(80)).max(6).default([]),
   /** Retry a page on the stronger model when mean confidence is below this. */
   fallbackBelowConfidence: z.number().min(0).max(1).default(0.8),
   /** A 30-row sheet needs ~6k; the ceiling is generous because truncation
@@ -39,8 +43,18 @@ export const GeminiConfigSchema = z.object({
 export type GeminiConfig = z.infer<typeof GeminiConfigSchema>;
 export const defaultGeminiConfig = (): GeminiConfig => GeminiConfigSchema.parse({});
 
+/* Models that read a picture and answer in a fixed JSON shape. Which of them
+   are free, and how many pages a day, depends on the key's Google project —
+   Settings › "Check models" asks Google and tries them on a real page. */
 export const GEMINI_MODELS = [
-  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", note: "Fast and cheap. Right for most sheets." },
-  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", note: "Slower, better on faint or messy handwriting." },
-  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite", note: "Cheapest. Try only on very clean scans." },
+  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", note: "Proven on these sheets. Small free allowance per day." },
+  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", note: "Cheapest 2.5. Check it on a page before relying on it." },
+  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", note: "Slow, strong on messy writing. Often not free." },
+  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash (preview)", note: "Newer Flash. Preview: may change or stop." },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", note: "Light and fast, larger free allowance." },
+  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", note: "Light and fast, larger free allowance." },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", note: "Newer Flash." },
+  { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", note: "Newer Flash." },
+  { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash", note: "Newer Flash." },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", note: "Newest Flash." },
 ] as const;

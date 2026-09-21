@@ -79,10 +79,14 @@ const RESPONSE_SCHEMA = {
            cross-check, and a struck-through row must not silently become a
            purchase. Left optional, the model skips them to save tokens. */
         required: ["page", "rstNo", "adatiName", "grossQtl", "katauti", "netQtl", "rate", "confidence", "struckThrough"],
+        /* Without an explicit order the API fills fields alphabetically, so the
+           model would state its confidence before reading a single digit. */
+        propertyOrdering: ["page", "srNo", "rstNo", "adatiName", "supplierMatch", "grossQtl", "katauti", "netQtl", "rate", "struckThrough", "notes", "confidence"],
       },
     },
   },
   required: ["rows"],
+  propertyOrdering: ["date", "millName", "jins", "rows", "totalWeightWritten"],
 } as const;
 
 const PROMPT = `You are reading a handwritten daily purchase register from a grain commission agent (arhtiya) in Uttar Pradesh, India. The form is printed in English; every entry is handwritten, mostly in Devanagari with some Latin digits.
@@ -96,7 +100,7 @@ Columns, left to right:
 - ADATI NAME — the supplier's name, handwritten in Hindi. Always return it in Devanagari, never in Latin letters. Copy the spelling as written; do not correct it.
   One exception: a trailing "T.C", "ट.C", "टी.सी" or "TC" is the abbreviation for Trading Company. Write it out as "ट्रेडिंग कंपनी". For example "शिवम T.C" becomes "शिवम ट्रेडिंग कंपनी".
   This column is never blank on a real row. If the name is hard to read, give your best reading in Devanagari and lower the confidence for that row rather than returning null.
-- RST NO — the weighbridge (dharam kanta) slip number. It is NOT a row count and is not in sequence. It can be 3 or 4 digits, and one sheet often mixes both, e.g. 626, 627, 1474, 629, 1471. Read every digit; do not drop a leading "1" or "14".
+- RST NO — the weighbridge (dharam kanta) slip number. It is NOT a row count and is not in sequence. It can be 3 or 4 digits, and one sheet often mixes both, e.g. 626, 627, 1474, 629, 1471. Read every digit; do not drop a leading "1" or "14". Write it with Latin digits 0-9 only, even if it is written in Devanagari digits (६२६ → 626).
 - DHARAM KANTA — gross weight in quintal, normally two decimal places (e.g. 19.20, 46.95).
 - KATAUTI — a whole number, normally close to the gross weight rounded off.
 - NET WEIGHT — weight in quintal, slightly less than the gross. Always copy this column; it is how the entry is checked. If the column is blank on the paper, return null.
@@ -108,6 +112,8 @@ Rules:
 - struckThrough is required on every row: true if the row is struck through or crossed out on the paper, false otherwise. Never leave it out.
 - Skip printed headers and blank ruled rows. Only rows with handwriting.
 - confidence is YOUR certainty about that whole row, 0 to 1. Be strict: use below 0.6 when any digit or letter is genuinely unclear. An honest low score is more useful than a confident guess, because low-confidence pages are read again with a stronger model.
+- A ditto mark (〃, ", ,, or "do") in a cell means "same as the row above": return the value from the row above.
+- One cell crossed out and rewritten is NOT a struck-through row: return the rewritten value and set struckThrough false. Only a line through the whole row means struckThrough true.
 - Decimal points in this handwriting are often faint. A gross weight is nearly always between 1 and 60 quintal with two decimals, so 1920 almost certainly means 19.20.
 
 Return only the structured object.`;
@@ -177,6 +183,8 @@ export interface QuotaInfo {
   freeTier: boolean;
   model: string | null;
   retryAfterSec: number | null;
+  /** Google allows 0 reads: this model has no free use on this key at all. */
+  notFree?: boolean;
 }
 
 /** Pulls the quota details out of a 429 so the message can be accurate. */
@@ -184,20 +192,29 @@ export function parseQuota(json: any): QuotaInfo | null {
   const e = json?.error;
   if (!e || (e.code !== 429 && e.status !== "RESOURCE_EXHAUSTED")) return null;
   let quotaId = "", limit: number | null = null, model: string | null = null, retry: number | null = null;
+  let zero = false;
   for (const d of e.details ?? []) {
     const t = String(d?.["@type"] ?? "");
     if (t.includes("QuotaFailure")) {
-      const v = d.violations?.[0];
-      quotaId = String(v?.quotaId ?? "");
-      limit = v?.quotaValue != null ? Number(v.quotaValue) : null;
-      model = v?.quotaDimensions?.model ?? null;
+      /* Google lists every limit that was hit, per minute and per day. The
+         daily one decides whether waiting helps, so it wins. */
+      for (const v of d.violations ?? []) {
+        const id = String(v?.quotaId ?? "");
+        const lim = v?.quotaValue != null && v.quotaValue !== "" ? Number(v.quotaValue) : null;
+        if (lim === 0) zero = true;
+        if (!quotaId || (/PerDay/i.test(id) && !/PerDay/i.test(quotaId))) {
+          quotaId = id; limit = lim; model = v?.quotaDimensions?.model ?? null;
+        }
+      }
     }
     if (t.includes("RetryInfo")) retry = parseFloat(String(d.retryDelay ?? "").replace("s", "")) || null;
   }
   return {
-    kind: /PerDay/i.test(quotaId) ? "per_day" : /PerMinute/i.test(quotaId) ? "per_minute" : "unknown",
-    limit, model, retryAfterSec: retry,
+    // an allowance of 0 never refills by waiting: the model is simply not free on this key
+    kind: zero || /PerDay/i.test(quotaId) ? "per_day" : /PerMinute/i.test(quotaId) ? "per_minute" : "unknown",
+    limit: zero ? 0 : limit, model, retryAfterSec: retry,
     freeTier: /FreeTier/i.test(quotaId),
+    notFree: zero,
   };
 }
 
@@ -215,6 +232,9 @@ export function nextQuotaReset(now = new Date()): Date {
 export function explainGeminiError(status: number, message: string, apiKey?: string, raw?: unknown): string {
   const q = parseQuota(raw);
   if (q) {
+    if (q.notFree) {
+      return `${q.model ?? "This model"} has no free reads on this key (Google allows 0). Pick another model in Settings, or enable billing on the Google project that owns this key.`;
+    }
     if (q.kind === "per_day") {
       const reset = nextQuotaReset().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata" });
       return q.freeTier
@@ -260,7 +280,7 @@ ${names.map((n, i) => `${i + 1}. ${n}`).join("\n")}
 
 For every row:
 - set "adatiName" to what is actually written, in Devanagari, as above;
-- set "supplierMatch" to the name from this list, copied EXACTLY character for character, that the handwriting most likely is. Only use null if it is clearly none of them. A trailing T.C / ट्रेडिंग कंपनी on the paper matches a listed name ending in ट्रेडिंग.`;
+- set "supplierMatch" to the name from this list, copied EXACTLY character for character, ONLY when the handwriting clearly is that name. If you are unsure, or it could be one of two names, return null — a wrong pick is worse than none, because the operator then does not look. A trailing T.C / ट्रेडिंग कंपनी on the paper matches a listed name ending in ट्रेडिंग.`;
 }
 
 export interface GeminiCallResult {
@@ -281,6 +301,29 @@ export interface GeminiCallResult {
   status?: number;
   /** A failure that the same request may well not hit again: busy, network, a garbled reply. */
   transient?: boolean;
+}
+
+/* Tests point this at a local stand-in for Google (see scripts/test-e2e.ts).
+   Only a local address is accepted, so a setting can never send the key elsewhere. */
+export const GEMINI_BASE = /^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(process.env.MANDI_GEMINI_BASE ?? "")
+  ? process.env.MANDI_GEMINI_BASE!
+  : "https://generativelanguage.googleapis.com";
+
+/**
+ * Copying a table needs no deliberation, and thinking tokens come out of the
+ * same output budget, so each family gets the least thinking it allows:
+ * 2.5 Flash / Flash-Lite switch it off, 2.5 Pro's minimum is 128, and the
+ * Gemini 3 family takes a level instead of a budget.
+ */
+/** Models that refused a thinking setting once: sent without it from then on. */
+const noThinking = new Set<string>();
+
+export function thinkingFor(model: string): Record<string, unknown> | undefined {
+  const m = model.toLowerCase();
+  if (/^gemini-2\.5-pro/.test(m)) return { thinkingBudget: 128 };
+  if (/^gemini-2\.5/.test(m)) return { thinkingBudget: 0 };
+  if (/^gemini-([3-9]|\d{2,})/.test(m)) return { thinkingLevel: "low" };
+  return undefined;
 }
 
 export async function readSheet(opts: {
@@ -305,8 +348,8 @@ export async function readSheet(opts: {
   }
 
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(opts.model)}:generateContent`,
+    const send = (thinkingConfig: Record<string, unknown> | undefined) => fetch(
+      `${GEMINI_BASE}/v1beta/models/${encodeURIComponent(opts.model)}:generateContent`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": opts.apiKey },
@@ -317,15 +360,24 @@ export async function readSheet(opts: {
             maxOutputTokens,
             responseMimeType: "application/json",
             responseSchema: RESPONSE_SCHEMA,
-            thinkingConfig: { thinkingBudget: 0 },
+            ...(thinkingConfig ? { thinkingConfig } : {}),
           },
         }),
         signal: opts.signal ?? AbortSignal.timeout(180_000),
       },
     );
-
+    const thinking = noThinking.has(opts.model) ? undefined : thinkingFor(opts.model);
+    let res = await send(thinking);
+    let json = await res.json().catch(() => null) as any;
+    /* A newer model that does not take our thinking setting answers 400 about
+       it; the same request without the setting is then the right one, and is
+       remembered. Nothing was read, so nothing is spent. */
+    if (res.status === 400 && thinking && /thinking/i.test(String(json?.error?.message ?? ""))) {
+      noThinking.add(opts.model);
+      res = await send(undefined);
+      json = await res.json().catch(() => null) as any;
+    }
     const ms = Date.now() - started;
-    const json = await res.json().catch(() => null) as any;
 
     const tokensIn = json?.usageMetadata?.promptTokenCount;
     const tokensOut = json?.usageMetadata?.candidatesTokenCount;
@@ -437,6 +489,7 @@ export async function readSheetReliably(
 export const keyHash = (key: string) => crypto.createHash("sha256").update(key).digest("hex").slice(0, 16);
 
 export async function recordCall(opts: { businessId: string; apiKey: string; result: GeminiCallResult }) {
+  if (opts.result.quota?.kind === "per_day") markSpent(opts.apiKey, opts.result.model);
   await db.insert(schema.geminiCalls).values({
     id: newId(), businessId: opts.businessId, keyHash: keyHash(opts.apiKey),
     model: opts.result.model, ok: opts.result.ok,
@@ -456,10 +509,10 @@ export async function usageToday(apiKey: string, model: string) {
   ));
   const used = rows.filter((r) => !r.refused).length;
   const refusedToday = rows.some((r) => r.refused);
-  const known = [...rows].reverse().find((r) => r.reportedLimit)?.reportedLimit ?? null;
+  const known = [...rows].reverse().find((r) => r.reportedLimit != null)?.reportedLimit ?? null;
   const allTime = await db.select({ l: schema.geminiCalls.reportedLimit }).from(schema.geminiCalls)
-    .where(eq(schema.geminiCalls.keyHash, keyHash(apiKey)));
-  const everLimit = allTime.find((r) => r.l)?.l ?? null;
+    .where(and(eq(schema.geminiCalls.keyHash, keyHash(apiKey)), eq(schema.geminiCalls.model, model)));
+  const everLimit = allTime.find((r) => r.l != null)?.l ?? null;
   return {
     model, used,
     /** From Google's own refusal; null until the key has been refused once. */
@@ -467,4 +520,67 @@ export async function usageToday(apiKey: string, model: string) {
     exhausted: refusedToday,
     resetsAt: reset.toISOString(),
   };
+}
+
+/* ------------------------------------------------------ spent for today */
+
+/* A daily refusal whose limit Google did not state leaves no number in the
+   call log, so it is also remembered here until the next Pacific midnight. */
+const spentUntil = new Map<string, number>();
+
+export function markSpent(apiKey: string, model: string) {
+  spentUntil.set(`${keyHash(apiKey)}|${model}`, nextQuotaReset().getTime());
+}
+
+/** True when this model already refused this key for the day (or is not free at all). */
+export async function spentToday(apiKey: string, model: string): Promise<boolean> {
+  const until = spentUntil.get(`${keyHash(apiKey)}|${model}`);
+  if (until && until > Date.now()) return true;
+  const dayStart = Math.floor(nextQuotaReset().getTime() / 1000) - 86400;
+  const rows = await db.select({ refused: schema.geminiCalls.refused, limit: schema.geminiCalls.reportedLimit })
+    .from(schema.geminiCalls).where(and(
+      eq(schema.geminiCalls.keyHash, keyHash(apiKey)),
+      eq(schema.geminiCalls.model, model),
+      gte(schema.geminiCalls.at, dayStart),
+    ));
+  return rows.some((r) => r.refused && r.limit != null);
+}
+
+/* ------------------------------------------------------- models on key */
+
+export interface KeyModel { id: string; displayName: string; inputTokenLimit: number | null }
+
+/* Not for reading a sheet: pictures, speech, video, embeddings, agents. */
+const NOT_FOR_SHEETS = /image|tts|audio|live|embed|computer-use|robotics|transcribe|translate|omni|veo|lyria|imagen|research|antigravity|aqa|learnlm/i;
+
+/**
+ * The models this key can call, from Google's own list. Listing is free: it
+ * spends none of the day's reads. It does not say which ones are free —
+ * only a real read (or AI Studio's rate-limit page) shows that.
+ */
+export async function listModels(apiKey: string): Promise<{ ok: true; models: KeyModel[] } | { ok: false; error: string; status?: number }> {
+  const out: KeyModel[] = [];
+  let pageToken = "";
+  try {
+    for (let i = 0; i < 10; i++) {
+      const url = `${GEMINI_BASE}/v1beta/models?pageSize=1000${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+      const res = await fetch(url, { headers: { "x-goog-api-key": apiKey }, signal: AbortSignal.timeout(20_000) });
+      const json = await res.json().catch(() => null) as any;
+      if (!res.ok) {
+        return { ok: false, status: res.status, error: explainGeminiError(res.status, json?.error?.message ?? `HTTP ${res.status}`, apiKey, json) };
+      }
+      for (const m of json?.models ?? []) {
+        const id = String(m?.name ?? "").replace(/^models\//, "");
+        if (!/^gemini-/i.test(id) || NOT_FOR_SHEETS.test(id)) continue;
+        if (!(m?.supportedGenerationMethods ?? []).includes("generateContent")) continue;
+        out.push({ id, displayName: String(m?.displayName ?? id), inputTokenLimit: m?.inputTokenLimit ?? null });
+      }
+      pageToken = json?.nextPageToken ?? "";
+      if (!pageToken) break;
+    }
+  } catch {
+    return { ok: false, error: "Could not reach Google (network)." };
+  }
+  out.sort((a, b) => b.id.localeCompare(a.id, "en", { numeric: true }));
+  return { ok: true, models: out };
 }

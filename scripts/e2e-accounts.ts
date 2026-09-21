@@ -113,6 +113,24 @@ await call("PUT", `/slips/${s3.id}`, { ratePaisePerQtl: 350_000 });
 row = (await call("GET", "/ledger")).rows.find((r: any) => r.id === A);
 check("pricing the 4.95 qtl slip at 3500 adds 17,325.00", row.balancePaise === -rs(1834.50) + rs(17325), row.balancePaise);
 
+console.log("\nChange a slip's commodity");
+const other = jins.find((j: any) => j.id !== j1509.id);
+const balBefore = (await call("GET", "/ledger")).rows.find((r: any) => r.id === A).balancePaise;
+const mv = await call("POST", "/slips/set-jins", { slipIds: [s1.id, s2.id], jinsId: other.id });
+check("two slips moved to the other commodity", mv.updated === 2, mv);
+const inOther = await call("GET", `/slips?date=2026-09-27&jinsId=${other.id}`);
+check("the list filtered by that commodity shows them", inOther.rows.filter((r: any) => r.adatiId === A).length === 2, inOther.rows.length);
+const in1509 = await call("GET", `/slips?date=2026-09-27&jinsId=${j1509.id}`);
+check("…and 1509 no longer does", in1509.rows.filter((r: any) => r.adatiId === A).length === 0);
+const s1now = inOther.rows.find((r: any) => r.id === s1.id);
+check("weight and amount do not change with the commodity", s1now.netGrams === 1_980_000 && s1now.amountPaise === rs(67320), s1now);
+check("the supplier's balance does not change either", (await call("GET", "/ledger")).rows.find((r: any) => r.id === A).balancePaise === balBefore);
+check("an unknown commodity is refused", (await raw("POST", "/slips/set-jins", { slipIds: [s1.id], jinsId: "nope" })).status === 400);
+check("moving to the same commodity again changes nothing", (await call("POST", "/slips/set-jins", { slipIds: [s1.id], jinsId: other.id })).updated === 0);
+await call("PUT", `/slips/${s2.id}`, { jinsId: j1509.id });
+check("one slip changed back on its own", (await call("GET", `/slips?date=2026-09-27&jinsId=${j1509.id}`)).rows.some((r: any) => r.id === s2.id));
+await call("POST", "/slips/set-jins", { slipIds: [s1.id], jinsId: j1509.id });
+
 const pays = await call("GET", `/payments?adatiId=${A}`);
 check("payments list: 2 left, 1,10,000 in all", pays.rows.length === 2 && pays.totals.amountPaise === rs(110000), pays.totals);
 check("split by mode: cash 50,000, bank 60,000", pays.totals.byMode.cash === rs(50000) && pays.totals.byMode.bank === rs(60000), pays.totals.byMode);

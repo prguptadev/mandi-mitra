@@ -5,7 +5,7 @@ import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
 import { encryptSecret, decryptSecret, maskKey } from "../lib/secrets.ts";
-import { explainGeminiError, usageToday } from "../lib/gemini.ts";
+import { explainGeminiError, usageToday, listModels, GEMINI_BASE } from "../lib/gemini.ts";
 import {
   DisplayConfigSchema, defaultDisplayConfig,
   GeminiConfigSchema, defaultGeminiConfig, GEMINI_MODELS,
@@ -130,7 +130,42 @@ settingsRoutes.get("/gemini/usage", can("scan.create", "settings.write"), async 
   if (!key) return c.json({ configured: false });
   const cfgRaw = await readSetting(biz, "gemini");
   const cfg = cfgRaw ? GeminiConfigSchema.parse(JSON.parse(cfgRaw)) : defaultGeminiConfig();
-  return c.json({ configured: true, ...(await usageToday(key, cfg.model)) });
+  /* With backups, the main model running out is not the end of the day:
+     say which model the next page goes to. */
+  const chain = await Promise.all([...new Set([cfg.model, ...cfg.backupModels])].map((m) => usageToday(key, m)));
+  const next = chain.find((u) => !u.exhausted && (u.dailyLimit == null || u.used < u.dailyLimit))?.model ?? null;
+  return c.json({
+    configured: true, ...chain[0],
+    chain: chain.map((u) => ({ model: u.model, used: u.used, dailyLimit: u.dailyLimit, exhausted: u.exhausted })),
+    next,
+  });
+});
+
+/**
+ * The models this key can call (Google's list — free to ask), with what the
+ * app has seen of each today: reads used, Google's stated daily limit, and
+ * whether it already refused. Which are free only shows on a real read.
+ */
+settingsRoutes.get("/gemini/models", can("settings.write", "scan.create"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const keyRaw = await readSetting(biz, "gemini.apiKey");
+  const key = keyRaw ? decryptSecret(keyRaw) : null;
+  if (!key) return c.json({ configured: false, ok: false, models: [] });
+  const cfgRaw = await readSetting(biz, "gemini");
+  const cfg = cfgRaw ? GeminiConfigSchema.parse(JSON.parse(cfgRaw)) : defaultGeminiConfig();
+  const listed = await listModels(key);
+  const ids = new Set<string>([
+    ...(listed.ok ? listed.models.map((m) => m.id) : []),
+    ...GEMINI_MODELS.map((m) => m.id), cfg.model, cfg.fallbackModel, ...cfg.backupModels,
+  ]);
+  const usage = await Promise.all([...ids].map((id) => usageToday(key, id)));
+  return c.json({
+    configured: true,
+    ok: listed.ok,
+    error: listed.ok ? null : listed.error,
+    models: listed.ok ? listed.models : [],
+    usage: Object.fromEntries(usage.map((u) => [u.model, { used: u.used, dailyLimit: u.dailyLimit, exhausted: u.exhausted }])),
+  });
 });
 
 /** Copy the key from another business this user already set it up in. */
@@ -195,7 +230,7 @@ settingsRoutes.post("/gemini/test", can("settings.write", "scan.create"), async 
        generateContent — so testing the key does not spend one of the day's
        free reads. */
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}`,
+      `${GEMINI_BASE}/v1beta/models/${encodeURIComponent(model)}`,
       { headers: { "x-goog-api-key": key }, signal: AbortSignal.timeout(20_000) },
     );
     const ms = Date.now() - started;

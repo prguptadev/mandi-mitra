@@ -153,6 +153,7 @@ export interface SlipDay {
 
 export interface GeminiSettings {
   model: string; fallbackModel: string; fallbackBelowConfidence: number;
+  backupModels: string[];
   maxOutputTokens: number; temperature: number;
   configured: boolean; maskedKey: string | null; keyUnreadable: boolean;
   models: { id: string; label: string; note: string }[];
@@ -225,6 +226,39 @@ export interface GeminiUsage {
   dailyLimit?: number | null;
   exhausted?: boolean;
   resetsAt?: string;
+  /** Main model then backups, in the order pages go to them. */
+  chain?: ModelToday[];
+  /** The model the next page will be read on; null when all are used up. */
+  next?: string | null;
+}
+
+export interface ModelToday { model?: string; used: number; dailyLimit: number | null; exhausted: boolean }
+
+export interface GeminiKeyModels {
+  configured: boolean;
+  ok: boolean;
+  error?: string | null;
+  models: { id: string; displayName: string; inputTokenLimit: number | null }[];
+  usage?: Record<string, ModelToday>;
+}
+
+export interface TryModelRow {
+  rstNo: string; name: string; matchedName: string | null;
+  grossQtl: number | null; netQtl: number | null; rate: number | null;
+  confidence: number | null; struckThrough: boolean; onScan: boolean; diff: string[];
+}
+
+export interface TryModelResult {
+  model: string; page: number; ms: number; attempts: number;
+  tokensIn: number | null; tokensOut: number | null;
+  ok: boolean;
+  error?: string;
+  quota?: { kind: string; limit: number | null; notFree: boolean } | null;
+  truncated?: boolean;
+  rowsRead?: number; netChecked?: number; netAgreeing?: number;
+  meanConfidence?: number | null; namesRead?: number;
+  vsScan?: { rows: number; rstFound: number; same: number; grossSame: number; rateSame: number; nameSame: number; namesChecked: number };
+  rows?: TryModelRow[];
 }
 
 export interface OrderRow {

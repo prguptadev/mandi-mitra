@@ -9,7 +9,7 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { decryptSecret } from "../lib/secrets.ts";
 import { GeminiConfigSchema, defaultGeminiConfig, DisplayConfigSchema, defaultDisplayConfig } from "../lib/display.ts";
 import { ChargeConfigSchema, KatautiSchema, type Katauti } from "../lib/charges.ts";
-import { readSheetReliably, recordCall, type GeminiCallResult } from "../lib/gemini.ts";
+import { readSheetReliably, recordCall, spentToday, type GeminiCallResult } from "../lib/gemini.ts";
 import { loadResolver } from "../lib/adatiResolve.ts";
 import { normKey, toHinglish } from "../lib/translit.ts";
 import {
@@ -17,7 +17,8 @@ import {
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
 import { deriveSlip } from "./slips.ts";
-import { can, actor, param, notFound, bad, requireBusiness, HttpError, type Env } from "../lib/http.ts";
+import { normRst } from "../lib/scanRows.ts";
+import { can, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 
 export const scanRoutes = new Hono<Env>();
 
@@ -33,10 +34,13 @@ export function recoverInterruptedScans() {
     .where(eq(schema.scanBatches.status, "reading")).all();
   if (!stale.length) return 0;
   for (const s of stale) {
-    db.update(schema.scanBatches).set({
-      status: "uploaded",
-      warningText: "The reader was interrupted before it finished. Start it again.",
-    }).where(eq(schema.scanBatches.id, s.id)).run();
+    const b = db.select({ pagesDone: schema.scanBatches.pagesDone }).from(schema.scanBatches).where(eq(schema.scanBatches.id, s.id)).get();
+    const done = b?.pagesDone ?? 0;
+    db.update(schema.scanBatches).set(done > 0
+      // pages already read are kept; "Read again" resumes after them
+      ? { status: "failed", errorText: `The reader was interrupted. Pages 1–${done} are kept; press "Read again" to continue from page ${done + 1}.`, warningText: null }
+      : { status: "uploaded", warningText: "The reader was interrupted before it finished. Start it again." },
+    ).where(eq(schema.scanBatches.id, s.id)).run();
   }
   return stale.length;
 }
@@ -47,13 +51,12 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_BYTES = 12 * 1024 * 1024;
 const OK_TYPES = new Set([
   "image/jpeg", "image/jpg", "image/png", "image/webp",
-  "image/heic", "image/heif", "image/tiff", "image/bmp", "application/pdf",
+  "image/heic", "image/heif", "application/pdf",
 ]);
 /** Phones and scanner drivers often send an empty or generic MIME type. */
 const EXT_TYPES: Record<string, string> = {
   jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp",
-  heic: "image/heic", heif: "image/heif", tif: "image/tiff", tiff: "image/tiff",
-  bmp: "image/bmp", pdf: "application/pdf",
+  heic: "image/heic", heif: "image/heif", pdf: "application/pdf",
 };
 
 function resolveType(file: File): string | null {
@@ -206,7 +209,7 @@ scanRoutes.post("/", can("scan.create"), async (c) => {
     const mimeType = resolveType(file);
     if (!mimeType) {
       fs.rmSync(dir, { recursive: true, force: true });
-      throw bad(`"${file.name}" is a ${file.type || "unknown"} file. Use JPG, PNG, WEBP or PDF.`, "bad_type");
+      throw bad(`"${file.name}" is a ${file.type || "unknown"} file. Use JPG, PNG, WEBP, HEIC or a one-page PDF.`, "bad_type");
     }
     if (file.size === 0) {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -219,11 +222,15 @@ scanRoutes.post("/", can("scan.create"), async (c) => {
     const ext = mimeType === "application/pdf" ? "pdf"
       : mimeType === "image/png" ? "png"
       : mimeType === "image/webp" ? "webp"
-      : mimeType === "image/heic" || mimeType === "image/heif" ? "heic"
-      : mimeType === "image/tiff" ? "tiff"
-      : mimeType === "image/bmp" ? "bmp" : "jpg";
+      : mimeType === "image/heic" || mimeType === "image/heif" ? "heic" : "jpg";
     const name = `${String(i).padStart(2, "0")}.${ext}`;
-    fs.writeFileSync(path.join(dir, name), Buffer.from(await file.arrayBuffer()));
+    const bytes = Buffer.from(await file.arrayBuffer());
+    // one read is one page: a multi-page PDF would lose every page after the first
+    if (mimeType === "application/pdf" && (bytes.toString("latin1").match(/\/Type\s*\/Page\b/g)?.length ?? 0) > 1) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      throw bad(`"${file.name}" has more than one page. Save each page as its own image (or PDF) and add them together.`, "multi_page_pdf");
+    }
+    fs.writeFileSync(path.join(dir, name), bytes);
     saved.push({ name, mimeType, bytes: file.size });
   }
 
@@ -302,6 +309,10 @@ async function performRead(opts: {
     if (!r.ok || !r.page) return "the first pass failed";
     const rows = r.page.rows;
     if (!rows.length) return null; // a blank page is not a weak read
+    // the sheet checks itself: net = gross − katauti (1 kg a rounded quintal)
+    const failing = rows.filter((x) => x.grossQtl != null && x.netQtl != null && !x.struckThrough
+      && Math.abs((x.grossQtl - Math.floor(x.grossQtl + 0.5) * 0.01) - x.netQtl) > 0.015).length;
+    if (failing / rows.length > 0.15) return `${failing} rows fail the net-weight check`;
     const mean = rows.reduce((a, x) => a + (x.confidence ?? 0), 0) / rows.length;
     if (mean < cfg.fallbackBelowConfidence) return `average confidence ${mean.toFixed(2)}`;
     const shaky = rows.filter((x) => (x.confidence ?? 1) < 0.6).length;
@@ -331,14 +342,33 @@ async function performRead(opts: {
         warningText: `Google is busy — page ${p + 1}, trying again in ${Math.round(waitMs / 1000)} s (attempt ${attempt + 1})`,
       }).where(eq(schema.scanBatches.id, id));
     };
-    let result: GeminiCallResult & { attempts?: number } = await readSheetReliably({
-      apiKey, model: wanted ?? cfg.model, images: image, knownSuppliers,
-      maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
-    }, record, { onRetry });
+    /* Every model has its own free allowance for the day. When the main
+       model's is used up (or it has none on this key), the page goes to the
+       backups in order; models already refused today are skipped without a
+       request, except the last, so the message is Google's own. */
+    const chain = wanted ? [wanted] : [...new Set([cfg.model, ...cfg.backupModels])];
+    const spentNames: string[] = [];
+    let result: GeminiCallResult & { attempts?: number } = { ok: false, model: chain[0], ms: 0, error: "Not read" };
+    for (let i = 0; i < chain.length; i++) {
+      const m = chain[i];
+      if (i < chain.length - 1 && await spentToday(apiKey, m)) { spentNames.push(m); continue; }
+      result = await readSheetReliably({
+        apiKey, model: m, images: image, knownSuppliers,
+        maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
+      }, record, { onRetry });
+      if (result.ok || !result.quota) break;
+      spentNames.push(m);
+    }
+    if (result.ok && spentNames.length) {
+      notes.push(`page ${p + 1} read on ${result.model}: today's free reads on ${spentNames.join(", ")} are used up`);
+    } else if (!result.ok && result.quota && spentNames.length > 1) {
+      result = { ...result, error: `${result.error ?? "Gemini limit reached"} Used up today: ${spentNames.join(", ")}.` };
+    }
 
     /* Still busy after the retries: the other model runs on separate
        capacity, so give it one go before giving up on the page. */
-    if (!result.ok && result.transient && !wanted && cfg.fallbackModel && cfg.fallbackModel !== cfg.model) {
+    if (!result.ok && result.transient && !wanted && cfg.fallbackModel && cfg.fallbackModel !== result.model
+      && !(await spentToday(apiKey, cfg.fallbackModel))) {
       const other = await readSheetReliably({
         apiKey, model: cfg.fallbackModel, images: image, knownSuppliers,
         maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
@@ -353,7 +383,8 @@ async function performRead(opts: {
        that could not be read. After a refusal (quota, key, network) a second
        request only spends another read and fails the same way. */
     const why = result.ok ? weakness(result) : null;
-    if (!wanted && why && cfg.fallbackModel && cfg.fallbackModel !== cfg.model && result.model !== cfg.fallbackModel) {
+    if (!wanted && why && cfg.fallbackModel && cfg.fallbackModel !== cfg.model && result.model !== cfg.fallbackModel
+      && !(await spentToday(apiKey, cfg.fallbackModel))) {
       const second = await readSheetReliably({
         apiKey, model: cfg.fallbackModel, images: image, knownSuppliers,
         maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
@@ -444,7 +475,6 @@ async function performRead(opts: {
     status: "review",
     warningText: notes.length ? notes.join(". ") + "." : null,
     errorText: null,
-    slipDate: batch.slipDate,
   }).where(eq(schema.scanBatches.id, id));
   await refreshScanMeta(biz, id);
 
@@ -470,8 +500,12 @@ scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
 
   const cfgRaw = await setting(biz, "gemini");
   const cfg = cfgRaw ? GeminiConfigSchema.parse(JSON.parse(cfgRaw)) : defaultGeminiConfig();
-  const wanted = (await c.req.json().catch(() => ({})))?.model as string | undefined;
+  const reqBody = (await c.req.json().catch(() => ({}))) as { model?: string; force?: boolean };
+  const wanted = reqBody?.model;
   const actorInfo = { userId: c.get("auth")!.user.id, userName: c.get("auth")!.user.name };
+  if (batch.status === "review" && !reqBody?.force) {
+    throw new HttpError(409, "This sheet is already read. Reading it again replaces every row and your edits, and uses one read per page.", "confirm_reread");
+  }
 
   const files: unknown[] = JSON.parse(batch.filePaths);
   const partial: ReviewRow[] = batch.parsedRows ? JSON.parse(batch.parsedRows) : [];
@@ -500,7 +534,102 @@ scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
   return c.json({ started: true });
 });
 
+/**
+ * Reads one page of this scan on one model and reports how well it did,
+ * without changing the scan: the rows on the scan (with the operator's
+ * corrections) are the yardstick. Spends one read of that model's allowance.
+ */
+scanRoutes.post("/:id/try-model", can("scan.create"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const id = param(c, "id");
+  const batch = await loadBatch(biz, id);
+  const body = z.object({ model: z.string().trim().min(3).max(80).regex(/^[a-z0-9][a-z0-9.\-]*$/i), page: z.number().int().min(1).default(1) })
+    .parse(await c.req.json());
+  const files: { name: string; mimeType: string }[] = JSON.parse(batch.filePaths);
+  if (body.page > files.length) throw bad(`This scan has ${files.length} page(s)`, "no_page");
+
+  const keyRaw = await setting(biz, "gemini.apiKey");
+  const apiKey = keyRaw ? decryptSecret(keyRaw) : null;
+  if (!apiKey) throw bad("Add the Gemini API key in Settings first", "no_key");
+  const cfgRaw = await setting(biz, "gemini");
+  const cfg = cfgRaw ? GeminiConfigSchema.parse(JSON.parse(cfgRaw)) : defaultGeminiConfig();
+
+  const resolver = await loadResolver(biz);
+  const file = files[body.page - 1];
+  const r = await readSheetReliably({
+    apiKey, model: body.model, knownSuppliers: resolver.candidateNames(300),
+    images: [{ base64: fs.readFileSync(path.join(SCAN_DIR, id, file.name)).toString("base64"), mimeType: file.mimeType }],
+    maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
+  }, (x) => recordCall({ businessId: biz, apiKey, result: x }), { sleep: (ms) => new Promise((res) => setTimeout(res, Math.min(ms, 5_000))) });
+
+  await audit({
+    actor: actor(c), action: "scan.try_model", entity: "scan_batch", entityId: id,
+    entityLabel: `${body.model} on page ${body.page}: ${r.ok ? `${r.page?.rows.length ?? 0} rows` : r.error ?? "failed"}`,
+  });
+  const base = { model: body.model, page: body.page, ms: r.ms, attempts: r.attempts, tokensIn: r.tokensIn ?? null, tokensOut: r.tokensOut ?? null };
+  if (!r.ok || !r.page) {
+    return c.json({
+      ...base, ok: false, error: r.error ?? "failed",
+      quota: r.quota ? { kind: r.quota.kind, limit: r.quota.limit, notFree: Boolean(r.quota.notFree) } : null,
+    });
+  }
+
+  const read = r.page.rows.filter((x) => !x.struckThrough);
+  const withNet = read.filter((x) => x.grossQtl != null && x.netQtl != null);
+  const netAgreeing = withNet.filter((x) => Math.abs((x.grossQtl! - Math.floor(x.grossQtl! + 0.5) * 0.01) - x.netQtl!) <= 0.015).length;
+  const conf = read.map((x) => x.confidence).filter((x): x is number => x != null);
+
+  // the scan's own rows for this page, as the operator left them
+  const saved: ReviewRow[] = batch.parsedRows ? JSON.parse(batch.parsedRows) : [];
+  const ref = new Map(saved.filter((x) => !x.excluded && (x.page ?? 1) === body.page && x.rstNo).map((x) => [x.rstNo, x]));
+  let same = 0, rstFound = 0, grossSame = 0, rateSame = 0, nameSame = 0, namesChecked = 0;
+  const rows = r.page.rows.map((o, i) => {
+    const rr = ocrToReviewRow(o, i);
+    const want = ref.get(rr.rstNo);
+    const who = rr.adatiRawText ? resolver.resolve(rr.adatiRawText, rr.modelPick).match : null;
+    let diff: string[] = [];
+    if (want && !o.struckThrough) {
+      rstFound++;
+      const g = want.grossGrams === rr.grossGrams; if (g) grossSame++; else diff.push("gross");
+      const t = want.ratePaisePerQtl === rr.ratePaisePerQtl; if (t) rateSame++; else diff.push("rate");
+      // the supplier the scan's row goes to: picked by hand, else as matched on screen
+      const wantId = want.adatiId ?? (want.adatiRawText ? resolver.resolve(want.adatiRawText, want.modelPick).match?.adatiId : null);
+      if (wantId) {
+        namesChecked++;
+        if (who?.adatiId === wantId) nameSame++; else diff.push("name");
+      }
+      if (!diff.length) same++;
+    } else diff = [];
+    return {
+      rstNo: rr.rstNo, name: rr.adatiRawText, matchedName: who?.nameHi ?? null,
+      grossQtl: o.grossQtl ?? null, netQtl: o.netQtl ?? null, rate: o.rate ?? null,
+      confidence: o.confidence ?? null, struckThrough: o.struckThrough === true,
+      onScan: Boolean(want), diff,
+    };
+  });
+  return c.json({
+    ...base, ok: true, truncated: Boolean(r.truncated),
+    rowsRead: read.length, netChecked: withNet.length, netAgreeing,
+    meanConfidence: conf.length ? conf.reduce((a, x) => a + x, 0) / conf.length : null,
+    namesRead: read.filter((x) => x.adatiName?.trim()).length,
+    vsScan: { rows: ref.size, rstFound, same, grossSame, rateSame, nameSame, namesChecked },
+    rows,
+  });
+});
+
 /* ------------------------------------------------------------------ review */
+
+/** Counts per status, for the filter chips. */
+scanRoutes.get("/counts", can("scan.review", "scan.create"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const rows = await db.select({
+    status: schema.scanBatches.status,
+    n: sql<number>`count(*)`.as("n"),
+  }).from(schema.scanBatches)
+    .where(eq(schema.scanBatches.businessId, biz))
+    .groupBy(schema.scanBatches.status);
+  return c.json(Object.fromEntries(rows.map((r) => [r.status, r.n])));
+});
 
 scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
@@ -572,17 +701,17 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
 
   const { rows, slipDate, merchantId, jinsId } = z.object({
     rows: z.array(ReviewRowSchema),
-    slipDate: z.string().regex(ISO_DATE).nullish(),
+    slipDate: isoDay().nullish(),
     merchantId: z.string().nullish(),
     jinsId: z.string().nullish(),
   }).parse(await c.req.json());
 
   await db.update(schema.scanBatches).set({
-    parsedRows: JSON.stringify(rows),
+    // the reader owns the rows while it runs; the header is the operator's
+    ...(batch.status === "reading" ? {} : { parsedRows: JSON.stringify(rows.map((r) => ({ ...r, rstNo: normRst(r.rstNo) }))) }),
     ...(slipDate !== undefined ? { slipDate: slipDate ?? null } : {}),
     ...(merchantId !== undefined ? { merchantId: merchantId ?? null } : {}),
     ...(jinsId !== undefined ? { jinsId: jinsId ?? null } : {}),
-    status: batch.status === "failed" ? "review" : batch.status,
   }).where(eq(schema.scanBatches.id, id));
 
   const fresh = await loadBatch(biz, id);
@@ -601,6 +730,11 @@ scanRoutes.post("/:id/commit", can("scan.review", "slip.write"), async (c) => {
   if (!batch.slipDate) throw bad("Set the sheet date before adding it to the daily list", "no_date");
   if (!batch.jinsId) throw bad("Set the commodity before adding it to the daily list", "no_jins");
 
+  const pageCount = (JSON.parse(batch.filePaths) as unknown[]).length;
+  if (batch.status !== "review" || batch.pagesDone < pageCount) {
+    throw new HttpError(409, `Only ${batch.pagesDone} of ${pageCount} pages are read. Read the rest before adding this sheet.`, "incomplete");
+  }
+
   const { rows, summary, katauti } = await checkAll(biz, batch);
   const toWrite = rows.filter((r) => !r.excluded);
   if (!toWrite.length) throw bad("Every row is excluded — nothing to add", "nothing_to_commit");
@@ -608,18 +742,16 @@ scanRoutes.post("/:id/commit", can("scan.review", "slip.write"), async (c) => {
     throw new HttpError(409, `${summary.blocking} row${summary.blocking === 1 ? "" : "s"} still need fixing before this can be added`, "has_blocking");
   }
 
-  const created: string[] = [];
-  const learned: { rawText: string; adatiId: string }[] = [];
-
+  // work everything out first, then write it all or nothing
+  const slipRows: (typeof schema.purchaseSlips.$inferInsert)[] = [];
+  const aliasOps: { raw: string; adatiId: string; corrected: boolean }[] = [];
   for (const r of toWrite) {
     const adatiId = r.adatiId ?? r.match?.adatiId;
     if (!adatiId || r.grossGrams === null) continue;
-
     const d = deriveSlip(r.grossGrams, katauti!, r.ratePaisePerQtl ?? 0, r.katautiOverride);
-    const slipId = newId();
-    await db.insert(schema.purchaseSlips).values({
-      id: slipId, businessId: biz,
-      slipDate: batch.slipDate, rstNo: r.rstNo,
+    slipRows.push({
+      id: newId(), businessId: biz,
+      slipDate: batch.slipDate, rstNo: normRst(r.rstNo),
       adatiId, jinsId: batch.jinsId,
       merchantId: batch.merchantId,
       grossGrams: r.grossGrams,
@@ -632,31 +764,39 @@ scanRoutes.post("/:id/commit", can("scan.review", "slip.write"), async (c) => {
       ocrConfidence: r.ocr.confidence ?? null,
       enteredBy: userId,
     });
-    created.push(slipId);
-    await enqueueSync(biz, "purchase_slip", slipId, "insert", { rstNo: r.rstNo, adatiId });
-
-    // teach the resolver: this reading meant this supplier
     const raw = r.adatiRawText.trim();
-    if (raw) {
-      const [existing] = await db.select().from(schema.adatiAliases)
-        .where(and(eq(schema.adatiAliases.businessId, biz), eq(schema.adatiAliases.rawText, raw))).limit(1);
-      if (existing) {
-        await db.update(schema.adatiAliases)
-          .set({ adatiId, hits: existing.hits + 1, lastUsedAt: nowSec(), normKey: normKey(raw) })
-          .where(eq(schema.adatiAliases.id, existing.id));
-      } else {
-        await db.insert(schema.adatiAliases).values({
-          id: newId(), businessId: biz, adatiId, rawText: raw, normKey: normKey(raw),
-          source: r.nameCorrected ? "correction" : "ocr", createdBy: userId,
-        });
-        learned.push({ rawText: raw, adatiId });
+    if (raw) aliasOps.push({ raw, adatiId, corrected: r.nameCorrected });
+  }
+  const existingAliases = aliasOps.length ? await db.select().from(schema.adatiAliases)
+    .where(and(eq(schema.adatiAliases.businessId, biz), inArray(schema.adatiAliases.rawText, [...new Set(aliasOps.map((a) => a.raw))]))) : [];
+  const aliasByRaw = new Map(existingAliases.map((a) => [a.rawText, a]));
+  const learned: { rawText: string; adatiId: string }[] = [];
+
+  db.transaction((tx) => {
+    for (const v of slipRows) tx.insert(schema.purchaseSlips).values(v).run();
+    for (const a of aliasOps) {
+      const ex = aliasByRaw.get(a.raw);
+      /* Teach the resolver only what the operator decided. The model's own
+         pick is not proof: learning it would make a wrong guess permanent. */
+      if (ex && ex.adatiId === a.adatiId) {
+        tx.update(schema.adatiAliases).set({ hits: ex.hits + 1, lastUsedAt: nowSec() }).where(eq(schema.adatiAliases.id, ex.id)).run();
+      } else if (ex && a.corrected) {
+        tx.update(schema.adatiAliases).set({ adatiId: a.adatiId, hits: 1, lastUsedAt: nowSec(), normKey: normKey(a.raw), source: "correction" })
+          .where(eq(schema.adatiAliases.id, ex.id)).run();
+        learned.push({ rawText: a.raw, adatiId: a.adatiId });
+      } else if (!ex && a.corrected) {
+        const row = { id: newId(), businessId: biz, adatiId: a.adatiId, rawText: a.raw, normKey: normKey(a.raw), source: "correction", createdBy: userId };
+        tx.insert(schema.adatiAliases).values(row).run();
+        aliasByRaw.set(a.raw, { ...row, hits: 1, lastUsedAt: nowSec(), createdAt: nowSec() } as never);
+        learned.push({ rawText: a.raw, adatiId: a.adatiId });
       }
     }
-  }
+    tx.update(schema.scanBatches).set({ status: "committed", reviewedBy: userId, reviewedAt: nowSec() })
+      .where(eq(schema.scanBatches.id, id)).run();
+  });
+  const created = slipRows.map((v) => v.id as string);
+  for (const v of slipRows) await enqueueSync(biz, "purchase_slip", v.id as string, "insert", { rstNo: v.rstNo, adatiId: v.adatiId });
 
-  await db.update(schema.scanBatches).set({
-    status: "committed", reviewedBy: userId, reviewedAt: nowSec(),
-  }).where(eq(schema.scanBatches.id, id));
   await refreshScanMeta(biz, id);
 
   await audit({
@@ -681,7 +821,7 @@ scanRoutes.put("/:id/order", can("scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const id = param(c, "id");
   const batch = await loadBatch(biz, id);
-  if (!["uploaded", "failed"].includes(batch.status)) {
+  if (!["uploaded", "failed"].includes(batch.status) || batch.pagesDone > 0) {
     throw new HttpError(409, "Pages can only be reordered before the sheet is read", "already_read");
   }
   const files: { name: string; mimeType: string; bytes: number }[] = JSON.parse(batch.filePaths);
@@ -834,14 +974,4 @@ scanRoutes.get("/", can("scan.review", "scan.create"), async (c) => {
   })));
 });
 
-/** Counts per status, for the filter chips. */
-scanRoutes.get("/counts", can("scan.review", "scan.create"), async (c) => {
-  const biz = c.get("auth")!.businessId!;
-  const rows = await db.select({
-    status: schema.scanBatches.status,
-    n: sql<number>`count(*)`.as("n"),
-  }).from(schema.scanBatches)
-    .where(eq(schema.scanBatches.businessId, biz))
-    .groupBy(schema.scanBatches.status);
-  return c.json(Object.fromEntries(rows.map((r) => [r.status, r.n])));
-});
+

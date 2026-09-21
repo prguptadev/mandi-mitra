@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 import {
   Upload, ScanLine, FileText, Check, AlertTriangle, Clock, Eye, Play, X, KeyRound,
 } from "lucide-react";
+import { prepareImage } from "@/lib/prepareImage.ts";
 import { api, ApiError, type ScanListRow, type Merchant, type Jins, type GeminiSettings } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
@@ -71,7 +72,7 @@ export function ScanListPage() {
     mutationFn: async (files: File[]) => {
       if (!files.length) throw new ApiError(400, t("scan.noFilesPicked"), "no_file");
       const fd = new FormData();
-      for (const f of files) fd.append("files", f);
+      for (const f of await Promise.all(files.map(prepareImage))) fd.append("files", f);
       if (upDate) fd.append("slipDate", upDate);
       if (upMill) fd.append("merchantId", upMill);
       if (upJins) fd.append("jinsId", upJins);

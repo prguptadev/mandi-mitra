@@ -38,6 +38,8 @@ interface Draft {
   /** Left blank unless the sheet's KATAUTI differs from the derived value. */
   katauti: string;
   rate: string;
+  /** Only while editing a row: its commodity. */
+  jinsId?: string;
 }
 const emptyDraft = (): Draft => ({ rstNo: "", adatiId: null, gross: "", katauti: "", rate: "" });
 
@@ -71,7 +73,7 @@ function derive(draft: Draft, cfg: KatautiConfig) {
 const NUMERIC = new Set<string>(["sr", "gross", "katauti", "deduction", "net", "rate", "amount", "bagsCount"]);
 const WIDTHS: Record<string, string> = {
   sr: "w-10", rstNo: "w-20", adatiHi: "min-w-[170px]", adatiLatin: "min-w-[140px]",
-  village: "w-28", mill: "w-16", jins: "w-16", gross: "w-24", katauti: "w-20",
+  village: "w-28", mill: "w-16", jins: "w-24", gross: "w-24", katauti: "w-20",
   deduction: "w-20", net: "w-24", rate: "w-24", amount: "w-32", bagsCount: "w-16", status: "w-20",
 };
 
@@ -93,7 +95,10 @@ export function DailyListPage() {
     return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : todayISO();
   });
   const [merchantId, setMerchantId] = useState<string>("");
+  /** Commodity new rows get. */
   const [jinsId, setJinsId] = useState<string>("");
+  /** Commodity the list shows; "" = all of them. */
+  const [filterJins, setFilterJins] = useState<string>("");
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [editing, setEditing] = useState<{ id: string; draft: Draft } | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -114,9 +119,9 @@ export function DailyListPage() {
   const days = useQuery({ queryKey: ["slips", "days"], queryFn: () => api.get<SlipDay[]>("/slips/days") });
 
   const sheet = useQuery({
-    queryKey: ["slips", { date, merchantId }],
+    queryKey: ["slips", { date, merchantId, jinsId: filterJins }],
     queryFn: () => api.get<{ rows: SlipRow[]; totals: SlipTotals }>(
-      `/slips?${new URLSearchParams({ date, ...(merchantId ? { merchantId } : {}) })}`),
+      `/slips?${new URLSearchParams({ date, ...(merchantId ? { merchantId } : {}), ...(filterJins ? { jinsId: filterJins } : {}) })}`),
   });
 
   // default the commodity to 1509 — it is what almost every sheet carries
@@ -175,6 +180,7 @@ export function DailyListPage() {
       const dd = derive(dr, katautiCfg);
       return api.put(`/slips/${id}`, {
         rstNo: dr.rstNo.trim(), adatiId: dr.adatiId,
+        ...(dr.jinsId ? { jinsId: dr.jinsId } : {}),
         grossGrams: dd.grossGrams,
         katautiUnits: dd.overridden ? dd.katautiUnits : null,
         ratePaisePerQtl: dd.ratePaise ?? 0,
@@ -187,6 +193,18 @@ export function DailyListPage() {
   const remove = useMutation({
     mutationFn: (id: string) => api.del(`/slips/${id}`),
     onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["slips"] }); },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+
+  const setJins = useMutation({
+    mutationFn: (to: string) => api.post<{ updated: number }>("/slips/set-jins", { slipIds: [...selected], jinsId: to }),
+    onSuccess: async (r, to) => {
+      setSelected(new Set());
+      setErr(null);
+      const code = jinsList.data?.find((j) => j.id === to)?.code ?? "";
+      setNotice(t("daily.jinsMoved", { n: r.updated, code }));
+      await qc.invalidateQueries({ queryKey: ["slips"] });
+    },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
@@ -251,7 +269,9 @@ export function DailyListPage() {
      shown: if both are switched off, the Hindi one comes back. */
   const visibleCols = DAILY_COLUMNS.filter((c) =>
     P.columns[c.key] !== false
-    || (c.key === "adatiHi" && P.columns.adatiHi === false && P.columns.adatiLatin === false));
+    || (c.key === "adatiHi" && P.columns.adatiHi === false && P.columns.adatiLatin === false)
+    // with every commodity on screen, each row has to say which one it is
+    || (c.key === "jins" && !filterJins));
   // the supplier box lives in the first name column on screen, Hindi or Hinglish
   const nameCol: DailyColumnKey = visibleCols.some((c) => c.key === "adatiHi") ? "adatiHi" : "adatiLatin";
   const PAD = P.density === "compact" ? "py-0.5" : "py-1";
@@ -359,6 +379,12 @@ export function DailyListPage() {
           if (e.key === "Escape") setEditing(null);
         }} />;
       case "amount": return <span className="num font-semibold">{dd.amountPaise === null ? "—" : f.amount(dd.amountPaise)}</span>;
+      case "jins": return (
+        <select className={cn(CELL, "min-w-[5.5rem] px-1 text-left")} value={ed.jinsId ?? r.jinsId} title={t("daily.jins")}
+          onChange={(e) => upd({ jinsId: e.target.value })}>
+          {jinsList.data?.map((j) => <option key={j.id} value={j.id}>{j.code}</option>)}
+        </select>
+      );
       default: return displayCell(key, r, i);
     }
   }
@@ -427,6 +453,11 @@ export function DailyListPage() {
               <span className="num font-semibold text-brand">{d.amountPaise === null ? "—" : f.amount(d.amountPaise)}</span>
             ) : c.key === "mill" ? (
               activeMill ? <Badge tone="neutral" className="num">{activeMill.code}</Badge> : <span className="text-faint">—</span>
+            ) : c.key === "jins" ? (
+              <select className={cn(CELL, "min-w-[5.5rem] px-1 text-left")} value={jinsId} title={t("daily.jinsNew")}
+                onChange={(e) => setJinsId(e.target.value)}>
+                {jinsList.data?.map((j) => <option key={j.id} value={j.id}>{j.code}</option>)}
+              </select>
             ) : null}
         </td>
       ))}
@@ -492,7 +523,9 @@ export function DailyListPage() {
 
           <div className="min-w-[160px]">
             <label className="mb-1 block text-[11px] font-medium text-faint">{t("daily.jins")}</label>
-            <Select value={jinsId} onChange={(e) => setJinsId(e.target.value)} className="h-8 text-[13px]">
+            <Select value={filterJins} className="h-8 text-[13px]"
+              onChange={(e) => { setFilterJins(e.target.value); if (e.target.value) setJinsId(e.target.value); }}>
+              <option value="">{t("daily.allJins")}</option>
               {jinsList.data?.map((j) => <option key={j.id} value={j.id}>{j.code} — {pick(j.name, j.nameHi)}</option>)}
             </Select>
           </div>
@@ -552,6 +585,17 @@ export function DailyListPage() {
                 {m.code}
               </Button>
             ))}
+            {(jinsList.data?.length ?? 0) > 1 && (
+              <>
+                <span className="ml-2 text-[12px] text-muted">{t("daily.setJins")}:</span>
+                {jinsList.data!.map((j) => (
+                  <Button key={j.id} size="sm" variant="secondary" loading={setJins.isPending}
+                    onClick={() => setJins.mutate(j.id)} title={pick(j.name, j.nameHi)}>
+                    {j.code}
+                  </Button>
+                ))}
+              </>
+            )}
             <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} icon={<X className="h-3.5 w-3.5" />} />
           </div>
         </Card>
@@ -658,6 +702,7 @@ export function DailyListPage() {
                                 gross: (r.grossGrams / GRAMS_PER_QTL).toFixed(2),
                                 katauti: r.katautiOverride ? String(r.katautiUnits) : "",
                                 rate: (r.ratePaisePerQtl / 100).toFixed(2),
+                                jinsId: r.jinsId,
                               },
                             })}>
                             <RefreshCw className="h-3.5 w-3.5" />
@@ -697,7 +742,8 @@ export function DailyListPage() {
         </div>
 
         {!sheet.isLoading && rows.length === 0 && (
-          <EmptyState icon={<Calendar className="h-8 w-8" />} title={t("daily.empty")} sub={t("daily.emptySub")} />
+          <EmptyState icon={<Calendar className="h-8 w-8" />}
+            title={filterJins || merchantId ? t("daily.emptyFiltered") : t("daily.empty")} sub={t("daily.emptySub")} />
         )}
       </Card>
 

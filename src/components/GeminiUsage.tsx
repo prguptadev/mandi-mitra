@@ -27,7 +27,16 @@ export function GeminiUsageBar({ className }: { className?: string }) {
   const limit = u.dailyLimit ?? null;
   const left = limit !== null ? Math.max(0, limit - (u.used ?? 0)) : null;
 
-  if (u.exhausted || (left !== null && left === 0)) {
+  const spent = u.exhausted || (left !== null && left === 0);
+  // the main model is used up but a backup still has reads: not the end of the day
+  if (spent && u.next && u.next !== u.model) {
+    return (
+      <Alert tone="warn" className={className}>
+        {t("gm.nextModel", { model: u.model ?? "", next: u.next })}
+      </Alert>
+    );
+  }
+  if (spent) {
     return (
       <Alert tone="bad" className={className}>
         <p className="font-semibold">{t("gemini.exhausted", { limit: limit ?? 20, reset })}</p>

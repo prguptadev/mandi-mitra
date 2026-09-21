@@ -15,6 +15,7 @@ import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { ScanGrid, type Field as GridField } from "@/components/ScanGrid.tsx";
 import { SplitPane } from "@/components/SplitPane.tsx";
 import { GeminiUsageBar } from "@/components/GeminiUsage.tsx";
+import { TryModelsButton } from "@/components/GeminiModels.tsx";
 import {
   Button, Card, CardHeader, Select, Input, Badge, Alert, Dialog, Field, Spinner, EmptyState, Tabs,
 } from "@/components/ui/index.tsx";
@@ -232,13 +233,24 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   });
 
   const run = useMutation({
-    mutationFn: (model?: string) => api.post(`/scans/${scanId}/run`, model ? { model } : {}),
+    mutationFn: (model?: string) => {
+      const force = batch.data?.status === "review";
+      if (force && !confirm(t("scan.confirmReread"))) return Promise.resolve(null);
+      return api.post(`/scans/${scanId}/run`, { ...(model ? { model } : {}), ...(force ? { force: true } : {}) });
+    },
     onSuccess: async () => { setDraft(null); await qc.invalidateQueries({ queryKey: ["scan", scanId] }); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
   const commit = useMutation({
-    mutationFn: () => api.post<{ created: number; learnedAliases: number; slipDate: string }>(`/scans/${scanId}/commit`),
+    mutationFn: async () => {
+      if (timer.current) {
+        clearTimeout(timer.current);
+        timer.current = null;
+        if (latest.current) await save.mutateAsync({ rows: latest.current });
+      }
+      return api.post<{ created: number; learnedAliases: number; slipDate: string }>(`/scans/${scanId}/commit`);
+    },
     onSuccess: async (r) => { setDone({ created: r.created, learned: r.learnedAliases, date: r.slipDate }); await qc.invalidateQueries(); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
@@ -420,7 +432,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
         )}
       </div>
 
-      {summary && !locked && !reading && (
+      {summary && !locked && !reading && b.status === "review" && (
         <div className="flex flex-wrap items-center gap-3 border-t border-line bg-surface/95 p-3">
           <div className="text-[12px] text-muted">
             <span className="num font-semibold text-ink">{summary.included}</span> {t("scan.rowsWord")}
@@ -435,7 +447,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
           )}
           <div className="flex-1" />
           <Button variant="primary" size="lg" loading={commit.isPending}
-            disabled={summary.blocking > 0 || needDate || needJins || summary.included === 0}
+            disabled={summary.blocking > 0 || needDate || needJins || summary.included === 0 || save.isPending}
             icon={<Check className="h-4 w-4" />}
             onClick={() => { setErr(null); commit.mutate(); }}>
             {needDate ? t("scan.needDate")
@@ -451,14 +463,19 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   return (
     <>
       <PageHeader title={t("scan.review")} sub={t("scan.reviewSub")}
-        action={!locked && !reading && (
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="ghost" icon={<Trash2 className="h-3.5 w-3.5 text-bad" />}
-              onClick={() => { if (confirm(t("scan.confirmDelete"))) remove.mutate(); }} />
-            <Button size="sm" variant="secondary" loading={run.isPending}
-              icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => run.mutate(undefined)}>
-              {t("scan.tryAgain")}
-            </Button>
+        action={!reading && (
+          <div className="flex flex-wrap items-center gap-2">
+            {can("scan.create") && b.status !== "uploaded" && <TryModelsButton scanId={scanId} pages={b.pages.length} />}
+            {!locked && (
+              <>
+                <Button size="sm" variant="ghost" icon={<Trash2 className="h-3.5 w-3.5 text-bad" />}
+                  onClick={() => { if (confirm(t("scan.confirmDelete"))) remove.mutate(); }} />
+                <Button size="sm" variant="secondary" loading={run.isPending}
+                  icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => run.mutate(undefined)}>
+                  {t("scan.tryAgain")}
+                </Button>
+              </>
+            )}
           </div>
         )} />
 

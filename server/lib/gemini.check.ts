@@ -6,7 +6,7 @@ import path from "node:path";
 import fs from "node:fs";
 // gemini.ts opens the database on import; point it at a throwaway folder first
 process.env.MANDI_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "mandi-check-"));
-const { readSheetReliably } = await import("./gemini.ts");
+const { readSheetReliably, parseQuota, thinkingFor, explainGeminiError } = await import("./gemini.ts");
 const good = { candidates: [{ content: { parts: [{ text: JSON.stringify({ rows: [{ rstNo: "630", adatiName: "राम", grossQtl: 28.6, katautiUnits: 29, netQtl: 28.31, rate: 3450, confidence: 0.9, struckThrough: false }] }) }] }, finishReason: "STOP" }] };
 const busy = { error: { code: 503, message: "The model is overloaded. Please try again later.", status: "UNAVAILABLE" } };
 const perDay = { error: { code: 429, message: "quota", status: "RESOURCE_EXHAUSTED", details: [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier", quotaValue: "20" }] }] } };
@@ -42,5 +42,38 @@ let recorded = 0;
 stub([[503, busy], [200, good]]);
 await readSheetReliably(opts, async () => { recorded++; }, noSleep);
 check("every attempt is counted in today's usage", recorded === 2, recorded);
+
+// quota: Google lists the per-minute and the per-day limit together; the daily one decides
+const both = (m: string, d: string) => ({ error: { code: 429, status: "RESOURCE_EXHAUSTED", details: [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [
+  { quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", quotaValue: m, quotaDimensions: { model: "gemini-2.5-pro" } },
+  { quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier", quotaValue: d, quotaDimensions: { model: "gemini-2.5-pro" } },
+] }] } });
+let q = parseQuota(both("10", "20"));
+check("minute + day listed: read as the daily limit of 20", q?.kind === "per_day" && q.limit === 20 && !q.notFree, q);
+q = parseQuota(both("0", "0"));
+check("an allowance of 0: not free on this key, and not worth waiting for", q?.kind === "per_day" && q.limit === 0 && q.notFree === true, q);
+check("…and the message says so", /no free reads/.test(explainGeminiError(429, "quota", "AIzaX", both("0", "0"))), explainGeminiError(429, "quota", "AIzaX", both("0", "0")));
+calls = stub([[429, both("0", "0")]]);
+r = await readSheetReliably({ ...opts, model: "gemini-2.5-pro" }, async () => {}, noSleep);
+check("a model with no free use is asked once, not four times", !r.ok && r.attempts === 1 && r.transient === false, { attempts: r.attempts });
+
+// thinking: the least each family allows
+check("2.5 Flash: thinking off", JSON.stringify(thinkingFor("gemini-2.5-flash")) === '{"thinkingBudget":0}', thinkingFor("gemini-2.5-flash"));
+check("2.5 Pro: its minimum 128", JSON.stringify(thinkingFor("gemini-2.5-pro")) === '{"thinkingBudget":128}', thinkingFor("gemini-2.5-pro"));
+check("3.x Flash: a level, not a budget", JSON.stringify(thinkingFor("gemini-3.5-flash-lite")) === '{"thinkingLevel":"low"}', thinkingFor("gemini-3.5-flash-lite"));
+check("an unknown family: no thinking setting sent", thinkingFor("gemma-4-27b") === undefined, thinkingFor("gemma-4-27b"));
+const sent: boolean[] = [];
+let n = 0;
+(globalThis as any).fetch = async (_u: string, init: any) => {
+  sent.push("thinkingConfig" in JSON.parse(init.body).generationConfig);
+  return n++ === 0
+    ? new Response(JSON.stringify({ error: { code: 400, message: "thinking_level is not supported by this model." } }), { status: 400 })
+    : new Response(JSON.stringify(good), { status: 200 });
+};
+r = await readSheetReliably({ ...opts, model: "gemini-3.1-flash-lite" }, async () => {}, noSleep);
+check("a model that refuses the thinking setting is asked again without it, and reads", r.ok && JSON.stringify(sent) === "[true,false]", sent);
+r = await readSheetReliably({ ...opts, model: "gemini-3.1-flash-lite" }, async () => {}, noSleep);
+check("…and is not sent it again", r.ok && JSON.stringify(sent) === "[true,false,false]", sent);
+
 console.log(bad === 0 ? "\nAll Gemini retry checks passed." : `\n${bad} FAILED`);
 process.exit(bad ? 1 : 0);

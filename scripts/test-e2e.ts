@@ -7,7 +7,14 @@ import path from "node:path";
 
 const PORT = "8799";
 const DATA = path.resolve("data-test");
-const env = { ...process.env, MANDI_DATA_DIR: DATA, MANDI_API: `http://localhost:${PORT}/api`, PORT };
+// Gemini is a local stand-in: no real key, no real read
+const FAKE_GEMINI = 8797;
+const env = {
+  ...process.env, MANDI_DATA_DIR: DATA, MANDI_API: `http://localhost:${PORT}/api`, PORT,
+  MANDI_GEMINI_BASE: `http://127.0.0.1:${FAKE_GEMINI}`,
+};
+// its own process: execFileSync below blocks this one while each test runs
+const fake = spawn("npx", ["tsx", "scripts/fake-gemini.ts", String(FAKE_GEMINI)], { stdio: "ignore" });
 
 fs.rmSync(DATA, { recursive: true, force: true });
 fs.mkdirSync(DATA, { recursive: true });
@@ -19,7 +26,9 @@ server.stderr.on("data", (d) => { log += d; });
 
 async function up() {
   for (let i = 0; i < 40; i++) {
-    try { if ((await fetch(`${env.MANDI_API}/health`)).ok) return; } catch { /* not yet */ }
+    try {
+      if ((await fetch(`${env.MANDI_API}/health`)).ok && (await fetch(`${env.MANDI_GEMINI_BASE}/__calls`)).ok) return;
+    } catch { /* not yet */ }
     await new Promise((r) => setTimeout(r, 250));
   }
   throw new Error("test server did not start:\n" + log);
@@ -39,8 +48,12 @@ try {
   run("scripts/e2e-scan-review.ts");
   run("scripts/e2e-loads.ts");
   run("scripts/e2e-accounts.ts");
+  run("scripts/e2e-gemini.ts");
 } finally {
+  // a failing run shows the test server's own last words
+  if (failed) console.log("\n--- test server log (last 40 lines) ---\n" + log.trim().split("\n").slice(-40).join("\n"));
   server.kill();
+  fake.kill();
   fs.rmSync(DATA, { recursive: true, force: true });
 }
 console.log(failed === 0 ? "\nAll end-to-end checks passed (test database, discarded)." : `\n${failed} end-to-end script(s) FAILED`);

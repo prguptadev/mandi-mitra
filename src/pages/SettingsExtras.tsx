@@ -8,6 +8,7 @@ import { useFormat, DEFAULT_DISPLAY, type DisplayConfig } from "@/lib/format.tsx
 import { SkeletonForm } from "@/components/Skeletons.tsx";
 import { NumberInput } from "@/components/NumberInput.tsx";
 import { GeminiUsageBar } from "@/components/GeminiUsage.tsx";
+import { BackupModels, KeyModelsList, modelChoices, useKeyModels } from "@/components/GeminiModels.tsx";
 import {
   Button, Card, CardHeader, Field, Input, Select, Switch, Alert, Badge,
 } from "@/components/ui/index.tsx";
@@ -215,9 +216,14 @@ export function GeminiCard() {
     onError: (e) => setTest({ ok: false, ms: 0, error: e instanceof ApiError ? e.message : "failed" }),
   });
 
+  const keyModels = useKeyModels(Boolean(q.data?.configured));
+
   if (q.isLoading) return <Card><div className="p-4"><SkeletonForm fields={4} /></div></Card>;
   const g = q.data!;
   const editable = can("settings.write");
+  const choices = modelChoices(g, keyModels.data);
+  // a model Google does not list for this key would only fail; keep it only if it is the saved one
+  const options = (current: string) => choices.filter((m) => m.onKey !== false || m.id === current);
 
   return (
     <Card>
@@ -293,17 +299,26 @@ export function GeminiCard() {
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2">
           <Field label={t("settings.model")}>
             <Select value={g.model} disabled={!editable}
-              onChange={(e) => save.mutate({ model: e.target.value })}>
-              {g.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              onChange={(e) => save.mutate({ model: e.target.value, backupModels: (g.backupModels ?? []).filter((x) => x !== e.target.value) })}>
+              {options(g.model).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
             </Select>
-            <p className="mt-1 text-[11px] leading-snug text-faint">{g.models.find((m) => m.id === g.model)?.note}</p>
+            <p className="mt-1 text-[11px] leading-snug text-faint">{choices.find((m) => m.id === g.model)?.note}</p>
           </Field>
           <Field label={t("settings.fallbackModel")} hint={t("settings.fallbackModelSub")}>
             <Select value={g.fallbackModel} disabled={!editable}
               onChange={(e) => save.mutate({ fallbackModel: e.target.value })}>
-              {g.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              {options(g.fallbackModel).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
             </Select>
           </Field>
+          <div className="sm:col-span-2">
+            <BackupModels g={g} k={keyModels.data} editable={editable} />
+          </div>
+          {g.configured && (
+            <div className="sm:col-span-2">
+              <KeyModelsList g={g} k={keyModels.data} loading={keyModels.isFetching}
+                onCheck={() => void keyModels.refetch()} />
+            </div>
+          )}
         </div>
 
         {g.configured && (

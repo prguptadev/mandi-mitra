@@ -429,6 +429,35 @@ slipRoutes.post("/reassign", can("slip.write"), async (c) => {
   return c.json({ ok: true, updated: slips.length });
 });
 
+/** Change the commodity of several slips at once. Weight, katauti and amount
+ *  do not depend on the commodity, so only the commodity changes. */
+slipRoutes.post("/set-jins", can("slip.write"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const { slipIds, jinsId } = z.object({
+    slipIds: z.array(z.string()).min(1).max(5000),
+    jinsId: z.string().min(1),
+  }).parse(await c.req.json());
+  const [j] = await db.select({ code: schema.jins.code }).from(schema.jins)
+    .where(and(eq(schema.jins.id, jinsId), eq(schema.jins.businessId, biz))).limit(1);
+  if (!j) throw bad("Unknown commodity", "bad_jins");
+  const slips = await db.select().from(schema.purchaseSlips)
+    .where(and(eq(schema.purchaseSlips.businessId, biz), inArray(schema.purchaseSlips.id, slipIds)));
+  if (slips.length !== new Set(slipIds).size) throw bad("Some slips were not found", "missing");
+  const moving = slips.filter((s) => s.jinsId !== jinsId);
+  if (moving.length) {
+    await db.update(schema.purchaseSlips).set({ jinsId, updatedAt: nowSec() })
+      .where(and(eq(schema.purchaseSlips.businessId, biz), inArray(schema.purchaseSlips.id, moving.map((s) => s.id))));
+    for (const s of moving) await enqueueSync(biz, "purchase_slip", s.id, "update", { jinsId });
+    await audit({
+      actor: actor(c), action: "slip.set_jins", entity: "purchase_slip",
+      entityLabel: `${moving.length} slips -> ${j.code}`,
+      before: moving.map((s) => ({ rstNo: s.rstNo, slipDate: s.slipDate, jinsId: s.jinsId })),
+      after: { jinsId, count: moving.length },
+    });
+  }
+  return c.json({ ok: true, updated: moving.length });
+});
+
 /** Recompute a whole day from gross + bags + rate. Repairs anything stale. */
 slipRoutes.post("/recompute", can("slip.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;

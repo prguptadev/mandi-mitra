@@ -114,7 +114,9 @@ const OCR = [
   { rstNo: "644", adatiName: "सहदेव सिंह ट्रेडिंग", grossQtl: 40.40, katauti: 40, netQtl: 40.00, rate: null, confidence: 0.8 },
   // struck through on the paper -> excluded automatically
   { rstNo: "634", adatiName: "शिवम ट्रेडिंग",      grossQtl: 41.25, katauti: 41, netQtl: 40.84, rate: 3550, confidence: 0.86, struckThrough: true },
-];
+  // the model "picked" a known supplier that looks nothing like the handwriting -> a suggestion, not a match
+  { rstNo: "650", adatiName: "रामू लाल",          grossQtl: 12.00, katauti: 12, netQtl: 11.88, rate: 3500, confidence: 0.9, supplierMatch: "फूलसिंह वर्मा" },
+] as { rstNo: string; adatiName: string; grossQtl: number; katauti: number; netQtl: number; rate: number | null; confidence: number; struckThrough?: boolean; supplierMatch?: string }[];
 
 const rows = OCR.map((r, i) => ({
   id: `r${i}`,
@@ -131,15 +133,17 @@ const rows = OCR.map((r, i) => ({
   ratePaisePerQtl: r.rate === null ? null : Math.round(r.rate * 100),
   excluded: r.struckThrough === true,
   nameCorrected: false,
+  modelPick: r.supplierMatch ?? null,
 }));
-sqlite.prepare("update scan_batches set parsed_rows = ?, status = 'review', model = 'simulated' where id = ?")
+// a fully read sheet: every page done
+sqlite.prepare("update scan_batches set parsed_rows = ?, status = 'review', model = 'simulated', pages_done = json_array_length(file_paths) where id = ?")
   .run(JSON.stringify(rows), scanId);
 
 const v1 = await call("GET", `/scans/${scanId}`);
 const byRst = (r: string) => v1.rows.filter((x: any) => x.rstNo === r);
 
 console.log("Validation of the raw reading");
-check("rows read", v1.summary.total, 10);
+check("rows read", v1.summary.total, 11);
 check("struck-through row auto-excluded", v1.summary.excluded, 1);
 check("misspelling resolved without help", byRst("627")[0].match?.via, "normkey");
 check("  ...to the right supplier", byRst("627")[0].match?.nameHinglish, "Phoolsingh Verma");
@@ -148,10 +152,24 @@ check("  ...with the right reason", byRst("637")[0].issues.some((i: any) => i.co
 // a repeated kanta slip no. is highlighted on both rows but never blocks
 check("repeated RST flagged on both rows", byRst("640").filter((r: any) => r.issues.some((i: any) => i.code === "rst_dupe")).length, 2);
 check("repeated RST does not block", byRst("640").filter((r: any) => r.blocking).length, 0);
-check("sheet net disagreeing warns, not blocks", byRst("638")[0].blocking, false);
+check("sheet net disagreeing blocks until the operator confirms it", byRst("638")[0].blocking, true);
+check("a model pick unlike the handwriting is not taken as the match", byRst("650")[0].match, null);
+check("  ...but offered first among the suggestions", byRst("650")[0].suggestions[0]?.nameHinglish, "Phoolsingh Verma");
 check("  ...and is flagged", byRst("638")[0].issues.some((i: any) => i.code === "net_mismatch"), true);
 check("missing rate warns, not blocks", byRst("644")[0].blocking, false);
-check("net cross-check counted", `${v1.summary.netAgreeing}/${v1.summary.netChecked}`, "8/9");
+check("net cross-check counted", `${v1.summary.netAgreeing}/${v1.summary.netChecked}`, "9/10");
+
+console.log("\nCommit is refused while a page is unread");
+sqlite.prepare("update scan_batches set pages_done = 0 where id = ?").run(scanId);
+try {
+  await call("POST", `/scans/${scanId}/commit`);
+  console.log(" FAIL  a half-read sheet was committed"); bad++;
+} catch (e) {
+  const ok = (e as Error).message.includes("incomplete");
+  if (!ok) bad++;
+  console.log(` ${ok ? "PASS" : "FAIL"}  refused: incomplete`);
+}
+sqlite.prepare("update scan_batches set pages_done = json_array_length(file_paths) where id = ?").run(scanId);
 
 console.log("\nCommit is refused while rows are broken");
 try {
@@ -172,7 +190,12 @@ const fixed = v1.rows.map((r: any) => {
     id: r.id, ocr: r.ocr, rstNo: r.rstNo, adatiId: r.adatiId, adatiRawText: r.adatiRawText,
     grossGrams: r.grossGrams, katautiOverride: r.katautiOverride,
     ratePaisePerQtl: r.ratePaisePerQtl, excluded: r.excluded, nameCorrected: r.nameCorrected,
+    modelPick: r.modelPick ?? null,
+    // the operator checked RST 638 against the paper: the gross is right as read
+    confirmed: r.rstNo === "638" ? ["gross"] : [],
   };
+  // not one of ours: the operator leaves it out
+  if (r.rstNo === "650") return { ...base, excluded: true };
   // pick a real supplier for the unreadable name
   if (r.rstNo === "637") return { ...base, adatiId: ramveer.id, nameCorrected: true };
   // the second RST 640 was really 645
