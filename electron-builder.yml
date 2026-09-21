@@ -5,6 +5,7 @@ executableName: MandiMitra
 copyright: Vijay Laxmi Dal Mill
 directories:
   output: release
+  buildResources: build
 files:
   - electron/**
   - desktop-build/**
@@ -17,6 +18,7 @@ asarUnpack:
   - node_modules/better-sqlite3/**
 npmRebuild: true
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch: [x64]
@@ -28,3 +30,7 @@ nsis:
   createDesktopShortcut: always
   createStartMenuShortcut: true
   shortcutName: Mandi Mitra
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  uninstallDisplayName: Mandi Mitra
