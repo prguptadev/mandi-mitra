@@ -26,13 +26,13 @@ export function useKeyModels(enabled = true) {
 }
 
 /** Catalogue first (with our notes), then whatever else the key lists. */
-export function modelChoices(g: GeminiSettings | undefined, k: GeminiKeyModels | undefined) {
+export function modelChoices(g: GeminiSettings | undefined, k: GeminiKeyModels | undefined, lang: "en" | "hi" = "en") {
   const out: { id: string; label: string; note?: string; onKey: boolean | null }[] = [];
   const onKey = k?.ok ? new Set(k.models.map((m) => m.id)) : null;
   const seen = new Set<string>();
   for (const m of g?.models ?? []) {
     seen.add(m.id);
-    out.push({ id: m.id, label: m.label, note: m.note, onKey: onKey ? onKey.has(m.id) : null });
+    out.push({ id: m.id, label: m.label, note: lang === "hi" && m.noteHi ? m.noteHi : m.note, onKey: onKey ? onKey.has(m.id) : null });
   }
   for (const m of k?.models ?? []) {
     if (seen.has(m.id)) continue;
@@ -72,7 +72,8 @@ export function BackupModels({ g, k, editable }: { g: GeminiSettings; k?: Gemini
     },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
-  const choices = modelChoices(g, k);
+  const { lang } = useI18n();
+  const choices = modelChoices(g, k, lang);
   const label = (id: string) => choices.find((c) => c.id === id)?.label ?? id;
   const list = g.backupModels ?? [];
   const move = (i: number, d: -1 | 1) => {
@@ -126,7 +127,7 @@ export function KeyModelsList({ g, k, loading, onCheck }: {
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const choices = modelChoices(g, k);
+  const choices = modelChoices(g, k, useI18n().lang);
   const role = (id: string) => id === g.model ? t("gm.main")
     : g.backupModels?.includes(id) ? t("gm.backup", { n: g.backupModels.indexOf(id) + 1 })
     : id === g.fallbackModel ? t("gm.fallback") : null;

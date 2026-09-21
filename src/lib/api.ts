@@ -158,7 +158,7 @@ export interface GeminiSettings {
   backupModels: string[];
   maxOutputTokens: number; temperature: number;
   configured: boolean; maskedKey: string | null; keyUnreadable: boolean;
-  models: { id: string; label: string; note: string }[];
+  models: { id: string; label: string; note: string; noteHi?: string }[];
 }
 
 export interface ScanIssue { code: string; level: "error" | "warn"; message: string; params?: Record<string, string | number> }

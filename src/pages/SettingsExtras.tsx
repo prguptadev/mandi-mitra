@@ -174,7 +174,7 @@ export function NumberFormatCard() {
 /* ------------------------------------------------------------- gemini card */
 
 export function GeminiCard() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const qc = useQueryClient();
   const { can } = useSession();
   const [apiKey, setApiKey] = useState("");
@@ -221,7 +221,7 @@ export function GeminiCard() {
   if (q.isLoading) return <Card><div className="p-4"><SkeletonForm fields={4} /></div></Card>;
   const g = q.data!;
   const editable = can("settings.write");
-  const choices = modelChoices(g, keyModels.data);
+  const choices = modelChoices(g, keyModels.data, lang);
   // a model Google does not list for this key would only fail; keep it only if it is the saved one
   const options = (current: string) => choices.filter((m) => m.onKey !== false || m.id === current);
 

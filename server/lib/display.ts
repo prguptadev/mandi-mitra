@@ -47,14 +47,14 @@ export const defaultGeminiConfig = (): GeminiConfig => GeminiConfigSchema.parse(
    are free, and how many pages a day, depends on the key's Google project —
    Settings › "Check models" asks Google and tries them on a real page. */
 export const GEMINI_MODELS = [
-  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", note: "Proven on these sheets. Small free allowance per day." },
-  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", note: "Cheapest 2.5. Check it on a page before relying on it." },
-  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", note: "Slow, strong on messy writing. Often not free." },
-  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash (preview)", note: "Newer Flash. Preview: may change or stop." },
-  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", note: "Light and fast, larger free allowance." },
-  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", note: "Light and fast, larger free allowance." },
-  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", note: "Newer Flash." },
-  { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", note: "Newer Flash." },
-  { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash", note: "Newer Flash." },
-  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", note: "Newest Flash." },
+  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", note: "Proven on these sheets. Small free allowance per day.", noteHi: "इन पर्चियों पर परखा हुआ। रोज़ की मुफ़्त पढ़ाई कम।" },
+  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", note: "Cheapest 2.5. Check it on a page before relying on it.", noteHi: "2.5 का सबसे सस्ता। भरोसा करने से पहले एक पन्ने पर आज़माएँ।" },
+  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", note: "Slow, strong on messy writing. Often not free.", noteHi: "धीमा, बिगड़ी लिखावट पर मज़बूत। अक्सर मुफ़्त नहीं।" },
+  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash (preview)", note: "Newer Flash. Preview: may change or stop.", noteHi: "नया Flash। प्रीव्यू: बदल या बंद हो सकता है।" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", note: "Light and fast, larger free allowance.", noteHi: "हल्का और तेज़, ज़्यादा मुफ़्त पढ़ाई।" },
+  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite", note: "Light and fast, larger free allowance.", noteHi: "हल्का और तेज़, ज़्यादा मुफ़्त पढ़ाई।" },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", note: "Newer Flash.", noteHi: "नया Flash।" },
+  { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash", note: "Newer Flash.", noteHi: "नया Flash।" },
+  { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash", note: "Newer Flash.", noteHi: "नया Flash।" },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", note: "Newest Flash.", noteHi: "सबसे नया Flash।" },
 ] as const;
