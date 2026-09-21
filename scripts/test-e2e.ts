@@ -15,9 +15,13 @@ const env = {
   ...process.env, MANDI_DATA_DIR: DATA, MANDI_API: `http://localhost:${PORT}/api`, PORT,
   MANDI_GEMINI_BASE: `http://127.0.0.1:${FAKE_GEMINI}`,
   MANDI_FAKE_SCANNER: FAKE_PAGE, MANDI_NO_AUTO_BACKUP: "1",
+  // a real Postgres in-process, standing in for Supabase
+  MANDI_FAKE_PG: "postgresql://postgres:test-only@127.0.0.1:8796/postgres",
+  MANDI_NO_GITHUB: "1",
 };
 // its own process: execFileSync below blocks this one while each test runs
 const fake = spawn("npx", ["tsx", "scripts/fake-gemini.ts", String(FAKE_GEMINI)], { stdio: "ignore" });
+const fakePg = spawn("npx", ["tsx", "scripts/fake-postgres.ts", "8796"], { stdio: "ignore" });
 
 fs.rmSync(DATA, { recursive: true, force: true });
 fs.mkdirSync(DATA, { recursive: true });
@@ -61,6 +65,8 @@ try {
   run("scripts/e2e-gemini.ts");
   run("scripts/e2e-scanner-backup.ts");
   run("scripts/e2e-rbac.ts");
+  run("scripts/e2e-update.ts");
+  run("scripts/e2e-cloud.ts");
   // last: every stored figure the tests produced, re-worked independently
   execFileSync("sqlite3", [path.join(DATA, "mandi.db"), `.backup ${path.join(DATA, "audit-copy.db")}`]);
   run2("scripts/money-check.ts", path.join(DATA, "audit-copy.db"));
@@ -69,6 +75,7 @@ try {
   if (failed) console.log("\n--- test server log (last 40 lines) ---\n" + log.trim().split("\n").slice(-40).join("\n"));
   server.kill();
   fake.kill();
+  fakePg.kill();
   fs.rmSync(DATA, { recursive: true, force: true });
 }
 console.log(failed === 0 ? "\nAll end-to-end checks passed (test database, discarded)." : `\n${failed} end-to-end script(s) FAILED`);

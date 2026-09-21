@@ -18,6 +18,8 @@ import {
 import { cn, fmtDateTime, relTime } from "@/lib/utils.ts";
 import { NumberFormatCard, GeminiCard } from "./SettingsExtras.tsx";
 import { BackupCard } from "@/components/BackupCard.tsx";
+import { CloudCard } from "@/components/CloudCard.tsx";
+import { UpdateCard } from "@/components/UpdateCard.tsx";
 
 /* ------------------------------------------------------------------- users */
 
@@ -626,6 +628,8 @@ export function SettingsPage() {
           <NumberFormatCard />
           <GeminiCard />
           <BackupCard />
+          <CloudCard />
+          <UpdateCard />
           <Card>
             <CardHeader title={t("common.language")} />
             <div className="flex gap-2 p-4">

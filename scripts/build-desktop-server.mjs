@@ -14,7 +14,8 @@ await build({
   format: "esm",
   target: "node20",
   outfile: "desktop-build/server/index.mjs",
-  external: ["better-sqlite3"],
+  // pg's optional native driver is never used
+  external: ["better-sqlite3", "pg-native"],
   // some bundled packages still call require(); give them one
   banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
   logLevel: "warning",

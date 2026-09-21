@@ -20,6 +20,8 @@ import { millLedgerRoutes, millReceiptRoutes } from "./routes/millAccounts.ts";
 import { challanRoutes } from "./routes/challan.ts";
 import { backupRoutes } from "./routes/backup.ts";
 import { scannerRoutes } from "./routes/scanner.ts";
+import { cloudRoutes } from "./routes/cloud.ts";
+import { appRoutes } from "./routes/appUpdate.ts";
 import { dashboardRoutes } from "./routes/dashboard.ts";
 
 /** The whole API. Electron imports this same object — no second implementation. */
@@ -53,6 +55,8 @@ export function createApp() {
   app.route("/api/challan", challanRoutes);
   app.route("/api/backup", backupRoutes);
   app.route("/api/scanner", scannerRoutes);
+  app.route("/api/cloud", cloudRoutes);
+  app.route("/api/app", appRoutes);
   app.route("/api/dashboard", dashboardRoutes);
 
   app.onError((err, c) => {

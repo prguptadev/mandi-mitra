@@ -14,3 +14,6 @@ desktop-build/
 release/
 data/backup.json
 data/scanner-wia.ps1
+data/cloud.json
+data/cloud-state.db
+data/update.json

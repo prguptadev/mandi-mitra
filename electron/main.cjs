@@ -32,6 +32,8 @@ async function startServer() {
   process.env.MANDI_STATIC_DIR = path.join(unpacked, "dist");
   process.env.MANDI_MIGRATIONS_DIR = path.join(unpacked, "desktop-build", "migrations");
   process.env.MANDI_HOST = "127.0.0.1";
+  process.env.MANDI_DESKTOP = "1";
+  process.env.MANDI_APP_VERSION = app.getVersion();
   const port = await freePort(8787);
   process.env.PORT = String(port);
   // the server bundle and the native database module are unpacked from the archive
