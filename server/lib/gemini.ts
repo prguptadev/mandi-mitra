@@ -1,4 +1,8 @@
 import { z } from "zod";
+import crypto from "node:crypto";
+import { and, eq, gte } from "drizzle-orm";
+import { db, schema } from "../db/client.ts";
+import { newId } from "./ids.ts";
 
 /* Reading a handwritten mandi sheet with Gemini.
  *
@@ -166,7 +170,61 @@ function stripFence(text: string): string {
  * expires. A value starting with "AQ." is a short-lived OAuth token, which
  * works for a while and then stops — the confusing failure this maps.
  */
-export function explainGeminiError(status: number, message: string, apiKey?: string): string {
+export interface QuotaInfo {
+  /** per_day: waiting a minute will not help; per_minute: it will. */
+  kind: "per_day" | "per_minute" | "unknown";
+  limit: number | null;
+  freeTier: boolean;
+  model: string | null;
+  retryAfterSec: number | null;
+}
+
+/** Pulls the quota details out of a 429 so the message can be accurate. */
+export function parseQuota(json: any): QuotaInfo | null {
+  const e = json?.error;
+  if (!e || (e.code !== 429 && e.status !== "RESOURCE_EXHAUSTED")) return null;
+  let quotaId = "", limit: number | null = null, model: string | null = null, retry: number | null = null;
+  for (const d of e.details ?? []) {
+    const t = String(d?.["@type"] ?? "");
+    if (t.includes("QuotaFailure")) {
+      const v = d.violations?.[0];
+      quotaId = String(v?.quotaId ?? "");
+      limit = v?.quotaValue != null ? Number(v.quotaValue) : null;
+      model = v?.quotaDimensions?.model ?? null;
+    }
+    if (t.includes("RetryInfo")) retry = parseFloat(String(d.retryDelay ?? "").replace("s", "")) || null;
+  }
+  return {
+    kind: /PerDay/i.test(quotaId) ? "per_day" : /PerMinute/i.test(quotaId) ? "per_minute" : "unknown",
+    limit, model, retryAfterSec: retry,
+    freeTier: /FreeTier/i.test(quotaId),
+  };
+}
+
+/** Daily quotas reset at midnight US Pacific time; say when that is locally. */
+export function nextQuotaReset(now = new Date()): Date {
+  const pt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(now);
+  const get = (k: string) => Number(pt.find((x) => x.type === k)?.value);
+  const secsIntoPtDay = get("hour") % 24 * 3600 + get("minute") * 60 + get("second");
+  return new Date(now.getTime() + (86400 - secsIntoPtDay) * 1000);
+}
+
+export function explainGeminiError(status: number, message: string, apiKey?: string, raw?: unknown): string {
+  const q = parseQuota(raw);
+  if (q) {
+    if (q.kind === "per_day") {
+      const reset = nextQuotaReset().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata" });
+      return q.freeTier
+        ? `Today's free Gemini limit is used up (${q.limit ?? 20} reads a day on ${q.model ?? "this model"}). Every page is one read. It resets at about ${reset} IST. To remove the limit, enable billing on the Google project that owns this key.`
+        : `Today's Gemini limit for this key is used up (${q.limit ?? "?"} a day). It resets at about ${reset} IST.`;
+    }
+    if (q.kind === "per_minute") {
+      return `Too many reads in one minute (${q.limit ?? "?"} a minute${q.freeTier ? " on the free tier" : ""}). Wait ${Math.ceil(q.retryAfterSec ?? 60)} seconds and read again.`;
+    }
+  }
   const looksLikeToken = Boolean(apiKey) && !apiKey!.startsWith("AIza");
   if (status === 401 || /UNAUTHENTICATED|invalid authentication/i.test(message)) {
     return looksLikeToken
@@ -177,7 +235,7 @@ export function explainGeminiError(status: number, message: string, apiKey?: str
     return "Google refused the request. The key may not have access to this model, or billing is not enabled on that Google project.";
   }
   if (status === 429) {
-    return "Google's rate limit was hit. Wait a minute and read the sheet again.";
+    return "Google's Gemini limit was reached. Check the quota at ai.dev/rate-limit.";
   }
   if (status === 404) {
     return "That model name is not available on this key. Pick a different model in Settings.";
@@ -216,6 +274,8 @@ export interface GeminiCallResult {
   tokensOut?: number;
   /** Set when the reply was truncated and rows were recovered from the fragment. */
   truncated?: boolean;
+  /** Present when Google refused for quota; tells us whether retrying is pointless. */
+  quota?: QuotaInfo;
   finishReason?: string;
 }
 
@@ -270,7 +330,8 @@ export async function readSheet(opts: {
     if (!res.ok) {
       return {
         ok: false, model: opts.model, ms, tokensIn, tokensOut, raw: json,
-        error: explainGeminiError(res.status, json?.error?.message ?? `HTTP ${res.status}`, opts.apiKey),
+        error: explainGeminiError(res.status, json?.error?.message ?? `HTTP ${res.status}`, opts.apiKey, json),
+        quota: parseQuota(json) ?? undefined,
       };
     }
 
@@ -323,4 +384,42 @@ export async function readSheet(opts: {
       error: err instanceof Error ? err.message : "Request failed",
     };
   }
+}
+
+
+/* ------------------------------------------------------------ usage count */
+
+export const keyHash = (key: string) => crypto.createHash("sha256").update(key).digest("hex").slice(0, 16);
+
+export async function recordCall(opts: { businessId: string; apiKey: string; result: GeminiCallResult }) {
+  await db.insert(schema.geminiCalls).values({
+    id: newId(), businessId: opts.businessId, keyHash: keyHash(opts.apiKey),
+    model: opts.result.model, ok: opts.result.ok,
+    refused: Boolean(opts.result.quota),
+    reportedLimit: opts.result.quota?.kind === "per_day" ? opts.result.quota.limit : null,
+  });
+}
+
+/** Reads sent with this key since the last Pacific midnight, per model. */
+export async function usageToday(apiKey: string, model: string) {
+  const reset = nextQuotaReset();
+  const dayStart = Math.floor(reset.getTime() / 1000) - 86400;
+  const rows = await db.select().from(schema.geminiCalls).where(and(
+    eq(schema.geminiCalls.keyHash, keyHash(apiKey)),
+    eq(schema.geminiCalls.model, model),
+    gte(schema.geminiCalls.at, dayStart),
+  ));
+  const used = rows.filter((r) => !r.refused).length;
+  const refusedToday = rows.some((r) => r.refused);
+  const known = [...rows].reverse().find((r) => r.reportedLimit)?.reportedLimit ?? null;
+  const allTime = await db.select({ l: schema.geminiCalls.reportedLimit }).from(schema.geminiCalls)
+    .where(eq(schema.geminiCalls.keyHash, keyHash(apiKey)));
+  const everLimit = allTime.find((r) => r.l)?.l ?? null;
+  return {
+    model, used,
+    /** From Google's own refusal; null until the key has been refused once. */
+    dailyLimit: known ?? everLimit,
+    exhausted: refusedToday,
+    resetsAt: reset.toISOString(),
+  };
 }

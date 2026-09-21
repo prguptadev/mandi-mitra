@@ -243,3 +243,12 @@ export interface ScanListRow {
   pages: number; rowCount: number;
   createdAt: number; reviewedAt: number | null;
 }
+
+export interface GeminiUsage {
+  configured: boolean;
+  model?: string;
+  used?: number;
+  dailyLimit?: number | null;
+  exhausted?: boolean;
+  resetsAt?: string;
+}

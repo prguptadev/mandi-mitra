@@ -205,8 +205,12 @@ scripts/
 - **Bilingual** — every screen in Hindi or English, including dates, relative
   times and OCR issue messages.
 - **Type Hinglish, get Hindi** — every hand-typed Hindi field converts as you
-  type: "phoolsingh verma" becomes फूलसिंह वर्मा. Space converts the finished
-  word, Enter or Tab accepts, Esc keeps the Latin. The supplier picker shows
+  type: "phoolsingh verma" becomes फूलसिंह वर्मा. Space converts the word just
+  finished — only that word, so "सिंह raam" + space gives "सिंह राम " and a box
+  can hold a mix. It triggers on the inserted space (`src/lib/hindiTyping.ts`),
+  not the key event, so phone keyboards and suggestion taps work too, and
+  letters typed while the lookup runs are kept. Enter or Tab accepts the
+  preview, Esc keeps the Latin. The supplier picker shows
   the Hindi reading of a Latin query and creates new suppliers in Devanagari. The business's own supplier spellings are consulted first, so
   a name is written the way that office already writes it; then a dictionary of
   common name and firm words; then a phonetic engine.
@@ -322,6 +326,22 @@ Settings → Gemini API key. Stored **per business**, encrypted with AES-256-GCM
 the key file is `data/.secret.key`, mode 0600, gitignored. The key is never
 returned to the browser or written to the audit log — only a mask.
 
+**Free-tier quota.** Google's free tier allows **20 requests a day per model
+per project** for gemini-2.5-flash (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`),
+resetting at midnight US Pacific, about 12:30 pm IST. One page is one
+request. A 429 is parsed (`parseQuota` reads `QuotaFailure` / `RetryInfo`)
+and explained in plain words; it is not a "wait a minute" problem. The only
+real fix is billing on the Google Cloud project behind the key.
+
+What the app does about it:
+- every request is logged in `gemini_calls` (per key hash, never the key), and
+  the scan screens show "N of 20 used today" with the reset time;
+- a quota refusal stops the whole read at once — no retries, no fallback
+  model after a failure — and keeps the pages already read (`pages_done`);
+  reading again resumes from the next page;
+- "Test key" calls `GET /v1beta/models/{model}`, which spends no quota;
+- the page-order step says how many reads a scan will use.
+
 Known limitation: the key file sits on the same disk as the database. That
 protects a leaked backup, not someone with full machine access. Moving it to
 the Windows Credential Store is an Electron-era task.
@@ -415,6 +435,8 @@ Never run a data-writing script against the dev server by hand again.
 | Daily list new line had no name box | the owner had hidden the Hindi name column, and the entry-row supplier box only ever lived in that column | the box goes in whichever name column is visible, and at least one name column is always shown |
 | A picked supplier vanished from the box | after the change for 1000+ suppliers, the picker relied on its search cache to name the chosen id | the picker keeps the option it was given |
 | "Add missing suppliers" would have created duplicates | it created "धरमपाल" beside the existing "धर्मपाल सिंह", splitting that supplier's ledger | rows with a close suggestion are left to pick; only names with nothing close are created |
+| "Google's rate limit was hit. Wait a minute" every day | wrong diagnosis: it was the free tier's **daily** cap of 20, and a failed page still triggered the fallback model, so each failure spent two | quota parsed and explained, read stops and resumes, usage counter, key test spends nothing (see §5 Gemini). Two scans failed before the fix still show the old text until re-read |
+| Only the first word became Hindi | once the box held any Devanagari, `looksLatin` was false for the whole value, so later words were never converted; the server also refused mixed text | server converts only the Latin tokens of mixed text; the client converts just the word finished by the space |
 | Approve stuck disabled on a fresh business | every OCR name was unmatched because the master was empty, and picking 29 one by one is not a reasonable ask | "Add the N missing suppliers" creates them from the sheet and links the rows — 29 blocking to 0 in one action |
 
 ---

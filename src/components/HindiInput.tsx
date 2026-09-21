@@ -1,11 +1,11 @@
-import { forwardRef, useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { convertFinishedWord, hasLatin } from "@/lib/hindiTyping.ts";
 import { Languages, Check } from "lucide-react";
 import { api } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { cn } from "@/lib/utils.ts";
 
 const DEVANAGARI = /[ऀ-ॿ]/;
-const looksLatin = (s: string) => Boolean(s.trim()) && !DEVANAGARI.test(s) && /[a-zA-Z]/.test(s);
 
 /**
  * Type in Hinglish, get Hindi. The operator has an ordinary keyboard, so
@@ -32,6 +32,8 @@ export const HindiInput = forwardRef<HTMLInputElement, {
   { value, onChange, placeholder, className, disabled, autoFocus, convertOnBlur = true, publicOnly, onKeyDown }, ref,
 ) {
   const { t } = useI18n();
+  const inner = useRef<HTMLInputElement>(null);
+  useImperativeHandle(ref, () => inner.current as HTMLInputElement);
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -39,7 +41,7 @@ export const HindiInput = forwardRef<HTMLInputElement, {
 
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current);
-    if (!looksLatin(value) || dismissed.current === value) {
+    if (!hasLatin(value) || dismissed.current === value) {
       setSuggestion(null);
       return;
     }
@@ -72,46 +74,23 @@ export const HindiInput = forwardRef<HTMLInputElement, {
     return true;
   };
 
-  /**
-   * Space finishes a word, so convert what is behind the cursor and leave the
-   * space for the next one. Typing "rakesh verma " ends up as "राकेश वर्मा "
-   * without the operator pressing anything else.
-   */
-  const convertOnSpace = async (current: string) => {
-    if (!looksLatin(current)) return;
-    try {
-      const path = publicOnly ? "/auth/to-devanagari" : "/adati/to-devanagari";
-      let r: { hindi: string; converted: boolean };
-      try {
-        r = await api.post(path, { text: current });
-      } catch {
-        r = await api.post("/auth/to-devanagari", { text: current });
-      }
-      if (r.converted && r.hindi && r.hindi !== current) {
-        dismissed.current = null;
-        setSuggestion(null);
-        onChange(r.hindi + " ");
-      }
-    } catch { /* keep what was typed */ }
-  };
-
   return (
     <div className="relative">
       <input
-        ref={ref}
+        ref={inner}
         value={value}
         disabled={disabled}
         autoFocus={autoFocus}
         placeholder={placeholder}
         lang={DEVANAGARI.test(value) ? "hi" : undefined}
-        onChange={(e) => { dismissed.current = null; onChange(e.target.value); }}
+        onChange={(e) => {
+          dismissed.current = null;
+          onChange(e.target.value);
+          // space after a Hinglish word turns that word into Hindi, in place
+          convertFinishedWord(e.target, value, (text) => { setSuggestion(null); onChange(text); }, publicOnly);
+        }}
         onBlur={() => { if (convertOnBlur) accept(); }}
         onKeyDown={(e) => {
-          if (e.key === " " && looksLatin(value) && value.trim() && !value.endsWith(" ")) {
-            e.preventDefault();
-            void convertOnSpace(value);
-            return;
-          }
           if ((e.key === "Enter" || e.key === "Tab") && suggestion) {
             if (accept()) {
               if (e.key === "Enter") { e.preventDefault(); return; }

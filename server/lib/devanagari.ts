@@ -135,6 +135,9 @@ function phonetic(word: string): string {
 const DEVANAGARI = /[ऀ-ॿ]/;
 export const hasDevanagari = (s: string) => DEVANAGARI.test(s ?? "");
 
+/** True when there is at least one Latin letter anywhere — mixed text counts. */
+export const hasLatin = (s: string) => /[a-zA-Z]/.test(s ?? "");
+
 /** True when the text is plain Latin worth converting. */
 export function looksLatin(s: string): boolean {
   const t = (s ?? "").trim();
@@ -146,20 +149,26 @@ export interface DevanagariOptions {
   known?: Map<string, string>;
 }
 
-/** Convert a Latin string to Devanagari, word by word. */
+/**
+ * Convert the Latin words in a string to Devanagari, word by word. Words that
+ * are already Devanagari are left exactly as they are, so "सिंह raam" becomes
+ * "सिंह राम" — mixed text is the normal case once the first word is converted.
+ */
 export function toDevanagari(input: string, opts: DevanagariOptions = {}): string {
   const text = (input ?? "").trim();
-  if (!text || hasDevanagari(text)) return text;
+  if (!text || !hasLatin(text)) return text;
 
-  // the whole phrase may already be a known supplier
-  const wholeKey = text.toLowerCase().replace(/\s+/g, " ");
-  const whole = opts.known?.get(wholeKey);
-  if (whole) return whole;
+  // the whole phrase may already be a known supplier, if it is all Latin
+  if (!hasDevanagari(text)) {
+    const whole = opts.known?.get(text.toLowerCase().replace(/\s+/g, " "));
+    if (whole) return whole;
+  }
 
   return text
     .split(/(\s+)/)
     .map((tok) => {
       if (/^\s+$/.test(tok)) return " ";
+      if (hasDevanagari(tok) || !hasLatin(tok)) return tok;
       const bare = tok.toLowerCase().replace(/[.,]/g, "");
       if (!bare) return tok;
       const fromMaster = opts.known?.get(bare);

@@ -9,7 +9,7 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { decryptSecret } from "../lib/secrets.ts";
 import { GeminiConfigSchema, defaultGeminiConfig, DisplayConfigSchema, defaultDisplayConfig } from "../lib/display.ts";
 import { ChargeConfigSchema, KatautiSchema, type Katauti } from "../lib/charges.ts";
-import { readSheet } from "../lib/gemini.ts";
+import { readSheet, recordCall } from "../lib/gemini.ts";
 import { loadResolver } from "../lib/adatiResolve.ts";
 import { normKey, toHinglish } from "../lib/translit.ts";
 import {
@@ -287,6 +287,8 @@ async function performRead(opts: {
   biz: string; id: string; apiKey: string;
   cfg: ReturnType<typeof defaultGeminiConfig>; wanted?: string;
   actorInfo: { userId: string | null; userName: string | null };
+  /** Pages already read by an attempt that stopped at a quota limit. */
+  resumeFrom?: number; resumeRows?: ReviewRow[];
 }) {
   const { biz, id, apiKey, cfg, wanted } = opts;
   const batch = await loadBatch(biz, id);
@@ -311,12 +313,12 @@ async function performRead(opts: {
     return null;
   }
 
-  const collected: ReviewRow[] = [];
+  const collected: ReviewRow[] = [...(opts.resumeRows ?? [])];
   const notes: string[] = [];
   let tokensIn = 0, tokensOut = 0;
   let modelUsed = wanted ?? cfg.model;
 
-  for (let p = 0; p < files.length; p++) {
+  for (let p = opts.resumeFrom ?? 0; p < files.length; p++) {
     const image = [{
       base64: fs.readFileSync(path.join(dir, files[p].name)).toString("base64"),
       mimeType: files[p].mimeType,
@@ -326,13 +328,18 @@ async function performRead(opts: {
       apiKey, model: wanted ?? cfg.model, images: image, knownSuppliers,
       maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
     });
+    await recordCall({ businessId: biz, apiKey, result });
 
-    const why = weakness(result);
+    /* The stronger model is for a page that was read badly, not for a page
+       that could not be read. After a refusal (quota, key, network) a second
+       request only spends another read and fails the same way. */
+    const why = result.ok ? weakness(result) : null;
     if (!wanted && why && cfg.fallbackModel && cfg.fallbackModel !== cfg.model) {
       const second = await readSheet({
         apiKey, model: cfg.fallbackModel, images: image, knownSuppliers,
         maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
       });
+      await recordCall({ businessId: biz, apiKey, result: second });
       if (second.ok && (!weakness(second) || !result.ok)) {
         result = second;
         notes.push(`page ${p + 1} read again on ${second.model} because ${why}`);
@@ -341,6 +348,22 @@ async function performRead(opts: {
 
     tokensIn += result.tokensIn ?? 0;
     tokensOut += result.tokensOut ?? 0;
+
+    if (result.quota) {
+      // keep what was read; "Read again" resumes from this page instead of page 1
+      await db.update(schema.scanBatches).set({
+        status: "failed", errorText: result.error ?? "Gemini limit reached", warningText: null,
+        parsedRows: collected.length ? JSON.stringify(collected) : null,
+        pagesDone: p, model: modelUsed, tokensIn, tokensOut,
+        rawResponse: JSON.stringify(result.raw ?? null).slice(0, 40000),
+      }).where(eq(schema.scanBatches.id, id));
+      await audit({
+        actor: { ...opts.actorInfo, businessId: biz },
+        action: "scan.read.quota", entity: "scan_batch", entityId: id,
+        entityLabel: `stopped at page ${p + 1} of ${files.length}: ${result.quota.kind} limit`,
+      });
+      return;
+    }
 
     if (!result.ok || !result.page) {
       // one bad page should not throw away the pages already read
@@ -426,12 +449,21 @@ scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
   const wanted = (await c.req.json().catch(() => ({})))?.model as string | undefined;
   const actorInfo = { userId: c.get("auth")!.user.id, userName: c.get("auth")!.user.name };
 
+  const files: unknown[] = JSON.parse(batch.filePaths);
+  const partial: ReviewRow[] = batch.parsedRows ? JSON.parse(batch.parsedRows) : [];
+  const resume = batch.status === "failed" && batch.pagesDone > 0 && batch.pagesDone < files.length;
+
   await db.update(schema.scanBatches)
-    .set({ status: "reading", errorText: null, warningText: null, pagesDone: 0, parsedRows: null })
+    .set(resume
+      ? { status: "reading", errorText: null, warningText: null }
+      : { status: "reading", errorText: null, warningText: null, pagesDone: 0, parsedRows: null })
     .where(eq(schema.scanBatches.id, id));
 
   inFlight.add(id);
-  void performRead({ biz, id, apiKey, cfg, wanted, actorInfo })
+  void performRead({
+    biz, id, apiKey, cfg, wanted, actorInfo,
+    ...(resume ? { resumeFrom: batch.pagesDone, resumeRows: partial } : {}),
+  })
     .catch(async (err) => {
       console.error("[scan]", id, err);
       await db.update(schema.scanBatches).set({

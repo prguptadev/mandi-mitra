@@ -5,7 +5,7 @@ import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
 import { encryptSecret, decryptSecret, maskKey } from "../lib/secrets.ts";
-import { explainGeminiError } from "../lib/gemini.ts";
+import { explainGeminiError, usageToday } from "../lib/gemini.ts";
 import {
   DisplayConfigSchema, defaultDisplayConfig,
   GeminiConfigSchema, defaultGeminiConfig, GEMINI_MODELS,
@@ -122,6 +122,17 @@ settingsRoutes.put("/gemini", can("settings.write"), async (c) => {
 });
 
 /** Round-trips a tiny prompt so the key and model are proven before a real scan. */
+/** How much of today's Gemini allowance this key has used, as counted by the app. */
+settingsRoutes.get("/gemini/usage", can("scan.create", "settings.write"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const keyRaw = await readSetting(biz, "gemini.apiKey");
+  const key = keyRaw ? decryptSecret(keyRaw) : null;
+  if (!key) return c.json({ configured: false });
+  const cfgRaw = await readSetting(biz, "gemini");
+  const cfg = cfgRaw ? GeminiConfigSchema.parse(JSON.parse(cfgRaw)) : defaultGeminiConfig();
+  return c.json({ configured: true, ...(await usageToday(key, cfg.model)) });
+});
+
 /** Copy the key from another business this user already set it up in. */
 settingsRoutes.post("/gemini/copy-from", can("settings.write"), async (c) => {
   const auth = c.get("auth")!;
@@ -180,33 +191,23 @@ settingsRoutes.post("/gemini/test", can("settings.write", "scan.create"), async 
 
   const started = Date.now();
   try {
+    /* Looking the model up proves the key and the model name without calling
+       generateContent — so testing the key does not spend one of the day's
+       free reads. */
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: "Reply with the single word: ready" }] }],
-          generationConfig: { temperature: 0, maxOutputTokens: 16 },
-        }),
-        signal: AbortSignal.timeout(20_000),
-      },
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}`,
+      { headers: { "x-goog-api-key": key }, signal: AbortSignal.timeout(20_000) },
     );
     const ms = Date.now() - started;
     const json = await res.json().catch(() => null) as any;
 
     if (!res.ok) {
-      const msg = explainGeminiError(res.status, json?.error?.message ?? `HTTP ${res.status}`, key);
+      const msg = explainGeminiError(res.status, json?.error?.message ?? `HTTP ${res.status}`, key, json);
       await audit({ actor: actor(c), action: "settings.gemini.test.fail", entity: "settings", entityId: "gemini", entityLabel: `${model}: ${msg}` });
       return c.json({ ok: false, model, ms, error: msg, status: res.status }, 200);
     }
-
-    const text = json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
-    await audit({ actor: actor(c), action: "settings.gemini.test.ok", entity: "settings", entityId: "gemini", entityLabel: `${model} in ${ms}ms` });
-    return c.json({
-      ok: true, model, ms, reply: text,
-      usage: json?.usageMetadata ?? null,
-    });
+    await audit({ actor: actor(c), action: "settings.gemini.test.ok", entity: "settings", entityId: "gemini", entityLabel: `${model} in ${ms}ms (no read used)` });
+    return c.json({ ok: true, model, ms, reply: json?.displayName ?? model });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Request failed";
     return c.json({ ok: false, model, ms: Date.now() - started, error: msg }, 200);

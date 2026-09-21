@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Plus, Check, Languages } from "lucide-react";
 import { api } from "@/lib/api.ts";
+import { convertFinishedWord } from "@/lib/hindiTyping.ts";
 import { cn } from "@/lib/utils.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import type { Adati } from "@/lib/api.ts";
@@ -80,7 +81,7 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
   const [asHindi, setAsHindi] = useState<string | null>(null);
   useEffect(() => {
     const q = query.trim();
-    if (!q || !/[a-zA-Z]/.test(q) || DEVANAGARI.test(q)) { setAsHindi(null); return; }
+    if (!q || !/[a-zA-Z]/.test(q)) { setAsHindi(null); return; }
     let cancelled = false;
     const id = setTimeout(async () => {
       try {
@@ -145,6 +146,10 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
           if (selected) onChange(null);
           setQuery(e.target.value);
           setOpen(true);
+          /* Space finishes a word: "amit trading " becomes "अमित ट्रेडिंग " in
+             this same box, one word at a time. The search then runs on the
+             Hindi, which is how the master is written. */
+          if (!selected) convertFinishedWord(e.target, query, setQuery);
         }}
         autoFocus={autoFocus}
         onFocus={() => setOpen(true)}
@@ -153,17 +158,6 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
           if (!value) onBlurEmpty?.();
         }, 120)}
         onKeyDown={(e) => {
-          /* Space finishes a word: "amit trading " becomes "अमित ट्रेडिंग " in
-             this same box. The search then runs on the Hindi, which is how
-             the master is written. */
-          if (e.key === " " && !selected && /[a-zA-Z]/.test(query) && !DEVANAGARI.test(query) && !query.endsWith(" ")) {
-            e.preventDefault();
-            const current = query;
-            api.post<{ hindi: string; converted: boolean }>("/adati/to-devanagari", { text: current })
-              .then((r) => setQuery(r.converted && r.hindi ? r.hindi + " " : current + " "))
-              .catch(() => setQuery(current + " "));
-            return;
-          }
           if (e.key === "ArrowDown") {
             e.preventDefault(); setOpen(true);
             setActive((i) => Math.min(i + 1, matches.length - 1));

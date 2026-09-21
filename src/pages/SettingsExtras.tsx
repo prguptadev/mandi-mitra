@@ -7,6 +7,7 @@ import { useSession } from "@/lib/session.tsx";
 import { useFormat, DEFAULT_DISPLAY, type DisplayConfig } from "@/lib/format.tsx";
 import { SkeletonForm } from "@/components/Skeletons.tsx";
 import { NumberInput } from "@/components/NumberInput.tsx";
+import { GeminiUsageBar } from "@/components/GeminiUsage.tsx";
 import {
   Button, Card, CardHeader, Field, Input, Select, Switch, Alert, Badge,
 } from "@/components/ui/index.tsx";
@@ -281,6 +282,8 @@ export function GeminiCard() {
             ))}
           </div>
         )}
+
+        <GeminiUsageBar />
 
         <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer"
           className="inline-flex items-center gap-1 text-[12px] font-medium text-brand hover:underline">

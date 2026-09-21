@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/AppShell.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { ScanGrid, type Field as GridField } from "@/components/ScanGrid.tsx";
 import { SplitPane } from "@/components/SplitPane.tsx";
+import { GeminiUsageBar } from "@/components/GeminiUsage.tsx";
 import {
   Button, Card, CardHeader, Select, Input, Badge, Alert, Dialog, Field, Spinner, EmptyState, Tabs,
 } from "@/components/ui/index.tsx";
@@ -147,7 +148,7 @@ function PageOrderer({ scanId, pages, onRead, reading }: {
         })}
       </div>
       <div className="flex flex-wrap items-center gap-2 border-t border-line p-3">
-        <p className="text-[12px] text-muted">{t("scan.orderHint")}</p>
+        <p className="text-[12px] text-muted">{t("scan.orderHint")} · <span className="font-medium text-ink">{t("gemini.willUse", { n: pages.length })}</span></p>
         <div className="flex-1" />
         {changed && (
           <Button onClick={() => setOrder(pages.map((_, i) => i))}>{t("common.cancel")}</Button>
@@ -341,6 +342,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
         <PageHeader title={t("scan.review")} sub={t("scan.reviewSub")} />
         {b.warningText && <Alert tone="warn" className="mb-3">{b.warningText}</Alert>}
         {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
+        <GeminiUsageBar className="mb-3" />
         <PageOrderer scanId={scanId} pages={b.pages} reading={run.isPending} onRead={() => run.mutate(undefined)} />
       </>
     );

@@ -5,7 +5,7 @@ import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { toHinglish, normKey, similarity, canonicalFirm } from "../lib/translit.ts";
-import { toDevanagari, looksLatin } from "../lib/devanagari.ts";
+import { toDevanagari, looksLatin, hasLatin } from "../lib/devanagari.ts";
 import { param, can, actor, notFound, bad, type Env } from "../lib/http.ts";
 
 export const adatiRoutes = new Hono<Env>();
@@ -126,7 +126,7 @@ adatiRoutes.get("/search", can("adati.read"), async (c) => {
 adatiRoutes.post("/to-devanagari", can("adati.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const { text } = z.object({ text: z.string() }).parse(await c.req.json());
-  if (!looksLatin(text)) return c.json({ hindi: text, converted: false });
+  if (!hasLatin(text)) return c.json({ hindi: text, converted: false });
 
   const master = await db.select({ hi: schema.adati.nameHi, lat: schema.adati.nameHinglish })
     .from(schema.adati)

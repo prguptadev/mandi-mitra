@@ -410,6 +410,26 @@ export const settings = sqliteTable(
   (t) => ({ uq: uniqueIndex("settings_uq").on(t.businessId, t.key) }),
 );
 
+/** One row per Gemini request, so the app can say how much of the daily
+ *  quota is gone before Google refuses. The key itself is never stored. */
+export const geminiCalls = sqliteTable(
+  "gemini_calls",
+  {
+    id: text("id").primaryKey(),
+    businessId: text("business_id"),
+    /** First 16 hex of sha256(key): quota is per key's project, shared across firms. */
+    keyHash: text("key_hash").notNull(),
+    model: text("model").notNull(),
+    ok: integer("ok", { mode: "boolean" }).notNull(),
+    /** Refused for quota; Google does not count these against the limit. */
+    refused: integer("refused", { mode: "boolean" }).notNull().default(false),
+    /** The daily limit Google reported, when it reported one. */
+    reportedLimit: integer("reported_limit"),
+    at: integer("at").notNull().$defaultFn(now),
+  },
+  (t) => ({ idx: index("gemini_calls_key_idx").on(t.keyHash, t.at) }),
+);
+
 /** Every local write queues here for the cloud push. */
 export const syncOutbox = sqliteTable(
   "sync_outbox",

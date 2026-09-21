@@ -8,6 +8,7 @@ import { api, ApiError, type ScanListRow, type Merchant, type Jins, type GeminiS
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
+import { GeminiUsageBar } from "@/components/GeminiUsage.tsx";
 import { SkeletonList } from "@/components/Skeletons.tsx";
 import {
   Button, Card, CardHeader, Select, Input, Badge, Alert, EmptyState, Field, Spinner,
@@ -116,6 +117,8 @@ export function ScanListPage() {
           </span>
         </Alert>
       )}
+
+      <GeminiUsageBar className="mb-3" />
 
       {can("scan.create") && (
         <Card className="mb-4">
