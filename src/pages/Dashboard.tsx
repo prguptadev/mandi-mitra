@@ -11,6 +11,7 @@ import { useFormat } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { SkeletonStats, SkeletonTable } from "@/components/Skeletons.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
+import { useFY } from "@/lib/fy.tsx";
 import { RaceChart, type RacePoint } from "@/components/RaceChart.tsx";
 import { Card, CardHeader, Badge, Select, Input, Button } from "@/components/ui/index.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
@@ -50,10 +51,11 @@ interface DashboardData {
 }
 interface LedgerTop { rows: { id: string; nameHi: string; nameHinglish: string; slips: number; balancePaise: number }[]; totals: { toPayPaise: number; paidAheadPaise: number } }
 
-type Period = "all" | "today" | "week" | "month" | "custom";
+type Period = "fy" | "all" | "today" | "week" | "month" | "custom";
 
-function periodRange(p: Period, from: string, to: string): { from?: string; to?: string } {
+function periodRange(p: Period, from: string, to: string, fy: { from: string; to: string }): { from?: string; to?: string } {
   const today = todayISO();
+  if (p === "fy") return { from: fy.from, to: fy.to };
   const d = new Date(today + "T00:00:00Z");
   if (p === "today") return { from: today, to: today };
   if (p === "week") { d.setUTCDate(d.getUTCDate() - 6); return { from: d.toISOString().slice(0, 10), to: today }; }
@@ -282,7 +284,7 @@ export function DashboardPage() {
   const f = useFormat();
   const { me, can } = useSession();
   const [period, setPeriod] = useState<Period>(() => {
-    try { return (localStorage.getItem("mandi.dash.period") as Period) || "all"; } catch { return "all"; }
+    try { return (localStorage.getItem("mandi.dash.period") as Period) || "fy"; } catch { return "fy"; }
   });
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -290,7 +292,8 @@ export function DashboardPage() {
   useEffect(() => { try { localStorage.setItem("mandi.dash.period", period); } catch { /* ignore */ } }, [period]);
 
   const jins = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins"), enabled: can("jins.read") });
-  const r = periodRange(period, from, to);
+  const { fy } = useFY();
+  const r = periodRange(period, from, to, fy);
   const qs = new URLSearchParams();
   if (r.from) qs.set("from", r.from);
   if (r.to) qs.set("to", r.to);
@@ -309,6 +312,7 @@ export function DashboardPage() {
         action={
           <div className="flex flex-wrap items-center gap-2">
             <Select value={period} onChange={(e) => setPeriod(e.target.value as Period)} className="h-8 w-36 text-[13px]">
+              <option value="fy">{t("dash.p.fy", { y: fy.label })}</option>
               <option value="all">{t("dash.p.all")}</option>
               <option value="today">{t("dash.p.today")}</option>
               <option value="week">{t("dash.p.week")}</option>

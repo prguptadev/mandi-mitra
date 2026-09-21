@@ -43,6 +43,8 @@ export interface DailyListPrefs {
   exportNameLang: "hi" | "latin";
   /** Columns of the report sent to a mill ("dara"). */
   millReportColumns: Record<string, boolean>;
+  /** Column widths (px) dragged by hand on the daily list. */
+  widths: Record<string, number>;
 }
 
 export interface Prefs { dailyList: DailyListPrefs }
@@ -61,6 +63,7 @@ export const DEFAULT_PREFS: Prefs = {
     showRunningTotal: true,
     exportNameLang: "hi",
     millReportColumns: { ...DEFAULT_MILL_REPORT_COLUMNS },
+    widths: {},
   },
 };
 

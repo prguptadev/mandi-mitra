@@ -20,3 +20,6 @@ data/update.json
 
 data-test-*/
 data-perftest/
+
+# everything the app keeps on a computer (database, scans, backups, settings files)
+data/

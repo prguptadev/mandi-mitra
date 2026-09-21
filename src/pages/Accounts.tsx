@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useFYRange } from "@/lib/fy.tsx";
 import { useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { BookOpen, Wallet, Plus, Pencil, Ban, Download, Printer, Search } from "lucide-react";
@@ -208,12 +209,16 @@ export function LedgerPage() {
   const search = new URLSearchParams(useSearch());
   const [selected, setSelected] = useState<string | null>(search.get("adati"));
   const [q, setQ] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // the chosen financial year, until other dates are picked
+  const { from, setFrom, to, setTo, fy } = useFYRange();
   const [paying, setPaying] = useState<null | { editing?: PaymentRow | null }>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  const list = useQuery({ queryKey: ["ledger", "all"], queryFn: () => api.get<LedgerList>("/ledger") });
+  // a past financial year: every balance as it stood on its 31 March
+  const list = useQuery({
+    queryKey: fy.current ? ["ledger", "all"] : ["ledger", "asOf", fy.to],
+    queryFn: () => api.get<LedgerList>(fy.current ? "/ledger" : `/ledger?asOf=${fy.to}`),
+  });
   const qs = new URLSearchParams();
   if (from) qs.set("from", from);
   if (to) qs.set("to", to);
@@ -499,8 +504,8 @@ export function PaymentsPage() {
   const f = useFormat();
   const { can } = useSession();
   const qc = useQueryClient();
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // the chosen financial year, until other dates are picked
+  const { from, setFrom, to, setTo } = useFYRange();
   const [mode, setMode] = useState<"" | Mode>("");
   const [adati, setAdati] = useState<string | null>(null);
   const [paying, setPaying] = useState<null | { editing?: PaymentRow | null }>(null);

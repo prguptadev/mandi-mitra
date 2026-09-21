@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useFYRange } from "@/lib/fy.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
@@ -32,8 +33,8 @@ export function ScanListPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [status, setStatus] = useState("all");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // the chosen financial year, until other dates are picked
+  const { from, setFrom, to, setTo } = useFYRange();
   const [merchantId, setMerchantId] = useState("");
   const [upDate, setUpDate] = useState(todayISO);
   const [upMill, setUpMill] = useState("");

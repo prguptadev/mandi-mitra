@@ -15,13 +15,13 @@ import { can, actor, param, HttpError, bad, type Env } from "../lib/http.ts";
 
 export const settingsRoutes = new Hono<Env>();
 
-async function readSetting(businessId: string, key: string): Promise<string | null> {
+export async function readSetting(businessId: string, key: string): Promise<string | null> {
   const [row] = await db.select().from(schema.settings)
     .where(and(eq(schema.settings.businessId, businessId), eq(schema.settings.key, key))).limit(1);
   return row?.value ?? null;
 }
 
-async function writeSetting(businessId: string, key: string, value: string) {
+export async function writeSetting(businessId: string, key: string, value: string) {
   const [row] = await db.select().from(schema.settings)
     .where(and(eq(schema.settings.businessId, businessId), eq(schema.settings.key, key))).limit(1);
   if (row) {

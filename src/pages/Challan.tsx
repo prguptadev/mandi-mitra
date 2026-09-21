@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useFYRange } from "@/lib/fy.tsx";
 import { Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ClipboardCheck, Download, Search } from "lucide-react";
@@ -64,8 +65,8 @@ export function ChallanPage() {
   const qc = useQueryClient();
   const [merchantId, setMerchantId] = useState("");
   const [jinsId, setJinsId] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // the chosen financial year, until other dates are picked
+  const { from, setFrom, to, setTo } = useFYRange();
   const [q, setQ] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });

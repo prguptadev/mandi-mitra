@@ -19,6 +19,7 @@ import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
 import { DownloadDialog } from "@/components/DownloadDialog.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
+import { useFY } from "@/lib/fy.tsx";
 import { slipCharges, defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
 import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
 import {
@@ -98,6 +99,13 @@ export function DailyListPage() {
     const d = new URLSearchParams(search).get("date");
     return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : todayISO();
   });
+  // another financial year chosen in the top bar: open a day inside it
+  const { fy } = useFY();
+  const fyFirst = useRef(true);
+  useEffect(() => {
+    if (fyFirst.current) { fyFirst.current = false; return; }
+    if (date < fy.from || date > fy.to) setDate(fy.current ? todayISO() : fy.to);
+  }, [fy.start]);
   const [merchantId, setMerchantId] = useState<string>("");
   /** Commodity new rows get. */
   const [jinsId, setJinsId] = useState<string>("");
@@ -321,6 +329,39 @@ export function DailyListPage() {
   // the supplier box lives in the first name column on screen, Hindi or Hinglish
   const nameCol: DailyColumnKey = visibleCols.some((c) => c.key === "adatiHi") ? "adatiHi" : "adatiLatin";
   const PAD = P.density === "compact" ? "py-0.5" : "py-1";
+  /* A header's right edge can be dragged to set that column's width; a
+     double-click on the edge gives the column back its own width. Widths are
+     kept with this computer's layout. */
+  const [liveW, setLiveW] = useState<Record<string, number>>({});
+  const widthOf = (k: string) => liveW[k] ?? P.widths?.[k];
+  const cw = (k: string) => { const w = widthOf(k); return w ? { width: w, minWidth: w, maxWidth: w, overflow: "hidden" as const } : undefined; };
+  const startResize = (k: string) => (e: React.MouseEvent<HTMLSpanElement>) => {
+    e.preventDefault(); e.stopPropagation();
+    const th = (e.currentTarget.parentElement as HTMLElement);
+    const x0 = e.clientX, w0 = th.getBoundingClientRect().width;
+    let w = w0;
+    // one redraw per frame: a season day can have 1,500 rows under this heading
+    let frame = 0;
+    const move = (ev: MouseEvent) => {
+      w = Math.round(Math.min(800, Math.max(40, w0 + ev.clientX - x0)));
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; setLiveW((m) => ({ ...m, [k]: w })); });
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up);
+      if (frame) cancelAnimationFrame(frame);
+      setLiveW((m) => ({ ...m, [k]: w }));
+      document.body.style.cursor = ""; document.body.style.userSelect = "";
+      if (Math.abs(w - w0) >= 2) void savePrefs({ ...P, widths: { ...(P.widths ?? {}), [k]: w } }).catch(() => undefined);
+    };
+    document.body.style.cursor = "col-resize"; document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+  };
+  const resetWidth = (k: string) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setLiveW((m) => { const n = { ...m }; delete n[k]; return n; });
+    const rest = { ...(P.widths ?? {}) }; delete rest[k];
+    void savePrefs({ ...P, widths: rest }).catch(() => undefined);
+  };
 
   const ordered = useMemo(
     () => sortSlips(rows, P.sortOrder, (r) => (nameCol === "adatiHi" ? r.adatiNameHi : r.adatiNameHinglish || r.adatiNameHi)),
@@ -489,7 +530,7 @@ export function DailyListPage() {
         <Plus className="mx-auto h-3.5 w-3.5 text-brand" />
       </td>
       {visibleCols.map((c) => (
-        <td key={c.key} className={cn("border-b border-line px-1 py-1.5", NUMERIC.has(c.key) && "text-right")}>
+        <td key={c.key} style={cw(c.key)} className={cn("border-b border-line px-1 py-1.5", NUMERIC.has(c.key) && "text-right")}>
           {c.key === "sr" ? <span className="num text-[11px] text-faint">{rows.length + 1}</span>
             : c.key === "rstNo" ? (
               <input ref={rstRef} className={cn(CELL, "text-left", rstTaken && "border-2 border-warn")}
@@ -725,15 +766,18 @@ export function DailyListPage() {
                   )}
                 </th>
                 {visibleCols.map((c) => (
-                  <th key={c.key}
+                  <th key={c.key} style={cw(c.key)}
                     title={c.key === "katauti" ? t("daily.katautiAuto") : c.key !== "sr" ? t("daily.clickToSort") : undefined}
                     onClick={c.key !== "sr" ? () => sortBy(c.key) : undefined}
                     className={cn(
                       "border-b border-line px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted",
                       NUMERIC.has(c.key) ? "text-right" : "text-left",
                       c.key !== "sr" && "cursor-pointer select-none hover:text-ink",
-                      WIDTHS[c.key],
+                      "relative", WIDTHS[c.key],
                     )}>
+                    <span role="separator" aria-orientation="vertical" title={t("daily.dragWidth")}
+                      onMouseDown={startResize(c.key)} onDoubleClick={resetWidth(c.key)} onClick={(e) => e.stopPropagation()}
+                      className="absolute right-0 top-0 z-10 h-full w-3 cursor-col-resize border-r-2 border-line/40 hover:border-brand hover:bg-brand/10" />
                     <span title={c.key === "commission" ? t("sc.commissionTip", { pct: terms.commissionPct }) : c.key === "gaushala" ? t("sc.gaushalaTip", { r: terms.gaushalaPerQtl }) : c.key === "payable" ? t("sc.payableTip") : undefined}>{colLabel(c)}</span>
                     {sortMark(c.key) && <span className="ml-1 text-brand">{sortMark(c.key)}</span>}
                     {(c.key === "rate" || c.key === "amount" || c.key === "commission" || c.key === "gaushala" || c.key === "payable") && f.symbol && (
@@ -762,7 +806,7 @@ export function DailyListPage() {
                     <tr key={r.id} className="bg-brand/[0.06]">
                       <td className={cn("border-b border-line/70 px-2", PAD)} />
                       {visibleCols.map((c) => (
-                        <td key={c.key} className={cn("border-b border-line/70 px-1", PAD, NUMERIC.has(c.key) && "text-right")}>
+                        <td key={c.key} style={cw(c.key)} className={cn("border-b border-line/70 px-1", PAD, NUMERIC.has(c.key) && "text-right")}>
                           {editCell(c.key, ed, dd, r, i)}
                         </td>
                       ))}
@@ -793,7 +837,7 @@ export function DailyListPage() {
                       )}
                     </td>
                     {visibleCols.map((c) => (
-                      <td key={c.key} className={cn(
+                      <td key={c.key} style={cw(c.key)} className={cn(
                         "border-b border-line/70 px-2", PAD,
                         NUMERIC.has(c.key) && "num text-right",
                       )}>
@@ -841,7 +885,7 @@ export function DailyListPage() {
                 <tr className="bg-raised font-semibold">
                   <td />
                   {visibleCols.map((c, idx) => (
-                    <td key={c.key} className={cn("px-2 py-2", NUMERIC.has(c.key) ? "num text-right" : "text-right")}>
+                    <td key={c.key} style={cw(c.key)} className={cn("px-2 py-2", NUMERIC.has(c.key) ? "num text-right" : "text-right")}>
                       {idx === 0 && !NUMERIC.has(c.key)
                         ? <span className="text-[12px] uppercase tracking-wide text-muted">{t("daily.totals")}</span>
                         : totalCell(c.key)}

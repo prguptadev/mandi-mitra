@@ -590,3 +590,27 @@ export const syncOutbox = sqliteTable(
   },
   (t) => ({ pendingIdx: index("outbox_pending_idx").on(t.pushedAt, t.createdAt) }),
 );
+
+/* ------------------------------------------------------------------- tally */
+
+/**
+ * What has been sent to Tally: one row per slip, payment, parcha, mill
+ * receipt or weight cut, with a fingerprint of the figures sent. An entry
+ * changed or removed here after it was sent shows up for fixing in Tally;
+ * nothing is sent twice.
+ */
+export const tallyExports = sqliteTable(
+  "tally_exports",
+  {
+    id: text("id").primaryKey(),
+    businessId: text("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    /** slip | payment | parcha | receipt | cut */
+    kind: text("kind").notNull(),
+    entityId: text("entity_id").notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    exportedBy: text("exported_by"),
+    exportedAt: integer("exported_at").notNull().$defaultFn(now),
+    updatedAt: integer("updated_at").notNull().$defaultFn(now),
+  },
+  (t) => ({ uq: uniqueIndex("tally_export_uq").on(t.businessId, t.kind, t.entityId) }),
+);

@@ -5,10 +5,11 @@ import {
   Factory, Wheat, BookOpen, Wallet, UserCog, ShieldCheck, ScrollText, Settings,
   Menu, X, Sun, Moon, Languages, ChevronDown, LogOut, Building2, Check, Plus,
   PanelLeftClose, PanelLeftOpen,
-  ClipboardList, Landmark, ClipboardCheck, KeyRound } from "lucide-react";
+  ClipboardList, Landmark, ClipboardCheck, KeyRound, FileSpreadsheet } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { ApiError } from "@/lib/api.ts";
 import { SyncIndicator } from "@/components/SyncIndicator.tsx";
+import { useFY } from "@/lib/fy.tsx";
 import { MyPinDialog } from "@/components/MyPinDialog.tsx";
 import { toastError } from "@/components/Toaster.tsx";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -42,6 +43,7 @@ const NAV: NavGroup[] = [
     { href: "/ledger", labelKey: "nav.ledger", icon: BookOpen, perm: "ledger.read" },
     { href: "/payments", labelKey: "nav.payments", icon: Wallet, perm: "payment.read" },
     { href: "/mill-accounts", labelKey: "nav.millAccounts", icon: Landmark, perm: "millledger.read" },
+    { href: "/tally", labelKey: "nav.tally", icon: FileSpreadsheet, perm: "export.data" },
   ] },
   { labelKey: "nav.admin", items: [
     { href: "/users", labelKey: "nav.users", icon: UserCog, perm: "users.read" },
@@ -299,6 +301,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
 
           <div className="flex-1" />
 
+          <FYPicker />
           <SyncIndicator />
 
           <Button
@@ -349,5 +352,20 @@ export function PageHeader({ title, sub, action }: { title: ReactNode; sub?: Rea
       {/* on a phone the buttons wrap under the title instead of pushing the page sideways */}
       {action && <div className="min-w-0 max-w-full">{action}</div>}
     </div>
+  );
+}
+
+/** The financial year the list pages open on (1 April – 31 March), as in Tally. */
+function FYPicker() {
+  const { t } = useI18n();
+  const { fy, years, setStart } = useFY();
+  return (
+    <label className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2 py-1 text-[12px]" title={t("fy.hint")}>
+      <span className="hidden text-muted sm:inline">{t("fy.label")}</span>
+      <select value={fy.start} onChange={(e) => setStart(Number(e.target.value))} aria-label={t("fy.label")}
+        className={"num cursor-pointer bg-transparent font-semibold outline-none " + (fy.current ? "text-ink" : "text-warn")}>
+        {years.map((y) => <option key={y.start} value={y.start}>{y.label}</option>)}
+      </select>
+    </label>
   );
 }

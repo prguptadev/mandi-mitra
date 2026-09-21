@@ -67,6 +67,8 @@ export const DailyListPrefsSchema = z.object({
   /** Downloads carry one "Adati name" column, in this script. */
   exportNameLang: z.enum(["hi", "latin"]).default("hi"),
   millReportColumns: ColumnsSchema.default(DEFAULT_MILL_REPORT_COLUMNS),
+  /** Column widths (px) dragged by hand on the daily list; the rest size themselves. */
+  widths: z.record(z.string(), z.number().int().min(40).max(800)).default({}),
 });
 
 export type DailyListPrefs = z.infer<typeof DailyListPrefsSchema>;

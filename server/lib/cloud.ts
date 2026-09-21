@@ -48,7 +48,7 @@ const SKIP_TABLES = new Set(["sessions", "sync_outbox", "__drizzle_migrations", 
 const LOCAL_COLUMNS: Record<string, string[]> = { scan_batches: ["raw_response"] };
 const skipRow = (tbl: string, row: Record<string, unknown>) => tbl === "settings" && row.key === "gemini.apiKey";
 /** Rows with nothing pointing at them: a unique clash is settled by taking the incoming row. */
-const REPLACEABLE = new Set(["settings", "role_permissions", "adati_aliases", "user_permission_overrides", "gemini_calls"]);
+const REPLACEABLE = new Set(["settings", "role_permissions", "adati_aliases", "user_permission_overrides", "gemini_calls", "tally_exports"]);
 
 export type SyncState = "off" | "ok" | "syncing" | "offline" | "paused" | "error";
 export interface CloudConfig {

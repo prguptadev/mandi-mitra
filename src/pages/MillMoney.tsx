@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useFYRange } from "@/lib/fy.tsx";
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Download, Landmark, Pencil, Plus, Printer, Ban } from "lucide-react";
@@ -293,8 +294,8 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
   const f = useFormat();
   const { can } = useSession();
   const qc = useQueryClient();
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // the chosen financial year, until other dates are picked
+  const { from, setFrom, to, setTo } = useFYRange();
   const [showVoid, setShowVoid] = useState(false);
   const [editing, setEditing] = useState<ReceiptRow | null>(null);
   const [voiding, setVoiding] = useState<ReceiptRow | null>(null);
@@ -395,8 +396,8 @@ export function MillStatementPage({ id }: { id: string }) {
   const f = useFormat();
   const { can } = useSession();
   const qc = useQueryClient();
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // the chosen financial year, until other dates are picked
+  const { from, setFrom, to, setTo } = useFYRange();
   const [receiving, setReceiving] = useState<null | { loadId?: string; editing?: ReceiptRow }>(null);
   const [voiding, setVoiding] = useState<MillEntry | null>(null);
   const [err, setErr] = useState<string | null>(null);

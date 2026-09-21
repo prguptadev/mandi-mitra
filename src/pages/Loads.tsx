@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useFYRange } from "@/lib/fy.tsx";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -156,8 +157,8 @@ export function LoadsPage() {
   const poId = search.get("poId") ?? "";
   const [mill, setMill] = useState("");
   const [status, setStatus] = useState<"" | "draft" | "billed">("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // the chosen financial year, until other dates are picked
+  const { from, setFrom, to, setTo } = useFYRange();
   const [q, setQ] = useState("");
   const [creating, setCreating] = useState(false);
 
@@ -931,8 +932,8 @@ export function ParchaRegisterPage() {
   const { t, pick } = useI18n();
   const f = useFormat();
   const [, navigate] = useLocation();
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // the chosen financial year, until other dates are picked
+  const { from, setFrom, to, setTo } = useFYRange();
   const [showVoid, setShowVoid] = useState(false);
   const qs = new URLSearchParams();
   if (from) qs.set("from", from);

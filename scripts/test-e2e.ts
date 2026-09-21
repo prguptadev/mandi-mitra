@@ -78,6 +78,7 @@ try {
   run("scripts/e2e-scanner-backup.ts");
   run("scripts/e2e-rbac.ts");
   run("scripts/e2e-update.ts");
+  run("scripts/e2e-tally.ts");
   run("scripts/e2e-cloud.ts");
   // last: every stored figure the tests produced, re-worked independently
   // on every computer: the synced copies must add up exactly like the first
