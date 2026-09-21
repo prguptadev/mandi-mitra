@@ -117,6 +117,10 @@ const pays = await call("GET", `/payments?adatiId=${A}`);
 check("payments list: 2 left, 1,10,000 in all", pays.rows.length === 2 && pays.totals.amountPaise === rs(110000), pays.totals);
 check("split by mode: cash 50,000, bank 60,000", pays.totals.byMode.cash === rs(50000) && pays.totals.byMode.bank === rs(60000), pays.totals.byMode);
 void p1; void p3;
+const del = await call("DELETE", `/adati/${A}`);
+check("a supplier with payments is made inactive, not deleted", del.deactivated === true, del);
+const still = (await call("GET", "/ledger")).rows.find((r: any) => r.id === A);
+check("…and stays on the ledger with its balance", Boolean(still) && still.balancePaise === -rs(1834.50) + rs(17325), still?.balancePaise);
 
 console.log(bad === 0 ? "\nLedger and payments add up." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

@@ -24,10 +24,11 @@ function save(blob: Blob, name: string) {
 /** Fetch the Dara (mill report) file and save it; errors come back as ApiError. */
 export async function downloadDara(opts: {
   merchantId: string; from: string; to: string; names: "hi" | "latin"; sort: SlipSortOrder;
-  format: "xlsx" | "csv"; columns: string[];
+  format: "xlsx" | "csv"; columns: string[]; jinsId?: string;
 }) {
   const qs = new URLSearchParams({
     merchantId: opts.merchantId, from: opts.from, to: opts.to, names: opts.names, sort: opts.sort, format: opts.format,
+    ...(opts.jinsId ? { jinsId: opts.jinsId } : {}),
     ...(opts.columns.length ? { cols: opts.columns.join(",") } : {}),
   });
   const res = await fetch(`/api/reports/mill?${qs}`, { credentials: "same-origin" });

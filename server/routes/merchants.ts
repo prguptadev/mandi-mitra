@@ -7,6 +7,7 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { toHinglish } from "../lib/translit.ts";
 import { ChargeConfigSchema, defaultChargeConfig, computeParcha } from "../lib/charges.ts";
 import { param, can, actor, notFound, bad, type Env } from "../lib/http.ts";
+import { refreshDraftWeighments } from "../lib/parcha.ts";
 import { qtlToGrams, rupeesToPaise } from "../lib/money.ts";
 
 export const merchantRoutes = new Hono<Env>();
@@ -107,6 +108,8 @@ merchantRoutes.put("/:id", can("merchant.write"), async (c) => {
     before: { ...before, chargeConfig: beforeCfg }, after: { ...after, chargeConfig: afterCfg },
   });
   if (JSON.stringify(beforeCfg) !== JSON.stringify(afterCfg)) {
+    // bardana per bag etc. changed: draft trucks' stored mill net follows
+    await refreshDraftWeighments(id);
     await audit({
       actor: actor(c), action: "merchant.charges.update", entity: "merchant_charges",
       entityId: id, entityLabel: after!.name, before: beforeCfg, after: afterCfg,
@@ -122,12 +125,17 @@ merchantRoutes.delete("/:id", can("merchant.delete"), async (c) => {
   const [before] = await db.select().from(schema.merchants)
     .where(and(eq(schema.merchants.id, id), eq(schema.merchants.businessId, biz))).limit(1);
   if (!before) throw notFound("Mill not found");
-  const [used] = await db.select({ id: schema.loads.id }).from(schema.loads)
-    .where(eq(schema.loads.merchantId, id)).limit(1);
-  if (used) {
+  // anything pointing at the mill keeps it: slips, trucks, POs, scans
+  const refs = await Promise.all([
+    db.select({ id: schema.loads.id }).from(schema.loads).where(eq(schema.loads.merchantId, id)).limit(1),
+    db.select({ id: schema.purchaseSlips.id }).from(schema.purchaseSlips).where(eq(schema.purchaseSlips.merchantId, id)).limit(1),
+    db.select({ id: schema.purchaseOrders.id }).from(schema.purchaseOrders).where(eq(schema.purchaseOrders.merchantId, id)).limit(1),
+    db.select({ id: schema.scanBatches.id }).from(schema.scanBatches).where(eq(schema.scanBatches.merchantId, id)).limit(1),
+  ]);
+  if (refs.some((r) => r.length)) {
     await db.update(schema.merchants).set({ active: false, updatedAt: nowSec() }).where(eq(schema.merchants.id, id));
     await audit({ actor: actor(c), action: "merchant.deactivate", entity: "merchant", entityId: id, entityLabel: before.name, before });
-    return c.json({ ok: true, deactivated: true, reason: "This mill has loads, so it was made inactive instead of deleted." });
+    return c.json({ ok: true, deactivated: true, reason: "This mill has slips, trucks, POs or scans, so it was made inactive instead of deleted." });
   }
   await db.delete(schema.merchants).where(eq(schema.merchants.id, id));
   await audit({ actor: actor(c), action: "merchant.delete", entity: "merchant", entityId: id, entityLabel: before.name, before });

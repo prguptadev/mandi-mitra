@@ -288,7 +288,7 @@ export function LedgerPage() {
                     {can("payment.write") && (
                       <Button size="sm" variant="primary" icon={<Wallet className="h-3.5 w-3.5" />} onClick={() => setPaying({})}>{t("pay.add")}</Button>
                     )}
-                    <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={downloadCsv}>CSV</Button>
+                    {can("export.data") && <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={downloadCsv}>CSV</Button>}
                     <Button size="sm" icon={<Printer className="h-3.5 w-3.5" />} onClick={printStatement}>{t("parcha.print")}</Button>
                   </div>
                 } />

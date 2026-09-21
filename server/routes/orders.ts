@@ -4,7 +4,7 @@ import { eq, and, desc, inArray } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
-import { can, actor, param, notFound, bad, HttpError, type Env } from "../lib/http.ts";
+import { can, actor, param, notFound, bad, HttpError, isoDay, LIMIT, type Env } from "../lib/http.ts";
 import { dmy } from "../lib/parchaLabels.ts";
 import { linesWithWeights } from "../lib/parcha.ts";
 
@@ -24,10 +24,10 @@ const Body = z.object({
   jinsId: z.string().min(1, "Pick a commodity"),
   /** Optional: a mill often sends only a date. */
   poNo: z.string().trim().max(30).optional().default(""),
-  poDate: z.string({ required_error: "PO date is required" }).regex(ISO_DATE, "PO date is required"),
-  qtyGrams: z.number().int().min(1, "Quantity is required"),
-  ratePaisePerQtl: z.number().int().min(0).nullish(),
-  validTill: z.string().regex(ISO_DATE).nullish().or(z.literal("")),
+  poDate: isoDay("PO date is required"),
+  qtyGrams: z.number().int().min(1, "Quantity is required").max(LIMIT.grams * 1000, "Quantity is too large"),
+  ratePaisePerQtl: z.number().int().min(0).max(LIMIT.rate).nullish(),
+  validTill: isoDay().nullish().or(z.literal("")),
   status: z.enum(["open", "closed"]).optional(),
   notes: z.string().trim().max(500).nullish(),
 });

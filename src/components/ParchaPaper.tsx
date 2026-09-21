@@ -116,10 +116,10 @@ export function ParchaPaper({ doc, draft, className }: { doc: ParchaDoc; draft?:
           <tr>
             <td colSpan={5} className={cn(cellC, head)}>TOTAL DARA</td>
             <td className={cn(cellL, head)}>ADVANCE</td>
-            <td colSpan={2} className={cellR}>{r.advancePaise ? money(r.advancePaise) : "-"}</td>
+            <td colSpan={2} className={cellR}>{r.advancePaise && doc.config.advance.treatment !== "exclude" ? money(r.advancePaise) : "-"}</td>
           </tr>
           <tr>
-            <td colSpan={5} className={cn(cellR, "h-9")}>{r.daraPaise ? money(r.daraPaise) : "-"}</td>
+            <td colSpan={5} className={cn(cellR, "h-9")}>{r.daraPaise && doc.config.parcha.showDaraRow && doc.config.dara.mode !== "none" ? money(r.daraPaise) : "-"}</td>
             <td className={cn(cellL, head)}>GRAND TOTAL</td>
             <td colSpan={2} className={cn(cellR, "text-[14px] font-bold")}>{money(r.grandTotalPaise)}</td>
           </tr>

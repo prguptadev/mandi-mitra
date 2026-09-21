@@ -30,4 +30,5 @@ export function relTime(sec: number, lang: string) {
   return rtf.format(-Math.floor(diff / 2592000), "month");
 }
 
-export const todayISO = () => new Date().toISOString().slice(0, 10);
+/** Today's date where the office is (not UTC: before 05:30 IST that would still be yesterday). */
+export const todayISO = () => new Date().toLocaleDateString("en-CA");

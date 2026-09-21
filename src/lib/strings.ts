@@ -439,6 +439,7 @@ export const STRINGS = {
     "load.b.line_no_rate": "No rate for {d}: that day has no priced purchases for this mill. Type a rate on the row.",
     "load.b.line_no_weight": "Give a weight on every row but one; the blank row takes the rest of the mill net",
     "load.b.lines_mismatch": "The rows add up to {rows} qtl but the mill's net is {net} qtl",
+    "load.b.line_not_positive": "The blank row for {d} comes to {q} qtl: the typed rows are more than the mill's net. Lower them.",
     "load.w.stock_negative": "Stock of {d} goes {q} qtl below zero with this truck",
 
     "stock.title": "Mill stock", "stock.sub": "Bought for each mill, minus what trucks took. Every figure adds up from the slips and truck rows.",
@@ -927,6 +928,9 @@ export const STRINGS = {
     "dl.daraColsWhere": "इन्हें दैनिक सूची की सेटिंग (गियर बटन) में, दारा कॉलम के नीचे बदलें।",
     "dl.plusDate": "+ दिनांक (कई दिन)", "dl.badRange": "'से' की तारीख 'तक' के बाद है।",
     "dl.download": "डाउनलोड", "dl.daraButton": "दारा",
+    "audite.filterAction": "कार्य",
+    "scan.readingSub": "पूरे पन्ने में लगभग आधा मिनट लगता है। आप दूसरी स्क्रीन पर जा सकते हैं — पढ़ना चलता रहेगा और लौटने पर पंक्तियाँ यहीं मिलेंगी।",
+    "scan.uploadingNow": "अपलोड हो रहा है…",
 
     "load.fromDay": "किस दिन की खरीद से", "load.fromDays": "किन दिनों से",
     "load.fromDayHelp": "यह वज़न किस दिन के स्टॉक से गया; उस दिन की औसत दर पर्चे पर आती है",
@@ -942,6 +946,7 @@ export const STRINGS = {
     "load.b.line_no_rate": "{d} की कोई दर नहीं: उस दिन इस मिल की दर वाली कोई खरीद नहीं। पंक्ति पर दर लिखें।",
     "load.b.line_no_weight": "एक को छोड़ हर पंक्ति पर वज़न लिखें; खाली पंक्ति मिल शुद्ध का बाकी लेती है",
     "load.b.lines_mismatch": "पंक्तियों का जोड़ {rows} क्विंटल है पर मिल का शुद्ध {net} क्विंटल है",
+    "load.b.line_not_positive": "{d} की खाली पंक्ति {q} क्विंटल बनती है: लिखी पंक्तियाँ मिल शुद्ध से ज़्यादा हैं। उन्हें घटाएँ।",
     "load.w.stock_negative": "इस ट्रक से {d} का स्टॉक {q} क्विंटल शून्य से नीचे जाता है",
 
     "stock.title": "मिल स्टॉक", "stock.sub": "हर मिल के लिए खरीदा, घटाकर जो ट्रकों में गया। हर आँकड़ा पर्चियों और ट्रक की पंक्तियों से जुड़ता है।",

@@ -1,4 +1,5 @@
 import type { Context, Next } from "hono";
+import { z } from "zod";
 import { getCookie } from "hono/cookie";
 import { resolveSession, type AuthContext } from "./auth.ts";
 import type { AuditActor } from "./audit.ts";
@@ -65,3 +66,23 @@ export function actor(c: Context<Env>): AuditActor {
     userAgent: c.req.header("user-agent") ?? null,
   };
 }
+
+/**
+ * A Content-Disposition value any browser accepts for any file name: an ASCII
+ * fallback (Hindi digits, slashes and quotes replaced) plus the real name
+ * UTF-8 encoded. "parcha-25-26/१९६.xlsx" must download, not crash.
+ */
+export function attachment(name: string): string {
+  const ascii = name.normalize("NFKD").replace(/[^\x20-\x7e]/g, "_").replace(/["\\/;]/g, "-");
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name.replace(/[\\/]/g, "-"))}`;
+}
+
+/** A real calendar day, YYYY-MM-DD, within 2000–2100: a typo like 0202 is refused, not saved. */
+export const isoDay = (msg = "Date must be YYYY-MM-DD") => z.string().regex(/^\d{4}-\d{2}-\d{2}$/, msg).refine((v) => {
+  const [y, m, d] = v.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return y >= 2000 && y <= 2100 && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}, { message: "That date is not a real day between 2000 and 2100" });
+
+/** Sanity caps: a slip or truck of 1,000 qtl, ₹1 lakh a quintal, ₹1,000 crore. */
+export const LIMIT = { grams: 100_000_000, rate: 10_000_000, paise: 100_000_000_000, count: 1_000_000 } as const;

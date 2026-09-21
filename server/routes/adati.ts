@@ -21,7 +21,7 @@ const AdatiBody = z.object({
   phone: z.string().trim().optional(),
   accountNo: z.string().trim().optional(),
   ifsc: z.string().trim().optional(),
-  openingBalanceRupees: z.number().optional(),
+  openingBalanceRupees: z.number().finite().min(-1e10).max(1e10).optional(),
   notes: z.string().trim().optional(),
   active: z.boolean().optional(),
 });
@@ -249,13 +249,15 @@ adatiRoutes.delete("/:id", can("adati.delete"), async (c) => {
     .where(and(eq(schema.adati.id, id), eq(schema.adati.businessId, biz))).limit(1);
   if (!before) throw notFound("Supplier not found");
 
-  const [used] = await db.select({ id: schema.purchaseSlips.id }).from(schema.purchaseSlips)
+  const [slip] = await db.select({ id: schema.purchaseSlips.id }).from(schema.purchaseSlips)
     .where(eq(schema.purchaseSlips.adatiId, id)).limit(1);
-  if (used) {
-    // never orphan a slip — deactivate instead
+  const [pay] = await db.select({ id: schema.payments.id }).from(schema.payments)
+    .where(eq(schema.payments.adatiId, id)).limit(1);
+  // a slip, a payment or an opening balance is money on the ledger: keep the supplier, make it inactive
+  if (slip || pay || before.openingBalancePaise !== 0) {
     await db.update(schema.adati).set({ active: false, updatedAt: nowSec() }).where(eq(schema.adati.id, id));
     await audit({ actor: actor(c), action: "adati.deactivate", entity: "adati", entityId: id, entityLabel: before.nameHinglish, before, after: { ...before, active: false } });
-    return c.json({ ok: true, deactivated: true, reason: "This supplier has slips, so it was made inactive instead of deleted." });
+    return c.json({ ok: true, deactivated: true, reason: "This supplier has slips, payments or an opening balance, so it was made inactive instead of deleted." });
   }
   await db.delete(schema.adati).where(eq(schema.adati.id, id));
   await audit({ actor: actor(c), action: "adati.delete", entity: "adati", entityId: id, entityLabel: before.nameHinglish, before });

@@ -14,7 +14,9 @@ const box = { top: thin, left: thin, bottom: thin, right: thin };
 export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean } = {}): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = "Mandi Mitra";
-  const ws = wb.addWorksheet(`Parcha ${doc.invoiceNo ?? "draft"}`, {
+  // Excel forbids / \\ ? * : [ ] in sheet names and caps them at 31 characters
+  const sheetName = `Parcha ${doc.invoiceNo ?? "draft"}`.replace(/[\\/?*:[\]]/g, "-").slice(0, 31);
+  const ws = wb.addWorksheet(sheetName, {
     pageSetup: { paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 1,
       margins: { left: 0.5, right: 0.5, top: 0.6, bottom: 0.6, header: 0.3, footer: 0.3 } },
   });
@@ -117,9 +119,9 @@ export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean } = {})
   const r = doc.result;
   put(`A${row}:E${row}`, "TOTAL DARA", { bold: true, align: "center" });
   put(`F${row}`, "ADVANCE", { bold: true });
-  put(`G${row}:H${row}`, r.advancePaise ? rs(r.advancePaise) : "-", { align: "right", fmt: INR });
+  put(`G${row}:H${row}`, r.advancePaise && doc.config.advance.treatment !== "exclude" ? rs(r.advancePaise) : "-", { align: "right", fmt: INR });
   row++;
-  put(`A${row}:E${row}`, r.daraPaise ? rs(r.daraPaise) : "-", { align: "right", fmt: INR });
+  put(`A${row}:E${row}`, r.daraPaise && doc.config.parcha.showDaraRow && doc.config.dara.mode !== "none" ? rs(r.daraPaise) : "-", { align: "right", fmt: INR });
   put(`F${row}`, "GRAND TOTAL", { bold: true });
   put(`G${row}:H${row}`, rs(r.grandTotalPaise), { bold: true, align: "right", fmt: INR });
   row++;

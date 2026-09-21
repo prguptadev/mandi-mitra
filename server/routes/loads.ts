@@ -8,7 +8,7 @@ import { ChargeConfigSchema } from "../lib/charges.ts";
 import { loadState, storedWeighment, stockDays, linesWithWeights, type ParchaDoc } from "../lib/parcha.ts";
 import { parchaXlsx } from "../lib/parchaXlsx.ts";
 import { poLabel } from "./orders.ts";
-import { can, actor, param, notFound, bad, HttpError, type Env } from "../lib/http.ts";
+import { can, actor, param, notFound, bad, HttpError, attachment, isoDay, LIMIT, type Env } from "../lib/http.ts";
 
 /* A load is one truck to one mill, loaded by weight from that mill's stock:
    each row takes a weight from one purchase day (optionally against a PO),
@@ -20,10 +20,10 @@ export const loadRoutes = new Hono<Env>();
 export const parchaRoutes = new Hono<Env>();
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const gramsOrNull = z.number().int().min(0).nullish();
+const gramsOrNull = z.number().int().min(0).max(LIMIT.grams, "Weight is too large — check the decimal point").nullish();
 
 const Header = z.object({
-  loadDate: z.string().regex(ISO_DATE, "Date must be YYYY-MM-DD"),
+  loadDate: isoDay(),
   merchantId: z.string().min(1, "Pick a mill"),
   jinsId: z.string().min(1, "Pick a commodity"),
   poId: z.string().nullish(),
@@ -36,17 +36,17 @@ const Header = z.object({
 
 const Weighment = z.object({
   millGrossGrams: gramsOrNull,
-  katteCount: z.number().int().min(0).nullish(),
-  boreCount: z.number().int().min(0).nullish(),
+  katteCount: z.number().int().min(0).max(LIMIT.count).nullish(),
+  boreCount: z.number().int().min(0).max(LIMIT.count).nullish(),
   katteBardanaGrams: gramsOrNull,
   boreBardanaGrams: gramsOrNull,
 });
 
 const ParchaFields = z.object({
   invoiceNo: z.string().trim().max(20).nullish(),
-  invoiceDate: z.string().regex(ISO_DATE).nullish(),
-  advancePaise: z.number().int().min(0),
-  daraPaise: z.number().int().min(0),
+  invoiceDate: isoDay().nullish(),
+  advancePaise: z.number().int().min(0).max(LIMIT.paise),
+  daraPaise: z.number().int().min(0).max(LIMIT.paise),
 });
 
 const truckNorm = (t?: string | null) => (t ? t.toUpperCase().replace(/[\s-]+/g, "") : t ?? null);
@@ -82,12 +82,12 @@ async function checkHeaderRefs(biz: string, h: { merchantId: string; jinsId: str
 }
 
 const LineBody = z.object({
-  stockDate: z.string().regex(ISO_DATE, "Pick the purchase day this weight comes from"),
+  stockDate: isoDay("Pick the purchase day this weight comes from"),
   poId: z.string().nullish(),
   /** grams; null = the rest of the mill's net */
-  netGrams: z.number().int().min(1, "Weight must be more than zero").nullish(),
+  netGrams: z.number().int().min(1, "Weight must be more than zero").max(LIMIT.grams, "Weight is too large — check the decimal point").nullish(),
   /** null = that day's average rate */
-  ratePaisePerQtl: z.number().int().min(1).nullish(),
+  ratePaisePerQtl: z.number().int().min(1).max(LIMIT.rate, "Rate is too large — check the decimal point").nullish(),
 });
 
 async function checkLinePo(biz: string, load: { merchantId: string; jinsId: string }, poId: string | null | undefined) {
@@ -141,13 +141,10 @@ loadRoutes.get("/", can("load.read"), async (c) => {
     millCode: schema.merchants.code,
     millName: schema.merchants.name,
     jinsCode: schema.jins.code,
-    poNo: schema.purchaseOrders.poNo,
-    poDate: schema.purchaseOrders.poDate,
   })
     .from(schema.loads)
     .innerJoin(schema.merchants, eq(schema.merchants.id, schema.loads.merchantId))
     .innerJoin(schema.jins, eq(schema.jins.id, schema.loads.jinsId))
-    .leftJoin(schema.purchaseOrders, eq(schema.purchaseOrders.id, schema.loads.poId))
     .where(and(...where))
     .orderBy(desc(schema.loads.loadDate), desc(schema.loads.createdAt))
     .limit(500);
@@ -191,14 +188,14 @@ loadRoutes.get("/:id/stock-days", can("load.read"), async (c) => {
 
 loadRoutes.post("/", can("load.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
-  const body = Header.extend({ stockDate: z.string().regex(ISO_DATE).optional() }).parse(await c.req.json());
+  const body = Header.extend({ stockDate: isoDay().optional() }).parse(await c.req.json());
   const refs = await checkHeaderRefs(biz, body);
 
   const id = newId();
   const values = {
     id, businessId: biz,
     loadDate: body.loadDate, merchantId: body.merchantId, jinsId: body.jinsId,
-    poId: body.poId ?? null,
+    poId: null,
     truckNo: truckNorm(body.truckNo),
     transporter: body.transporter ?? null,
     driverPhone: body.driverPhone ?? null,
@@ -239,7 +236,8 @@ loadRoutes.put("/:id", can("load.write"), async (c) => {
   const header = {
     merchantId: body.merchantId ?? before.merchantId,
     jinsId: body.jinsId ?? before.jinsId,
-    poId: body.poId === undefined ? before.poId : (body.poId ?? null),
+    // POs live on the rows now; the truck-level field is always cleared
+    poId: null as string | null,
   };
   const refs = await checkHeaderRefs(biz, header);
 
@@ -264,7 +262,9 @@ loadRoutes.put("/:id", can("load.write"), async (c) => {
     katteBardanaGrams: pick("katteBardanaGrams", before.katteBardanaGrams) as number | null,
     boreBardanaGrams: pick("boreBardanaGrams", before.boreBardanaGrams) as number | null,
     invoiceNo: body.invoiceNo === undefined ? before.invoiceNo : (body.invoiceNo?.trim() || null),
-    invoiceDate: pick("invoiceDate", before.invoiceDate) as string | null,
+    invoiceDate: body.invoiceDate !== undefined ? (body.invoiceDate ?? null)
+      : body.loadDate && (before.invoiceDate == null || before.invoiceDate === before.loadDate) ? body.loadDate
+      : before.invoiceDate,
     advancePaise: body.advancePaise ?? before.advancePaise,
     daraPaise: body.daraPaise ?? before.daraPaise,
     updatedAt: nowSec(),
@@ -295,6 +295,7 @@ loadRoutes.post("/:id/lines", can("load.write"), async (c) => {
     sort: (last?.n ?? -1) + 1,
   };
   await db.insert(schema.loadLines).values(values);
+  await enqueueSync(biz, "load_line", lid, "insert", values);
   await audit({ actor: actor(c), action: "load.add_line", entity: "load", entityId: l.id,
     entityLabel: `${l.loadDate} ${l.truckNo ?? ""}: + ${body.stockDate}`.trim(), after: values });
   return c.json({ id: lid });
@@ -318,6 +319,7 @@ loadRoutes.put("/:id/lines/:lineId", can("load.write"), async (c) => {
     updatedAt: nowSec(),
   };
   await db.update(schema.loadLines).set(patch).where(eq(schema.loadLines.id, lineId));
+  await enqueueSync(biz, "load_line", lineId, "update", patch);
   await audit({ actor: actor(c), action: "load.update_line", entity: "load", entityId: l.id,
     entityLabel: `${l.loadDate} ${l.truckNo ?? ""}: ${patch.stockDate}`.trim(), before, after: { ...before, ...patch } });
   return c.json({ ok: true });
@@ -332,6 +334,7 @@ loadRoutes.delete("/:id/lines/:lineId", can("load.write"), async (c) => {
     .where(and(eq(schema.loadLines.id, lineId), eq(schema.loadLines.loadId, l.id))).limit(1);
   if (!before) throw notFound("That row is not on this truck");
   await db.delete(schema.loadLines).where(eq(schema.loadLines.id, lineId));
+  await enqueueSync(biz, "load_line", lineId, "delete");
   await audit({ actor: actor(c), action: "load.remove_line", entity: "load", entityId: l.id,
     entityLabel: `${l.loadDate} ${l.truckNo ?? ""}: − ${before.stockDate}`.trim(), before });
   return c.json({ ok: true });
@@ -358,10 +361,21 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
   const id = param(c, "id");
   const l = await getLoad(biz, id);
   assertDraft(l);
+  const req = z.object({
+    invoiceNo: z.string().trim().min(1).max(20).optional(),
+    /** The grand total the approver was looking at; a change since then is refused. */
+    expectedGrandTotalPaise: z.number().int().optional(),
+  }).parse(await c.req.json().catch(() => ({})));
+  if (req.invoiceNo && req.invoiceNo !== (l.invoiceNo ?? "")) {
+    await db.update(schema.loads).set({ invoiceNo: req.invoiceNo, updatedAt: nowSec() }).where(eq(schema.loads.id, id));
+  }
   const s = await loadState(biz, id);
   if (!s) throw notFound("Load not found");
   if (s.blockers.length || !s.doc) {
     return c.json({ error: "The parcha is not ready to approve", code: "not_ready", blockers: s.blockers }, 409);
+  }
+  if (req.expectedGrandTotalPaise !== undefined && req.expectedGrandTotalPaise !== s.doc.result.grandTotalPaise) {
+    return c.json({ error: "The parcha changed since you looked at it (someone edited the truck or a slip). Check the new total and approve again.", code: "changed" }, 409);
   }
   const parchaNo = s.doc.invoiceNo!;
   const [last] = await db.select({ v: sql<number>`max(${schema.parchas.version})` }).from(schema.parchas)
@@ -379,7 +393,11 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
       grandTotalPaise: doc.result.grandTotalPaise,
       status: "approved", approvedBy: auth.user.id, approvedAt: at,
     }).run();
-    tx.update(schema.loads).set({ status: "billed", invoiceDate: doc.invoiceDate, updatedAt: at })
+    // the stored mill figures are what stock and PO balances read: make them the billed ones
+    tx.update(schema.loads).set({
+      status: "billed", invoiceDate: doc.invoiceDate, updatedAt: at,
+      bags: s.weighment.bags, millBardanaGrams: s.weighment.bardanaGrams, millNetGrams: s.weighment.netGrams,
+    })
       .where(eq(schema.loads.id, id)).run();
   });
   await audit({ actor: actor(c), action: "parcha.approve", entity: "parcha", entityId: pid,
@@ -401,7 +419,7 @@ loadRoutes.get("/:id/parcha.xlsx", can("parcha.read"), async (c) => {
   return new Response(new Uint8Array(buf), {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="${name}"`,
+      "Content-Disposition": attachment(name),
     },
   });
 });

@@ -107,7 +107,9 @@ function build(cfg: DisplayConfig): Formatter {
     },
     rate: (paise) => formatNumber(paise / 100, cfg.rateDecimals, cfg),
     weight: (grams, opts) => {
-      const body = formatNumber(grams / GRAMS_PER_QTL, cfg.weightDecimals, cfg);
+      // to the kg, half up, in integers — so screen, print and Excel never differ by a kilo
+      const kg = Math.sign(grams) * Math.round(Math.abs(grams) / 1000);
+      const body = formatNumber(cfg.weightDecimals <= 2 ? kg / 100 : grams / GRAMS_PER_QTL, cfg.weightDecimals, cfg);
       const signed = wrapNegative(body, grams < 0, cfg);
       return opts?.unit ? `${signed} ${cfg.weightUnitLabel}` : signed;
     },

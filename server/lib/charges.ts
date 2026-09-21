@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { amountPaise, pctPaise, roundHalfUp, GRAMS_PER_QTL } from "./money.ts";
+import { amountPaise, pctPaise, perUnitPaise, divHalfUp, GRAMS_PER_QTL } from "./money.ts";
+
+/** Bags × kg a bag, rounded half up to a whole kg: the parcha prints weight to 0.01 qtl (1 kg). */
+export function bardanaKg(bags: number, kgPerBag: number): number {
+  return Number(divHalfUp(BigInt(bags) * BigInt(Math.round(kgPerBag * 1000)), 1000n)) * 1000;
+}
 
 /* Every number on the kaccha parcha is driven from here. Nothing is hardcoded,
    because the terms differ per mill — including WHICH BASE a percentage applies
@@ -20,7 +25,7 @@ export const BagKind = z.enum(["all", "katte", "bore"]);
 export const KatautiSchema = z.object({
   mode: z.enum(["per_quintal_rounded", "per_quintal_exact", "per_bag", "none"])
     .default("per_quintal_rounded"),
-  kgPerUnit: z.number().min(0).max(5).default(1),
+  kgPerUnit: z.number().finite().min(0).max(5).default(1),
   /**
    * half_up is what your munshi uses: it matched 45/45 rows, and every exact
    * .50 case rounds up (32.50 -> 33, 28.50 -> 29, 17.50 -> 18). A bigger
@@ -33,13 +38,13 @@ export const ChargeConfigSchema = z.object({
   katauti: KatautiSchema,
   /** Bardana weight per katta (plastic bag) as the destination mill counts it:
    *  4.56 qtl over 800 katte on invoice 196. */
-  millBardanaKgPerBag: z.number().min(0).max(5).default(0.57),
+  millBardanaKgPerBag: z.number().finite().min(0).max(5).default(0.57),
   /** Bardana per bora (jute sack). Not on any paper seen yet — an assumption. */
-  millBoreBardanaKgPerBag: z.number().min(0).max(5).default(1),
+  millBoreBardanaKgPerBag: z.number().finite().min(0).max(5).default(1),
 
   adat: z.object({
     enabled: z.boolean().default(true),
-    pct: z.number().min(0).max(100).default(2),
+    pct: z.number().finite().min(0).max(100).default(2),
     label: z.string().default("Kacchi Adat"),
   }).default({}),
 
@@ -48,28 +53,28 @@ export const ChargeConfigSchema = z.object({
      for jute bags. Which bags each rate counts is a setting, not code. */
   labour1: z.object({
     enabled: z.boolean().default(true),
-    perBagRupees: z.number().min(0).default(9.5),
+    perBagRupees: z.number().finite().min(0).default(9.5),
     appliesTo: BagKind.default("katte"),
     label: z.string().default("Labour"),
   }).default({}),
 
   labour2: z.object({
     enabled: z.boolean().default(true),
-    perBagRupees: z.number().min(0).default(15.5),
+    perBagRupees: z.number().finite().min(0).default(15.5),
     appliesTo: BagKind.default("bore"),
     label: z.string().default("Labour"),
   }).default({}),
 
   sutli: z.object({
     enabled: z.boolean().default(true),
-    perBagRupees: z.number().min(0).default(1),
+    perBagRupees: z.number().finite().min(0).default(1),
     appliesTo: BagKind.default("all"),
     label: z.string().default("Sutli"),
   }).default({}),
 
   gaushala: z.object({
     enabled: z.boolean().default(true),
-    perQtlRupees: z.number().min(0).default(1.25),
+    perQtlRupees: z.number().finite().min(0).default(1.25),
     /** Your 20-09-2026 parcha charges this on GROSS, not net. */
     base: WeightBase.default("gross"),
     label: z.string().default("Gaushala"),
@@ -77,7 +82,7 @@ export const ChargeConfigSchema = z.object({
 
   mandiTax: z.object({
     enabled: z.boolean().default(true),
-    pct: z.number().min(0).max(100).default(1.5),
+    pct: z.number().finite().min(0).max(100).default(1.5),
     /** Verified: 1.5% x (amount + adat) = 16,228.64 on your parcha. */
     base: PctBase.default("amount_plus_adat"),
     label: z.string().default("Mandi Tax"),
@@ -85,14 +90,14 @@ export const ChargeConfigSchema = z.object({
 
   commission: z.object({
     enabled: z.boolean().default(true),
-    pct: z.number().min(0).max(100).default(1),
+    pct: z.number().finite().min(0).max(100).default(1),
     base: PctBase.default("amount_plus_adat"),
     label: z.string().default("Commission"),
   }).default({}),
 
   gatePass: z.object({
     enabled: z.boolean().default(true),
-    perTruckRupees: z.number().min(0).default(100),
+    perTruckRupees: z.number().finite().min(0).default(100),
     label: z.string().default("Gate Pass"),
   }).default({}),
 
@@ -102,7 +107,7 @@ export const ChargeConfigSchema = z.object({
     label: z.string(),
     labelHi: z.string().optional(),
     kind: z.enum(["per_bag", "per_qtl", "per_truck", "pct", "flat"]),
-    value: z.number(),
+    value: z.number().finite(),
     base: PctBase.optional(),
     weightBase: WeightBase.optional(),
     sign: z.enum(["add", "subtract"]).default("add"),
@@ -110,7 +115,7 @@ export const ChargeConfigSchema = z.object({
 
   dara: z.object({
     mode: z.enum(["none", "per_bag", "per_qtl", "pct", "manual"]).default("manual"),
-    value: z.number().default(0),
+    value: z.number().finite().default(0),
     weightBase: WeightBase.default("net"),
     /** On your sample parcha Dara is printed but NOT inside the grand total. */
     includeInGrandTotal: z.boolean().default(false),
@@ -136,7 +141,7 @@ export const ChargeConfigSchema = z.object({
     footerNoteHi: z.string().default(""),
   }).default({}),
 
-  paymentTermsDays: z.number().int().min(0).default(0),
+  paymentTermsDays: z.number().finite().int().min(0).default(0),
   notes: z.string().default(""),
 });
 
@@ -236,8 +241,8 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
   const trucks = input.trucks ?? 1;
   const grossGrams = input.grossGrams;
 
-  const katteBardanaGrams = input.katteBardanaGrams ?? Math.round(katte * cfg.millBardanaKgPerBag * 1000);
-  const boreBardanaGrams = input.boreBardanaGrams ?? Math.round(bore * cfg.millBoreBardanaKgPerBag * 1000);
+  const katteBardanaGrams = input.katteBardanaGrams ?? bardanaKg(katte, cfg.millBardanaKgPerBag);
+  const boreBardanaGrams = input.boreBardanaGrams ?? bardanaKg(bore, cfg.millBoreBardanaKgPerBag);
   const bardanaGrams = input.bardanaGrams ?? katteBardanaGrams + boreBardanaGrams;
   const netGrams = input.netGrams ?? grossGrams - bardanaGrams;
   const bagsOf = (k: z.infer<typeof BagKind>) => (k === "katte" ? katte : k === "bore" ? bore : bags);
@@ -283,7 +288,7 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
       key: "labour1", label: cfg.labour1.label, labelHi: "लेबर",
       detail: `Rs ${cfg.labour1.perBagRupees}/bag x ${n}${cfg.labour1.appliesTo === "all" ? "" : " " + cfg.labour1.appliesTo}`,
       rate: cfg.labour1.perBagRupees, per: "bag",
-      amountPaise: roundHalfUp(n * cfg.labour1.perBagRupees * 100), kind: "charge",
+      amountPaise: perUnitPaise(n, 1, cfg.labour1.perBagRupees), kind: "charge",
     });
   }
   if (cfg.labour2.enabled) {
@@ -292,7 +297,7 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
       key: "labour2", label: cfg.labour2.label, labelHi: "लेबर (दूसरा)",
       detail: `Rs ${cfg.labour2.perBagRupees}/bag x ${n}${cfg.labour2.appliesTo === "all" ? "" : " " + cfg.labour2.appliesTo}`,
       rate: cfg.labour2.perBagRupees, per: "bag",
-      amountPaise: roundHalfUp(n * cfg.labour2.perBagRupees * 100), kind: "charge",
+      amountPaise: perUnitPaise(n, 1, cfg.labour2.perBagRupees), kind: "charge",
     });
   }
   if (cfg.sutli.enabled) {
@@ -301,7 +306,7 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
       key: "sutli", label: cfg.sutli.label, labelHi: "सुतली",
       detail: `Rs ${cfg.sutli.perBagRupees}/bag x ${n}${cfg.sutli.appliesTo === "all" ? "" : " " + cfg.sutli.appliesTo}`,
       rate: cfg.sutli.perBagRupees, per: "bag",
-      amountPaise: roundHalfUp(n * cfg.sutli.perBagRupees * 100), kind: "charge",
+      amountPaise: perUnitPaise(n, 1, cfg.sutli.perBagRupees), kind: "charge",
     });
   }
   if (cfg.gaushala.enabled) {
@@ -310,7 +315,7 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
       key: "gaushala", label: cfg.gaushala.label, labelHi: "गौशाला",
       detail: `Rs ${cfg.gaushala.perQtlRupees}/qtl on ${cfg.gaushala.base} ${(w / GRAMS_PER_QTL).toFixed(2)}`,
       rate: cfg.gaushala.perQtlRupees, per: "qtl",
-      amountPaise: roundHalfUp((w / GRAMS_PER_QTL) * cfg.gaushala.perQtlRupees * 100), kind: "charge",
+      amountPaise: perUnitPaise(w, GRAMS_PER_QTL, cfg.gaushala.perQtlRupees), kind: "charge",
     });
   }
   if (cfg.mandiTax.enabled) {
@@ -333,17 +338,17 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
     push({
       key: "gatePass", label: cfg.gatePass.label, labelHi: "गेट पास",
       detail: `Rs ${cfg.gatePass.perTruckRupees}/truck x ${trucks}`, rate: cfg.gatePass.perTruckRupees, per: "truck",
-      amountPaise: roundHalfUp(trucks * cfg.gatePass.perTruckRupees * 100), kind: "charge",
+      amountPaise: perUnitPaise(trucks, 1, cfg.gatePass.perTruckRupees), kind: "charge",
     });
   }
 
   for (const ex of cfg.extraCharges) {
     let amt = 0;
-    if (ex.kind === "per_bag") amt = roundHalfUp(bags * ex.value * 100);
-    else if (ex.kind === "per_qtl") amt = roundHalfUp((weightFor(ex.weightBase ?? "net") / GRAMS_PER_QTL) * ex.value * 100);
-    else if (ex.kind === "per_truck") amt = roundHalfUp(trucks * ex.value * 100);
+    if (ex.kind === "per_bag") amt = perUnitPaise(bags, 1, ex.value);
+    else if (ex.kind === "per_qtl") amt = perUnitPaise(weightFor(ex.weightBase ?? "net"), GRAMS_PER_QTL, ex.value);
+    else if (ex.kind === "per_truck") amt = perUnitPaise(trucks, 1, ex.value);
     else if (ex.kind === "pct") amt = pctPaise(baseFor(ex.base ?? "amount_plus_adat", subtotal + charges), ex.value);
-    else amt = roundHalfUp(ex.value * 100);
+    else amt = perUnitPaise(1, 1, ex.value);
     push({ key: `extra:${ex.key}`, label: ex.label, labelHi: ex.labelHi, amountPaise: amt, kind: "charge", sign: ex.sign });
   }
 
@@ -352,8 +357,8 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
 
   // Dara — computed but, by default, reported outside the grand total.
   let dara = 0;
-  if (cfg.dara.mode === "per_bag") dara = roundHalfUp(bags * cfg.dara.value * 100);
-  else if (cfg.dara.mode === "per_qtl") dara = roundHalfUp((weightFor(cfg.dara.weightBase) / GRAMS_PER_QTL) * cfg.dara.value * 100);
+  if (cfg.dara.mode === "per_bag") dara = perUnitPaise(bags, 1, cfg.dara.value);
+  else if (cfg.dara.mode === "per_qtl") dara = perUnitPaise(weightFor(cfg.dara.weightBase), GRAMS_PER_QTL, cfg.dara.value);
   else if (cfg.dara.mode === "pct") dara = pctPaise(total, cfg.dara.value);
   else if (cfg.dara.mode === "manual") dara = input.manualDaraPaise ?? 0;
   if (cfg.parcha.showDaraRow && cfg.dara.mode !== "none") {

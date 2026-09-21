@@ -7,27 +7,43 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { ChargeConfigSchema, KatautiSchema, deriveKatauti, type Katauti } from "../lib/charges.ts";
 import { amountPaise, weightedAvgRate, GRAMS_PER_QTL } from "../lib/money.ts";
 import { DisplayConfigSchema, defaultDisplayConfig } from "../lib/display.ts";
-import { can, actor, param, notFound, bad, HttpError, type Env } from "../lib/http.ts";
+import { can, actor, param, notFound, bad, HttpError, isoDay, LIMIT, type Env } from "../lib/http.ts";
+
+/** Supplier, commodity and mill must all be this business's own. */
+async function checkSlipRefs(biz: string, r: { adatiId?: string; jinsId?: string; merchantId?: string | null }) {
+  if (r.adatiId) {
+    const [a] = await db.select({ id: schema.adati.id }).from(schema.adati).where(and(eq(schema.adati.id, r.adatiId), eq(schema.adati.businessId, biz))).limit(1);
+    if (!a) throw bad("That supplier does not belong to this business", "bad_adati");
+  }
+  if (r.jinsId) {
+    const [j] = await db.select({ id: schema.jins.id }).from(schema.jins).where(and(eq(schema.jins.id, r.jinsId), eq(schema.jins.businessId, biz))).limit(1);
+    if (!j) throw bad("That commodity does not belong to this business", "bad_jins");
+  }
+  if (r.merchantId) {
+    const [m] = await db.select({ id: schema.merchants.id }).from(schema.merchants).where(and(eq(schema.merchants.id, r.merchantId), eq(schema.merchants.businessId, biz))).limit(1);
+    if (!m) throw bad("That mill does not belong to this business", "bad_merchant");
+  }
+}
 
 export const slipRoutes = new Hono<Env>();
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 const SlipBody = z.object({
-  slipDate: z.string().regex(ISO_DATE, "Date must be YYYY-MM-DD"),
+  slipDate: isoDay(),
   rstNo: z.string().trim().min(1, "RST no is required").max(20),
   adatiId: z.string().min(1, "Pick a supplier"),
   jinsId: z.string().min(1, "Pick a commodity"),
   merchantId: z.string().nullish(),
   /** Dharam kanta, in grams. */
-  grossGrams: z.number().int().min(1, "Gross weight is required"),
+  grossGrams: z.number().int().min(1, "Gross weight is required").max(LIMIT.grams, "Gross weight is too large — check the decimal point"),
   /** Only when the sheet's KATAUTI differs from gross rounded to a quintal. */
-  katautiUnits: z.number().int().min(0).nullish(),
+  katautiUnits: z.number().int().min(0).max(10_000).nullish(),
   /** Physical bags, when known. Not the same number as katauti. */
-  bagsCount: z.number().int().min(0).nullish(),
-  ratePaisePerQtl: z.number().int().min(0),
+  bagsCount: z.number().int().min(0).max(LIMIT.count).nullish(),
+  ratePaisePerQtl: z.number().int().min(0).max(LIMIT.rate, "Rate is too large — check the decimal point"),
   /** When the sheet's own net disagrees with the formula, we want to know. */
-  netGramsClaimed: z.number().int().nullish(),
+  netGramsClaimed: z.number().int().min(0).max(LIMIT.grams).nullish(),
 });
 
 /** Katauti terms come from the mill on the sheet header, else the business default. */
@@ -271,6 +287,7 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
   const [jn] = await db.select({ id: schema.jins.id }).from(schema.jins)
     .where(and(eq(schema.jins.id, body.jinsId), eq(schema.jins.businessId, biz))).limit(1);
   if (!jn) throw bad("That commodity does not belong to this business", "bad_jins");
+  await checkSlipRefs(biz, { merchantId: body.merchantId });
 
   const cfg = await katautiCfg(biz, body.merchantId);
   const d = deriveSlip(body.grossGrams, cfg, body.ratePaisePerQtl, body.katautiUnits ?? null);
@@ -322,17 +339,7 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
     .where(and(eq(schema.purchaseSlips.id, id), eq(schema.purchaseSlips.businessId, biz))).limit(1);
   if (!before) throw notFound("Slip not found");
   assertRateAllowed(c, body.ratePaisePerQtl !== undefined && body.ratePaisePerQtl !== before.ratePaisePerQtl);
-
-  if (body.rstNo && body.rstNo !== before.rstNo) {
-    const date = body.slipDate ?? before.slipDate;
-    const [dupe] = await db.select({ id: schema.purchaseSlips.id }).from(schema.purchaseSlips)
-      .where(and(
-        eq(schema.purchaseSlips.businessId, biz),
-        eq(schema.purchaseSlips.slipDate, date),
-        eq(schema.purchaseSlips.rstNo, body.rstNo),
-      )).limit(1);
-    // a repeated RST is allowed; the grid highlights it
-  }
+  await checkSlipRefs(biz, { adatiId: body.adatiId, jinsId: body.jinsId, merchantId: body.merchantId });
 
   const merged = {
     slipDate: body.slipDate ?? before.slipDate,
@@ -412,6 +419,7 @@ slipRoutes.post("/reassign", can("slip.write"), async (c) => {
       netGrams: d.netGrams, amountPaise: d.amountPaise, updatedAt: nowSec(),
     }).where(eq(schema.purchaseSlips.id, s.id));
   }
+  for (const sl of slips) await enqueueSync(biz, "purchase_slip", sl.id, "update", { merchantId });
   await audit({
     actor: actor(c), action: "slip.reassign", entity: "purchase_slip",
     entityLabel: `${slips.length} slips -> ${label}`,
@@ -438,6 +446,7 @@ slipRoutes.post("/recompute", can("slip.write"), async (c) => {
       await db.update(schema.purchaseSlips)
         .set({ katautiUnits: d.katautiUnits, netGrams: d.netGrams, amountPaise: d.amountPaise, updatedAt: nowSec() })
         .where(eq(schema.purchaseSlips.id, r.id));
+      await enqueueSync(biz, "purchase_slip", r.id, "update", { katautiUnits: d.katautiUnits, netGrams: d.netGrams, amountPaise: d.amountPaise });
       changed++;
     }
   }

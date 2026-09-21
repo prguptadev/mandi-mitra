@@ -1,11 +1,12 @@
 import { Hono } from "hono";
-import { eq, and, gte, lte, isNull, inArray, sql } from "drizzle-orm";
+import { eq, and, gte, lte, lt, isNull, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { parsePrefs, MILL_REPORT_COLUMNS, type MillReportColumnKey } from "../lib/prefs.ts";
 import { millReportXlsx, millReportCsv, reportTotals, type MillReportRow } from "../lib/millReport.ts";
 import { sortSlips, type SlipSortOrder } from "../lib/slipOrder.ts";
-import { can, bad, notFound, type Env } from "../lib/http.ts";
+import { can, bad, notFound, attachment, type Env } from "../lib/http.ts";
 import { boughtByDay, linesWithWeights } from "../lib/parcha.ts";
+import { avgFromSums } from "../lib/money.ts";
 
 /* Reports sent out of the office, and the mill stock that proves them. */
 
@@ -93,14 +94,14 @@ reportRoutes.get("/mill", can("export.data"), async (c) => {
   if (format === "json") return c.json({ ...data, totals: reportTotals(rows) });
   if (format === "csv") {
     return new Response(millReportCsv(data), {
-      headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${base}.csv"` },
+      headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": attachment(`${base}.csv`) },
     });
   }
   const buf = await millReportXlsx(data);
   return new Response(new Uint8Array(buf), {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="${base}.xlsx"`,
+      "Content-Disposition": attachment(`${base}.xlsx`),
     },
   });
 });
@@ -137,7 +138,7 @@ stockRoutes.get("/", can("stock.read"), async (c) => {
     netGrams: sql<number>`sum(${S.netGrams})`,
     amountPaise: sql<number>`sum(${S.amountPaise})`,
     pricedNet: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} else 0 end)`,
-    pricedValue: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end)`,
+    pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
   }).from(S).where(and(...where)).groupBy(S.merchantId);
 
   const L = schema.loadLines;
@@ -160,7 +161,7 @@ stockRoutes.get("/", can("stock.read"), async (c) => {
       slips: b?.slips ?? 0,
       boughtNet: b?.netGrams ?? 0,
       boughtAmount: b?.amountPaise ?? 0,
-      avgRatePaisePerQtl: b && b.pricedNet ? Math.floor(b.pricedValue / b.pricedNet + 0.5) : 0,
+      avgRatePaisePerQtl: b ? avgFromSums(b.pricedValue, b.pricedNet) : 0,
       loadedNet: loaded,
       trucks: new Set(mine.map((x) => x.loadId)).size,
       stockNet: (b?.netGrams ?? 0) - loaded,
@@ -186,11 +187,11 @@ stockRoutes.get("/:merchantId", can("stock.read"), async (c) => {
       date: S.slipDate, slips: sql<number>`count(*)`, netGrams: sql<number>`sum(${S.netGrams})`,
       amountPaise: sql<number>`sum(${S.amountPaise})`,
       pricedNet: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} else 0 end)`,
-      pricedValue: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end)`,
+      pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
       unpriced: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then 0 else 1 end)`,
     }).from(S).where(and(...where)).groupBy(S.slipDate);
     days = new Map(rows.map((r) => [r.date, { date: r.date, slips: r.slips, netGrams: r.netGrams, amountPaise: r.amountPaise,
-      unpriced: r.unpriced, avgRatePaisePerQtl: r.pricedNet ? Math.floor(r.pricedValue / r.pricedNet + 0.5) : 0 }]));
+      unpriced: r.unpriced, avgRatePaisePerQtl: avgFromSums(r.pricedValue, r.pricedNet) }]));
   } else {
     const [m] = await db.select({ id: schema.merchants.id }).from(schema.merchants)
       .where(and(eq(schema.merchants.id, mid), eq(schema.merchants.businessId, biz))).limit(1);
@@ -230,8 +231,19 @@ stockRoutes.get("/:merchantId", can("stock.read"), async (c) => {
     };
   });
 
-  // running balance, oldest day first: what the godown held after each day
+  // running balance, oldest day first: what the godown held after each day,
+  // starting from what was already there before the period
   let run = 0;
+  if (f.from && mid !== "none") {
+    const S = schema.purchaseSlips;
+    const bw = [eq(S.businessId, biz), eq(S.merchantId, mid), lt(S.slipDate, f.from)];
+    if (f.jinsId) bw.push(eq(S.jinsId, f.jinsId));
+    const [b] = await db.select({ g: sql<number>`coalesce(sum(${S.netGrams}), 0)` }).from(S).where(and(...bw));
+    const lw2 = [eq(schema.loadLines.businessId, biz), eq(schema.loads.merchantId, mid), lt(schema.loadLines.stockDate, f.from)];
+    if (f.jinsId) lw2.push(eq(schema.loadLines.jinsId, f.jinsId));
+    const before = await linesWithWeights(and(...lw2));
+    run = (b?.g ?? 0) - before.reduce((x, r) => x + r.weightGrams, 0);
+  }
   for (const d of [...dayList].reverse()) { run += d.stockNet; (d as typeof d & { runningNet: number }).runningNet = run; }
 
   const totals = {

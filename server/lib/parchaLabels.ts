@@ -33,7 +33,11 @@ export function indianMoney(paise: number): string {
 }
 
 /** grams -> "310.74" quintals. */
-export const qtl2 = (grams: number) => (grams / 100_000).toFixed(2);
+export const qtl2 = (grams: number) => {
+  // whole kg, half up, in integers; then "310.74"
+  const kg = Math.round(Math.abs(grams) / 1000);
+  return `${grams < 0 ? "-" : ""}${Math.floor(kg / 100)}.${String(kg % 100).padStart(2, "0")}`;
+};
 
 /** "2026-09-20" -> "20-09-2026", as the parcha writes it. */
 export const dmy = (iso: string) => {

@@ -2,9 +2,10 @@ import { Hono } from "hono";
 import { eq, and, gte, lte, sql, inArray } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { can, bad, notFound, type Env } from "../lib/http.ts";
-import { incoming, trucks, race, worstAhead, type Filter } from "../lib/tracking.ts";
+import { incoming, trucks, race, worstAhead, type Filter, type TruckSummary } from "../lib/tracking.ts";
 import { linesWithWeights } from "../lib/parcha.ts";
 import { dispatchedByPo, poLabel } from "./orders.ts";
+import { avgFromSums } from "../lib/money.ts";
 
 /* The owner's control panel: what came in, what went out, what is left per
    mill, how the two raced each other, and a list of everything that does not
@@ -22,13 +23,17 @@ function filterOf(c: { req: { query: (k: string) => string | undefined } }): Fil
   return { from, to, jinsId: c.req.query("jinsId") || null };
 }
 
-const avgOf = (pricedValue: number, pricedNet: number) => (pricedNet ? Math.floor(pricedValue / pricedNet + 0.5) : 0);
+/** Weighted average over grouped rows whose Σ(net × rate) came back as text (kept exact in BigInt). */
+const avgOver = (rows: { pricedValue: string | number | null; pricedNet: number }[]) => {
+  const value = rows.reduce((s, r) => s + BigInt(String(r.pricedValue ?? 0).split(".")[0]), 0n);
+  return avgFromSums(value.toString(), rows.reduce((s, r) => s + r.pricedNet, 0));
+};
 
 export type FlagItem = Record<string, string | number | null>;
 export interface Flag { code: string; level: "bad" | "warn" | "info"; items: FlagItem[] }
 
 /** Everything that does not add up, across all dates. */
-async function flags(biz: string, jinsId: string | null): Promise<Flag[]> {
+async function flags(biz: string, jinsId: string | null, opts: { all: TruckSummary[]; canLedger: boolean }): Promise<Flag[]> {
   const out: Flag[] = [];
   const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code }).from(schema.merchants)
     .where(eq(schema.merchants.businessId, biz));
@@ -76,7 +81,7 @@ async function flags(biz: string, jinsId: string | null): Promise<Flag[]> {
   out.push({ code: "day_negative", level: "warn", items: dayNeg.sort((a, b) => String(b.date).localeCompare(String(a.date))) });
 
   // trucks
-  const all = await trucks(biz, { jinsId });
+  const all = opts.all;
   out.push({ code: "truck_mismatch", level: "bad", items: all.filter((x) => x.mismatch).map((x) => ({
     loadId: x.loadId, truck: x.truckNo, mill: code(x.merchantId), date: x.loadDate,
     rowsGrams: x.rows.reduce((s, r) => s + r.weightGrams, 0), netGrams: x.millNetGrams })) });
@@ -106,7 +111,8 @@ async function flags(biz: string, jinsId: string | null): Promise<Flag[]> {
   out.push({ code: "po_over", level: "warn", items: pos.filter((p) => (sent.get(p.id)?.grams ?? 0) > p.qtyGrams).map((p) => ({
     po: poLabel(p), mill: code(p.merchantId), overGrams: (sent.get(p.id)?.grams ?? 0) - p.qtyGrams })) });
 
-  // suppliers paid more than they are owed
+  // suppliers paid more than they are owed — only for those allowed to see the ledger
+  if (opts.canLedger) {
   const suppliers = await db.select({ id: schema.adati.id, nameHi: schema.adati.nameHi, nameHinglish: schema.adati.nameHinglish, opening: schema.adati.openingBalancePaise })
     .from(schema.adati).where(eq(schema.adati.businessId, biz));
   const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.amountPaise})` }).from(S).where(eq(S.businessId, biz)).groupBy(S.adatiId);
@@ -115,6 +121,7 @@ async function flags(biz: string, jinsId: string | null): Promise<Flag[]> {
   const ahead = suppliers.map((s) => ({ s, bal: s.opening + (bought.find((b) => b.adatiId === s.id)?.p ?? 0) - (paid.find((p) => p.adatiId === s.id)?.p ?? 0) }))
     .filter((x) => x.bal < 0);
   out.push({ code: "paid_ahead", level: "warn", items: ahead.map((x) => ({ adatiId: x.s.id, nameHi: x.s.nameHi, name: x.s.nameHinglish, paise: -x.bal })) });
+  }
 
   // reads that failed or never finished
   const scans = await db.select({ id: schema.scanBatches.id, date: schema.scanBatches.slipDate, status: schema.scanBatches.status, error: schema.scanBatches.errorText })
@@ -125,22 +132,36 @@ async function flags(biz: string, jinsId: string | null): Promise<Flag[]> {
 }
 
 dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
-  const biz = c.get("auth")!.businessId!;
+  const auth = c.get("auth")!;
+  const biz = auth.businessId!;
   const f = filterOf(c);
   const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code, name: schema.merchants.name, nameHi: schema.merchants.nameHi, active: schema.merchants.active })
     .from(schema.merchants).where(eq(schema.merchants.businessId, biz));
 
-  const inRows = await incoming(biz, f);
-  const outRows = await trucks(biz, f);
-  const beforeIn = f.from ? await incoming(biz, { jinsId: f.jinsId, before: f.from }) : [];
-  const beforeOut = f.from ? await trucks(biz, { jinsId: f.jinsId, before: f.from }) : [];
+  // everything once, then split by date in memory
+  const allIn = await incoming(biz, { jinsId: f.jinsId });
+  const allOut = await trucks(biz, { jinsId: f.jinsId });
+  const inRange = (d: string) => (!f.from || d >= f.from) && (!f.to || d <= f.to);
+  const inRows = allIn.filter((r) => inRange(r.date));
+  const outRows = allOut.filter((r) => inRange(r.loadDate));
+  const beforeIn = f.from ? allIn.filter((r) => r.date < f.from!) : [];
+  const beforeOut = f.from ? allOut.filter((r) => r.loadDate < f.from!) : [];
+  const group = <T,>(rows: T[], key: (r: T) => string | null) => {
+    const m = new Map<string, T[]>();
+    for (const r of rows) { const k = key(r) ?? "-"; m.set(k, [...(m.get(k) ?? []), r]); }
+    return m;
+  };
+  const inBy = group(inRows, (r) => r.merchantId);
+  const outBy = group(outRows, (r) => r.merchantId);
+  const bInBy = group(beforeIn, (r) => r.merchantId);
+  const bOutBy = group(beforeOut, (r) => r.merchantId);
 
   const perMill = mills.map((m) => {
-    const ins = inRows.filter((r) => r.merchantId === m.id);
-    const outs = outRows.filter((r) => r.merchantId === m.id);
+    const ins = inBy.get(m.id) ?? [];
+    const outs = outBy.get(m.id) ?? [];
     const opening = {
-      in: beforeIn.filter((r) => r.merchantId === m.id).reduce((s, r) => s + r.netGrams, 0),
-      out: beforeOut.filter((r) => r.merchantId === m.id).reduce((s, r) => s + r.weightGrams, 0),
+      in: (bInBy.get(m.id) ?? []).reduce((s, r) => s + r.netGrams, 0),
+      out: (bOutBy.get(m.id) ?? []).reduce((s, r) => s + r.weightGrams, 0),
     };
     const series = race(ins.map((r) => ({ date: r.date, netGrams: r.netGrams })), outs, opening);
     const boughtNet = ins.reduce((s, r) => s + r.netGrams, 0);
@@ -151,7 +172,7 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
       slips: ins.reduce((s, r) => s + r.slips, 0),
       boughtNetGrams: boughtNet,
       boughtAmountPaise: ins.reduce((s, r) => s + r.amountPaise, 0),
-      avgBuyPaisePerQtl: avgOf(ins.reduce((s, r) => s + r.pricedValue, 0), ins.reduce((s, r) => s + r.pricedNet, 0)),
+      avgBuyPaisePerQtl: avgOver(ins),
       loadedGrams: loaded,
       goodsPaise: goods,
       avgSalePaisePerQtl: loaded ? Math.floor((goods * 100_000) / loaded + 0.5) : 0,
@@ -173,7 +194,7 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
     slips: inRows.reduce((s, r) => s + r.slips, 0),
     boughtNetGrams: inRows.reduce((s, r) => s + r.netGrams, 0),
     boughtAmountPaise: inRows.reduce((s, r) => s + r.amountPaise, 0),
-    avgBuyPaisePerQtl: avgOf(inRows.reduce((s, r) => s + r.pricedValue, 0), inRows.reduce((s, r) => s + r.pricedNet, 0)),
+    avgBuyPaisePerQtl: avgOver(inRows),
     noMillGrams: noMill.reduce((s, r) => s + r.netGrams, 0),
     loadedGrams: perMill.reduce((s, m) => s + m.loadedGrams, 0),
     goodsPaise: perMill.reduce((s, m) => s + m.goodsPaise, 0),
@@ -181,11 +202,12 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
     trucks: outRows.length,
     drafts: outRows.filter((r) => r.status !== "billed").length,
     leftGrams: perMill.reduce((s, m) => s + m.leftGrams, 0),
-    paidPaise: payments[0]?.p ?? 0,
+    // payments are shown only to those who may see them
+    paidPaise: auth.permissions.has("payment.read") || auth.permissions.has("ledger.read") ? (payments[0]?.p ?? 0) : null,
   };
   const avgSale = kpis.loadedGrams ? Math.floor((kpis.goodsPaise * 100_000) / kpis.loadedGrams + 0.5) : 0;
 
-  return c.json({ period: { from: f.from ?? null, to: f.to ?? null }, kpis: { ...kpis, avgSalePaisePerQtl: avgSale }, mills: perMill, flags: await flags(biz, f.jinsId ?? null) });
+  return c.json({ period: { from: f.from ?? null, to: f.to ?? null }, kpis: { ...kpis, avgSalePaisePerQtl: avgSale }, mills: perMill, flags: await flags(biz, f.jinsId ?? null, { all: allOut, canLedger: auth.permissions.has("ledger.read") }) });
 });
 
 /** One mill: received, loaded (every truck, priced), left, and the race between them. */
@@ -212,7 +234,7 @@ dashboardRoutes.get("/mill/:id", can("stock.read"), async (c) => {
       boughtNetGrams: boughtNet,
       boughtGrossGrams: ins.reduce((s, r) => s + r.grossGrams, 0),
       boughtAmountPaise: ins.reduce((s, r) => s + r.amountPaise, 0),
-      avgBuyPaisePerQtl: avgOf(ins.reduce((s, r) => s + r.pricedValue, 0), ins.reduce((s, r) => s + r.pricedNet, 0)),
+      avgBuyPaisePerQtl: avgOver(ins),
       unpriced: ins.reduce((s, r) => s + r.unpriced, 0),
       loadedGrams: loaded,
       goodsPaise: goods,
@@ -226,6 +248,6 @@ dashboardRoutes.get("/mill/:id", can("stock.read"), async (c) => {
     worstAhead: worstAhead(series),
     trucks: outs.sort((a, b) => b.loadDate.localeCompare(a.loadDate)),
     incoming: ins.map((r) => ({ date: r.date, slips: r.slips, netGrams: r.netGrams, grossGrams: r.grossGrams, amountPaise: r.amountPaise,
-      avgPaisePerQtl: avgOf(r.pricedValue, r.pricedNet), unpriced: r.unpriced })).sort((a, b) => b.date.localeCompare(a.date)),
+      avgPaisePerQtl: avgFromSums(r.pricedValue, r.pricedNet), unpriced: r.unpriced })).sort((a, b) => b.date.localeCompare(a.date)),
   });
 });

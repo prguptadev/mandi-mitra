@@ -1,6 +1,7 @@
 import ExcelJS from "exceljs";
 import { MILL_REPORT_COLUMNS, type MillReportColumnKey } from "./prefs.ts";
 import { dmy } from "./parchaLabels.ts";
+import { weightedAvgRate } from "./money.ts";
 
 /* The daily report sent to a mill ("dara"): what was bought for it, one row
    per slip, with the total and the weighted average rate at the foot.
@@ -30,8 +31,6 @@ export interface MillReportData {
 
 export function reportTotals(rows: MillReportRow[]) {
   const priced = rows.filter((r) => r.ratePaisePerQtl > 0);
-  const pricedNet = priced.reduce((s, r) => s + r.netGrams, 0);
-  const pricedValue = priced.reduce((s, r) => s + r.netGrams * r.ratePaisePerQtl, 0);
   return {
     count: rows.length,
     grossGrams: rows.reduce((s, r) => s + r.grossGrams, 0),
@@ -39,7 +38,7 @@ export function reportTotals(rows: MillReportRow[]) {
     netGrams: rows.reduce((s, r) => s + r.netGrams, 0),
     amountPaise: rows.reduce((s, r) => s + r.amountPaise, 0),
     /** Σ(net × rate) / Σ net over priced slips, to the paisa. */
-    avgRatePaisePerQtl: pricedNet ? Math.floor(pricedValue / pricedNet + 0.5) : 0,
+    avgRatePaisePerQtl: weightedAvgRate(priced),
     unpriced: rows.length - priced.length,
   };
 }

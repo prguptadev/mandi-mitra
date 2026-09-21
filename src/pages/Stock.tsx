@@ -66,10 +66,12 @@ export function StockPage() {
   const s = useStockFilters();
   const list = useQuery({ queryKey: ["stock", "all", s.qs.toString()], queryFn: () => api.get<StockRow[]>(`/stock?${s.qs}`), enabled: Boolean(s.jinsId) });
   const rows = list.data ?? [];
+  // slips with no mill are in no mill's stock: shown as their own row, left out of the total
+  const milled = rows.filter((r) => r.merchantId);
   const total = {
-    bought: rows.reduce((x, r) => x + r.boughtNet, 0),
-    loaded: rows.reduce((x, r) => x + r.loadedNet, 0),
-    left: rows.reduce((x, r) => x + r.stockNet, 0),
+    bought: milled.reduce((x, r) => x + r.boughtNet, 0),
+    loaded: milled.reduce((x, r) => x + r.loadedNet, 0),
+    left: milled.reduce((x, r) => x + r.stockNet, 0),
   };
 
   return (
@@ -170,7 +172,7 @@ export function MillAccountPage({ id }: { id: string }) {
     setErr(null);
     try {
       await downloadDara({
-        merchantId: id, from: date, to: date, names: prefs.dailyList.exportNameLang, sort: prefs.dailyList.sortOrder,
+        merchantId: id, from: date, to: date, jinsId: s.jinsId, names: prefs.dailyList.exportNameLang, sort: prefs.dailyList.sortOrder,
         format: "xlsx", columns: MILL_REPORT_COLUMNS.filter((c) => prefs.dailyList.millReportColumns[c.key]).map((c) => c.key),
       });
     } catch (e) {

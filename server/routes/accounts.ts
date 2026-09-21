@@ -4,7 +4,8 @@ import { eq, and, gte, lte, lt, desc, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
-import { can, actor, param, notFound, bad, type Env } from "../lib/http.ts";
+import { can, actor, param, notFound, bad, isoDay, LIMIT, type Env } from "../lib/http.ts";
+import { weightedAvgRate } from "../lib/money.ts";
 
 /* The supplier (adati) ledger, Tally-style. What we owe a supplier is
      opening balance + every purchase (net × rate, on the slip's date) − every payment.
@@ -165,11 +166,7 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
       netGrams: entries.reduce((x, e) => x + (e.netGrams ?? 0), 0),
       grossGrams: slips.reduce((x, e) => x + e.grossGrams, 0),
       katautiUnits: slips.reduce((x, e) => x + e.katautiUnits, 0),
-      avgRatePaisePerQtl: (() => {
-        const priced = slips.filter((x) => x.ratePaisePerQtl > 0);
-        const n = priced.reduce((a, x) => a + x.netGrams, 0);
-        return n ? Math.floor(priced.reduce((a, x) => a + x.netGrams * x.ratePaisePerQtl, 0) / n + 0.5) : 0;
-      })(),
+      avgRatePaisePerQtl: weightedAvgRate(slips.filter((x) => x.ratePaisePerQtl > 0)),
       slips: slips.length,
       unpriced: slips.filter((x) => !x.ratePaisePerQtl).length,
       closingPaise: broughtForward + purchases - payments,
@@ -181,8 +178,8 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
 
 const PayBody = z.object({
   adatiId: z.string().min(1, "Pick a supplier"),
-  payDate: z.string({ required_error: "Payment date is required" }).regex(ISO_DATE, "Payment date is required"),
-  amountPaise: z.number().int().min(1, "Amount must be more than zero"),
+  payDate: isoDay("Payment date is required"),
+  amountPaise: z.number().int().min(1, "Amount must be more than zero").max(LIMIT.paise, "Amount is too large"),
   mode: z.enum(PAY_MODES).default("cash"),
   reference: z.string().trim().max(60).nullish(),
   notes: z.string().trim().max(300).nullish(),
@@ -216,8 +213,12 @@ paymentRoutes.get("/", can("payment.read"), async (c) => {
     .orderBy(desc(P.payDate), desc(P.createdAt))
     .limit(1000);
   const list = rows.map((r) => ({ ...r.p, adatiNameHi: r.nameHi, adatiNameHinglish: r.nameHinglish, createdByName: r.byName }));
-  const byMode = Object.fromEntries(PAY_MODES.map((m) => [m, list.filter((x) => x.mode === m).reduce((s, x) => s + x.amountPaise, 0)]));
-  return c.json({ rows: list, totals: { count: list.length, amountPaise: list.reduce((s, x) => s + x.amountPaise, 0), byMode } });
+  // totals over every matching payment, not just the rows sent
+  const agg = await db.select({ mode: P.mode, n: sql<number>`count(*)`, p: sql<number>`sum(${P.amountPaise})` })
+    .from(P).where(and(...where)).groupBy(P.mode);
+  const byMode = Object.fromEntries(PAY_MODES.map((m) => [m, agg.find((a) => a.mode === m)?.p ?? 0]));
+  const count = agg.reduce((s, a) => s + a.n, 0);
+  return c.json({ rows: list, truncated: count > list.length, totals: { count, amountPaise: agg.reduce((s, a) => s + a.p, 0), byMode } });
 });
 
 paymentRoutes.post("/", can("payment.write"), async (c) => {

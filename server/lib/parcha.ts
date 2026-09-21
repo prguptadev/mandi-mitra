@@ -1,7 +1,7 @@
 import { eq, and, ne, asc, desc, sql, gte, lte, inArray, type SQL } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
-import { ChargeConfigSchema, computeParcha, type ChargeConfig, type ParchaResult } from "./charges.ts";
-import { amountPaise, roundHalfUp } from "./money.ts";
+import { ChargeConfigSchema, computeParcha, bardanaKg, type ChargeConfig, type ParchaResult } from "./charges.ts";
+import { amountPaise, roundHalfUp, avgFromSums } from "./money.ts";
 
 /* Everything about one truck, worked out in one place. A truck is loaded by
    weight from its mill's stock: each row takes a weight from one purchase
@@ -15,6 +15,7 @@ export type Blocker =
   | { code: "no_lines" }
   | { code: "line_no_rate"; date: string }
   | { code: "line_no_weight" }
+  | { code: "line_not_positive"; date: string; grams: number }
   | { code: "lines_mismatch"; linesGrams: number; millNetGrams: number }
   | { code: "no_mill_gross" }
   | { code: "no_bags" }
@@ -65,6 +66,13 @@ export interface ParchaDoc {
 
 export type LoadRow = typeof schema.loads.$inferSelect;
 
+/** The version an approval of this parcha number would get: one past any earlier (voided) ones. */
+export async function nextVersion(businessId: string, parchaNo: string) {
+  const [last] = await db.select({ v: sql<number>`max(${schema.parchas.version})` }).from(schema.parchas)
+    .where(and(eq(schema.parchas.businessId, businessId), eq(schema.parchas.parchaNo, parchaNo)));
+  return (last?.v ?? 0) + 1;
+}
+
 /** Rate × weight / weight, back to a rate: the TOTAL row's rate on the parcha. */
 export const rateOf = (goodsPaise: number, netGrams: number) =>
   netGrams ? roundHalfUp((goodsPaise * 100_000) / netGrams) : 0;
@@ -87,8 +95,8 @@ export async function suggestInvoiceNo(businessId: string, exceptLoadId?: string
 function weighment(l: LoadRow, cfg: ChargeConfig) {
   const katte = l.katteCount ?? (l.boreCount == null ? (l.bags ?? 0) : 0);
   const bore = l.boreCount ?? 0;
-  const katteBardanaGrams = l.katteBardanaGrams ?? Math.round(katte * cfg.millBardanaKgPerBag * 1000);
-  const boreBardanaGrams = l.boreBardanaGrams ?? Math.round(bore * cfg.millBoreBardanaKgPerBag * 1000);
+  const katteBardanaGrams = l.katteBardanaGrams ?? bardanaKg(katte, cfg.millBardanaKgPerBag);
+  const boreBardanaGrams = l.boreBardanaGrams ?? bardanaKg(bore, cfg.millBoreBardanaKgPerBag);
   const bardanaGrams = katteBardanaGrams + boreBardanaGrams;
   const grossGrams = l.millGrossGrams;
   const netGrams = grossGrams == null ? null : grossGrams - bardanaGrams;
@@ -99,6 +107,20 @@ function weighment(l: LoadRow, cfg: ChargeConfig) {
 export function storedWeighment(l: LoadRow, cfg: ChargeConfig) {
   const w = weighment(l, cfg);
   return { bags: w.bags, millBardanaGrams: w.bardanaGrams, millNetGrams: w.netGrams };
+}
+
+/**
+ * Stock, PO balances and the dashboard read the stored mill net, so it is
+ * recomputed whenever a mill's terms change (e.g. bardana 0.57 → 0.60 kg) —
+ * for draft trucks only; an approved truck keeps what was billed.
+ */
+export async function refreshDraftWeighments(merchantId: string) {
+  const [m] = await db.select({ cfg: schema.merchants.chargeConfig }).from(schema.merchants).where(eq(schema.merchants.id, merchantId)).limit(1);
+  if (!m) return 0;
+  const cfg = ChargeConfigSchema.parse(JSON.parse(m.cfg));
+  const drafts = await db.select().from(schema.loads).where(and(eq(schema.loads.merchantId, merchantId), eq(schema.loads.status, "draft")));
+  for (const l of drafts) await db.update(schema.loads).set(storedWeighment(l, cfg)).where(eq(schema.loads.id, l.id));
+  return drafts.length;
 }
 
 /**
@@ -144,9 +166,11 @@ export async function linesWithWeights(where: SQL | undefined) {
     sort: schema.loadLines.sort, createdAt: schema.loadLines.createdAt,
   }).from(schema.loadLines).where(inArray(schema.loadLines.loadId, partial))
     .orderBy(asc(schema.loadLines.sort), asc(schema.loadLines.createdAt)) : [];
+  const siblingsOf = new Map<string, typeof siblings>();
+  for (const sb of siblings) siblingsOf.set(sb.loadId, [...(siblingsOf.get(sb.loadId) ?? []), sb]);
   const weightById = new Map<string, number>();
   for (const loadId of partial) {
-    const all = siblings.filter((s) => s.loadId === loadId);
+    const all = siblingsOf.get(loadId) ?? [];
     const net = byLoad.get(loadId)![0].millNetGrams;
     resolveWeights(all, net).forEach((g, i) => weightById.set(all[i].id, g));
   }
@@ -167,12 +191,12 @@ export async function boughtByDay(businessId: string, merchantId: string, jinsId
     netGrams: sql<number>`sum(${S.netGrams})`,
     amountPaise: sql<number>`sum(${S.amountPaise})`,
     pricedNet: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} else 0 end)`,
-    pricedValue: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end)`,
+    pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
     unpriced: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then 0 else 1 end)`,
   }).from(S).where(and(...where)).groupBy(S.slipDate);
   return new Map(rows.map((r) => [r.date, {
     date: r.date, slips: r.slips, netGrams: r.netGrams, amountPaise: r.amountPaise, unpriced: r.unpriced,
-    avgRatePaisePerQtl: r.pricedNet ? Math.floor(r.pricedValue / r.pricedNet + 0.5) : 0,
+    avgRatePaisePerQtl: avgFromSums(r.pricedValue, r.pricedNet),
   }]));
 }
 
@@ -269,6 +293,12 @@ export async function loadState(businessId: string, loadId: string) {
   if (!lines.length) blockers.push({ code: "no_lines" });
   for (const x of lines) if (!x.ratePaisePerQtlUsed) blockers.push({ code: "line_no_rate", date: x.stockDate });
   if (lines.filter((x) => x.netGrams == null).length > 1) blockers.push({ code: "line_no_weight" });
+  // the blank row is "the rest": typed rows heavier than the mill net leave it at or below zero
+  if (w.netGrams != null) {
+    for (const x of lines) {
+      if (x.weightGrams <= 0 && (x.netGrams == null)) blockers.push({ code: "line_not_positive", date: x.stockDate, grams: x.weightGrams });
+    }
+  }
   if (w.grossGrams == null || w.grossGrams <= 0) blockers.push({ code: "no_mill_gross" });
   if (w.bags <= 0) blockers.push({ code: "no_bags" });
   if (w.netGrams != null && w.netGrams <= 0) blockers.push({ code: "net_nonpositive" });
@@ -328,14 +358,14 @@ export async function loadState(businessId: string, loadId: string) {
       mill: { code: mill.code, name: mill.name, nameHi: mill.nameHi, city: mill.city, state: mill.state, gstin: mill.gstin },
       invoiceNo: l.invoiceNo?.trim() || null,
       invoiceDate: l.invoiceDate ?? l.loadDate,
-      version: (history[0]?.version ?? 0) + (approved ? 0 : 1),
+      version: approved ? approved.version : (l.invoiceNo?.trim() ? await nextVersion(businessId, l.invoiceNo.trim()) : 1),
       truckNo: l.truckNo, loadDate: l.loadDate, ewayBillNo: l.ewayBillNo,
       weights: {
         grossGrams: w.grossGrams!, bardanaGrams: w.bardanaGrams, netGrams: w.netGrams!,
         katte: w.katte, bore: w.bore, katteBardanaGrams: w.katteBardanaGrams, boreBardanaGrams: w.boreBardanaGrams,
       },
       lines: lines.map((x, i) => ({
-        po: x.poNo || String(i + 1),
+        po: x.poNo || (x.poId && x.poDate ? `${x.poDate.slice(8, 10)}-${x.poDate.slice(5, 7)}` : String(i + 1)),
         jinsCode: jins.code,
         date: x.stockDate,
         netGrams: x.weightGrams,

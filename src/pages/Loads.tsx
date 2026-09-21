@@ -280,6 +280,24 @@ function TextCell({ value, onCommit, disabled, placeholder, mono, upper, classNa
   );
 }
 
+/** A date box that saves once, when it is left — not on every keystroke of the year. */
+function DateCell({ value, onCommit, disabled }: { value: string; onCommit: (v: string) => void; disabled?: boolean }) {
+  const [v, setV] = useState(value);
+  const focused = useRef(false);
+  useEffect(() => { if (!focused.current) setV(value); }, [value]);
+  const ok = (d: string) => /^(20\d{2}|2100)-\d{2}-\d{2}$/.test(d);
+  return (
+    <input type="date" value={v} disabled={disabled} className={CELL}
+      onFocus={() => { focused.current = true; }}
+      onChange={(e) => setV(e.target.value)}
+      onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+      onBlur={() => {
+        focused.current = false;
+        if (v !== value && ok(v)) onCommit(v); else setV(value);
+      }} />
+  );
+}
+
 /** A number box in display units that saves in storage units when it is left. */
 function NumCell({ value, scale, integer, decimals, onCommit, disabled, placeholder, className }: {
   value: number | null; scale: number; integer?: boolean; decimals?: number;
@@ -311,6 +329,7 @@ function useLoadMessages() {
     switch (b.code) {
       case "invoice_taken": return t("load.b.invoice_taken", { truck: b.truckNo ?? "—" });
       case "line_no_rate": return t("load.b.line_no_rate", { d: dmy(b.date) });
+      case "line_not_positive": return t("load.b.line_not_positive", { d: dmy(b.date), q: f.weight(b.grams) });
       case "lines_mismatch": return t("load.b.lines_mismatch", { rows: f.weight(b.linesGrams), net: f.weight(b.millNetGrams) });
       default: return t(`load.b.${b.code}`);
     }
@@ -394,7 +413,9 @@ export function LoadDetailPage({ id }: { id: string }) {
     await qc.invalidateQueries({ queryKey: ["orders"] });
     await qc.invalidateQueries({ queryKey: ["stock"] });
   };
-  const onErr = (e: unknown) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong"));
+  // a refused edit remounts the boxes, so they show what is saved, not what was typed
+  const [rev, setRev] = useState(0);
+  const onErr = (e: unknown) => { setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")); setRev((r) => r + 1); };
   const save = useMutation({ mutationFn: (patch: Record<string, unknown>) => api.put(`/loads/${id}`, patch), onSuccess: refresh, onError: onErr });
   const commit = (patch: Record<string, unknown>) => { setErr(null); save.mutate(patch); };
   const lineSave = useMutation({
@@ -416,10 +437,10 @@ export function LoadDetailPage({ id }: { id: string }) {
   }, [st?.load.invoiceNo, st?.suggestedInvoiceNo]);
 
   const approve = useMutation({
-    mutationFn: async () => {
-      if ((st!.load.invoiceNo ?? "") !== invoice.trim()) await api.put(`/loads/${id}`, { invoiceNo: invoice.trim() || null });
-      return api.post<{ parchaNo: string; version: number }>(`/loads/${id}/approve`);
-    },
+    mutationFn: () => api.post<{ parchaNo: string; version: number }>(`/loads/${id}/approve`, {
+      invoiceNo: invoice.trim() || undefined,
+      expectedGrandTotalPaise: (st!.approved?.doc ?? st!.doc)?.result.grandTotalPaise,
+    }),
     onSuccess: async () => { setApproving(false); await refresh(); await qc.invalidateQueries({ queryKey: ["parchas"] }); },
     onError: async (e) => { setApproving(false); await refresh(); onErr(e); },
   });
@@ -495,15 +516,14 @@ export function LoadDetailPage({ id }: { id: string }) {
         </Alert>
       )}
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
+      <div key={rev} className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_400px]">
         <div className="min-w-0 space-y-5">
           {/* truck */}
           <Card>
             <CardHeader title={t("load.truck")} />
             <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
               <Field label={t("load.date")}>
-                <input type="date" value={l.loadDate} disabled={!canEdit} className={CELL}
-                  onChange={(e) => e.target.value && commit({ loadDate: e.target.value })} />
+                <DateCell value={l.loadDate} disabled={!canEdit} onCommit={(v) => commit({ loadDate: v })} />
               </Field>
               <Field label={t("load.truckNo")}>
                 <TextCell value={l.truckNo} mono upper disabled={!canEdit} placeholder="UP25CT5038" onCommit={(v) => commit({ truckNo: v })} />
@@ -676,8 +696,7 @@ export function LoadDetailPage({ id }: { id: string }) {
                   onBlur={() => { if ((l.invoiceNo ?? "") !== invoice.trim()) commit({ invoiceNo: invoice.trim() || null }); }} />
               </Field>
               <Field label={t("parcha.invoiceDate")}>
-                <input type="date" value={l.invoiceDate ?? l.loadDate} disabled={!canParcha} className={CELL}
-                  onChange={(e) => e.target.value && commit({ invoiceDate: e.target.value })} />
+                <DateCell value={l.invoiceDate ?? l.loadDate} disabled={!canParcha} onCommit={(v) => commit({ invoiceDate: v })} />
               </Field>
               <Field label={t("parcha.advance")} hint={t(`merchant.advance.${cfg.advance.treatment}`)}>
                 <NumCell value={l.advancePaise} scale={100} decimals={2} disabled={!canParcha} placeholder="0.00"

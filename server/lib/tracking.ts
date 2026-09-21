@@ -1,6 +1,6 @@
 import { eq, and, gte, lte, lt, inArray, sql, type SQL } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
-import { amountPaise } from "./money.ts";
+import { amountPaise, avgFromSums } from "./money.ts";
 import { linesWithWeights, rateOf, type ParchaDoc } from "./parcha.ts";
 
 /* Reconciliation: what came in for each mill against what went out to it.
@@ -19,10 +19,10 @@ export async function dayAverages(businessId: string) {
   const rows = await db.select({
     merchantId: S.merchantId, jinsId: S.jinsId, date: S.slipDate,
     pricedNet: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} else 0 end)`,
-    pricedValue: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end)`,
+    pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
   }).from(S).where(eq(S.businessId, businessId)).groupBy(S.merchantId, S.jinsId, S.slipDate);
   const m = new Map<string, number>();
-  for (const r of rows) if (r.pricedNet) m.set(key(r.merchantId, r.jinsId, r.date), Math.floor(r.pricedValue / r.pricedNet + 0.5));
+  for (const r of rows) if (r.pricedNet) m.set(key(r.merchantId, r.jinsId, r.date), avgFromSums(r.pricedValue, r.pricedNet));
   return (mill: string | null, jins: string, date: string) => m.get(key(mill, jins, date)) ?? 0;
 }
 
@@ -42,7 +42,7 @@ export async function incoming(businessId: string, f: Filter & { before?: string
     grossGrams: sql<number>`sum(${S.grossGrams})`,
     amountPaise: sql<number>`sum(${S.amountPaise})`,
     pricedNet: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} else 0 end)`,
-    pricedValue: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end)`,
+    pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
     unpriced: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then 0 else 1 end)`,
   }).from(S).where(and(...w)).groupBy(S.merchantId, S.slipDate);
 }
@@ -77,8 +77,10 @@ export async function trucks(businessId: string, f: Filter & { before?: string }
     .from(schema.parchas).where(and(inArray(schema.parchas.loadId, ids), eq(schema.parchas.status, "approved")));
   const parchaOf = new Map(parchas.map((p) => [p.loadId, p]));
 
+  const byLoad = new Map<string, typeof lines>();
+  for (const x of lines) byLoad.set(x.loadId, [...(byLoad.get(x.loadId) ?? []), x]);
   return loads.map((l) => {
-    const mine = lines.filter((x) => x.loadId === l.id);
+    const mine = byLoad.get(l.id) ?? [];
     const rows = mine.map((x) => {
       const dayAvg = avg(l.merchantId, x.jinsId, x.stockDate);
       const rate = x.ratePaisePerQtl ?? dayAvg;
@@ -97,7 +99,9 @@ export async function trucks(businessId: string, f: Filter & { before?: string }
       weightGrams: weight, goodsPaise: goods, ratePaisePerQtl: doc ? doc.totals.ratePaisePerQtl : rateOf(goods, weight),
       stockDates: [...new Set(rows.map((r) => r.stockDate))].sort(),
       parchaNo: p?.parchaNo ?? null, grandTotalPaise: p?.grand ?? null,
-      mismatch: l.millNetGrams != null && rows.length > 0 && rows.reduce((s, r) => s + r.weightGrams, 0) !== l.millNetGrams,
+      // an approved truck is billed from its frozen parcha; only a draft can still be out of step
+      mismatch: !p && l.millNetGrams != null && rows.length > 0
+        && (rows.reduce((s, r) => s + r.weightGrams, 0) !== l.millNetGrams || rows.some((r) => r.weightGrams <= 0)),
       incomplete: l.status !== "billed" && (l.millGrossGrams == null || !l.bags),
       rows,
     };

@@ -119,7 +119,7 @@ check("goods 10,60,695.45", r.goodsAmountPaise === 106_069_545, r.goodsAmountPai
 check("kacchi adat 21,213.91", r.adatPaise === 2_121_391, r.adatPaise);
 check("total 11,17,851.22", r.totalPaise === 111_785_122, r.totalPaise);
 check("grand total 11,27,851.22", r.grandTotalPaise === 112_785_122, r.grandTotalPaise);
-check("parcha row: PO by date prints as 1, rate 3413.45", st.doc.lines[0].po === "1" && st.doc.lines[0].ratePaisePerQtl === 341_345, st.doc.lines[0]);
+check("parcha row: a PO without a number prints its date (25-09), rate 3413.45", st.doc.lines[0].po === "25-09" && st.doc.lines[0].ratePaisePerQtl === 341_345, st.doc.lines[0]);
 check("20.31 qtl of " + DAY1 + " stays in stock", st.lines[0].day.leftGrams === q(20.31), st.lines[0].day.leftGrams);
 check("flags 10.74 qtl over the 300 qtl PO", st.warnings.some((w: any) => w.code === "po_over" && w.overGrams === q(10.74)), st.warnings);
 
@@ -147,8 +147,33 @@ s2 = await call("GET", `/loads/${t2.id}`);
 check("two blank rows block approval (a weight would count twice)", s2.blockers.some((x: any) => x.code === "line_no_weight"), codes(s2.blockers));
 await call("PUT", `/loads/${t2.id}/lines/${a.id}`, { netGrams: q(25) });
 
+console.log("\nSafeguards");
+{
+  // typed rows heavier than the mill net must not leave a negative "rest" row
+  const t3 = await call("POST", "/loads", { loadDate: DAY2, merchantId: lb.id, jinsId: j1509.id, stockDate: DAY2 });
+  const s3 = await call("GET", `/loads/${t3.id}`);
+  await call("POST", `/loads/${t3.id}/lines`, { stockDate: DAY1, netGrams: q(120) });
+  await call("PUT", `/loads/${t3.id}`, { millGrossGrams: q(98.46), katteCount: 100, invoiceNo: "900", advancePaise: 0, daraPaise: 0 });
+  const s3b = await call("GET", `/loads/${t3.id}`);
+  check("typed rows over the mill net leave the blank row negative: blocked", s3b.blockers.some((b: any) => b.code === "line_not_positive"), codes(s3b.blockers));
+  const ap3 = await status("POST", `/loads/${t3.id}/approve`);
+  check("…and approval is refused", ap3.status === 409, ap3.status);
+  void s3;
+  await call("DELETE", `/loads/${t3.id}`);
+  const huge = await status("POST", "/slips", { slipDate: DAY1, rstNo: "999", adatiId: (byHi.get("अमित ट्रेडिंग") as any).id, jinsId: j1509.id, merchantId: lb.id, grossGrams: q(192000), ratePaisePerQtl: 350000 });
+  check("an absurd gross (1,92,000 qtl) is refused", huge.status === 400, huge.json?.error);
+  const badDay = await status("POST", "/slips", { slipDate: "0202-09-25", rstNo: "998", adatiId: (byHi.get("अमित ट्रेडिंग") as any).id, jinsId: j1509.id, merchantId: lb.id, grossGrams: q(10), ratePaisePerQtl: 350000 });
+  check("a date in year 0202 is refused", badDay.status === 400, badDay.json?.error);
+  const alien = await status("POST", "/slips", { slipDate: DAY1, rstNo: "997", adatiId: (byHi.get("अमित ट्रेडिंग") as any).id, jinsId: j1509.id, merchantId: "01a0c000-0000-7000-8000-000000000000", grossGrams: q(10), ratePaisePerQtl: 350000 });
+  check("a mill of another business is refused", alien.status === 400, alien.json?.code);
+  // the approver sees one total; a change in between is refused
+  const st1 = await call("GET", `/loads/${t1.id}`);
+  const stale = await status("POST", `/loads/${t1.id}/approve`, { expectedGrandTotalPaise: st1.doc.result.grandTotalPaise + 1 });
+  check("approving a total that has since changed is refused", stale.status === 409 && stale.json.code === "changed", stale.json?.code);
+}
+
 console.log("\nApprove");
-const ap = await call("POST", `/loads/${t1.id}/approve`);
+const ap = await call("POST", `/loads/${t1.id}/approve`, { expectedGrandTotalPaise: st.doc.result.grandTotalPaise });
 check("approved as parcha 196 v1", ap.parchaNo === "196" && ap.version === 1, ap);
 check("grand total frozen", ap.grandTotalPaise === 112_785_122, ap.grandTotalPaise);
 st = await call("GET", `/loads/${t1.id}`);
