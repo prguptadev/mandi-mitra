@@ -144,7 +144,9 @@ check("misspelling resolved without help", byRst("627")[0].match?.via, "normkey"
 check("  ...to the right supplier", byRst("627")[0].match?.nameHinglish, "Phoolsingh Verma");
 check("unknown name blocks", byRst("637")[0].blocking, true);
 check("  ...with the right reason", byRst("637")[0].issues.some((i: any) => i.code === "name_unresolved"), true);
-check("duplicate RST blocks both rows", byRst("640").filter((r: any) => r.blocking).length, 2);
+// a repeated kanta slip no. is highlighted on both rows but never blocks
+check("repeated RST flagged on both rows", byRst("640").filter((r: any) => r.issues.some((i: any) => i.code === "rst_dupe")).length, 2);
+check("repeated RST does not block", byRst("640").filter((r: any) => r.blocking).length, 0);
 check("sheet net disagreeing warns, not blocks", byRst("638")[0].blocking, false);
 check("  ...and is flagged", byRst("638")[0].issues.some((i: any) => i.code === "net_mismatch"), true);
 check("missing rate warns, not blocks", byRst("644")[0].blocking, false);

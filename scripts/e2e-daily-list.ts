@@ -136,18 +136,16 @@ console.log("\nDerived katauti vs what is written on the sheet:");
   console.log(miss === 0 ? ` PASS  all ${SHEET.length} derived katauti values match the sheet` : "");
 }
 
-console.log("\nDuplicate-RST guard:");
+console.log("\nRepeated RST (allowed, highlighted):");
 try {
   const ad: any = byHi.get("शिवम ट्रेडिंग");
   await call("POST", "/slips", {
     slipDate: DATE, rstNo: "634", adatiId: ad.id, jinsId: j1509.id, merchantId: lb.id,
     grossGrams: 1000000, ratePaisePerQtl: 300000,
   });
-  console.log(" FAIL  a duplicate RST was accepted"); bad++;
+  console.log(" PASS  repeated RST 634 accepted");
 } catch (e) {
-  const m = (e as Error).message;
-  console.log(m.includes("duplicate_rst") ? " PASS  duplicate RST 634 rejected" : " FAIL  " + m.slice(0, 90));
-  if (!m.includes("duplicate_rst")) bad++;
+  console.log(" FAIL  repeated RST was refused: " + (e as Error).message.slice(0, 90)); bad++;
 }
 
 console.log(bad === 0 ? "\nDaily list reproduces the sheet exactly." : `\n${bad} FAILED`);

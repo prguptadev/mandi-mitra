@@ -342,8 +342,15 @@ the Windows Credential Store is an Electron-era task.
   original. `data/scans/` is gitignored.
 - **The scan and the grid share a draggable divider**, remembered per device
   in localStorage (`mandi.split.scanReview`); double-click resets it.
-- **RST is the weighbridge slip number**, not a row count and not sequential.
-  The daily list no longer suggests "last + 1" for it.
+- **RST is the weighbridge slip number**, not a row count and not sequential,
+  and it **may repeat**. A repeated or unreadable RST is highlighted orange and
+  never blocks saving — on the scan review or the daily list. The unique index
+  on (business, date, RST) was dropped in migration 0004 for this reason.
+- **Multi-page reads show nothing until every page is done.** The API returns no
+  rows while a scan is `reading`.
+- **Review cells carry no text** — colour only: orange = worth a look (cleared
+  by editing), red = blocks approval (name missing, weight missing). The reason
+  is in the cell's tooltip; the approve button counts the red ones.
 - **Multi-page scans are ordered before they are read.** Several pages stop at
   an order step; the model then reads them as one list and tags each row with
   its page. The review shows every page stacked in one scroll, and the grid
@@ -382,6 +389,8 @@ the Windows Credential Store is an Electron-era task.
 | Approve stayed grey with no reason | a blank commodity from the upload box, and 8 blocking rows whose reasons had been removed from the screen | commodity defaults to the business's most-used, then 1509; red cells carry a short reason underneath |
 | Page 3's rows appeared above page 1 | all pages went in one Gemini call and the model inferred which page each row came from | pages are read **one per call**; the page number is the image's position, not the model's guess, and rows save as each page lands |
 | Duplicate slip numbers that could not be cleared | real misreads — 1471 read as 671, 1473 as 633 — but the only explanation was a tooltip on a disabled star | red box plus "same slip no. as row N" underneath; prompt now warns that slips mix 3- and 4-digit numbers and not to drop a leading 14 |
+| Daily list new line had no name box | the owner had hidden the Hindi name column, and the entry-row supplier box only ever lived in that column | the box goes in whichever name column is visible, and at least one name column is always shown |
+| A picked supplier vanished from the box | after the change for 1000+ suppliers, the picker relied on its search cache to name the chosen id | the picker keeps the option it was given |
 | "Add missing suppliers" would have created duplicates | it created "धरमपाल" beside the existing "धर्मपाल सिंह", splitting that supplier's ledger | rows with a close suggestion are left to pick; only names with nothing close are created |
 | Approve stuck disabled on a fresh business | every OCR name was unmatched because the master was empty, and picking 29 one by one is not a reasonable ask | "Add the N missing suppliers" creates them from the sheet and links the rows — 29 blocking to 0 in one action |
 

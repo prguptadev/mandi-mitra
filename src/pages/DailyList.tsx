@@ -209,7 +209,7 @@ export function DailyListPage() {
   });
 
   const draftReady =
-    draft.rstNo.trim() !== "" && !rstTaken && draft.adatiId !== null &&
+    draft.rstNo.trim() !== "" && draft.adatiId !== null &&
     d.grossGrams !== null && d.grossGrams > 0 && d.netGrams !== null && d.netGrams > 0;
 
   /** Enter walks the row; Enter on the last field saves and starts the next. */
@@ -290,7 +290,13 @@ export function DailyListPage() {
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
   const someSelected = selected.size > 0;
 
-  const visibleCols = DAILY_COLUMNS.filter((c) => P.columns[c.key] !== false);
+  /* A row cannot be entered without a supplier, so one name column is always
+     shown: if both are switched off, the Hindi one comes back. */
+  const visibleCols = DAILY_COLUMNS.filter((c) =>
+    P.columns[c.key] !== false
+    || (c.key === "adatiHi" && P.columns.adatiHi === false && P.columns.adatiLatin === false));
+  // the supplier box lives in the first name column on screen, Hindi or Hinglish
+  const nameCol: DailyColumnKey = visibleCols.some((c) => c.key === "adatiHi") ? "adatiHi" : "adatiLatin";
   const PAD = P.density === "compact" ? "py-0.5" : "py-1";
 
   const ordered = useMemo(() => {
@@ -301,10 +307,18 @@ export function DailyListPage() {
     return list;
   }, [rows, P.sortOrder]);
 
+  const rstCount = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) m.set(r.rstNo, (m.get(r.rstNo) ?? 0) + 1);
+    return m;
+  }, [rows]);
+
   function displayCell(key: DailyColumnKey, r: SlipRow, i: number) {
     switch (key) {
       case "sr": return <span className="num text-[11px] text-faint">{i + 1}</span>;
-      case "rstNo": return <span className="num font-medium">{r.rstNo}</span>;
+      case "rstNo": return (rstCount.get(r.rstNo) ?? 0) > 1
+        ? <span className="num rounded border-2 border-warn px-1 font-medium" title={t("daily.rstRepeated")}>{r.rstNo}</span>
+        : <span className="num font-medium">{r.rstNo}</span>;
       case "adatiHi": return (
         <span className="flex items-center gap-1.5">
           <span lang="hi" className="truncate text-[14px] text-ink">{r.adatiNameHi}</span>
@@ -355,9 +369,12 @@ export function DailyListPage() {
       case "sr": return <span className="num text-[11px] text-faint">{i + 1}</span>;
       case "rstNo": return <input className={cn(CELL, "text-left")} value={ed.rstNo} autoFocus
         onChange={(e) => upd({ rstNo: e.target.value })} />;
-      case "adatiHi": return <SupplierPicker value={ed.adatiId}
-        selectedLabel={{ nameHi: r.adatiNameHi, nameHinglish: r.adatiNameHinglish }}
-        onChange={(v) => upd({ adatiId: v })} />;
+      case "adatiHi":
+      case "adatiLatin":
+        if (key !== nameCol) return displayCell(key, r, i);
+        return <SupplierPicker value={ed.adatiId}
+          selectedLabel={{ nameHi: r.adatiNameHi, nameHinglish: r.adatiNameHinglish }}
+          onChange={(v) => upd({ adatiId: v })} />;
       case "gross": return <input className={CELL} value={ed.gross} inputMode="decimal"
         onChange={(e) => upd({ gross: e.target.value })} />;
       case "katauti": return <input className={cn(CELL, !ed.katauti && "text-faint")} inputMode="numeric"
@@ -404,11 +421,11 @@ export function DailyListPage() {
         <td key={c.key} className={cn("border-b border-line px-1 py-1.5", NUMERIC.has(c.key) && "text-right")}>
           {c.key === "sr" ? <span className="num text-[11px] text-faint">{rows.length + 1}</span>
             : c.key === "rstNo" ? (
-              <input ref={rstRef} className={cn(CELL, "text-left", rstTaken && "border-bad")}
+              <input ref={rstRef} className={cn(CELL, "text-left", rstTaken && "border-2 border-warn")}
                 value={draft.rstNo} placeholder={t("daily.rstPlaceholder")}
                 onChange={(e) => setDraft((p) => ({ ...p, rstNo: e.target.value }))}
                 onKeyDown={step("adati")} />
-            ) : c.key === "adatiHi" ? (
+            ) : c.key === nameCol ? (
               <SupplierPicker ref={adatiRef} value={draft.adatiId}
                 onChange={(v) => setDraft((p) => ({ ...p, adatiId: v }))}
                 onCommit={() => grossRef.current?.focus()}

@@ -26,10 +26,12 @@ function flagFor(r: ScanRow, f: Field, t: (k: never, v?: Record<string, string |
   const conf = r.ocr.confidence ?? 1;
 
   if (f === "rst") {
-    if (has("rst_missing")) return { level: "bad", why: t("scan.fix.rstMissing" as never) };
-    if (has("rst_dupe")) return { level: "bad", why: t("issue.rst_dupe" as never, { rst: r.rstNo }) };
-    if (has("rst_exists")) return { level: "bad", why: t("scan.fix.rstExists" as never) };
-    if (!done && conf < LOW) return { level: "doubt", why: t("issue.low_confidence" as never) };
+    // the kanta slip no. can repeat or be unreadable — highlight, never block
+    if (done) return null;
+    if (has("rst_missing")) return { level: "doubt", why: t("scan.fix.rstMissing" as never) };
+    if (has("rst_dupe")) return { level: "doubt", why: t("issue.rst_dupe" as never, { rst: r.rstNo }) };
+    if (has("rst_exists")) return { level: "doubt", why: t("issue.rst_exists" as never, { rst: r.rstNo }) };
+    if (conf < LOW) return { level: "doubt", why: t("issue.low_confidence" as never) };
   }
   if (f === "name") {
     if (!r.chosen && !r.match) return { level: "bad", why: t("scan.fix.pickName" as never) };
@@ -65,12 +67,6 @@ function cellClass(flag: Flag) {
   return flag.level === "bad" ? "border-bad border-2 bg-bad-soft/30" : "border-warn border-2";
 }
 
-/** A red cell has to say what to do, in words, right under it. */
-function FixHint({ flag }: { flag: Flag }) {
-  if (!flag || flag.level !== "bad") return null;
-  return <p className="mt-0.5 text-left text-[10px] leading-tight text-bad">{flag.why}</p>;
-}
-
 export function ScanGrid({
   rows, pageCount, locked, canRate, onPatch, onPageClick,
 }: {
@@ -89,13 +85,6 @@ export function ScanGrid({
   const tt = t as unknown as (k: never, v?: Record<string, string | number>) => string;
   const multi = pageCount > 1;
 
-  const rowsWithRst = new Map<string, number[]>();
-  rows.forEach((r, i) => {
-    if (r.excluded || !r.rstNo) return;
-    const list = rowsWithRst.get(r.rstNo) ?? [];
-    list.push(i + 1);
-    rowsWithRst.set(r.rstNo, list);
-  });
 
   return (
     /* a floor on the width: a narrow pane scrolls sideways instead of
@@ -121,12 +110,8 @@ export function ScanGrid({
           const dead = r.excluded || locked;
           const pageStart = multi && (i === 0 || (rows[i - 1].page ?? 1) !== (r.page ?? 1));
           const name = r.chosen ?? r.match;
-          const others = (rowsWithRst.get(r.rstNo) ?? []).filter((n) => n !== i + 1);
-          const rstFlag = flagFor(r, "rst", tt);
           const fl = {
-            rst: rstFlag && r.issues.some((x) => x.code === "rst_dupe") && others.length
-              ? { level: "bad" as const, why: t("scan.alsoOnRow", { rows: others.join(", ") }) }
-              : rstFlag,
+            rst: flagFor(r, "rst", tt),
             name: flagFor(r, "name", tt), gross: flagFor(r, "gross", tt),
             katauti: flagFor(r, "katauti", tt), rate: flagFor(r, "rate", tt),
           };
@@ -156,7 +141,6 @@ export function ScanGrid({
                     <input value={r.rstNo} disabled={dead} placeholder="RST" title={fl.rst?.why}
                       onChange={(e) => onPatch(r.id, { rstNo: e.target.value }, "rst")}
                       className={cn(CELL, "text-left", cellClass(fl.rst))} />
-                    <FixHint flag={fl.rst} />
                   </div>
                 </td>
 
@@ -197,7 +181,6 @@ export function ScanGrid({
                         onBlurEmpty={() => setEditingName(null)}
                       />
                     )}
-                    <FixHint flag={fl.name} />
                   </div>
                 </td>
 
@@ -207,7 +190,6 @@ export function ScanGrid({
                       className={cn(CELL, cellClass(fl.gross))}
                       value={r.grossGrams === null ? null : r.grossGrams / GRAMS_PER_QTL}
                       onValueChange={(n) => onPatch(r.id, { grossGrams: n === null ? null : Math.round(n * GRAMS_PER_QTL) }, "gross")} />
-                    <FixHint flag={fl.gross} />
                   </div>
                 </td>
 
@@ -218,7 +200,6 @@ export function ScanGrid({
                       placeholder={r.derivedKatautiUnits === null ? "" : String(r.derivedKatautiUnits)}
                       value={r.katautiOverride}
                       onValueChange={(n) => onPatch(r.id, { katautiOverride: n }, "katauti")} />
-                    <FixHint flag={fl.katauti} />
                   </div>
                 </td>
 
@@ -238,7 +219,6 @@ export function ScanGrid({
                       className={cn(CELL, cellClass(fl.rate))}
                       value={r.ratePaisePerQtl === null ? null : r.ratePaisePerQtl / 100}
                       onValueChange={(n) => onPatch(r.id, { ratePaisePerQtl: n === null ? null : Math.round(n * 100) }, "rate")} />
-                    <FixHint flag={fl.rate} />
                   </div>
                 </td>
 

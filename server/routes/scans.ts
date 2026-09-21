@@ -449,7 +449,8 @@ scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
 scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const batch = await loadBatch(biz, param(c, "id"));
-  const checked = batch.parsedRows ? await checkAll(biz, batch) : { rows: [], summary: null, katauti: null };
+  const checked = batch.parsedRows && batch.status !== "reading"
+    ? await checkAll(biz, batch) : { rows: [], summary: null, katauti: null };
   const files: { name: string; mimeType: string; bytes: number }[] = JSON.parse(batch.filePaths);
   return c.json({
     id: batch.id, status: batch.status, sourceKind: batch.sourceKind,

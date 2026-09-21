@@ -394,16 +394,18 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
         </Button>
       </div>
 
-      {reading && (
-        <div className="flex items-center gap-2 border-b border-line bg-brand/5 px-3 py-2 text-[12px] text-ink">
-          <Spinner className="text-brand" />
-          <span className="font-medium">{t("scan.readingPage", { n: Math.min(b.pagesDone + 1, b.pages.length), total: b.pages.length })}</span>
-          <span className="text-muted">{t("scan.readingMore")}</span>
-        </div>
-      )}
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {rows.length === 0 ? (
+        {reading ? (
+          /* rows appear only once every page is read, in page order */
+          <div className="flex flex-col items-center justify-center gap-3 px-6 py-24 text-center">
+            <Spinner className="h-7 w-7 text-brand" />
+            <p className="text-sm font-semibold text-ink">
+              {t("scan.readingPage", { n: Math.min(b.pagesDone + 1, b.pages.length), total: b.pages.length })}
+            </p>
+            <p className="max-w-sm text-[13px] text-muted">{t("scan.readingSub")}</p>
+          </div>
+        ) : rows.length === 0 ? (
           reading ? <div className="p-3"><SkeletonTable rows={8} cols={[{ w: "w-14" }, { w: "w-40" }, { w: "w-16", numeric: true }, { w: "w-16", numeric: true }, { w: "w-20", numeric: true }]} /></div>
             : <EmptyState icon={<ScanLine className="h-7 w-7" />} title={t("common.noResults")} />
         ) : (

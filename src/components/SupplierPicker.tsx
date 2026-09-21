@@ -103,8 +103,11 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
   const matches = results.data?.rows ?? [];
   const total = results.data?.total ?? 0;
 
+  // the picker remembers what was just chosen, so no caller has to
+  const [picked, setPicked] = useState<SupplierOption | null>(null);
   const selected = !value ? null
-    : (suppliers as SupplierOption[] | undefined)?.find((s) => s.id === value)
+    : (picked?.id === value ? picked : null)
+      ?? (suppliers as SupplierOption[] | undefined)?.find((s) => s.id === value)
       ?? matches.find((s) => s.id === value)
       ?? (selectedLabel
         ? { id: value, nameHi: selectedLabel.nameHi, nameHinglish: selectedLabel.nameHinglish ?? "", village: null }
@@ -120,6 +123,7 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
   }, [active, open]);
 
   const choose = (s: SupplierOption) => {
+    setPicked(s);
     onChange(s.id);
     setQuery("");
     setOpen(false);

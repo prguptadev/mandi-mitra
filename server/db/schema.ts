@@ -250,7 +250,8 @@ export const purchaseSlips = sqliteTable(
     updatedAt: integer("updated_at").notNull().$defaultFn(now),
   },
   (t) => ({
-    uq: uniqueIndex("slip_rst_uq").on(t.businessId, t.slipDate, t.rstNo),
+    // RST is the kanta slip no.; it can repeat, so it is indexed, not unique
+    rstIdx: index("slip_rst_idx").on(t.businessId, t.slipDate, t.rstNo),
     dateIdx: index("slip_date_idx").on(t.businessId, t.slipDate),
     loadIdx: index("slip_load_idx").on(t.loadId),
     adatiIdx: index("slip_adati_idx").on(t.adatiId, t.slipDate),

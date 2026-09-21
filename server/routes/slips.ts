@@ -258,7 +258,7 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
       eq(schema.purchaseSlips.slipDate, body.slipDate),
       eq(schema.purchaseSlips.rstNo, body.rstNo),
     )).limit(1);
-  if (dupe) throw bad(`RST ${body.rstNo} is already on this date`, "duplicate_rst");
+  const rstRepeated = Boolean(dupe);
 
   const [ad] = await db.select({ id: schema.adati.id, name: schema.adati.nameHinglish }).from(schema.adati)
     .where(and(eq(schema.adati.id, body.adatiId), eq(schema.adati.businessId, biz))).limit(1);
@@ -301,6 +301,7 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
     katautiUnits: d.katautiUnits,
     katautiGrams: d.katautiGrams,
     /** Set when the sheet's own net differs from the formula. */
+    rstRepeated,
     netWarning: claimed != null && claimed !== d.netGrams
       ? { claimedGrams: claimed, computedGrams: d.netGrams, diffGrams: claimed - d.netGrams }
       : null,
@@ -328,7 +329,7 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
         eq(schema.purchaseSlips.slipDate, date),
         eq(schema.purchaseSlips.rstNo, body.rstNo),
       )).limit(1);
-    if (dupe && dupe.id !== id) throw bad(`RST ${body.rstNo} is already on this date`, "duplicate_rst");
+    // a repeated RST is allowed; the grid highlights it
   }
 
   const merged = {
