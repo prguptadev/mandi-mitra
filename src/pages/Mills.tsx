@@ -165,6 +165,7 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
     city: editing?.city ?? "", state: editing?.state ?? "", pincode: editing?.pincode ?? "",
     contactPerson: editing?.contactPerson ?? "", phone: editing?.phone ?? "",
     gstin: editing?.gstin ?? "", active: editing?.active ?? true,
+    openingBalance: editing ? (editing.openingBalancePaise ?? 0) / 100 : null as number | null,
   }));
   const [cfg, setCfg] = useState<ChargeConfig | null>(editing?.chargeConfig ?? null);
 
@@ -175,7 +176,8 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
 
   const save = useMutation({
     mutationFn: () => {
-      const payload = { ...f, chargeConfig: cfg ?? undefined };
+      const { openingBalance, ...rest } = f;
+      const payload = { ...rest, openingBalanceRupees: openingBalance ?? 0, chargeConfig: cfg ?? undefined };
       return isNew ? api.post("/merchants", payload) : api.put(`/merchants/${editing!.id}`, payload);
     },
     onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["merchants"] }); onClose(); },
@@ -245,6 +247,11 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
             </Field>
             <Field label={t("adati.phone")}>
               <Input value={f.phone} onChange={(e) => setF((p) => ({ ...p, phone: e.target.value }))} mono inputMode="tel" />
+            </Field>
+            <Field label={t("mm.opening")} hint={t("mm.openingHelp")} className="sm:col-span-2">
+              <NumberInput value={f.openingBalance} decimals={2} allowNegative
+                onValueChange={(n) => setF((p) => ({ ...p, openingBalance: n }))}
+                className="h-9.5 w-full rounded-lg border bg-surface px-3 text-right font-mono text-sm tabular-nums text-ink focus:border-brand" placeholder="0.00" />
             </Field>
           </div>
           <div className="border-t border-line pt-4">

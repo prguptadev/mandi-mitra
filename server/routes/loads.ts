@@ -445,7 +445,20 @@ parchaRoutes.get("/", can("parcha.read"), async (c) => {
     .where(and(...where))
     .orderBy(desc(schema.parchas.invoiceDate), desc(schema.parchas.approvedAt))
     .limit(500);
-  return c.json(rows);
+  // money the mill has sent against each truck (cancelled receipts count for nothing)
+  const R = schema.millReceipts;
+  const loadIds = [...new Set(rows.map((r) => r.loadId))];
+  const got = loadIds.length
+    ? await db.select({ loadId: R.loadId, p: sql<number>`sum(${R.amountPaise} + ${R.deductionPaise})` }).from(R)
+      .where(and(inArray(R.loadId, loadIds), isNull(R.voidedAt))).groupBy(R.loadId)
+    : [];
+  const gotBy = new Map(got.map((g) => [g.loadId, g.p]));
+  // the mill's weight cut, valued as the mill account values it
+  const { billed } = await import("./millAccounts.ts");
+  const cut = new Map((await billed(biz)).map((b) => [b.id, b.shortagePaise]));
+  return c.json(rows.map((r) => r.status === "approved"
+    ? { ...r, shortagePaise: cut.get(r.id) ?? 0, receivedPaise: gotBy.get(r.loadId) ?? 0, duePaise: r.grandTotalPaise - (cut.get(r.id) ?? 0) - (gotBy.get(r.loadId) ?? 0) }
+    : { ...r, shortagePaise: null, receivedPaise: null, duePaise: null }));
 });
 
 parchaRoutes.post("/:id/void", can("parcha.void"), async (c) => {

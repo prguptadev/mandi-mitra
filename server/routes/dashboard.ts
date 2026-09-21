@@ -1,11 +1,13 @@
 import { Hono } from "hono";
-import { eq, and, gte, lte, sql, inArray } from "drizzle-orm";
+import { eq, and, gte, lte, sql, inArray, isNull } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { can, bad, notFound, type Env } from "../lib/http.ts";
 import { incoming, trucks, race, worstAhead, type Filter, type TruckSummary } from "../lib/tracking.ts";
 import { linesWithWeights } from "../lib/parcha.ts";
 import { dispatchedByPo, poLabel } from "./orders.ts";
 import { avgFromSums } from "../lib/money.ts";
+import { millBalances } from "./millAccounts.ts";
+import type { ParchaDoc } from "../lib/parcha.ts";
 
 /* The owner's control panel: what came in, what went out, what is left per
    mill, how the two raced each other, and a list of everything that does not
@@ -117,7 +119,7 @@ async function flags(biz: string, jinsId: string | null, opts: { all: TruckSumma
     .from(schema.adati).where(eq(schema.adati.businessId, biz));
   const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.amountPaise})` }).from(S).where(eq(S.businessId, biz)).groupBy(S.adatiId);
   const paid = await db.select({ adatiId: schema.payments.adatiId, p: sql<number>`sum(${schema.payments.amountPaise})` })
-    .from(schema.payments).where(eq(schema.payments.businessId, biz)).groupBy(schema.payments.adatiId);
+    .from(schema.payments).where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt))).groupBy(schema.payments.adatiId);
   const ahead = suppliers.map((s) => ({ s, bal: s.opening + (bought.find((b) => b.adatiId === s.id)?.p ?? 0) - (paid.find((p) => p.adatiId === s.id)?.p ?? 0) }))
     .filter((x) => x.bal < 0);
   out.push({ code: "paid_ahead", level: "warn", items: ahead.map((x) => ({ adatiId: x.s.id, nameHi: x.s.nameHi, name: x.s.nameHinglish, paise: -x.bal })) });
@@ -187,8 +189,11 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
   }).filter((m) => m.slips || m.trucks || m.openingGrams);
 
   const noMill = inRows.filter((r) => !r.merchantId);
+  // what each mill still owes us, all time — money is shown only to those who may see it
+  const canMoney = auth.permissions.has("ledger.read");
+  const owed = canMoney ? await millBalances(biz) : null;
   const payments = await db.select({ p: sql<number>`coalesce(sum(${schema.payments.amountPaise}), 0)` }).from(schema.payments)
-    .where(and(eq(schema.payments.businessId, biz), ...(f.from ? [gte(schema.payments.payDate, f.from)] : []), ...(f.to ? [lte(schema.payments.payDate, f.to)] : [])));
+    .where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt), ...(f.from ? [gte(schema.payments.payDate, f.from)] : []), ...(f.to ? [lte(schema.payments.payDate, f.to)] : [])));
 
   const kpis = {
     slips: inRows.reduce((s, r) => s + r.slips, 0),
@@ -204,10 +209,20 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
     leftGrams: perMill.reduce((s, m) => s + m.leftGrams, 0),
     // payments are shown only to those who may see them
     paidPaise: auth.permissions.has("payment.read") || auth.permissions.has("ledger.read") ? (payments[0]?.p ?? 0) : null,
+    toReceivePaise: owed ? owed.totals.toReceivePaise : null,
+    /** Goods on trucks whose parcha is not approved yet: not billed, so not owed yet. */
+    unbilledGoodsPaise: outRows.filter((r) => r.status !== "billed").reduce((s, r) => s + r.goodsPaise, 0),
   };
   const avgSale = kpis.loadedGrams ? Math.floor((kpis.goodsPaise * 100_000) / kpis.loadedGrams + 0.5) : 0;
 
-  return c.json({ period: { from: f.from ?? null, to: f.to ?? null }, kpis: { ...kpis, avgSalePaisePerQtl: avgSale }, mills: perMill, flags: await flags(biz, f.jinsId ?? null, { all: allOut, canLedger: auth.permissions.has("ledger.read") }) });
+  const owedBy = new Map((owed?.rows ?? []).map((r) => [r.id, r]));
+  const millsOut = perMill.map((m) => ({
+    ...m,
+    // all time, whatever the period: a mill's balance does not reset with the filter
+    owedPaise: owed ? owedBy.get(m.merchantId)?.balancePaise ?? 0 : null,
+    receivedPaise: owed ? owedBy.get(m.merchantId)?.receivedPaise ?? 0 : null,
+  }));
+  return c.json({ period: { from: f.from ?? null, to: f.to ?? null }, kpis: { ...kpis, avgSalePaisePerQtl: avgSale }, mills: millsOut, flags: await flags(biz, f.jinsId ?? null, { all: allOut, canLedger: auth.permissions.has("ledger.read") }) });
 });
 
 /** One mill: received, loaded (every truck, priced), left, and the race between them. */
@@ -249,5 +264,89 @@ dashboardRoutes.get("/mill/:id", can("stock.read"), async (c) => {
     trucks: outs.sort((a, b) => b.loadDate.localeCompare(a.loadDate)),
     incoming: ins.map((r) => ({ date: r.date, slips: r.slips, netGrams: r.netGrams, grossGrams: r.grossGrams, amountPaise: r.amountPaise,
       avgPaisePerQtl: avgFromSums(r.pricedValue, r.pricedNet), unpriced: r.unpriced })).sort((a, b) => b.date.localeCompare(a.date)),
+  });
+});
+
+/**
+ * The whole money picture: what suppliers are owed, what mills owe, and where
+ * the money on the approved parchas goes (goods, adat and each charge).
+ * Balances are as of `to` (default today); flows are within the period.
+ */
+dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const f = filterOf(c);
+  const S = schema.purchaseSlips;
+  const P = schema.payments;
+
+  // suppliers, as of `to`
+  const sup = await db.select({ opening: sql<number>`coalesce(sum(${schema.adati.openingBalancePaise}), 0)` })
+    .from(schema.adati).where(eq(schema.adati.businessId, biz));
+  const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.amountPaise})` }).from(S)
+    .where(and(eq(S.businessId, biz), ...(f.to ? [lte(S.slipDate, f.to)] : []))).groupBy(S.adatiId);
+  const paidBy = await db.select({ adatiId: P.adatiId, p: sql<number>`sum(${P.amountPaise})` }).from(P)
+    .where(and(eq(P.businessId, biz), isNull(P.voidedAt), ...(f.to ? [lte(P.payDate, f.to)] : []))).groupBy(P.adatiId);
+  const openings = await db.select({ id: schema.adati.id, o: schema.adati.openingBalancePaise }).from(schema.adati).where(eq(schema.adati.businessId, biz));
+  const bal = openings.map((a) => a.o + (bought.find((b) => b.adatiId === a.id)?.p ?? 0) - (paidBy.find((p) => p.adatiId === a.id)?.p ?? 0));
+
+  // flows in the period
+  const inPeriod = <T,>(col: T) => [...(f.from ? [gte(col as never, f.from)] : []), ...(f.to ? [lte(col as never, f.to)] : [])];
+  const [purchases] = await db.select({ p: sql<number>`coalesce(sum(${S.amountPaise}), 0)`, n: sql<number>`count(*)` })
+    .from(S).where(and(eq(S.businessId, biz), ...inPeriod(S.slipDate)));
+  const [paid] = await db.select({ p: sql<number>`coalesce(sum(${P.amountPaise}), 0)`, n: sql<number>`count(*)` })
+    .from(P).where(and(eq(P.businessId, biz), isNull(P.voidedAt), ...inPeriod(P.payDate)));
+
+  // mills
+  const mills = await millBalances(biz, f.to);
+  const { billed, receipts } = await import("./millAccounts.ts");
+  const bills = await billed(biz, { from: f.from, to: f.to });
+  const recs = await receipts(biz, { from: f.from, to: f.to });
+
+  // what the approved parchas are made of, line by line, from their frozen copies
+  const docs = bills.length
+    ? await db.select({ snapshot: schema.parchas.snapshot }).from(schema.parchas).where(inArray(schema.parchas.id, bills.map((b) => b.id)))
+    : [];
+  const parts = new Map<string, { key: string; label: string; labelHi: string | null; amountPaise: number; sign: string }>();
+  let goods = 0, grand = 0;
+  for (const d of docs) {
+    const doc = JSON.parse(d.snapshot) as ParchaDoc;
+    grand += doc.result.grandTotalPaise;
+    for (const l of doc.result.lines) {
+      if (l.kind === "goods") { goods += l.amountPaise; continue; }
+      if (l.kind !== "charge" && l.kind !== "adjust") continue;
+      const signed = l.sign === "subtract" ? -l.amountPaise : l.amountPaise;
+      const p = parts.get(l.key) ?? { key: l.key, label: l.label, labelHi: l.labelHi ?? null, amountPaise: 0, sign: "add" };
+      p.amountPaise += signed;
+      parts.set(l.key, p);
+    }
+  }
+  // adat is one of the charge lines; it is the arhat's own share, so it is also named on its own
+  const adat = parts.get("adat")?.amountPaise ?? 0;
+  const listed = goods + [...parts.values()].reduce((s, p) => s + p.amountPaise, 0);
+
+  return c.json({
+    period: { from: f.from ?? null, to: f.to ?? null },
+    suppliers: {
+      openingPaise: sup[0]?.opening ?? 0,
+      purchasesPaise: purchases.p, slips: purchases.n,
+      paidPaise: paid.p, payments: paid.n,
+      toPayPaise: bal.filter((b) => b > 0).reduce((s, b) => s + b, 0),
+      paidAheadPaise: bal.filter((b) => b < 0).reduce((s, b) => s - b, 0),
+    },
+    mills: {
+      billedPaise: bills.reduce((s, b) => s + b.grandTotalPaise, 0), parchas: bills.length,
+      shortagePaise: bills.reduce((s, b) => s + b.shortagePaise, 0),
+      receivedPaise: recs.reduce((s, r) => s + r.amountPaise, 0),
+      deductedPaise: recs.reduce((s, r) => s + r.deductionPaise, 0), receipts: recs.length,
+      toReceivePaise: mills.totals.toReceivePaise,
+      paidAheadPaise: mills.totals.paidAheadPaise,
+    },
+    /** Grand totals of the approved parchas in the period, split into what they are made of. */
+    billed: {
+      goodsPaise: goods, adatPaise: adat,
+      parts: [...parts.values()].filter((p) => p.amountPaise !== 0),
+      grandTotalPaise: grand,
+      // grand-total rounding (and a dara added to the total, if a mill does that)
+      otherPaise: grand - listed,
+    },
   });
 });

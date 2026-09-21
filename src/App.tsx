@@ -21,6 +21,8 @@ import { OrdersPage } from "@/pages/Orders.tsx";
 import { LoadsPage, LoadDetailPage, ParchaRegisterPage } from "@/pages/Loads.tsx";
 import { StockPage, MillAccountPage } from "@/pages/Stock.tsx";
 import { LedgerPage, PaymentsPage } from "@/pages/Accounts.tsx";
+import { MillLedgerPage, MillStatementPage } from "@/pages/MillMoney.tsx";
+import { ChallanPage } from "@/pages/Challan.tsx";
 import { UsersPage, RolesPage, AuditPage, CommoditiesPage, SettingsPage } from "@/pages/Admin.tsx";
 
 function AddBusinessDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -126,11 +128,14 @@ export default function App() {
           <Route path="/orders">{() => <Guard perm="po.read"><OrdersPage /></Guard>}</Route>
           <Route path="/loads">{() => <Guard perm="load.read"><LoadsPage /></Guard>}</Route>
           <Route path="/loads/:id">{(p) => <Guard perm="load.read"><LoadDetailPage id={p.id} /></Guard>}</Route>
+          <Route path="/challan">{() => <Guard perm="load.read"><ChallanPage /></Guard>}</Route>
           <Route path="/parcha">{() => <Guard perm="parcha.read"><ParchaRegisterPage /></Guard>}</Route>
           <Route path="/stock">{() => <Guard perm="stock.read"><StockPage /></Guard>}</Route>
           <Route path="/stock/:mill">{(p) => <Guard perm="stock.read"><MillAccountPage id={p.mill} /></Guard>}</Route>
           <Route path="/ledger">{() => <Guard perm="ledger.read"><LedgerPage /></Guard>}</Route>
           <Route path="/payments">{() => <Guard perm="payment.read"><PaymentsPage /></Guard>}</Route>
+          <Route path="/mill-accounts">{() => <Guard perm="ledger.read"><MillLedgerPage /></Guard>}</Route>
+          <Route path="/mill-accounts/:id">{(p) => <Guard perm="ledger.read"><MillStatementPage id={p.id} /></Guard>}</Route>
           <Route path="/suppliers">{() => <Guard perm="adati.read"><SuppliersPage /></Guard>}</Route>
           <Route path="/mills">{() => <Guard perm="merchant.read"><MillsPage /></Guard>}</Route>
           <Route path="/commodities">{() => <Guard perm="jins.read"><CommoditiesPage /></Guard>}</Route>

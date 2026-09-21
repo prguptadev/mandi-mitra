@@ -53,6 +53,8 @@ export interface TruckSummary {
   weightGrams: number; goodsPaise: number; ratePaisePerQtl: number;
   stockDates: string[]; parchaNo: string | null; grandTotalPaise: number | null;
   mismatch: boolean; incomplete: boolean;
+  /** Weight the mill cut on arrival, and its note (see loads.millDeductionGrams). */
+  deductionGrams: number; deductionNote: string | null;
   rows: { stockDate: string; weightGrams: number; ratePaisePerQtl: number; dayAvgPaisePerQtl: number; typed: boolean; amountPaise: number }[];
 }
 
@@ -103,6 +105,7 @@ export async function trucks(businessId: string, f: Filter & { before?: string }
       mismatch: !p && l.millNetGrams != null && rows.length > 0
         && (rows.reduce((s, r) => s + r.weightGrams, 0) !== l.millNetGrams || rows.some((r) => r.weightGrams <= 0)),
       incomplete: l.status !== "billed" && (l.millGrossGrams == null || !l.bags),
+      deductionGrams: l.millDeductionGrams, deductionNote: l.millDeductionNote,
       rows,
     };
   });

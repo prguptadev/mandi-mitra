@@ -5,8 +5,7 @@ import {
   Factory, Wheat, BookOpen, Wallet, UserCog, ShieldCheck, ScrollText, Settings,
   Menu, X, Sun, Moon, Languages, ChevronDown, LogOut, Building2, Check, Plus,
   PanelLeftClose, PanelLeftOpen,
-  ClipboardList,
-} from "lucide-react";
+  ClipboardList, Landmark, ClipboardCheck } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useTheme } from "@/lib/theme.tsx";
@@ -26,6 +25,7 @@ const NAV: NavGroup[] = [
     { href: "/scan", labelKey: "nav.scan", icon: ScanLine, perm: "scan.create" },
     { href: "/orders", labelKey: "nav.orders", icon: ClipboardList, perm: "po.read" },
     { href: "/loads", labelKey: "nav.loads", icon: Truck, perm: "load.read" },
+    { href: "/challan", labelKey: "nav.challan", icon: ClipboardCheck, perm: "load.read" },
     { href: "/parcha", labelKey: "nav.parcha", icon: FileText, perm: "parcha.read" },
     { href: "/stock", labelKey: "nav.stock", icon: Boxes, perm: "stock.read" },
   ] },
@@ -37,6 +37,7 @@ const NAV: NavGroup[] = [
   { labelKey: "nav.accounts", items: [
     { href: "/ledger", labelKey: "nav.ledger", icon: BookOpen, perm: "ledger.read" },
     { href: "/payments", labelKey: "nav.payments", icon: Wallet, perm: "payment.read" },
+    { href: "/mill-accounts", labelKey: "nav.millAccounts", icon: Landmark, perm: "ledger.read" },
   ] },
   { labelKey: "nav.admin", items: [
     { href: "/users", labelKey: "nav.users", icon: UserCog, perm: "users.read" },

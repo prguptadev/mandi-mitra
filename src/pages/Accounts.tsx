@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { BookOpen, Wallet, Plus, Pencil, Trash2, Download, Printer, Search } from "lucide-react";
+import { BookOpen, Wallet, Plus, Pencil, Ban, Download, Printer, Search } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
@@ -10,8 +10,10 @@ import { PageHeader } from "@/components/AppShell.tsx";
 import { NumberInput } from "@/components/NumberInput.tsx";
 import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
+import { ReasonDialog } from "@/components/ReasonDialog.tsx";
+import { useSort } from "@/lib/useSort.ts";
 import {
-  Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Textarea,
+  Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Textarea, Checkbox,
 } from "@/components/ui/index.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
@@ -37,7 +39,8 @@ interface Entry {
   rstNo?: string; jinsCode?: string; millCode?: string | null; netGrams?: number; ratePaisePerQtl?: number;
   grossGrams?: number; katautiUnits?: number;
   mode?: Mode; reference?: string | null; notes?: string | null;
-  creditPaise: number; debitPaise: number; balancePaise: number;
+  voided?: boolean; voidReason?: string | null;
+  creditPaise: number; debitPaise: number; balancePaise: number; amountPaise?: number;
 }
 interface Statement {
   supplier: { id: string; nameHi: string; nameHinglish: string; village: string | null; phone: string | null; accountNo: string | null; ifsc: string | null; openingBalancePaise: number };
@@ -47,6 +50,7 @@ interface Statement {
 interface PaymentRow {
   id: string; adatiId: string; payDate: string; amountPaise: number; mode: Mode; reference: string | null; notes: string | null;
   adatiNameHi: string; adatiNameHinglish: string; createdByName: string | null;
+  voidedAt?: number | null; voidReason?: string | null;
 }
 
 /** "₹12,500.00 to pay" / "₹2,000.00 paid ahead" — the sign in words, as a munshi says it. */
@@ -193,9 +197,10 @@ export function LedgerPage() {
     return needle ? all.filter((r) => r.nameHi.includes(q.trim()) || r.nameHinglish.toLowerCase().includes(needle) || (r.village ?? "").toLowerCase().includes(needle)) : all;
   }, [list.data, q]);
 
+  const [voiding, setVoiding] = useState<{ id: string; amountPaise: number } | null>(null);
   const del = useMutation({
-    mutationFn: (id: string) => api.del(`/payments/${id}`),
-    onSuccess: () => invalidateAccounts(qc),
+    mutationFn: ({ id, reason }: { id: string; reason: string }) => api.post(`/payments/${id}/void`, { reason }),
+    onSuccess: async () => { setVoiding(null); await invalidateAccounts(qc); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
@@ -210,7 +215,7 @@ export function LedgerPage() {
       ["", s.from ? "Brought forward" : "Opening balance", "", "", "", "", (s.broughtForwardPaise / 100).toFixed(2)],
       ...s.entries.map((e) => [
         dmy(e.date),
-        e.kind === "purchase" ? `RST ${e.rstNo} · ${e.jinsCode}${e.millCode ? ` · ${e.millCode}` : ""}` : `Payment · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}`,
+        e.kind === "purchase" ? `RST ${e.rstNo} · ${e.jinsCode}${e.millCode ? ` · ${e.millCode}` : ""}` : `Payment · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
         e.netGrams != null ? (e.netGrams / 100_000).toFixed(2) : "",
         e.ratePaisePerQtl ? (e.ratePaisePerQtl / 100).toFixed(2) : "",
         e.creditPaise ? (e.creditPaise / 100).toFixed(2) : "",
@@ -339,7 +344,7 @@ export function LedgerPage() {
                       <td className="no-print" />
                     </tr>
                     {s.entries.map((e) => (
-                      <Tr key={`${e.kind}-${e.id}`}>
+                      <Tr key={`${e.kind}-${e.id}`} className={cn(e.voided && "opacity-60")}>
                         <Td className="whitespace-nowrap">{dmy(e.date)}</Td>
                         {e.kind === "purchase" ? (
                           <>
@@ -352,25 +357,27 @@ export function LedgerPage() {
                             <Td numeric>{e.ratePaisePerQtl ? f.rate(e.ratePaisePerQtl) : ""}</Td>
                           </>
                         ) : (
-                          <Td className="whitespace-nowrap text-ok" colSpan={7}>
+                          <Td className={cn("whitespace-nowrap text-ok", e.voided && "line-through")} colSpan={7}>
                             {t("ledger.payment")} · {t(`pay.mode.${e.mode ?? "cash"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}
                             {e.notes ? <span className="text-faint"> · {e.notes}</span> : null}
+                            {e.voided && <span className="ml-2 text-[11px] text-bad">{t("money.cancelledBecause", { why: e.voidReason ?? "" })}</span>}
                           </Td>
                         )}
                         <Td numeric>{e.creditPaise ? f.amount(e.creditPaise) : ""}</Td>
                         <Td numeric className="text-ok">{e.debitPaise ? f.amount(e.debitPaise) : ""}</Td>
                         <Td numeric><Balance paise={e.balancePaise} /></Td>
                         <Td className="no-print whitespace-nowrap text-right">
-                          {e.kind === "payment" && can("payment.write") && (
+                          {e.voided && <Badge tone="bad">{t("money.cancelled")}</Badge>}
+                          {e.kind === "payment" && !e.voided && can("payment.write") && (
                             <>
                               <Button variant="ghost" size="icon" title={t("common.edit")} onClick={() => setPaying({
                                 editing: { id: e.id, adatiId: s.supplier.id, payDate: e.date, amountPaise: e.debitPaise, mode: e.mode ?? "cash",
                                   reference: e.reference ?? null, notes: e.notes ?? null, adatiNameHi: s.supplier.nameHi,
                                   adatiNameHinglish: s.supplier.nameHinglish, createdByName: null },
                               })}><Pencil className="h-3.5 w-3.5" /></Button>
-                              <Button variant="ghost" size="icon" title={t("common.delete")}
-                                onClick={() => { if (confirm(t("pay.confirmDelete", { amt: f.money(e.debitPaise) }))) { setErr(null); del.mutate(e.id); } }}>
-                                <Trash2 className="h-3.5 w-3.5 text-bad" />
+                              <Button variant="ghost" size="icon" title={t("money.cancel")}
+                                onClick={() => { setErr(null); setVoiding({ id: e.id, amountPaise: e.debitPaise }); }}>
+                                <Ban className="h-3.5 w-3.5 text-bad" />
                               </Button>
                             </>
                           )}
@@ -398,6 +405,11 @@ export function LedgerPage() {
         </div>
       </div>
 
+      {voiding && (
+        <ReasonDialog title={t("pay.cancelTitle", { amt: f.money(voiding.amountPaise) })} sub={t("pay.cancelSub")}
+          confirmLabel={t("money.confirmCancel")} busy={del.isPending} error={err}
+          onClose={() => setVoiding(null)} onConfirm={(reason) => del.mutate({ id: voiding.id, reason })} />
+      )}
       {paying && (
         <PaymentDialog onClose={() => setPaying(null)} editing={paying.editing ?? null}
           adatiId={selected ?? undefined}
@@ -420,8 +432,11 @@ export function PaymentsPage() {
   const [adati, setAdati] = useState<string | null>(null);
   const [paying, setPaying] = useState<null | { editing?: PaymentRow | null }>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [showVoid, setShowVoid] = useState(false);
+  const [voiding, setVoiding] = useState<PaymentRow | null>(null);
 
   const qs = new URLSearchParams();
+  if (showVoid) qs.set("showVoid", "1");
   if (from) qs.set("from", from);
   if (to) qs.set("to", to);
   if (mode) qs.set("mode", mode);
@@ -431,11 +446,15 @@ export function PaymentsPage() {
     queryFn: () => api.get<{ rows: PaymentRow[]; totals: { count: number; amountPaise: number; byMode: Record<Mode, number> } }>(`/payments?${qs}`),
   });
   const del = useMutation({
-    mutationFn: (id: string) => api.del(`/payments/${id}`),
-    onSuccess: () => invalidateAccounts(qc),
+    mutationFn: ({ id, reason }: { id: string; reason: string }) => api.post(`/payments/${id}/void`, { reason }),
+    onSuccess: async () => { setVoiding(null); await invalidateAccounts(qc); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
   const rows = list.data?.rows ?? [];
+  const sort = useSort(rows, {
+    date: (p) => p.payDate, supplier: (p) => (lang === "hi" ? p.adatiNameHi : p.adatiNameHinglish || p.adatiNameHi),
+    mode: (p) => p.mode, reference: (p) => p.reference, amount: (p) => p.amountPaise, by: (p) => p.createdByName,
+  }, { storageKey: "payments" });
 
   return (
     <div>
@@ -461,6 +480,7 @@ export function PaymentsPage() {
           <Field label={t("daily.supplier")} className="w-64">
             <SupplierPicker value={adati} onChange={setAdati} className="h-8 text-[13px]" placeholder={t("common.all")} />
           </Field>
+          <div className="pb-1.5"><Checkbox checked={showVoid} onChange={setShowVoid} label={t("money.showCancelled")} /></div>
         </div>
         {list.isPending ? <SkeletonTable rows={6} /> : !rows.length ? (
           <EmptyState icon={<Wallet className="h-5 w-5" />} title={t("pay.empty")} sub={t("pay.emptySub")}
@@ -469,26 +489,28 @@ export function PaymentsPage() {
           <Table>
             <thead>
               <tr>
-                <Th>{t("pay.date")}</Th><Th>{t("daily.supplier")}</Th><Th>{t("pay.mode")}</Th><Th>{t("pay.reference")}</Th>
-                <Th numeric>{t("pay.amount")}</Th><Th>{t("pay.by")}</Th><Th className="w-20" />
+                <Th {...sort.th("date")}>{t("pay.date")}</Th><Th {...sort.th("supplier")}>{t("daily.supplier")}</Th>
+                <Th {...sort.th("mode")}>{t("pay.mode")}</Th><Th {...sort.th("reference")}>{t("pay.reference")}</Th>
+                <Th numeric {...sort.th("amount")}>{t("pay.amount")}</Th><Th {...sort.th("by")}>{t("pay.by")}</Th><Th className="w-20" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((p) => (
-                <Tr key={p.id}>
-                  <Td className="whitespace-nowrap">{dmy(p.payDate)}</Td>
+              {sort.sorted.map((p) => (
+                <Tr key={p.id} className={cn(p.voidedAt && "opacity-60")}>
+                  <Td className={cn("whitespace-nowrap", p.voidedAt && "line-through")}>{dmy(p.payDate)}</Td>
                   <Td><span lang={lang === "hi" ? "hi" : undefined}>{lang === "hi" ? p.adatiNameHi : p.adatiNameHinglish || p.adatiNameHi}</span></Td>
                   <Td><Badge>{t(`pay.mode.${p.mode}`)}</Badge></Td>
-                  <Td className="text-muted">{p.reference ?? ""}{p.notes ? <span className="block text-[11px] text-faint">{p.notes}</span> : null}</Td>
-                  <Td numeric className="font-medium">{f.money(p.amountPaise)}</Td>
+                  <Td className="text-muted">{p.reference ?? ""}{p.notes ? <span className="block text-[11px] text-faint">{p.notes}</span> : null}
+                    {p.voidedAt && <span className="block text-[11px] text-bad">{t("money.cancelledBecause", { why: p.voidReason ?? "" })}</span>}</Td>
+                  <Td numeric className={cn("font-medium", p.voidedAt && "line-through")}>{f.money(p.amountPaise)}</Td>
                   <Td className="text-[12px] text-muted">{p.createdByName ?? ""}</Td>
                   <Td className="whitespace-nowrap text-right">
-                    {can("payment.write") && (
+                    {p.voidedAt ? <Badge tone="bad">{t("money.cancelled")}</Badge> : can("payment.write") && (
                       <>
                         <Button variant="ghost" size="icon" title={t("common.edit")} onClick={() => setPaying({ editing: p })}><Pencil className="h-3.5 w-3.5" /></Button>
-                        <Button variant="ghost" size="icon" title={t("common.delete")}
-                          onClick={() => { if (confirm(t("pay.confirmDelete", { amt: f.money(p.amountPaise) }))) { setErr(null); del.mutate(p.id); } }}>
-                          <Trash2 className="h-3.5 w-3.5 text-bad" />
+                        <Button variant="ghost" size="icon" title={t("money.cancel")}
+                          onClick={() => { setErr(null); setVoiding(p); }}>
+                          <Ban className="h-3.5 w-3.5 text-bad" />
                         </Button>
                       </>
                     )}
@@ -512,6 +534,11 @@ export function PaymentsPage() {
         )}
       </Card>
       {paying && <PaymentDialog onClose={() => setPaying(null)} editing={paying.editing ?? null} adatiId={adati ?? undefined} />}
+      {voiding && (
+        <ReasonDialog title={t("pay.cancelTitle", { amt: f.money(voiding.amountPaise) })} sub={t("pay.cancelSub")}
+          confirmLabel={t("money.confirmCancel")} busy={del.isPending} error={err}
+          onClose={() => setVoiding(null)} onConfirm={(reason) => del.mutate({ id: voiding.id, reason })} />
+      )}
     </div>
   );
 }

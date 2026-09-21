@@ -101,9 +101,16 @@ console.log("\nEdit, delete, overpay, price a slip");
 await call("PUT", `/payments/${p2.id}`, { amountPaise: rs(32000) });
 row = (await call("GET", "/ledger")).rows.find((r: any) => r.id === A);
 check("editing 30,000 → 32,000 lowers the balance by 2,000", row.balancePaise === rs(26165.50), row.balancePaise);
-await call("DELETE", `/payments/${p2.id}`);
+const noWhy = await raw("POST", `/payments/${p2.id}/void`, { reason: "" });
+check("cancelling a payment needs a reason", noWhy.status === 400);
+await call("POST", `/payments/${p2.id}/void`, { reason: "paid twice by mistake" });
 row = (await call("GET", "/ledger")).rows.find((r: any) => r.id === A);
-check("deleting it puts 32,000 back", row.balancePaise === rs(58165.50), row.balancePaise);
+check("cancelling it puts 32,000 back", row.balancePaise === rs(58165.50), row.balancePaise);
+check("a cancelled payment cannot be edited", (await raw("PUT", `/payments/${p2.id}`, { amountPaise: 1 })).status === 409);
+const stV = await call("GET", `/ledger/${A}`);
+check("…but stays on the statement, struck, counting nothing", stV.entries.some((e: any) => e.id === p2.id && e.voided && e.debitPaise === 0));
+const withVoid = await call("GET", `/payments?adatiId=${A}&showVoid=1`);
+check("the payments list shows it only when asked", withVoid.rows.some((p: any) => p.id === p2.id && p.voidedAt));
 const p3 = await call("POST", "/payments", { adatiId: A, payDate: "2026-09-29", amountPaise: rs(60000), mode: "bank" });
 list = await call("GET", "/ledger");
 row = list.rows.find((r: any) => r.id === A);
@@ -132,7 +139,7 @@ check("one slip changed back on its own", (await call("GET", `/slips?date=2026-0
 await call("POST", "/slips/set-jins", { slipIds: [s1.id], jinsId: j1509.id });
 
 const pays = await call("GET", `/payments?adatiId=${A}`);
-check("payments list: 2 left, 1,10,000 in all", pays.rows.length === 2 && pays.totals.amountPaise === rs(110000), pays.totals);
+check("payments list: 2 left (the cancelled one hidden), 1,10,000 in all", pays.rows.length === 2 && pays.totals.amountPaise === rs(110000), pays.totals);
 check("split by mode: cash 50,000, bank 60,000", pays.totals.byMode.cash === rs(50000) && pays.totals.byMode.bank === rs(60000), pays.totals.byMode);
 void p1; void p3;
 const del = await call("DELETE", `/adati/${A}`);

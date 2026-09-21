@@ -48,6 +48,7 @@ try {
   run("scripts/e2e-scan-review.ts");
   run("scripts/e2e-loads.ts");
   run("scripts/e2e-accounts.ts");
+  run("scripts/e2e-mill-money.ts");
   run("scripts/e2e-gemini.ts");
 } finally {
   // a failing run shows the test server's own last words

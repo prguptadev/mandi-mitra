@@ -78,6 +78,20 @@
       "when": 1789987455347,
       "tag": "0010_clear_truck_po",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1789991416198,
+      "tag": "0011_mill_money",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1789992099186,
+      "tag": "0012_truck_deduction",
+      "breakpoints": true
     }
   ]
 }

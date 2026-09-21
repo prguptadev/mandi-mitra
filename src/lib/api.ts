@@ -76,6 +76,8 @@ export interface Merchant {
   state: string | null; pincode: string | null; contactPerson: string | null;
   phone: string | null; gstin: string | null; active: boolean;
   chargeConfig: ChargeConfig;
+  /** What the mill owed us before the app started; positive = it owes us. */
+  openingBalancePaise: number;
 }
 
 /* Charge terms and parcha results come straight from the server's own
@@ -302,4 +304,6 @@ export interface ParchaRegisterRow {
   grandTotalPaise: number; status: "approved" | "void"; approvedAt: number | null;
   voidedAt: number | null; voidReason: string | null;
   truckNo: string | null; millCode: string; millName: string;
+  /** Approved only: money (and held back) the mill sent against this truck, and what is left. */
+  receivedPaise: number | null; duePaise: number | null;
 }

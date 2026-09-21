@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, and, gte, lte, lt, desc, sql } from "drizzle-orm";
+import { eq, and, gte, lte, lt, desc, sql, isNull } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
-import { can, actor, param, notFound, bad, isoDay, LIMIT, type Env } from "../lib/http.ts";
+import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } from "../lib/http.ts";
 import { weightedAvgRate } from "../lib/money.ts";
 
 /* The supplier (adati) ledger, Tally-style. What we owe a supplier is
@@ -24,7 +24,8 @@ async function sums(businessId: string, opts: { before?: string; upTo?: string; 
   const S = schema.purchaseSlips;
   const P = schema.payments;
   const sw = [eq(S.businessId, businessId)];
-  const pw = [eq(P.businessId, businessId)];
+  // a cancelled payment stays on record but pays nothing
+  const pw = [eq(P.businessId, businessId), isNull(P.voidedAt)];
   if (opts.adatiId) { sw.push(eq(S.adatiId, opts.adatiId)); pw.push(eq(P.adatiId, opts.adatiId)); }
   if (opts.before) { sw.push(lt(S.slipDate, opts.before)); pw.push(lt(P.payDate, opts.before)); }
   if (opts.upTo) { sw.push(lte(S.slipDate, opts.upTo)); pw.push(lte(P.payDate, opts.upTo)); }
@@ -127,7 +128,7 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
   const pays = await db.select().from(P).where(and(...pw));
 
   type Entry = {
-    kind: "purchase" | "payment"; id: string; date: string; at: number;
+    kind: "purchase" | "payment"; id: string; date: string; at: number; voided?: boolean; voidReason?: string | null;
     rstNo?: string; jinsCode?: string; millCode?: string | null; netGrams?: number; ratePaisePerQtl?: number;
     grossGrams?: number; katautiUnits?: number;
     mode?: string; reference?: string | null; notes?: string | null;
@@ -143,7 +144,9 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
     ...pays.map((p) => ({
       kind: "payment" as const, id: p.id, date: p.payDate, at: p.createdAt,
       mode: p.mode, reference: p.reference, notes: p.notes,
-      creditPaise: 0, debitPaise: p.amountPaise,
+      // shown struck out, counted as nothing
+      voided: p.voidedAt != null, voidReason: p.voidReason,
+      creditPaise: 0, debitPaise: p.voidedAt != null ? 0 : p.amountPaise,
     })),
   ];
   // day by day; within a day purchases first, then payments, each in the order entered
@@ -200,6 +203,8 @@ paymentRoutes.get("/", can("payment.read"), async (c) => {
   const to = c.req.query("to");
   const adatiId = c.req.query("adatiId");
   const mode = c.req.query("mode");
+  const showVoid = c.req.query("showVoid") === "1";
+  if (!showVoid) where.push(isNull(P.voidedAt));
   if (from && ISO_DATE.test(from)) where.push(gte(P.payDate, from));
   if (to && ISO_DATE.test(to)) where.push(lte(P.payDate, to));
   if (adatiId) where.push(eq(P.adatiId, adatiId));
@@ -215,10 +220,11 @@ paymentRoutes.get("/", can("payment.read"), async (c) => {
   const list = rows.map((r) => ({ ...r.p, adatiNameHi: r.nameHi, adatiNameHinglish: r.nameHinglish, createdByName: r.byName }));
   // totals over every matching payment, not just the rows sent
   const agg = await db.select({ mode: P.mode, n: sql<number>`count(*)`, p: sql<number>`sum(${P.amountPaise})` })
-    .from(P).where(and(...where)).groupBy(P.mode);
+    .from(P).where(and(...where, isNull(P.voidedAt))).groupBy(P.mode);
   const byMode = Object.fromEntries(PAY_MODES.map((m) => [m, agg.find((a) => a.mode === m)?.p ?? 0]));
   const count = agg.reduce((s, a) => s + a.n, 0);
-  return c.json({ rows: list, truncated: count > list.length, totals: { count, amountPaise: agg.reduce((s, a) => s + a.p, 0), byMode } });
+  const [all] = await db.select({ n: sql<number>`count(*)` }).from(P).where(and(...where));
+  return c.json({ rows: list, truncated: all.n > list.length, totals: { count, amountPaise: agg.reduce((s, a) => s + a.p, 0), byMode } });
 });
 
 paymentRoutes.post("/", can("payment.write"), async (c) => {
@@ -243,6 +249,7 @@ paymentRoutes.put("/:id", can("payment.write"), async (c) => {
   const [before] = await db.select().from(schema.payments)
     .where(and(eq(schema.payments.id, id), eq(schema.payments.businessId, biz))).limit(1);
   if (!before) throw notFound("Payment not found");
+  if (before.voidedAt) throw new HttpError(409, "This payment is cancelled and cannot be changed", "voided");
   const body = PayBody.partial().parse(await c.req.json());
   const patch = {
     adatiId: body.adatiId ?? before.adatiId,
@@ -260,16 +267,28 @@ paymentRoutes.put("/:id", can("payment.write"), async (c) => {
   return c.json({ ok: true });
 });
 
-paymentRoutes.delete("/:id", can("payment.write"), async (c) => {
+/* A payment is never erased: cancelling keeps it on record, struck out, with
+   who cancelled it and why, and it stops counting towards the balance. */
+async function voidPayment(c: any, reason: string) {
   const biz = c.get("auth")!.businessId!;
   const id = param(c, "id");
   const [before] = await db.select().from(schema.payments)
     .where(and(eq(schema.payments.id, id), eq(schema.payments.businessId, biz))).limit(1);
   if (!before) throw notFound("Payment not found");
+  if (before.voidedAt) return c.json({ ok: true, alreadyVoid: true });
   const name = await supplierName(biz, before.adatiId);
-  await db.delete(schema.payments).where(eq(schema.payments.id, id));
-  await audit({ actor: actor(c), action: "payment.delete", entity: "payment", entityId: id,
-    entityLabel: `${before.payDate} ${name} ₹${(before.amountPaise / 100).toFixed(2)}`, before });
-  await enqueueSync(biz, "payment", id, "delete");
+  const patch = { voidedAt: Math.floor(Date.now() / 1000), voidedBy: c.get("auth")!.user.id, voidReason: reason };
+  await db.update(schema.payments).set(patch).where(eq(schema.payments.id, id));
+  await audit({ actor: actor(c), action: "payment.void", entity: "payment", entityId: id,
+    entityLabel: `${before.payDate} ${name} ₹${(before.amountPaise / 100).toFixed(2)} cancelled: ${reason}`, before, after: { ...before, ...patch } });
+  await enqueueSync(biz, "payment", id, "update", patch);
   return c.json({ ok: true });
+}
+
+paymentRoutes.post("/:id/void", can("payment.write"), async (c) => {
+  const { reason } = z.object({ reason: z.string().trim().min(3, "Say why it is cancelled").max(300) }).parse(await c.req.json());
+  return voidPayment(c, reason);
 });
+
+/** Kept for older screens: "delete" now cancels, it never erases. */
+paymentRoutes.delete("/:id", can("payment.write"), async (c) => voidPayment(c, "Deleted"));

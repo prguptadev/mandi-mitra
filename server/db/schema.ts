@@ -212,6 +212,8 @@ export const merchants = sqliteTable(
     gstin: text("gstin"),
     /** JSON blob validated by ChargeConfig zod schema in server/lib/charges.ts */
     chargeConfig: text("charge_config").notNull(),
+    /** What this mill owed us before the app started. Positive = the mill owes us (लेना). */
+    openingBalancePaise: integer("opening_balance_paise").notNull().default(0),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
     createdAt: integer("created_at").notNull().$defaultFn(now),
     updatedAt: integer("updated_at").notNull().$defaultFn(now),
@@ -319,6 +321,10 @@ export const loads = sqliteTable(
     invoiceNo: text("invoice_no"),
     invoiceDate: text("invoice_date"),
     ewayBillNo: text("eway_bill_no"),
+    /** Weight the mill cut after receiving the truck (shortage, moisture), in grams.
+     *  Valued at the truck's rate, it lowers what the mill owes; the parcha itself is not changed. */
+    millDeductionGrams: integer("mill_deduction_grams").notNull().default(0),
+    millDeductionNote: text("mill_deduction_note"),
     /** draft | billed */
     status: text("status").notNull().default("draft"),
     notes: text("notes"),
@@ -402,8 +408,45 @@ export const payments = sqliteTable(
     notes: text("notes"),
     createdBy: text("created_by").references(() => users.id),
     createdAt: integer("created_at").notNull().$defaultFn(now),
+    /** Cancelled payments stay on record, struck out, and count for nothing. */
+    voidedAt: integer("voided_at"),
+    voidedBy: text("voided_by").references(() => users.id),
+    voidReason: text("void_reason"),
   },
   (t) => ({ idx: index("payment_adati_idx").on(t.adatiId, t.payDate) }),
+);
+
+/**
+ * Money a mill paid us against the kaccha parchas we billed it. What the mill
+ * still owes = its opening + every approved parcha − every receipt (amount
+ * plus anything the mill held back, e.g. TDS or a shortage claim).
+ */
+export const millReceipts = sqliteTable(
+  "mill_receipts",
+  {
+    id: text("id").primaryKey(),
+    businessId: text("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    merchantId: text("merchant_id").notNull().references(() => merchants.id),
+    /** The truck (and so its parcha) this money is for, when the mill said so. */
+    loadId: text("load_id").references(() => loads.id, { onDelete: "set null" }),
+    receiptDate: text("receipt_date").notNull(),
+    amountPaise: integer("amount_paise").notNull(),
+    /** Held back by the mill and accepted: settles the bill without money arriving. */
+    deductionPaise: integer("deduction_paise").notNull().default(0),
+    deductionNote: text("deduction_note"),
+    mode: text("mode").notNull().default("bank"),
+    reference: text("reference"),
+    notes: text("notes"),
+    createdBy: text("created_by").references(() => users.id),
+    createdAt: integer("created_at").notNull().$defaultFn(now),
+    voidedAt: integer("voided_at"),
+    voidedBy: text("voided_by").references(() => users.id),
+    voidReason: text("void_reason"),
+  },
+  (t) => ({
+    idx: index("mill_receipt_mill_idx").on(t.merchantId, t.receiptDate),
+    loadIdx: index("mill_receipt_load_idx").on(t.loadId),
+  }),
 );
 
 /* --------------------------------------------------------------- scan / ocr */

@@ -26,6 +26,8 @@ const Body = z.object({
   phone: z.string().trim().optional(),
   gstin: z.string().trim().optional(),
   chargeConfig: ChargeConfigSchema.optional(),
+  /** What the mill owed us before the app started; positive = the mill owes us. */
+  openingBalanceRupees: z.number().finite().min(-1e10).max(1e10).optional(),
   active: z.boolean().optional(),
 });
 
@@ -73,6 +75,7 @@ merchantRoutes.post("/", can("merchant.write"), async (c) => {
     contactPerson: body.contactPerson || null, phone: body.phone || null,
     gstin: body.gstin || null,
     chargeConfig: JSON.stringify(cfg),
+    openingBalancePaise: Math.round((body.openingBalanceRupees ?? 0) * 100),
     active: body.active ?? true,
   };
   await db.insert(schema.merchants).values(values);
@@ -95,6 +98,7 @@ merchantRoutes.put("/:id", can("merchant.write"), async (c) => {
     if (body[k] !== undefined) patch[k] = body[k] || null;
   }
   if (body.active !== undefined) patch.active = body.active;
+  if (body.openingBalanceRupees !== undefined) patch.openingBalancePaise = Math.round(body.openingBalanceRupees * 100);
   if (body.chargeConfig) patch.chargeConfig = JSON.stringify(ChargeConfigSchema.parse(body.chargeConfig));
 
   await db.update(schema.merchants).set(patch).where(eq(schema.merchants.id, id));
@@ -131,7 +135,9 @@ merchantRoutes.delete("/:id", can("merchant.delete"), async (c) => {
     db.select({ id: schema.purchaseSlips.id }).from(schema.purchaseSlips).where(eq(schema.purchaseSlips.merchantId, id)).limit(1),
     db.select({ id: schema.purchaseOrders.id }).from(schema.purchaseOrders).where(eq(schema.purchaseOrders.merchantId, id)).limit(1),
     db.select({ id: schema.scanBatches.id }).from(schema.scanBatches).where(eq(schema.scanBatches.merchantId, id)).limit(1),
+    db.select({ id: schema.millReceipts.id }).from(schema.millReceipts).where(eq(schema.millReceipts.merchantId, id)).limit(1),
   ]);
+  if (before.openingBalancePaise !== 0) refs.push([{ id: "opening" }]);
   if (refs.some((r) => r.length)) {
     await db.update(schema.merchants).set({ active: false, updatedAt: nowSec() }).where(eq(schema.merchants.id, id));
     await audit({ actor: actor(c), action: "merchant.deactivate", entity: "merchant", entityId: id, entityLabel: before.name, before });

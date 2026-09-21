@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { Boxes, Truck, FileSpreadsheet, ChevronRight, ArrowLeft, PackageOpen, Warehouse } from "lucide-react";
+import { Boxes, Truck, FileSpreadsheet, ChevronRight, ArrowLeft, PackageOpen, Warehouse, Landmark } from "lucide-react";
+import { useSort } from "@/lib/useSort.ts";
+import { ReceiptDialog, type MillLedgerList } from "@/pages/MillMoney.tsx";
 import { api, ApiError, type Jins, type StockRow, type StockMillDay } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
@@ -23,13 +25,11 @@ import { dmy } from "@server/lib/parchaLabels.ts";
    purchases with the trucks that took from them. Negative is allowed. */
 
 function useStockFilters() {
+  // "" = every commodity, so no mill is hidden behind a filter
   const [jinsId, setJinsId] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const jins = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
-  useEffect(() => {
-    if (!jinsId && jins.data?.length) setJinsId(jins.data.find((j) => j.code === "1509")?.id ?? jins.data[0].id);
-  }, [jins.data]);
   const qs = new URLSearchParams();
   if (jinsId) qs.set("jinsId", jinsId);
   if (from) qs.set("from", from);
@@ -43,6 +43,7 @@ function Filters({ s }: { s: ReturnType<typeof useStockFilters> }) {
     <div className="flex flex-wrap items-end gap-3 border-b border-line p-3">
       <Field label={t("load.jins")} className="w-52">
         <Select value={s.jinsId} onChange={(e) => s.setJinsId(e.target.value)} className="h-8 text-[13px]">
+          <option value="">{t("daily.allJins")}</option>
           {s.jins.data?.map((j) => <option key={j.id} value={j.id}>{j.code} — {pick(j.name, j.nameHi)}</option>)}
         </Select>
       </Field>
@@ -64,8 +65,16 @@ export function StockPage() {
   const f = useFormat();
   const [, navigate] = useLocation();
   const s = useStockFilters();
-  const list = useQuery({ queryKey: ["stock", "all", s.qs.toString()], queryFn: () => api.get<StockRow[]>(`/stock?${s.qs}`), enabled: Boolean(s.jinsId) });
+  const { can } = useSession();
+  const list = useQuery({ queryKey: ["stock", "all", s.qs.toString()], queryFn: () => api.get<StockRow[]>(`/stock?${s.qs}`) });
+  // what each mill owes us, for its card — only for those who may see money
+  const money = useQuery({ queryKey: ["mill-ledger", "all"], queryFn: () => api.get<MillLedgerList>("/mill-ledger"), enabled: can("ledger.read") });
+  const owed = new Map((money.data?.rows ?? []).map((r) => [r.id, r]));
   const rows = list.data ?? [];
+  const sort = useSort(rows, {
+    mill: (r) => r.millCode, slips: (r) => r.slips, bought: (r) => r.boughtNet, avg: (r) => r.avgRatePaisePerQtl,
+    loaded: (r) => r.loadedNet, trucks: (r) => r.trucks, left: (r) => r.stockNet,
+  }, { storageKey: "stock" });
   // slips with no mill are in no mill's stock: shown as their own row, left out of the total
   const milled = rows.filter((r) => r.merchantId);
   const total = {
@@ -77,21 +86,55 @@ export function StockPage() {
   return (
     <div>
       <PageHeader title={t("stock.title")} sub={t("stock.sub")} />
+      <Card className="mb-4"><Filters s={s} /></Card>
+      {milled.length > 0 && (
+        <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {milled.map((r) => {
+            const m = owed.get(r.merchantId!);
+            const pct = r.boughtNet > 0 ? Math.min(100, Math.max(0, (r.loadedNet / r.boughtNet) * 100)) : r.loadedNet > 0 ? 100 : 0;
+            return (
+              <Link key={r.merchantId} href={`/stock/${r.merchantId}`}
+                className="block rounded-xl border border-line bg-surface p-4 shadow-card transition-colors hover:border-brand/60">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-2"><Badge tone="brand" className="num">{r.millCode}</Badge>
+                    <span className="truncate text-[14px] font-medium text-ink">{r.millName}</span></span>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-faint" />
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-[12px]">
+                  <div><p className="text-faint">{t("dash.received")}</p><p className="num text-[15px] font-semibold">{f.weight(r.boughtNet)}</p><p className="text-faint">{r.slips} {t("ledger.slips")}</p></div>
+                  <div><p className="text-faint">{t("dash.loaded")}</p><p className="num text-[15px] font-semibold">{f.weight(r.loadedNet)}</p><p className="text-faint">{r.trucks} {t("stock.trucks")}</p></div>
+                  <div><p className="text-faint">{t("dash.left")}</p><p className={cn("num text-[15px] font-semibold", r.stockNet < 0 && "text-bad")}>{f.weight(r.stockNet)}</p><p className="text-faint">{f.unit}</p></div>
+                </div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-raised" title={t("stock.loadedShare", { p: Math.round(pct) })}>
+                  <div className={cn("h-full rounded-full", r.stockNet < 0 ? "bg-bad" : "bg-brand")} style={{ width: `${pct}%` }} />
+                </div>
+                {m && (
+                  <div className="mt-3 grid grid-cols-3 gap-2 border-t border-line pt-2.5 text-[12px]">
+                    <div><p className="text-faint">{t("mm.billed")}</p><p className="num">{f.money(m.billedPaise)}</p></div>
+                    <div><p className="text-faint">{t("mm.received")}</p><p className="num text-ok">{f.money(m.receivedPaise)}</p></div>
+                    <div><p className="text-faint">{t("mm.owes")}</p><p className={cn("num font-semibold", m.balancePaise < 0 ? "text-warn" : "text-brand")}>{f.money(m.balancePaise)}</p></div>
+                  </div>
+                )}
+              </Link>
+            );
+          })}
+        </div>
+      )}
       <Card>
-        <Filters s={s} />
         {list.isPending ? <SkeletonTable rows={4} /> : !rows.length ? (
           <EmptyState icon={<Boxes className="h-5 w-5" />} title={t("stock.empty")} sub={t("stock.emptySub")} />
         ) : (
           <Table>
             <thead>
               <tr>
-                <Th>{t("load.mill")}</Th><Th numeric>{t("load.slips")}</Th><Th numeric>{t("stock.bought")}</Th>
-                <Th numeric>{t("stock.avgRate")}</Th><Th numeric>{t("stock.onTrucks")}</Th><Th numeric>{t("stock.trucks")}</Th>
-                <Th numeric>{t("stock.left")}</Th><Th className="w-8" />
+                <Th {...sort.th("mill")}>{t("load.mill")}</Th><Th numeric {...sort.th("slips")}>{t("load.slips")}</Th>
+                <Th numeric {...sort.th("bought")}>{t("stock.bought")}</Th><Th numeric {...sort.th("avg")}>{t("stock.avgRate")}</Th>
+                <Th numeric {...sort.th("loaded")}>{t("stock.onTrucks")}</Th><Th numeric {...sort.th("trucks")}>{t("stock.trucks")}</Th>
+                <Th numeric {...sort.th("left")}>{t("stock.left")}</Th><Th className="w-8" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {sort.sorted.map((r) => {
                 const key = r.merchantId ?? "none";
                 return (
                   <Tr key={key} onClick={() => navigate(`/stock/${key}`)}>
@@ -160,12 +203,17 @@ export function MillAccountPage({ id }: { id: string }) {
   const acct = useQuery({
     queryKey: ["mill-account", id, s.qs.toString()],
     queryFn: () => api.get<MillAccount>(`/dashboard/mill/${id}?${s.qs}`),
-    enabled: !isNone && Boolean(s.jinsId),
+    enabled: !isNone,
   });
+  const money = useQuery({
+    queryKey: ["mill-ledger", id, "card"],
+    queryFn: () => api.get<{ totals: { billedPaise: number; receivedPaise: number; deductedPaise: number; closingPaise: number } }>(`/mill-ledger/${id}`),
+    enabled: !isNone && can("ledger.read"),
+  });
+  const [receiving, setReceiving] = useState(false);
   const days = useQuery({
     queryKey: ["stock", id, s.qs.toString()],
     queryFn: () => api.get<{ days: StockMillDay[]; totals: { slips: number; boughtNet: number; loadedNet: number; stockNet: number } }>(`/stock/${id}?${s.qs}`),
-    enabled: Boolean(s.jinsId),
   });
 
   const dara = async (date: string) => {
@@ -198,8 +246,11 @@ export function MillAccountPage({ id }: { id: string }) {
       <PageHeader
         title={isNone ? t("stock.noMill") : a ? <span className="flex items-center gap-2"><Badge tone="brand" className="num">{a.mill.code}</Badge>{pick(a.mill.name, a.mill.nameHi)}</span> : "…"}
         sub={isNone ? t("stock.noMillHelp") : t("stock.millSub")}
-        action={!isNone && can("load.write") && (
-          <Button variant="primary" icon={<Truck className="h-4 w-4" />} onClick={() => setTruckFrom("")}>{t("load.new")}</Button>
+        action={!isNone && (
+          <div className="flex flex-wrap gap-2">
+            {can("ledger.read") && <Link href={`/mill-accounts/${id}`}><Button icon={<Landmark className="h-4 w-4" />}>{t("mm.title")}</Button></Link>}
+            {can("load.write") && <Button variant="primary" icon={<Truck className="h-4 w-4" />} onClick={() => setTruckFrom("")}>{t("load.new")}</Button>}
+          </div>
         )} />
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
 
@@ -207,7 +258,7 @@ export function MillAccountPage({ id }: { id: string }) {
 
       {!isNone && (!a || !sm ? <SkeletonStats /> : (
         <>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className={cn("grid gap-3 sm:grid-cols-3", money.data && "xl:grid-cols-4")}>
             <div className="rounded-xl border border-line bg-surface p-4 shadow-card">
               <p className="mb-1 flex items-center gap-2 text-[12px] font-medium uppercase tracking-wide text-muted"><PackageOpen className="h-4 w-4 text-brand" />{t("dash.received")}</p>
               <p className="num text-2xl font-semibold">{f.weight(sm.boughtNetGrams)} <span className="text-[13px] font-normal text-muted">{f.unit}</span></p>
@@ -228,6 +279,15 @@ export function MillAccountPage({ id }: { id: string }) {
               </p>
               {sm.leftGrams < 0 && <p className="text-[12px] font-medium text-bad">{t("stock.loadedMoreHelp", { q: f.weight(-sm.leftGrams) })}</p>}
             </div>
+            {money.data && (
+              <div className="rounded-xl border border-line bg-surface p-4 shadow-card">
+                <p className="mb-1 flex items-center gap-2 text-[12px] font-medium uppercase tracking-wide text-muted"><Landmark className="h-4 w-4 text-brand" />{t("mm.owes")}</p>
+                <p className={cn("num text-2xl font-semibold", money.data.totals.closingPaise < 0 ? "text-warn" : "text-brand")}>{f.money(money.data.totals.closingPaise)}</p>
+                <p className="text-[12px] text-muted">{t("mm.billed")} {f.money(money.data.totals.billedPaise)} · {t("mm.received")} {f.money(money.data.totals.receivedPaise)}{money.data.totals.deductedPaise ? ` · ${t("mm.heldShort")} ${f.money(money.data.totals.deductedPaise)}` : ""}</p>
+                <p className="text-[11px] text-faint">{t("mm.allTimeNote")}</p>
+                {can("payment.write") && <Button size="sm" variant="secondary" className="mt-2" onClick={() => setReceiving(true)}>{t("mm.receive")}</Button>}
+              </div>
+            )}
           </div>
 
           <Card className="mt-5">
@@ -292,7 +352,7 @@ export function MillAccountPage({ id }: { id: string }) {
             <thead>
               <tr>
                 <Th>{t("daily.date")}</Th><Th numeric>{t("load.slips")}</Th><Th numeric>{t("stock.bought")}</Th>
-                <Th numeric>{t("stock.dayAvg")}</Th><Th>{t("stock.trucksThatDay")}</Th><Th numeric>{t("stock.onTrucks")}</Th>
+                <Th numeric title={!s.jinsId ? t("stock.pickJinsForDara") : undefined}>{t("stock.dayAvg")}</Th><Th>{t("stock.trucksThatDay")}</Th><Th numeric>{t("stock.onTrucks")}</Th>
                 <Th numeric>{t("stock.leftThatDay")}</Th><Th numeric>{t("stock.running")}</Th><Th />
               </tr>
             </thead>
@@ -303,7 +363,7 @@ export function MillAccountPage({ id }: { id: string }) {
                   <td className="num px-3 py-2 text-right">{d.slips}</td>
                   <td className="num px-3 py-2 text-right">{f.weight(d.boughtNet)}</td>
                   <td className="num px-3 py-2 text-right">
-                    {d.avgRatePaisePerQtl ? f.rate(d.avgRatePaisePerQtl) : "—"}
+                    {!s.jinsId ? <span className="text-faint" title={t("stock.pickJinsForDara")}>—</span> : d.avgRatePaisePerQtl ? f.rate(d.avgRatePaisePerQtl) : "—"}
                     {d.unpriced > 0 && <span className="block text-[10px] text-warn">{t("stock.unpriced", { n: d.unpriced })}</span>}
                   </td>
                   <td className="px-3 py-2">
@@ -326,7 +386,7 @@ export function MillAccountPage({ id }: { id: string }) {
                       <Button size="sm" variant="ghost" icon={<Truck className="h-3.5 w-3.5" />} title={t("stock.truckFromDay")}
                         onClick={() => setTruckFrom(d.date)} />
                     )}
-                    {!isNone && can("export.data") && d.slips > 0 && (
+                    {!isNone && can("export.data") && d.slips > 0 && s.jinsId && (
                       <Button size="sm" variant="ghost" icon={<FileSpreadsheet className="h-3.5 w-3.5" />} title={t("dl.dara")}
                         onClick={() => dara(d.date)} />
                     )}
@@ -351,8 +411,9 @@ export function MillAccountPage({ id }: { id: string }) {
 
       {truckFrom !== null && !isNone && (
         <NewLoadDialog open onClose={() => setTruckFrom(null)}
-          preset={{ merchantId: id, jinsId: s.jinsId, stockDate: truckFrom || undefined }} />
+          preset={{ merchantId: id, jinsId: s.jinsId || undefined, stockDate: truckFrom || undefined }} />
       )}
+      {receiving && <ReceiptDialog onClose={() => setReceiving(false)} merchantId={id} />}
     </div>
   );
 }

@@ -299,7 +299,7 @@ function DateCell({ value, onCommit, disabled }: { value: string; onCommit: (v: 
 }
 
 /** A number box in display units that saves in storage units when it is left. */
-function NumCell({ value, scale, integer, decimals, onCommit, disabled, placeholder, className }: {
+export function NumCell({ value, scale, integer, decimals, onCommit, disabled, placeholder, className }: {
   value: number | null; scale: number; integer?: boolean; decimals?: number;
   onCommit: (v: number | null) => void; disabled?: boolean; placeholder?: string; className?: string;
 }) {
