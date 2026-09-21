@@ -34,5 +34,11 @@ export function relTime(sec: number, lang: string) {
   return rtf.format(-Math.floor(diff / 2592000), "month");
 }
 
+/** "2026-09-21" → "21-09-2026", as dates are written in the office. */
+export const dmy = (iso: string) => iso.split("-").reverse().join("-");
+/** "Mon" / "सोम" for a YYYY-MM-DD date. */
+export const weekday = (iso: string, lang: string) =>
+  new Date(`${iso}T12:00:00`).toLocaleDateString(lang === "hi" ? "hi-IN" : "en-IN", { weekday: "short" });
+
 /** Today's date where the office is (not UTC: before 05:30 IST that would still be yesterday). */
 export const todayISO = () => new Date().toLocaleDateString("en-CA");

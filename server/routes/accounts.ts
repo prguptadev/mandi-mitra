@@ -6,6 +6,7 @@ import { newId } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } from "../lib/http.ts";
 import { weightedAvgRate } from "../lib/money.ts";
+import { assertDaysOpen } from "../lib/dayClose.ts";
 
 /* The supplier (adati) ledger, Tally-style. What we owe a supplier is
      opening balance + every purchase (net × rate, on the slip's date) − every payment.
@@ -249,6 +250,7 @@ paymentRoutes.get("/", can("payment.read"), async (c) => {
 paymentRoutes.post("/", can("payment.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const body = PayBody.parse(await c.req.json());
+  await assertDaysOpen(biz, body.payDate);
   const name = await supplierName(biz, body.adatiId);
   const id = newId();
   const values = {
@@ -270,6 +272,7 @@ paymentRoutes.put("/:id", can("payment.write"), async (c) => {
   if (!before) throw notFound("Payment not found");
   if (before.voidedAt) throw new HttpError(409, "This payment is cancelled and cannot be changed", "voided");
   const body = PayBody.partial().parse(await c.req.json());
+  await assertDaysOpen(biz, before.payDate, body.payDate);
   const patch = {
     adatiId: body.adatiId ?? before.adatiId,
     payDate: body.payDate ?? before.payDate,
@@ -295,6 +298,7 @@ async function voidPayment(c: any, reason: string) {
     .where(and(eq(schema.payments.id, id), eq(schema.payments.businessId, biz))).limit(1);
   if (!before) throw notFound("Payment not found");
   if (before.voidedAt) return c.json({ ok: true, alreadyVoid: true });
+  await assertDaysOpen(biz, before.payDate);
   const name = await supplierName(biz, before.adatiId);
   const patch = { voidedAt: Math.floor(Date.now() / 1000), voidedBy: c.get("auth")!.user.id, voidReason: reason };
   await db.update(schema.payments).set(patch).where(eq(schema.payments.id, id));

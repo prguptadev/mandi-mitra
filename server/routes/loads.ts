@@ -10,6 +10,7 @@ import { parchaXlsx } from "../lib/parchaXlsx.ts";
 import { poLabel } from "./orders.ts";
 import { claimParchaNumber, CloudError } from "../lib/cloud.ts";
 import { can, actor, param, notFound, bad, HttpError, attachment, isoDay, LIMIT, type Env } from "../lib/http.ts";
+import { assertDaysOpen } from "../lib/dayClose.ts";
 
 /* A load is one truck to one mill, loaded by weight from that mill's stock:
    each row takes a weight from one purchase day (optionally against a PO),
@@ -198,6 +199,7 @@ loadRoutes.get("/:id/stock-days", can("load.read"), async (c) => {
 loadRoutes.post("/", can("load.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const body = Header.extend({ stockDate: isoDay().optional() }).parse(await c.req.json());
+  await assertDaysOpen(biz, body.loadDate);
   const refs = await checkHeaderRefs(biz, body);
 
   const id = newId();
@@ -235,6 +237,7 @@ loadRoutes.put("/:id", can("load.write"), async (c) => {
   const before = await getLoad(biz, id);
   assertDraft(before);
   const body = Header.partial().merge(Weighment.partial()).merge(ParchaFields.partial()).parse(await c.req.json());
+  await assertDaysOpen(biz, before.loadDate, before.invoiceDate, body.loadDate, body.invoiceDate);
 
   // a truck with a parcha on record or money against it stays with its mill: moving it
   // would credit one mill's account with another's bill or payment
@@ -300,6 +303,7 @@ loadRoutes.post("/:id/lines", can("load.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const l = await getLoad(biz, param(c, "id"));
   assertDraft(l);
+  await assertDaysOpen(biz, l.loadDate);
   const body = LineBody.parse(await c.req.json());
   await checkLinePo(biz, l, body.poId);
   const [last] = await db.select({ n: sql<number>`coalesce(max(${schema.loadLines.sort}), -1)` })
@@ -321,6 +325,7 @@ loadRoutes.put("/:id/lines/:lineId", can("load.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const l = await getLoad(biz, param(c, "id"));
   assertDraft(l);
+  await assertDaysOpen(biz, l.loadDate);
   const lineId = param(c, "lineId");
   const [before] = await db.select().from(schema.loadLines)
     .where(and(eq(schema.loadLines.id, lineId), eq(schema.loadLines.loadId, l.id))).limit(1);
@@ -345,6 +350,7 @@ loadRoutes.delete("/:id/lines/:lineId", can("load.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const l = await getLoad(biz, param(c, "id"));
   assertDraft(l);
+  await assertDaysOpen(biz, l.loadDate);
   const lineId = param(c, "lineId");
   const [before] = await db.select().from(schema.loadLines)
     .where(and(eq(schema.loadLines.id, lineId), eq(schema.loadLines.loadId, l.id))).limit(1);
@@ -360,6 +366,7 @@ loadRoutes.delete("/:id", can("load.delete"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const l = await getLoad(biz, param(c, "id"));
   assertDraft(l);
+  await assertDaysOpen(biz, l.loadDate, l.invoiceDate);
   const [p] = await db.select({ id: schema.parchas.id }).from(schema.parchas).where(eq(schema.parchas.loadId, l.id)).limit(1);
   if (p) throw new HttpError(409, "This load has a voided parcha on record, so it is kept.", "load_has_history");
   const [r] = await db.select({ id: schema.millReceipts.id }).from(schema.millReceipts).where(eq(schema.millReceipts.loadId, l.id)).limit(1);
@@ -392,6 +399,7 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
   if (s.blockers.length || !s.doc) {
     return c.json({ error: "The parcha is not ready to approve", code: "not_ready", blockers: s.blockers }, 409);
   }
+  await assertDaysOpen(biz, l.loadDate, s.doc.invoiceDate);
   if (req.expectedGrandTotalPaise !== undefined && req.expectedGrandTotalPaise !== s.doc.result.grandTotalPaise) {
     return c.json({ error: "The parcha changed since you looked at it (someone edited the truck or a slip). Check the new total and approve again.", code: "changed" }, 409);
   }
@@ -548,6 +556,7 @@ parchaRoutes.post("/:id/void", can("parcha.void"), async (c) => {
     .where(and(eq(schema.parchas.id, id), eq(schema.parchas.businessId, biz))).limit(1);
   if (!p) throw notFound("Parcha not found");
   if (p.status !== "approved") throw new HttpError(409, "This parcha is already void", "already_void");
+  await assertDaysOpen(biz, p.invoiceDate);
   const at = nowSec();
   db.transaction((tx) => {
     tx.update(schema.parchas).set({ status: "void", voidedBy: auth.user.id, voidedAt: at, voidReason: reason })

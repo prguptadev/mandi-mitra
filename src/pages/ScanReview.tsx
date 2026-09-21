@@ -7,6 +7,7 @@ import {
   PanelRightClose, PanelRightOpen, UserPlus, FileText,
 } from "lucide-react";
 import { api, ApiError, apiStatus, type ScanBatch, type PageCheck, type ScanRow, type ScanIssue, type Jins, type Merchant } from "@/lib/api.ts";
+import { sayServer } from "@/lib/serverHi.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, parseLooseNumber, GRAMS_PER_QTL } from "@/lib/format.tsx";
@@ -185,7 +186,7 @@ type Field = GridField;
 const dmyIso = (iso: string) => iso.split("-").reverse().join("-");
 
 export function ScanReviewPage({ scanId }: { scanId: string }) {
-  const { t, pick } = useI18n();
+  const { t, pick, lang } = useI18n();
   const f = useFormat();
   const qc = useQueryClient();
   const { can } = useSession();
@@ -433,7 +434,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
     return (
       <>
         <PageHeader title={t("scan.review")} sub={t("scan.reviewSub")} />
-        {b.warningText && <Alert tone="warn" className="mb-3">{b.warningText}</Alert>}
+        {b.warningText && <Alert tone="warn" className="mb-3">{sayServer(b.warningText, lang)}</Alert>}
         {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
         <GeminiUsageBar className="mb-3" />
         <PageOrderer scanId={scanId} pages={b.pages} reading={run.isPending} onRead={() => run.mutate(undefined)} />
@@ -500,7 +501,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
             </p>
             <p className="max-w-sm text-[13px] text-muted">{t("scan.readingSub")}</p>
             {b.warningText && (
-              <p className="max-w-sm rounded-lg border border-warn/40 bg-warn-soft px-3 py-1.5 text-[12px] text-warn">{b.warningText}</p>
+              <p className="max-w-sm rounded-lg border border-warn/40 bg-warn-soft px-3 py-1.5 text-[12px] text-warn">{sayServer(b.warningText, lang)}</p>
             )}
             {/* "reading", but no read is running here: it stopped, or runs on another computer */}
             {!b.running && (
@@ -585,13 +586,13 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
       {b.warningText && !reading && (
         <Alert tone="warn" className="mb-3">
           <span className="flex items-start gap-2"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span className="min-w-0 break-words">{b.warningText}</span></span>
+            <span className="min-w-0 break-words">{sayServer(b.warningText, lang)}</span></span>
         </Alert>
       )}
       {b.errorText && (
         <Alert tone="bad" className="mb-3">
           <p className="font-semibold">{t("scan.failedTitle")}</p>
-          <p className="mt-0.5 break-words leading-relaxed">{b.errorText}</p>
+          <p className="mt-0.5 break-words leading-relaxed">{sayServer(b.errorText, lang)}</p>
           {/^Google rejected/.test(b.errorText) && can("business.read") && (
             <Button size="sm" variant="secondary" className="mt-2" onClick={() => navigate("/settings")}>{t("nav.settings")}</Button>
           )}

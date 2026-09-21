@@ -24,6 +24,7 @@ import { LedgerPage, PaymentsPage } from "@/pages/Accounts.tsx";
 import { MillLedgerPage, MillStatementPage } from "@/pages/MillMoney.tsx";
 import { ChallanPage } from "@/pages/Challan.tsx";
 import { TallyPage } from "@/pages/Tally.tsx";
+import { DayClosePage } from "@/pages/DayClose.tsx";
 import { UsersPage, RolesPage, AuditPage, CommoditiesPage, SettingsPage } from "@/pages/Admin.tsx";
 
 /** The dashboard, or — for a role without it — the first screen the role may open. */
@@ -153,6 +154,7 @@ export default function App() {
           <Route path="/payments">{() => <Guard perm="payment.read"><PaymentsPage /></Guard>}</Route>
           <Route path="/mill-accounts">{() => <Guard perm="millledger.read"><MillLedgerPage /></Guard>}</Route>
           <Route path="/tally">{() => <Guard perm="millledger.read"><TallyPage /></Guard>}</Route>
+          <Route path="/day-close">{() => <Guard perm="slip.read"><DayClosePage /></Guard>}</Route>
           <Route path="/mill-accounts/:id">{(p) => <Guard perm="millledger.read"><MillStatementPage id={p.id} /></Guard>}</Route>
           <Route path="/suppliers">{() => <Guard perm="adati.read"><SuppliersPage /></Guard>}</Route>
           <Route path="/mills">{() => <Guard perm="merchant.read"><MillsPage /></Guard>}</Route>

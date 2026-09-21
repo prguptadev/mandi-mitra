@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearch } from "wouter";
 import { Download, CheckCircle2, Wrench, ChevronDown } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -38,6 +39,9 @@ export function TallyPage() {
   const qc = useQueryClient();
   const ask = useConfirm();
   const { from, setFrom, to, setTo, fy } = useFYRange();
+  // opened from a day's Tally mark (/tally?day=2026-09-20): just that day
+  const day = new URLSearchParams(useSearch()).get("day");
+  useEffect(() => { if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) { setFrom(day); setTo(day); } }, [day]);
   const [kinds, setKinds] = useState<Kind[]>([...KINDS]);
   const [onlyNew, setOnlyNew] = useState(true);
   const [err, setErr] = useState<string | null>(null);

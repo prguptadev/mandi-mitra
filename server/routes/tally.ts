@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { and, eq, gte, lte, isNull, inArray } from "drizzle-orm";
+import { and, eq, gte, lte, isNull, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
@@ -36,10 +36,16 @@ tallyRoutes.put("/settings", can("settings.write"), async (c) => {
   return c.json(next);
 });
 
-type Entry = { kind: Kind; id: string; fp: string };
+type Entry = { kind: Kind; id: string; fp: string; day: string };
+/** Only one party's entries: a supplier's purchases and payments, or a mill's sales, cuts, money and the purchases loaded for it. */
+export type Party = { adatiId?: string | null; merchantId?: string | null };
+/** A parcha counts on its invoice date, else on its truck's load date (as in the mill ledger). */
+const parchaDay = sql<string>`coalesce(${schema.parchas.invoiceDate}, ${schema.loads.loadDate})`;
 
 /** Everything in the period that Tally should hold, as vouchers, with each source entry's fingerprint. */
-async function build(biz: string, from: string, to: string, kinds: Kind[], cfg: TallySettings, skip: Set<string> = new Set()) {
+async function build(biz: string, from: string, to: string, kinds0: Kind[], cfg: TallySettings, skip: Set<string> = new Set(), party: Party = {}) {
+  // a supplier has no sales; a mill has no supplier payments
+  const kinds = kinds0.filter((k) => !(party.adatiId && (k === "parcha" || k === "cut" || k === "receipt")) && !(party.merchantId && k === "payment"));
   const L = cfg.ledgers, T = cfg.voucherTypes;
   const vouchers: TallyVoucher[] = [];
   const entries: Entry[] = [];
@@ -76,7 +82,8 @@ async function build(biz: string, from: string, to: string, kinds: Kind[], cfg: 
     const slips = await db.select({ s: S, jins: schema.jins.code, millCode: schema.merchants.code }).from(S)
       .innerJoin(schema.jins, eq(schema.jins.id, S.jinsId))
       .leftJoin(schema.merchants, eq(schema.merchants.id, S.merchantId))
-      .where(and(eq(S.businessId, biz), gte(S.slipDate, from), lte(S.slipDate, to)));
+      .where(and(eq(S.businessId, biz), gte(S.slipDate, from), lte(S.slipDate, to),
+        party.adatiId ? eq(S.adatiId, party.adatiId) : undefined, party.merchantId ? eq(S.merchantId, party.merchantId) : undefined));
     const pricedAll = slips.filter((x) => x.s.ratePaisePerQtl > 0);
     unpriced = slips.length - pricedAll.length;
     const priced = fresh("slip", pricedAll, (x) => x.s.id);
@@ -102,27 +109,29 @@ async function build(biz: string, from: string, to: string, kinds: Kind[], cfg: 
           { ledger: sup(s0.adatiId), paise: -sum((y) => y.payablePaise) },
         ],
       });
-      for (const y of g) entries.push({ kind: "slip", id: y.s.id, fp: fpSlip(y.s) });
+      for (const y of g) entries.push({ kind: "slip", id: y.s.id, fp: fpSlip(y.s), day: y.s.slipDate });
     }
   }
 
   if (kinds.includes("payment")) {
     const P = schema.payments;
-    const pays = fresh("payment", await db.select().from(P).where(and(eq(P.businessId, biz), isNull(P.voidedAt), gte(P.payDate, from), lte(P.payDate, to))), (x) => x.id);
+    const pays = fresh("payment", await db.select().from(P).where(and(eq(P.businessId, biz), isNull(P.voidedAt), gte(P.payDate, from), lte(P.payDate, to),
+      party.adatiId ? eq(P.adatiId, party.adatiId) : undefined)), (x) => x.id);
     for (const p of pays) {
       vouchers.push({
         type: T.payment, date: p.payDate, reference: p.reference ?? undefined, party: sup(p.adatiId),
         narration: [`Paid by ${p.mode}`, p.reference, p.notes].filter(Boolean).join(" · "),
         lines: [{ ledger: sup(p.adatiId), paise: p.amountPaise }, { ledger: cashOrBank(p.mode), paise: -p.amountPaise }],
       });
-      entries.push({ kind: "payment", id: p.id, fp: fpPayment(p) });
+      entries.push({ kind: "payment", id: p.id, fp: fpPayment(p), day: p.payDate });
     }
   }
 
   const PA = schema.parchas;
   const parchas = kinds.includes("parcha") || kinds.includes("cut")
     ? await db.select({ p: PA, l: schema.loads }).from(PA).innerJoin(schema.loads, eq(schema.loads.id, PA.loadId))
-      .where(and(eq(PA.businessId, biz), eq(PA.status, "approved"), gte(PA.invoiceDate, from), lte(PA.invoiceDate, to)))
+      .where(and(eq(PA.businessId, biz), eq(PA.status, "approved"), sql`${parchaDay} >= ${from}`, sql`${parchaDay} <= ${to}`,
+        party.merchantId ? eq(schema.loads.merchantId, party.merchantId) : undefined))
     : [];
   if (kinds.includes("parcha")) {
     for (const { p, l } of fresh("parcha", parchas, (x) => x.p.id)) {
@@ -151,7 +160,7 @@ async function build(biz: string, from: string, to: string, kinds: Kind[], cfg: 
         narration: `Kaccha parcha ${p.parchaNo}${p.version > 1 ? ` v${p.version}` : ""} · truck ${l.truckNo ?? "-"} · ${q2(d.totals.netGrams)} qtl × Rs ${(d.totals.ratePaisePerQtl / 100).toFixed(2)}`,
         lines,
       });
-      entries.push({ kind: "parcha", id: p.id, fp: fpParcha(p) });
+      entries.push({ kind: "parcha", id: p.id, fp: fpParcha(p), day: p.invoiceDate ?? l.loadDate });
     }
   }
 
@@ -166,13 +175,14 @@ async function build(biz: string, from: string, to: string, kinds: Kind[], cfg: 
         narration: `Weight cut on parcha ${p.parchaNo} · ${q2(l.millDeductionGrams)} qtl${l.millDeductionNote ? ` · ${l.millDeductionNote}` : ""}`,
         lines: [{ ledger: use(L.weightShortage, "Indirect Expenses"), paise: value }, { ledger: mill(l.merchantId), paise: -value }],
       });
-      entries.push({ kind: "cut", id: l.id, fp: fpCut(l.millDeductionGrams, value) });
+      entries.push({ kind: "cut", id: l.id, fp: fpCut(l.millDeductionGrams, value), day: p.invoiceDate ?? l.loadDate });
     }
   }
 
   if (kinds.includes("receipt")) {
     const R = schema.millReceipts;
-    const recs = fresh("receipt", await db.select().from(R).where(and(eq(R.businessId, biz), isNull(R.voidedAt), gte(R.receiptDate, from), lte(R.receiptDate, to))), (x) => x.id);
+    const recs = fresh("receipt", await db.select().from(R).where(and(eq(R.businessId, biz), isNull(R.voidedAt), gte(R.receiptDate, from), lte(R.receiptDate, to),
+      party.merchantId ? eq(R.merchantId, party.merchantId) : undefined)), (x) => x.id);
     for (const x of recs) {
       vouchers.push({
         type: T.receipt, date: x.receiptDate, reference: x.reference ?? undefined, party: mill(x.merchantId),
@@ -183,7 +193,7 @@ async function build(biz: string, from: string, to: string, kinds: Kind[], cfg: 
           { ledger: mill(x.merchantId), paise: -(x.amountPaise + x.deductionPaise) },
         ],
       });
-      entries.push({ kind: "receipt", id: x.id, fp: fpReceipt(x) });
+      entries.push({ kind: "receipt", id: x.id, fp: fpReceipt(x), day: x.receiptDate });
     }
   }
   vouchers.sort((a, b) => a.date.localeCompare(b.date));
@@ -221,7 +231,84 @@ const Q = z.object({
   kinds: z.array(z.enum(KINDS)).min(1),
   /** Leave out what was sent to Tally before (the usual). */
   onlyNew: z.boolean().default(true),
+  /** Only this supplier's, or only this mill's, entries. */
+  adatiId: z.string().nullish(),
+  merchantId: z.string().nullish(),
 });
+
+/* ------------------------------------------------ where each entry stands */
+
+export type TallyState = "new" | "sent" | "changed" | "unpriced";
+export interface EntryState { kind: Kind; id: string; day: string; state: TallyState; at: number | null; by: string | null }
+
+/** Every entry in the period and whether Tally has it: not yet, yes, or yes but it changed here since.
+ *  Reads only the figures a fingerprint needs, so a whole season stays quick. */
+export async function tallyStatus(biz: string, from: string, to: string, kinds: Kind[], party: Party = {}): Promise<EntryState[]> {
+  const TE = schema.tallyExports;
+  const mark = (kind: Kind, id: Parameters<typeof eq>[1]) => and(eq(TE.businessId, biz), eq(TE.kind, kind), eq(TE.entityId, id as never));
+  const out: EntryState[] = [];
+  // a left join with nothing on the right comes back as null
+  const put = (kind: Kind, id: string, day: string, fp: string | null, m: { fp: string | null; at: number | null; by: string | null } | null) =>
+    out.push({ kind, id, day, at: m?.at ?? null, by: m?.by ?? null, state: fp === null ? "unpriced" : m?.fp == null ? "new" : m.fp === fp ? "sent" : "changed" });
+  const M = { fp: TE.fingerprint, at: TE.exportedAt, by: TE.exportedBy };
+
+  if (kinds.includes("slip")) {
+    const S = schema.purchaseSlips;
+    const rows = await db.select({ s: { id: S.id, slipDate: S.slipDate, adatiId: S.adatiId, amountPaise: S.amountPaise, commissionPaise: S.commissionPaise, gaushalaPaise: S.gaushalaPaise, payablePaise: S.payablePaise, ratePaisePerQtl: S.ratePaisePerQtl }, m: M })
+      .from(S).leftJoin(TE, mark("slip", S.id))
+      .where(and(eq(S.businessId, biz), gte(S.slipDate, from), lte(S.slipDate, to),
+        party.adatiId ? eq(S.adatiId, party.adatiId) : undefined, party.merchantId ? eq(S.merchantId, party.merchantId) : undefined));
+    for (const r of rows) put("slip", r.s.id, r.s.slipDate, r.s.ratePaisePerQtl > 0 ? fpSlip(r.s as typeof S.$inferSelect) : null, r.m);
+  }
+  if (kinds.includes("payment") && !party.merchantId) {
+    const P = schema.payments;
+    const rows = await db.select({ p: { id: P.id, payDate: P.payDate, adatiId: P.adatiId, amountPaise: P.amountPaise, mode: P.mode }, m: M })
+      .from(P).leftJoin(TE, mark("payment", P.id))
+      .where(and(eq(P.businessId, biz), isNull(P.voidedAt), gte(P.payDate, from), lte(P.payDate, to), party.adatiId ? eq(P.adatiId, party.adatiId) : undefined));
+    for (const r of rows) put("payment", r.p.id, r.p.payDate, fpPayment(r.p as typeof P.$inferSelect), r.m);
+  }
+  if ((kinds.includes("parcha") || kinds.includes("cut")) && !party.adatiId) {
+    const PA = schema.parchas, LD = schema.loads;
+    const where = and(eq(PA.businessId, biz), eq(PA.status, "approved"), sql`${parchaDay} >= ${from}`, sql`${parchaDay} <= ${to}`,
+      party.merchantId ? eq(LD.merchantId, party.merchantId) : undefined);
+    if (kinds.includes("parcha")) {
+      const rows = await db.select({ p: { id: PA.id, invoiceDate: PA.invoiceDate, parchaNo: PA.parchaNo, version: PA.version, grandTotalPaise: PA.grandTotalPaise, status: PA.status }, day: parchaDay, m: M })
+        .from(PA).innerJoin(LD, eq(LD.id, PA.loadId)).leftJoin(TE, mark("parcha", PA.id)).where(where);
+      for (const r of rows) put("parcha", r.p.id, r.day, fpParcha(r.p as typeof PA.$inferSelect), r.m);
+    }
+    if (kinds.includes("cut")) {
+      const rows = await db.select({ id: LD.id, grams: LD.millDeductionGrams, snapshot: PA.snapshot, day: parchaDay, m: M })
+        .from(PA).innerJoin(LD, eq(LD.id, PA.loadId)).leftJoin(TE, mark("cut", LD.id)).where(and(where, sql`${LD.millDeductionGrams} > 0`));
+      for (const r of rows) {
+        const value = amountPaise(r.grams, (JSON.parse(r.snapshot) as ParchaDoc).totals.ratePaisePerQtl);
+        if (value) put("cut", r.id, r.day, fpCut(r.grams, value), r.m);
+      }
+    }
+  }
+  if (kinds.includes("receipt") && !party.adatiId) {
+    const R = schema.millReceipts;
+    const rows = await db.select({ x: { id: R.id, receiptDate: R.receiptDate, merchantId: R.merchantId, amountPaise: R.amountPaise, deductionPaise: R.deductionPaise, mode: R.mode }, m: M })
+      .from(R).leftJoin(TE, mark("receipt", R.id))
+      .where(and(eq(R.businessId, biz), isNull(R.voidedAt), gte(R.receiptDate, from), lte(R.receiptDate, to), party.merchantId ? eq(R.merchantId, party.merchantId) : undefined));
+    for (const r of rows) put("receipt", r.x.id, r.x.receiptDate, fpReceipt(r.x as typeof R.$inferSelect), r.m);
+  }
+  return out;
+}
+
+type Tally4 = Record<TallyState, number>;
+const zero = (): Tally4 => ({ new: 0, sent: 0, changed: 0, unpriced: 0 });
+
+/** Day by day: how many entries of each kind are new, in Tally, or changed since. */
+export async function tallyDays(biz: string, from: string, to: string, kinds: Kind[], party: Party = {}) {
+  const byDay = new Map<string, { day: string; all: Tally4; kinds: Partial<Record<Kind, Tally4>> }>();
+  for (const e of await tallyStatus(biz, from, to, kinds, party)) {
+    let d = byDay.get(e.day);
+    if (!d) { d = { day: e.day, all: zero(), kinds: {} }; byDay.set(e.day, d); }
+    d.all[e.state]++;
+    (d.kinds[e.kind] ??= zero())[e.state]++;
+  }
+  return [...byDay.values()].sort((a, b) => b.day.localeCompare(a.day));
+}
 
 async function pick(biz: string, body: z.infer<typeof Q>) {
   if (body.from > body.to) throw bad("The from date is after the to date", "bad_range");
@@ -232,8 +319,26 @@ async function pick(biz: string, body: z.infer<typeof Q>) {
       .where(eq(schema.tallyExports.businessId, biz));
     for (const m of marks) skip.add(`${m.kind}|${m.id}`);
   }
-  return { cfg, ...(await build(biz, body.from, body.to, body.kinds, cfg, skip)) };
+  return { cfg, ...(await build(biz, body.from, body.to, body.kinds, cfg, skip, { adatiId: body.adatiId, merchantId: body.merchantId })) };
 }
+
+/** The day-by-day table of the Tally screen. */
+tallyRoutes.post("/days", guard, async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const body = Q.parse(await c.req.json());
+  if (body.from > body.to) throw bad("The from date is after the to date", "bad_range");
+  return c.json({ days: await tallyDays(biz, body.from, body.to, body.kinds, { adatiId: body.adatiId, merchantId: body.merchantId }) });
+});
+
+/** The little "in Tally" mark on each row of a list: only entries Tally has (or had), with when and by whom. */
+tallyRoutes.get("/flags", can("slip.read", "payment.read", "parcha.read", "millledger.read", "ledger.read"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const q = z.object({ kind: z.enum(KINDS), from: isoDay(), to: isoDay() }).parse(c.req.query());
+  const list = (await tallyStatus(biz, q.from, q.to, [q.kind])).filter((e) => e.state === "sent" || e.state === "changed");
+  const ids = [...new Set(list.map((e) => e.by).filter((x): x is string => Boolean(x)))];
+  const names = new Map(ids.length ? (await db.select({ id: schema.users.id, name: schema.users.name }).from(schema.users).where(inArray(schema.users.id, ids))).map((u) => [u.id, u.name]) : []);
+  return c.json({ flags: Object.fromEntries(list.map((e) => [e.id, { state: e.state, at: e.at, by: e.by ? names.get(e.by) ?? null : null }])) });
+});
 
 /** What would go: counts, and what needs fixing in Tally by hand. */
 tallyRoutes.post("/preview", guard, async (c) => {

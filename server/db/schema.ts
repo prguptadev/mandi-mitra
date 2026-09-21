@@ -614,3 +614,51 @@ export const tallyExports = sqliteTable(
   },
   (t) => ({ uq: uniqueIndex("tally_export_uq").on(t.businessId, t.kind, t.entityId) }),
 );
+
+/* ------------------------------------------------------ day close & follow-up */
+
+/**
+ * A closed day: nothing dated on it (slips, payments, trucks, parchas, money
+ * from mills) can be added, changed or cancelled until the owner reopens it.
+ * The day's figures at closing are kept with it.
+ */
+export const dayCloses = sqliteTable(
+  "day_closes",
+  {
+    id: text("id").primaryKey(),
+    businessId: text("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    day: text("day").notNull(),
+    /** JSON: the day's counts and totals when it was closed. */
+    summary: text("summary").notNull(),
+    note: text("note"),
+    closedBy: text("closed_by").references(() => users.id),
+    closedAt: integer("closed_at").notNull().$defaultFn(now),
+    updatedAt: integer("updated_at").notNull().$defaultFn(now),
+  },
+  (t) => ({ uq: uniqueIndex("day_close_uq").on(t.businessId, t.day) }),
+);
+
+/**
+ * Chasing a mill for its money: each call or visit is one row — what was
+ * said, any amount the mill promised, and when to ask again. The newest row
+ * of a mill is where things stand.
+ */
+export const millFollowups = sqliteTable(
+  "mill_followups",
+  {
+    id: text("id").primaryKey(),
+    businessId: text("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    merchantId: text("merchant_id").notNull().references(() => merchants.id, { onDelete: "cascade" }),
+    note: text("note"),
+    promisedPaise: integer("promised_paise"),
+    /** When to ask again (YYYY-MM-DD); null = nothing planned. */
+    nextDate: text("next_date"),
+    createdBy: text("created_by").references(() => users.id),
+    createdAt: integer("created_at").notNull().$defaultFn(now),
+    updatedAt: integer("updated_at").notNull().$defaultFn(now),
+  },
+  (t) => ({
+    millIdx: index("mill_followup_mill_idx").on(t.merchantId, t.createdAt),
+    bizIdx: index("mill_followup_biz_idx").on(t.businessId, t.createdAt),
+  }),
+);

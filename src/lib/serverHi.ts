@@ -1,0 +1,254 @@
+/*
+ * The server answers in English. When the screens are in Hindi, its messages
+ * — refusals, warnings, "not found" — are shown in Hindi from this table.
+ * A message not listed here is shown as it came (English), never hidden.
+ * Messages with numbers or names in them are matched by pattern.
+ */
+
+const EXACT: Record<string, string> = {
+  "Not allowed from here": "यहाँ से इसकी अनुमति नहीं है",
+  "Not allowed from another site": "किसी दूसरी साइट से इसकी अनुमति नहीं है",
+  "Something went wrong on the server": "ऐप की सर्विस में कुछ गड़बड़ हुई। फिर से कोशिश करें।",
+  "Something went wrong. Please try again.": "कुछ गड़बड़ हुई। फिर से कोशिश करें।",
+  "Not found": "नहीं मिला",
+  "Not a backup file": "यह बैकअप फ़ाइल नहीं है",
+  "That backup is no longer there": "वह बैकअप अब वहाँ नहीं है",
+  "That backup was made by a newer Mandi Mitra. Install that version first.": "यह बैकअप मंडी मित्र के नए संस्करण से बना है। पहले वह संस्करण लगाएँ।",
+  "That is not a connection string. It starts with postgresql://": "यह कनेक्शन स्ट्रिंग नहीं है। यह postgresql:// से शुरू होती है",
+  "That is not a Postgres connection string. It starts with postgresql://": "यह Postgres कनेक्शन स्ट्रिंग नहीं है। यह postgresql:// से शुरू होती है",
+  "Put your database password in place of [YOUR-PASSWORD].": "[YOUR-PASSWORD] की जगह अपने डेटाबेस का पासवर्ड डालें।",
+  "Cloud sync is not set up": "क्लाउड सिंक चालू नहीं है",
+  "The cloud is empty — there is nothing to bring down.": "क्लाउड ख़ाली है — नीचे लाने को कुछ नहीं है।",
+  "Could not reach Google (network).": "Google तक नहीं पहुँच सके (इंटरनेट देखें)।",
+  "Please sign in": "कृपया लॉग इन करें",
+  "No business selected": "कोई व्यापार नहीं चुना गया",
+  "That folder does not exist": "वह फ़ोल्डर मौजूद नहीं है",
+  "Updates are installed from the Windows app.": "अपडेट Windows ऐप से लगाए जाते हैं।",
+  "That installer is no longer in the folder, or is not newer than this version.": "वह इंस्टॉलर फ़ोल्डर में नहीं है, या इस संस्करण से नया नहीं है।",
+  "The installer can only be checked against GitHub with the internet on. Connect and press Install again.": "इंस्टॉलर की जाँच GitHub से इंटरनेट चालू होने पर ही होती है। इंटरनेट जोड़कर फिर Install दबाएँ।",
+  "Date must be YYYY-MM-DD": "तारीख़ सही नहीं है",
+  "The from date is after the to date": "‘से’ की तारीख़ ‘तक’ की तारीख़ के बाद है",
+  "Supplier not found": "आढ़ती नहीं मिला",
+  "That supplier does not belong to this business": "यह आढ़ती इस व्यापार का नहीं है",
+  "Payment not found": "भुगतान नहीं मिला",
+  "This payment is cancelled and cannot be changed": "यह भुगतान रद्द है, बदला नहीं जा सकता",
+  "Pick a supplier": "आढ़ती चुनें",
+  "Amount must be more than zero": "राशि शून्य से ज़्यादा होनी चाहिए",
+  "Amount is too large": "राशि बहुत बड़ी है",
+  "Say why it is cancelled": "रद्द करने का कारण लिखें",
+  "Payment date is required": "भुगतान की तारीख़ ज़रूरी है",
+  "A supplier with that Hindi name already exists": "इस हिन्दी नाम का आढ़ती पहले से है",
+  "Alias not found": "दूसरा नाम नहीं मिला",
+  "You cannot set a supplier's opening balance (it needs the payments permission)": "आप आढ़ती का शुरुआती बकाया नहीं भर सकते (इसके लिए भुगतान की अनुमति चाहिए)",
+  "Hindi name is required": "हिन्दी नाम ज़रूरी है",
+  "Already set up. Please sign in.": "ऐप पहले से तैयार है। लॉग इन करें।",
+  "Unknown user": "यह उपयोगकर्ता नहीं मिला",
+  "You are not a member of that business": "आप उस व्यापार के सदस्य नहीं हैं",
+  "Only the Admin can add a business": "नया व्यापार सिर्फ़ एडमिन जोड़ सकता है",
+  "Current PIN is wrong": "अभी का PIN ग़लत है",
+  "Enter your name": "अपना नाम लिखें",
+  "Enter the business name": "व्यापार का नाम लिखें",
+  "Type RESTORE to confirm": "पक्का करने के लिए RESTORE लिखें",
+  "Cloud sync is on for this computer. Bring the data down from the cloud instead (Cloud sync › Bring all data down), or turn sync off here first.": "इस कंप्यूटर पर क्लाउड सिंक चालू है। इसकी जगह क्लाउड से डेटा नीचे लाएँ (क्लाउड सिंक › सारा डेटा नीचे लाएँ), या पहले यहाँ सिंक बंद करें।",
+  "Truck not found": "ट्रक नहीं मिला",
+  "The cut is more than the truck carried": "कटौती ट्रक के माल से ज़्यादा है",
+  "Weight must be in whole grams": "वज़न पूरे ग्राम में होना चाहिए",
+  "The cut cannot be negative": "कटौती माइनस में नहीं हो सकती",
+  "That is more than any truck holds": "यह किसी भी ट्रक की क्षमता से ज़्यादा है",
+  "Type JOIN to confirm": "पक्का करने के लिए JOIN लिखें",
+  "This computer is already set up. Use Settings › Cloud sync.": "यह कंप्यूटर पहले से तैयार है। सेटिंग › क्लाउड सिंक इस्तेमाल करें।",
+  "Mill not found": "मिल नहीं मिली",
+  "A day that has not come yet cannot be closed": "जो दिन अभी आया नहीं, वह बंद नहीं हो सकता",
+  "This day is already closed": "यह दिन पहले से बंद है",
+  "Say why the day is being reopened": "दिन फिर खोलने का कारण लिखें",
+  "Commodity not found": "जिंस नहीं मिली",
+  "Load not found": "लोड नहीं मिला",
+  "That mill does not belong to this business": "यह मिल इस व्यापार की नहीं है",
+  "That commodity does not belong to this business": "यह जिंस इस व्यापार की नहीं है",
+  "That PO does not belong to this business": "यह PO इस व्यापार का नहीं है",
+  "That row is not on this truck": "यह पंक्ति इस ट्रक पर नहीं है",
+  "Enter the mill weight and bags first — there is no parcha to export yet": "पहले मिल का वज़न और बोरे भरें — अभी निकालने को पर्चा नहीं है",
+  "Parcha not found": "पर्चा नहीं मिला",
+  "This load's parcha is approved. Void the parcha to change the load.": "इस लोड का पर्चा स्वीकार हो चुका है। लोड बदलने के लिए पहले पर्चा रद्द करें।",
+  "This truck has a parcha on record or money received against it, so its mill cannot change. Make a new truck for the other mill.": "इस ट्रक का पर्चा बना है या इस पर पैसा आया है, इसलिए इसकी मिल नहीं बदल सकती। दूसरी मिल के लिए नया ट्रक बनाएँ।",
+  "You cannot change the parcha's invoice number, advance or dara": "आप पर्चे का नंबर, एडवांस या दारा नहीं बदल सकते",
+  "This load has a voided parcha on record, so it is kept.": "इस लोड का रद्द पर्चा रिकॉर्ड में है, इसलिए यह रखा गया है।",
+  "Money from the mill is recorded against this truck. Move or cancel that receipt first.": "इस ट्रक पर मिल से आया पैसा दर्ज है। पहले वह रसीद हटाएँ या रद्द करें।",
+  "This parcha is already void": "यह पर्चा पहले से रद्द है",
+  "The parcha is not ready to approve": "पर्चा अभी स्वीकार करने लायक नहीं है",
+  "The parcha changed since you looked at it (someone edited the truck or a slip). Check the new total and approve again.": "आपके देखने के बाद पर्चा बदल गया (किसी ने ट्रक या पर्ची बदली)। नया जोड़ देखें और फिर स्वीकार करें।",
+  "The truck changed while the parcha number was being reserved. Check it and approve again.": "पर्चा नंबर लेते समय ट्रक बदल गया। जाँचें और फिर स्वीकार करें।",
+  "This truck was approved a moment ago.": "यह ट्रक अभी-अभी स्वीकार हुआ है।",
+  "Weight is too large — check the decimal point": "वज़न बहुत बड़ा है — दशमलव देखें",
+  "Pick a mill": "मिल चुनें",
+  "Pick a commodity": "जिंस चुनें",
+  "Weight must be more than zero": "वज़न शून्य से ज़्यादा होना चाहिए",
+  "Rate is too large — check the decimal point": "दर बहुत बड़ी है — दशमलव देखें",
+  "Say why the parcha is being voided": "पर्चा रद्द करने का कारण लिखें",
+  "Pick the purchase day this weight comes from": "यह वज़न किस ख़रीद के दिन का है, वह चुनें",
+  "Short code is required": "छोटा कोड ज़रूरी है",
+  "Mill name is required": "मिल का नाम ज़रूरी है",
+  "That truck was not found": "वह ट्रक नहीं मिला",
+  "That truck went to a different mill": "वह ट्रक किसी दूसरी मिल को गया था",
+  "Enter the amount received": "आई हुई राशि भरें",
+  "Receipt not found": "रसीद नहीं मिली",
+  "This receipt is cancelled and cannot be changed": "यह रसीद रद्द है, बदली नहीं जा सकती",
+  "Amount cannot be negative": "राशि माइनस में नहीं हो सकती",
+  "Held back cannot be negative": "काटी गई राशि माइनस में नहीं हो सकती",
+  "Date is required": "तारीख़ ज़रूरी है",
+  "Write what was said, a promised amount or the next date": "क्या बात हुई, वादे की राशि या अगली तारीख़ — कुछ तो लिखें",
+  "Note not found": "नोट नहीं मिला",
+  "PO not found": "PO नहीं मिला",
+  "Loads are already sent against this PO, so its mill and commodity cannot change": "इस PO पर लोड जा चुके हैं, इसलिए इसकी मिल और जिंस नहीं बदल सकती",
+  "Loads are sent against this PO. Close it instead of deleting it.": "इस PO पर लोड गए हैं। इसे हटाने की जगह बंद करें।",
+  "Quantity is required": "मात्रा ज़रूरी है",
+  "Quantity is too large": "मात्रा बहुत बड़ी है",
+  "PO date is required": "PO की तारीख़ ज़रूरी है",
+  "Pick a day, or a from and to date": "एक दिन चुनें, या ‘से’ और ‘तक’ की तारीख़",
+  "Scanning from the scanner works in the Windows app, on the computer the scanner is connected to. Here, upload the scan as a file.": "स्कैनर से स्कैन Windows ऐप में, उसी कंप्यूटर पर होता है जिससे स्कैनर जुड़ा है। यहाँ स्कैन फ़ाइल के रूप में अपलोड करें।",
+  "Scan not found": "स्कैन नहीं मिला",
+  "Page not found": "पेज नहीं मिला",
+  "No file reached the server. Pick the scan again — if it still fails, try dragging the file onto the box.": "कोई फ़ाइल नहीं पहुँची। स्कैन फिर से चुनें — फिर भी न हो तो फ़ाइल को बॉक्स पर खींचकर छोड़ें।",
+  "Ten pages at a time is the limit": "एक बार में ज़्यादा से ज़्यादा दस पेज",
+  "That page is over 12 MB. Scan at 200–300 dpi instead.": "यह पेज 12 MB से बड़ा है। 200–300 dpi पर स्कैन करें।",
+  "Add the Gemini API key in Settings first": "पहले सेटिंग में Gemini API कुंजी डालें",
+  "This page's picture is on the computer that scanned it": "इस पेज की फ़ोटो उसी कंप्यूटर पर है जिस पर स्कैन हुआ",
+  "Set the sheet date before adding it to the daily list": "दैनिक सूची में डालने से पहले शीट की तारीख़ भरें",
+  "Set the commodity before adding it to the daily list": "दैनिक सूची में डालने से पहले जिंस चुनें",
+  "Every row is excluded — nothing to add": "हर पंक्ति छोड़ी गई है — डालने को कुछ नहीं",
+  "The new order must list every page exactly once": "नए क्रम में हर पेज ठीक एक बार होना चाहिए",
+  "The pictures of this sheet are on the computer that scanned it. Read it again there.": "इस शीट की फ़ोटो उसी कंप्यूटर पर हैं जिस पर स्कैन हुई। वहीं फिर से पढ़ें।",
+  "This sheet is already being read or has been read. Start a new scan for more pages.": "यह शीट पढ़ी जा रही है या पढ़ी जा चुकी है। और पेज के लिए नया स्कैन शुरू करें।",
+  "This scan is already on the daily list": "यह स्कैन पहले से दैनिक सूची में है",
+  "This sheet is already read. Reading it again replaces every row and your edits, and uses one read per page.": "यह शीट पढ़ी जा चुकी है। फिर से पढ़ने पर हर पंक्ति और आपके बदलाव बदल जाएँगे, और हर पेज की एक रीडिंग लगेगी।",
+  "This scan has already been added to the daily list": "यह स्कैन पहले ही दैनिक सूची में डाला जा चुका है",
+  "This sheet has not been read yet. Press “Read the sheet” first, then check the rows and add it.": "यह शीट अभी पढ़ी नहीं गई। पहले “शीट पढ़ें” दबाएँ, फिर पंक्तियाँ जाँचकर इसे डालें।",
+  "This sheet carries rates, and you may not set purchase rates. Ask someone who may to add it.": "इस शीट में दरें हैं, और आप ख़रीद दर नहीं भर सकते। जिसे अनुमति हो उससे डलवाएँ।",
+  "A page's date, total or rows still need checking against the paper before this can be added": "डालने से पहले किसी पेज की तारीख़, जोड़ या पंक्तियाँ काग़ज़ से मिलानी बाक़ी हैं",
+  "Pages can only be reordered before the sheet is read": "पेज का क्रम शीट पढ़ने से पहले ही बदल सकता है",
+  "This scan is already on the daily list. Delete those rows there instead.": "यह स्कैन पहले से दैनिक सूची में है। वहीं उन पंक्तियों को हटाएँ।",
+  "Not read": "पढ़ा नहीं गया",
+  "That does not look like a Gemini API key": "यह Gemini API कुंजी जैसी नहीं लगती",
+  "That business has no key saved": "उस व्यापार की कोई कुंजी सहेजी नहीं है",
+  "Add the API key first": "पहले API कुंजी डालें",
+  "Net weight works out to zero or less — check the gross weight": "शुद्ध वज़न शून्य या उससे कम आता है — धर्म कांटा वज़न देखें",
+  "Slip not found": "पर्ची नहीं मिली",
+  "Some slips were not found": "कुछ पर्चियाँ नहीं मिलीं",
+  "Unknown mill": "यह मिल नहीं मिली",
+  "Unknown commodity": "यह जिंस नहीं मिली",
+  "You cannot set or change the purchase rate": "आप ख़रीद दर भर या बदल नहीं सकते",
+  "RST no is required": "RST नंबर ज़रूरी है",
+  "Gross weight is required": "धर्म कांटा वज़न ज़रूरी है",
+  "Gross weight is too large — check the decimal point": "धर्म कांटा वज़न बहुत बड़ा है — दशमलव देखें",
+  "Business not found": "व्यापार नहीं मिला",
+  "Pick a valid role": "सही भूमिका चुनें",
+  "Member not found": "सदस्य नहीं मिला",
+  "User not found": "उपयोगकर्ता नहीं मिला",
+  "Role not found": "भूमिका नहीं मिली",
+  "Only an Owner can make someone an Owner": "किसी को स्वामी सिर्फ़ स्वामी बना सकता है",
+  "Only an Owner can change an Owner or make someone an Owner": "स्वामी को बदलना या किसी को स्वामी बनाना सिर्फ़ स्वामी कर सकता है",
+  "This is the only Owner. Make someone else an Owner first.": "यह अकेला स्वामी है। पहले किसी और को स्वामी बनाएँ।",
+  "The Owner role must keep all permissions.": "स्वामी की भूमिका के पास सारी अनुमतियाँ रहनी चाहिए।",
+  "Built-in roles cannot be deleted. Edit its permissions instead.": "पहले से बनी भूमिकाएँ हटाई नहीं जा सकतीं। इसकी अनुमतियाँ बदलें।",
+  "Move the users off this role first.": "पहले इस भूमिका के उपयोगकर्ताओं को दूसरी भूमिका दें।",
+  "Use lowercase letters, digits and underscore": "छोटे अंग्रेज़ी अक्षर, अंक और _ ही लिखें",
+  "Pick a day": "दिन चुनें",
+  // reading a sheet
+  "The reader was interrupted before it finished.": "पढ़ना पूरा होने से पहले रुक गया।",
+  "Start it again.": "फिर से शुरू करें।",
+  "The reader was interrupted.": "पढ़ना बीच में रुक गया।",
+  "Google took too long to answer.": "Google ने जवाब देने में बहुत देर की।",
+  "Unknown error": "अनजानी गड़बड़",
+  "Google rejected the API key. Check it in Settings, or create a new one at aistudio.google.com/apikey.": "Google ने API कुंजी नहीं मानी। सेटिंग में जाँचें, या aistudio.google.com/apikey पर नई बनाएँ।",
+  "Google refused the request. The key may not have access to this model, or billing is not enabled on that Google project.": "Google ने मना कर दिया। हो सकता है कुंजी को इस मॉडल की अनुमति न हो, या उस Google प्रोजेक्ट पर बिलिंग चालू न हो।",
+  "Google's Gemini limit was reached. Check the quota at ai.dev/rate-limit.": "Google Gemini की सीमा पूरी हो गई। सीमा ai.dev/rate-limit पर देखें।",
+  "That model name is not available on this key. Pick a different model in Settings.": "यह मॉडल इस कुंजी पर नहीं है। सेटिंग में दूसरा मॉडल चुनें।",
+  "Google's Gemini service is overloaded or down at the moment.": "Google की Gemini सेवा अभी व्यस्त है या बंद है।",
+  "The reply hit the length limit before any rows came back. Scan one page at a time.": "एक भी पंक्ति आने से पहले जवाब की लंबाई पूरी हो गई। एक बार में एक पेज स्कैन करें।",
+  "The image was refused by the model. Try a clearer scan.": "मॉडल ने फ़ोटो नहीं ली। साफ़ स्कैन करके देखें।",
+  "The reply was cut short before a single complete row. Scan one page at a time.": "एक भी पूरी पंक्ति से पहले जवाब कट गया। एक बार में एक पेज स्कैन करें।",
+  "The model's reply was not valid JSON.": "मॉडल का जवाब सही रूप में नहीं आया।",
+  // what the form checker says by itself
+  "Required": "ज़रूरी है",
+  "Invalid input": "सही नहीं भरा",
+  "Invalid date": "तारीख़ सही नहीं है",
+};
+
+const plural = (n: string) => n;
+const PATTERNS: [RegExp, (...m: string[]) => string][] = [
+  [/^the copy is damaged \((.*)\)$/, (_, r) => `कॉपी ख़राब है (${r})`],
+  [/^The cloud was set up by a newer Mandi Mitra \((.*)\)\. Install that version on this computer first\.$/, (_, v) => `क्लाउड मंडी मित्र के नए संस्करण (${v}) से बना है। पहले इस कंप्यूटर पर वह संस्करण लगाएँ।`],
+  [/^Parcha #(.+) is already used on another computer\. Pick the next number and approve again\.$/, (_, n) => `पर्चा #${n} दूसरे कंप्यूटर पर इस्तेमाल हो चुका है। अगला नंबर लें और फिर स्वीकार करें।`],
+  [/^(.+) (?:is|are) closed \(दिन बंद है\)\..*$/, (_, d) => `${d} का दिन बंद है। इसे बदलने के लिए स्वामी "दिन बंद" स्क्रीन पर दिन फिर खोलें।`],
+  [/^You do not have permission: (.+)$/, (_, p) => `आपको इसकी अनुमति नहीं है (${p})`],
+  [/^Missing (.+) in the URL$/, (_, n) => `पता अधूरा है (${n})`],
+  [/^Voucher (.*) of (.+) does not balance \((.+)\)$/, (_, v, d, s) => `${d} का वाउचर ${v} बराबर नहीं है (${s})`],
+  [/^GitHub has no (.+) to check this file against\. Download it again from the Releases page\.$/, (_, f) => `GitHub पर ${f} नहीं है जिससे यह फ़ाइल जाँची जाए। Releases पेज से फिर डाउनलोड करें।`],
+  [/^(.+) is not the file GitHub published \(damaged or changed\)\. Delete it and download it again from the Releases page\.$/, (_, f) => `${f} वह फ़ाइल नहीं है जो GitHub पर है (ख़राब या बदली हुई)। इसे हटाकर Releases पेज से फिर डाउनलोड करें।`],
+  [/^Too many wrong PINs\. Try again in (\d+) min\.$/, (_, m) => `बहुत बार ग़लत PIN। ${m} मिनट बाद फिर कोशिश करें।`],
+  [/^That is more than (\d+) days at once\. Pick a nearer date first\.$/, (_, n) => `एक बार में ${n} दिन से ज़्यादा हैं। पहले पास की तारीख़ चुनें।`],
+  [/^Code "(.+)" already exists$/, (_, c) => `कोड "${c}" पहले से है`],
+  [/^(.+) is for another mill$/, (_, p) => `${p} किसी दूसरी मिल का है`],
+  [/^(.+) is for another commodity$/, (_, p) => `${p} किसी दूसरी जिंस का है`],
+  [/^Parcha #(.+) is already used for another truck\. Change the parcha number to the next one and approve again\.$/, (_, n) => `पर्चा #${n} दूसरे ट्रक पर लग चुका है। पर्चा नंबर अगला करें और फिर स्वीकार करें।`],
+  [/^Short code "(.+)" is already used by another mill$/, (_, c) => `छोटा कोड "${c}" दूसरी मिल का है`],
+  [/^PO (.+) already exists for (.+)$/, (_, p, m) => `PO ${p} ${m} के लिए पहले से है`],
+  [/^"(.+)" is a (.+) file\. Use JPG, PNG, WEBP, HEIC or a one-page PDF\.$/, (_, f, k) => `"${f}" ${k} फ़ाइल है। JPG, PNG, WEBP, HEIC या एक पेज की PDF इस्तेमाल करें।`],
+  [/^"(.+)" is empty\. Scan it again\.$/, (_, f) => `"${f}" ख़ाली है। फिर से स्कैन करें।`],
+  [/^"(.+)" is over 12 MB\. Scan at 200–300 dpi instead\.$/, (_, f) => `"${f}" 12 MB से बड़ी है। 200–300 dpi पर स्कैन करें।`],
+  [/^"(.+)" has more than one page\. .*$/, (_, f) => `"${f}" में एक से ज़्यादा पेज हैं। हर पेज को अलग फ़ोटो (या PDF) बनाकर साथ में डालें।`],
+  [/^This scan has (\d+) page\(s\)$/, (_, n) => `इस स्कैन में ${n} पेज हैं`],
+  [/^Only (\d+) of (\d+) pages are read\..*$/, (_, a, b) => `${b} में से सिर्फ़ ${a} पेज पढ़े गए हैं। बाक़ी पढ़ने के लिए “दोबारा पढ़ें” दबाएँ, फिर शीट डालें।`],
+  [/^(\d+) rows? (?:has|have) no supplier, no weight, or a figure out of range \(RST (.+)\)$/, (_, n, r) => `${n} पंक्तियों में आढ़ती नहीं, वज़न नहीं, या कोई आँकड़ा सीमा से बाहर है (RST ${r})`],
+  [/^(\d+) rows? still need fixing before this can be added$/, (_, n) => `डालने से पहले ${n} पंक्तियाँ ठीक करनी बाक़ी हैं`],
+  [/^RST (.+): the net weight works out to zero or less — check the gross$/, (_, r) => `RST ${r}: शुद्ध वज़न शून्य या कम आता है — धर्म कांटा देखें`],
+  [/^RST (.+): with that mill's katauti the net works out to zero or less$/, (_, r) => `RST ${r}: उस मिल की कटौती से शुद्ध वज़न शून्य या कम आता है`],
+  [/^Role "(.+)" already exists$/, (_, r) => `भूमिका "${r}" पहले से है`],
+  [/^(.*) Used up today: (.+)\.$/, (_, e, m) => `${translateServer(e) ?? e} आज की सीमा पूरी: ${m}।`],
+  [/^Gemini limit reached$/, () => "Gemini की सीमा पूरी हो गई"],
+  [/^Unexpected shape: (.*)$/, (_, x) => `जवाब समझ में नहीं आया: ${x}`],
+  [/^Pages 1–(\d+) are kept; press "Read again" to continue from page (\d+)\.$/, (_, a, b) => `पेज 1–${a} रखे गए हैं; पेज ${b} से आगे पढ़ने के लिए “दोबारा पढ़ें” दबाएँ।`],
+  [/^Pages? 1(?:–(\d+))? (?:are|is) kept\.$/, (_, a) => (a ? `पेज 1–${a} रखे गए हैं।` : "पेज 1 रखा गया है।")],
+  [/^Press "Read again" to continue from page (\d+)(?: of (\d+))?\.$/, (_, p, n) => `आगे पढ़ने के लिए “दोबारा पढ़ें” दबाएँ (पेज ${p}${n ? ` / ${n}` : ""} से)।`],
+  [/^Tried (\d+) times\.$/, (_, n) => `${n} बार कोशिश की।`],
+  [/^Google is busy — page (\d+), trying again in (\d+) s \(attempt (\d+)\)$/, (_, p, s2, a) => `Google व्यस्त है — पेज ${p}, ${s2} सेकंड में फिर कोशिश (${a}वीं बार)`],
+  [/^Today's free Gemini limit is used up \((\d+) reads a day on (.+)\)\. Every page is one read\. It resets at about (.+) IST\..*$/, (_, n, m, r) => `आज की मुफ़्त Gemini सीमा पूरी हो गई (${m} पर रोज़ ${n} रीडिंग)। हर पेज एक रीडिंग है। लगभग ${r} बजे फिर मिलेगी। सीमा हटाने के लिए उस Google प्रोजेक्ट पर बिलिंग चालू करें।`],
+  [/^Today's Gemini limit for this key is used up \((.+) a day\)\. It resets at about (.+) IST\.$/, (_, n, r) => `इस कुंजी की आज की Gemini सीमा पूरी हो गई (रोज़ ${n})। लगभग ${r} बजे फिर मिलेगी।`],
+  [/^Too many reads in one minute \((.+) a minute.*\)\. Wait (\d+) seconds and read again\.$/, (_, n, w) => `एक मिनट में बहुत रीडिंग (${n} प्रति मिनट)। ${w} सेकंड रुककर फिर पढ़ें।`],
+  [/^(.+) has no free reads on this key \(Google allows 0\)\..*$/, (_, m) => `इस कुंजी पर ${m} की कोई मुफ़्त रीडिंग नहीं है। सेटिंग में दूसरा मॉडल चुनें, या उस Google प्रोजेक्ट पर बिलिंग चालू करें।`],
+];
+void plural;
+
+function one(m: string): string | null {
+  if (EXACT[m]) return EXACT[m];
+  for (const [re, fn] of PATTERNS) {
+    const x = m.match(re);
+    if (x) return fn(...x);
+  }
+  return null;
+}
+
+/** The Hindi for a server message, or null when there is none. A message
+ *  made of several sentences is put into Hindi sentence by sentence. */
+export function translateServer(msg: string): string | null {
+  const m = msg.trim();
+  const whole = one(m);
+  if (whole) return whole;
+  const parts = m.split(/(?<=\.)\s+(?=[A-Z"])/);
+  if (parts.length < 2) return null;
+  // the longest run of sentences that is one known message wins
+  const out: string[] = [];
+  let any = false;
+  for (let i = 0; i < parts.length;) {
+    let j = parts.length;
+    for (; j > i; j--) {
+      const hit = one(parts.slice(i, j).join(" "));
+      if (hit) { out.push(hit); any = true; break; }
+    }
+    if (j > i) i = j; else { out.push(parts[i]); i++; }
+  }
+  return any ? out.join(" ") : null;
+}
+
+/** For text the server saved with a record (a scan's warning, say): Hindi when the screens are in Hindi. */
+export const sayServer = (msg: string, lang: string) => (lang === "hi" ? translateServer(msg) ?? msg : msg);

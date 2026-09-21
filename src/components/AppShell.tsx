@@ -5,11 +5,11 @@ import {
   Factory, Wheat, BookOpen, Wallet, UserCog, ShieldCheck, ScrollText, Settings,
   Menu, X, Sun, Moon, Languages, ChevronDown, LogOut, Building2, Check, Plus,
   PanelLeftClose, PanelLeftOpen,
-  ClipboardList, Landmark, ClipboardCheck, KeyRound, FileSpreadsheet } from "lucide-react";
+  ClipboardList, Landmark, ClipboardCheck, KeyRound, FileSpreadsheet, CalendarCheck } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { ApiError } from "@/lib/api.ts";
 import { SyncIndicator } from "@/components/SyncIndicator.tsx";
-import { useFY } from "@/lib/fy.tsx";
+import { useFY, useFYYears } from "@/lib/fy.tsx";
 import { MyPinDialog } from "@/components/MyPinDialog.tsx";
 import { toastError } from "@/components/Toaster.tsx";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -33,6 +33,7 @@ const NAV: NavGroup[] = [
     { href: "/challan", labelKey: "nav.challan", icon: ClipboardCheck, perm: "load.read" },
     { href: "/parcha", labelKey: "nav.parcha", icon: FileText, perm: "parcha.read" },
     { href: "/stock", labelKey: "nav.stock", icon: Boxes, perm: "stock.read" },
+    { href: "/day-close", labelKey: "nav.dayClose", icon: CalendarCheck, perm: "slip.read" },
   ] },
   { labelKey: "nav.masters", items: [
     { href: "/suppliers", labelKey: "nav.suppliers", icon: Users2, perm: "adati.read" },
@@ -358,7 +359,8 @@ export function PageHeader({ title, sub, action }: { title: ReactNode; sub?: Rea
 /** The financial year the list pages open on (1 April – 31 March), as in Tally. */
 function FYPicker() {
   const { t } = useI18n();
-  const { fy, years, setStart } = useFY();
+  const { fy, setStart } = useFY();
+  const years = useFYYears();
   return (
     <label className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2 py-1 text-[12px]" title={t("fy.hint")}>
       <span className="hidden text-muted sm:inline">{t("fy.label")}</span>

@@ -1,3 +1,4 @@
+import { translateServer } from "./serverHi.ts";
 /** Duck-typed: `instanceof` is unreliable across hot-reloaded module copies. */
 export function apiStatus(err: unknown): number | null {
   const s = (err as { status?: unknown } | null)?.status;
@@ -26,7 +27,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    throw new ApiError(res.status, data?.error ?? res.statusText, data?.code, data?.field, data?.issues);
+    // the server answers in English; with the screens in Hindi its message is shown in Hindi
+    const hi = typeof document !== "undefined" && document.documentElement.lang === "hi";
+    const say = (m: string) => (hi ? translateServer(m) ?? m : m);
+    const issues = Array.isArray(data?.issues) ? (data.issues as { field: string; message: string }[]).map((i) => ({ ...i, message: say(i.message) })) : data?.issues;
+    throw new ApiError(res.status, say(String(data?.error ?? res.statusText)), data?.code, data?.field, issues);
   }
   return data as T;
 }

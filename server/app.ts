@@ -25,6 +25,8 @@ import { syncSoon } from "./lib/cloud.ts";
 import { appRoutes } from "./routes/appUpdate.ts";
 import { dashboardRoutes } from "./routes/dashboard.ts";
 import { tallyRoutes } from "./routes/tally.ts";
+import { dayRoutes } from "./routes/days.ts";
+import { millFollowupRoutes } from "./routes/millFollowup.ts";
 
 /** The whole API. Electron imports this same object — no second implementation. */
 export function createApp() {
@@ -83,6 +85,8 @@ export function createApp() {
   app.route("/api/app", appRoutes);
   app.route("/api/dashboard", dashboardRoutes);
   app.route("/api/tally", tallyRoutes);
+  app.route("/api/days", dayRoutes);
+  app.route("/api/mill-followup", millFollowupRoutes);
 
   app.onError((err, c) => {
     if (err instanceof HttpError) {

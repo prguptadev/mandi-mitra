@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Calendar, Trash2, Truck, AlertTriangle, Check,
   RefreshCw, Download, Keyboard, Lock, Plus, X, Image as ImageIcon, CheckSquare,
-  FileSpreadsheet, Pencil, ArrowUp, ArrowDown,
+  FileSpreadsheet, Pencil, ArrowUp, ArrowDown, LockOpen,
 } from "lucide-react";
 import { api, ApiError, type Jins, type Merchant, type SlipRow, type SlipTotals, type SlipDay, type KatautiConfig } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -12,6 +12,8 @@ import { useSort } from "@/lib/useSort.ts";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, parseLooseNumber, parseQtlToGrams, parseRupeesToPaise, GRAMS_PER_QTL } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
+import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
+import { useDayActions, type DayRow } from "@/lib/dayClose.tsx";
 import { DailyListSettings } from "@/components/DailyListSettings.tsx";
 import { usePrefs, DAILY_COLUMNS, type DailyColumnKey } from "@/lib/prefs.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
@@ -106,6 +108,13 @@ export function DailyListPage() {
     if (fyFirst.current) { fyFirst.current = false; return; }
     if (date < fy.from || date > fy.to) setDate(fy.current ? todayISO() : fy.to);
   }, [fy.start]);
+  /* a closed day is shown locked: no new row, no edits, no deletes */
+  const dayQ = useQuery({ queryKey: ["days", "one", date], queryFn: () => api.get<DayRow>(`/days/one?day=${date}`) });
+  const dayClosed = dayQ.data?.closed ?? null;
+  const dayAct = useDayActions();
+  const canSlip = can("slip.write") && !dayClosed;
+  const canDel = can("slip.delete") && !dayClosed;
+  const tallyFlags = useTallyFlags("slip", date, date);
   const [merchantId, setMerchantId] = useState<string>("");
   /** Commodity new rows get. */
   const [jinsId, setJinsId] = useState<string>("");
@@ -409,7 +418,7 @@ export function DailyListPage() {
 
   function displayCell(key: DailyColumnKey, r: SlipRow, i: number) {
     switch (key) {
-      case "sr": return <span className="num text-[11px] text-faint">{i + 1}</span>;
+      case "sr": return <span className="inline-flex items-center gap-1"><span className="num text-[11px] text-faint">{i + 1}</span><TallyMark flag={tallyFlags[r.id]} /></span>;
       case "rstNo": return (rstCount.get(r.rstNo) ?? 0) > 1
         ? <span className="num rounded border-2 border-warn px-1 font-medium" title={t("daily.rstRepeated")}>{r.rstNo}</span>
         : <span className="num font-medium">{r.rstNo}</span>;
@@ -524,7 +533,7 @@ export function DailyListPage() {
   }
 
   const draftCharges = preview(d.amountPaise, d.netGrams, d.ratePaise);
-  const entryRow = can("slip.write") ? (
+  const entryRow = canSlip ? (
     <tr className="bg-brand/[0.04]">
       <td className="border-b border-line px-2 py-1.5 text-center">
         <Plus className="mx-auto h-3.5 w-3.5 text-brand" />
@@ -596,6 +605,12 @@ export function DailyListPage() {
         sub={t("daily.sub")}
         action={
           <div className="flex items-center gap-2">
+            {!dayClosed && can("day.close") && date <= todayISO() && dayQ.data && (
+              <Button size="sm" variant="secondary" icon={<Lock className="h-3.5 w-3.5" />} loading={dayAct.busy}
+                onClick={async () => { const fresh = await dayQ.refetch(); if (fresh.data) await dayAct.close(fresh.data); }}>
+                {t("dc.closeThisDay")}
+              </Button>
+            )}
             <Button size="sm" variant="ghost" icon={<Keyboard className="h-3.5 w-3.5" />} onClick={() => setShowHelp(true)} title={t("daily.keys")} aria-label={t("daily.keys")} />
             <DailyListSettings />
             {can("export.data") && (
@@ -655,6 +670,20 @@ export function DailyListPage() {
         </div>
       </Card>
 
+      {dayAct.dialog}
+      {dayClosed && (
+        <Alert tone="brand" className="mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="inline-flex items-center gap-2">
+              <Lock className="h-4 w-4 shrink-0" />
+              <span><b>{t("dc.dayIsClosed")}</b> {t("dc.closedBy", { by: dayClosed.by ?? "—", at: new Date(dayClosed.at * 1000).toLocaleString(lang === "hi" ? "hi-IN" : "en-IN") })}. {t("dc.dayIsClosedSub")}</span>
+            </span>
+            {can("day.reopen") && (
+              <Button size="sm" variant="secondary" icon={<LockOpen className="h-3.5 w-3.5" />} onClick={() => dayAct.reopen(date)}>{t("dc.reopenBtn")}</Button>
+            )}
+          </div>
+        </Alert>
+      )}
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
       {notice && <Alert tone="ok" className="mb-3">{notice}</Alert>}
       {staleWarn && (
@@ -682,7 +711,7 @@ export function DailyListPage() {
               <AlertTriangle className="h-3.5 w-3.5" />
               {t("daily.mismatchRows", { n: totals.mismatchRows })}
             </span>
-            {can("slip.write") && (
+            {canSlip && (
               <Button size="sm" variant="secondary" loading={recompute.isPending}
                 icon={<RefreshCw className="h-3.5 w-3.5" />}
                 onClick={async () => { if (await ask({ title: t("daily.recompute"), message: t("daily.confirmRecompute", { n: totals?.mismatchRows ?? 0 }) })) recompute.mutate(); }}>
@@ -757,7 +786,7 @@ export function DailyListPage() {
             <thead>
               <tr className="bg-raised/80">
                 <th className="w-8 border-b border-line px-2 py-1.5">
-                  {can("slip.write") && selectableIds.length > 0 && (
+                  {canSlip && selectableIds.length > 0 && (
                     <Checkbox
                       checked={allSelected}
                       indeterminate={someSelected && !allSelected}
@@ -828,7 +857,7 @@ export function DailyListPage() {
                     !r.reconciles && "bg-bad-soft/60",
                   )}>
                     <td className={cn("border-b border-line/70 px-2", PAD)}>
-                      {can("slip.write") && (
+                      {canSlip && (
                         <Checkbox checked={selected.has(r.id)} onChange={(v) => {
                           const next = new Set(selected);
                           if (v) next.add(r.id); else next.delete(r.id);
@@ -846,7 +875,7 @@ export function DailyListPage() {
                     ))}
                     <td className={cn("border-b border-line/70 px-1", PAD)}>
                       <div className="flex items-center justify-end gap-0.5">
-                        {can("slip.write") && (
+                        {canSlip && (
                           <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.edit")} aria-label={t("common.edit")}
                             onClick={() => setEditing({
                               id: r.id,
@@ -862,7 +891,7 @@ export function DailyListPage() {
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
                         )}
-                        {can("slip.delete") && (
+                        {canDel && (
                           <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.delete")} aria-label={t("common.delete")}
                             onClick={async () => {
                               if (await ask({ title: t("daily.confirmDeleteRow", { rst: r.rstNo }), danger: true, confirmLabel: t("confirm.yesDelete"),

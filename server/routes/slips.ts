@@ -10,6 +10,7 @@ import { amountPaise, weightedAvgRate, GRAMS_PER_QTL } from "../lib/money.ts";
 import { DisplayConfigSchema, defaultDisplayConfig } from "../lib/display.ts";
 import { can, actor, param, notFound, bad, HttpError, isoDay, LIMIT, type Env } from "../lib/http.ts";
 import { approvedOnDays } from "../lib/parcha.ts";
+import { assertDaysOpen } from "../lib/dayClose.ts";
 
 /** Supplier, commodity and mill must all be this business's own. */
 export async function checkSlipRefs(biz: string, r: { adatiId?: string; jinsId?: string; merchantId?: string | null }) {
@@ -296,6 +297,7 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const body = SlipBody.parse(await c.req.json());
   assertRateAllowed(c, body.ratePaisePerQtl > 0);
+  await assertDaysOpen(biz, body.slipDate);
 
   const [dupe] = await db.select({ id: schema.purchaseSlips.id, rst: schema.purchaseSlips.rstNo })
     .from(schema.purchaseSlips)
@@ -369,6 +371,7 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
   const [before] = await db.select().from(schema.purchaseSlips)
     .where(and(eq(schema.purchaseSlips.id, id), eq(schema.purchaseSlips.businessId, biz))).limit(1);
   if (!before) throw notFound("Slip not found");
+  await assertDaysOpen(biz, before.slipDate, body.slipDate);
   assertRateAllowed(c, body.ratePaisePerQtl !== undefined && body.ratePaisePerQtl !== before.ratePaisePerQtl);
   await checkSlipRefs(biz, { adatiId: body.adatiId, jinsId: body.jinsId, merchantId: body.merchantId });
 
@@ -427,6 +430,7 @@ slipRoutes.delete("/:id", can("slip.delete"), async (c) => {
   const [before] = await db.select().from(schema.purchaseSlips)
     .where(and(eq(schema.purchaseSlips.id, id), eq(schema.purchaseSlips.businessId, biz))).limit(1);
   if (!before) throw notFound("Slip not found");
+  await assertDaysOpen(biz, before.slipDate);
   await db.delete(schema.purchaseSlips).where(eq(schema.purchaseSlips.id, id));
   await audit({
     actor: actor(c), action: "slip.delete", entity: "purchase_slip", entityId: id,
@@ -447,6 +451,7 @@ slipRoutes.post("/reassign", can("slip.write"), async (c) => {
   const slips = await db.select().from(schema.purchaseSlips)
     .where(and(eq(schema.purchaseSlips.businessId, biz), inArray(schema.purchaseSlips.id, slipIds)));
   if (slips.length !== slipIds.length) throw bad("Some slips were not found", "missing");
+  await assertDaysOpen(biz, ...slips.map((s) => s.slipDate));
 
 
   let label = "no mill";
@@ -503,6 +508,7 @@ slipRoutes.post("/set-jins", can("slip.write"), async (c) => {
     .where(and(eq(schema.purchaseSlips.businessId, biz), inArray(schema.purchaseSlips.id, slipIds)));
   if (slips.length !== new Set(slipIds).size) throw bad("Some slips were not found", "missing");
   const moving = slips.filter((s) => s.jinsId !== jinsId);
+  await assertDaysOpen(biz, ...moving.map((s) => s.slipDate));
   if (moving.length) {
     await db.update(schema.purchaseSlips).set({ jinsId, updatedAt: nowSec() })
       .where(and(eq(schema.purchaseSlips.businessId, biz), inArray(schema.purchaseSlips.id, moving.map((s) => s.id))));
@@ -524,6 +530,7 @@ slipRoutes.post("/set-jins", can("slip.write"), async (c) => {
 slipRoutes.post("/recompute", can("slip.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const { slipDate } = z.object({ slipDate: z.string().regex(ISO_DATE) }).parse(await c.req.json());
+  await assertDaysOpen(biz, slipDate);
   const rows = await db.select().from(schema.purchaseSlips)
     .where(and(eq(schema.purchaseSlips.businessId, biz), eq(schema.purchaseSlips.slipDate, slipDate)));
 

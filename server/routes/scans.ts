@@ -20,6 +20,7 @@ import {
 import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
 import { normRst, checkPages, slipMarks, type PageMeta } from "../lib/scanRows.ts";
 import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
+import { assertDaysOpen } from "../lib/dayClose.ts";
 
 /** Pages read so far. A sheet read before pages were counted (before 21-09-2026)
  *  was read in full, but its count was left at 0 when the count was added. */
@@ -861,6 +862,7 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
   if (batch.status === "committed") throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
   if (!batch.slipDate) throw bad("Set the sheet date before adding it to the daily list", "no_date");
   if (!batch.jinsId) throw bad("Set the commodity before adding it to the daily list", "no_jins");
+  await assertDaysOpen(biz, batch.slipDate);
 
   const pageCount = (JSON.parse(batch.filePaths) as unknown[]).length;
   const read = pagesRead(batch);

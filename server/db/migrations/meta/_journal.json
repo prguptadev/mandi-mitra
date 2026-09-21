@@ -120,6 +120,13 @@
       "when": 1790011924585,
       "tag": "0016_tally_exports",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1790013807153,
+      "tag": "0017_day_close_followup",
+      "breakpoints": true
     }
   ]
 }

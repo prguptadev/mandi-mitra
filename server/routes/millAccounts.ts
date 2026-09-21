@@ -7,6 +7,7 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } from "../lib/http.ts";
 import { amountPaise } from "../lib/money.ts";
 import type { ParchaDoc } from "../lib/parcha.ts";
+import { assertDaysOpen } from "../lib/dayClose.ts";
 
 /* The mill side of the money, Tally-style, like the supplier ledger:
      what a mill owes us = its opening + every approved kaccha parcha (grand
@@ -279,6 +280,7 @@ millReceiptRoutes.post("/", can("millreceipt.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const body = Body.parse(await c.req.json());
   if (body.amountPaise + body.deductionPaise <= 0) throw bad("Enter the amount received", "zero");
+  await assertDaysOpen(biz, body.receiptDate);
   const code = await checkRefs(biz, body.merchantId, body.loadId);
   const id = newId();
   const values = {
@@ -300,6 +302,7 @@ millReceiptRoutes.put("/:id", can("millreceipt.write"), async (c) => {
   if (!before) throw notFound("Receipt not found");
   if (before.voidedAt) throw new HttpError(409, "This receipt is cancelled and cannot be changed", "voided");
   const body = Body.partial().parse(await c.req.json());
+  await assertDaysOpen(biz, before.receiptDate, body.receiptDate);
   const patch = {
     merchantId: body.merchantId ?? before.merchantId,
     loadId: body.loadId === undefined ? before.loadId : (body.loadId ?? null),
@@ -326,6 +329,7 @@ millReceiptRoutes.post("/:id/void", can("millreceipt.write"), async (c) => {
   const [before] = await db.select().from(R).where(and(eq(R.id, id), eq(R.businessId, biz))).limit(1);
   if (!before) throw notFound("Receipt not found");
   if (before.voidedAt) return c.json({ ok: true, alreadyVoid: true });
+  await assertDaysOpen(biz, before.receiptDate);
   const [m] = await db.select({ code: schema.merchants.code }).from(schema.merchants).where(eq(schema.merchants.id, before.merchantId)).limit(1);
   const patch = { voidedAt: nowSec(), voidedBy: c.get("auth")!.user.id, voidReason: reason };
   await db.update(R).set(patch).where(eq(R.id, id));
