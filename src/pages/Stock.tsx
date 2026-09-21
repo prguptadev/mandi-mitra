@@ -230,6 +230,14 @@ export function MillAccountPage({ id }: { id: string }) {
 
   const a = acct.data;
   const sm = a?.summary;
+  const truckSort = useSort(a?.trucks ?? [], {
+    date: (x) => x.loadDate, truck: (x) => x.truckNo, from: (x) => x.stockDates[0], loaded: (x) => x.weightGrams,
+    rate: (x) => x.ratePaisePerQtl, goods: (x) => x.goodsPaise, parcha: (x) => x.parchaNo, total: (x) => x.grandTotalPaise,
+  }, { storageKey: "mill-trucks" });
+  const daySort = useSort(days.data?.days ?? [], {
+    date: (d) => d.date, slips: (d) => d.slips, bought: (d) => d.boughtNet, avg: (d) => d.avgRatePaisePerQtl,
+    loaded: (d) => d.loadedNet, left: (d) => d.stockNet, running: (d) => d.runningNet,
+  }, { storageKey: "mill-days" });
   const trucksTotal = a ? {
     weight: a.trucks.reduce((x, r) => x + r.weightGrams, 0),
     goods: a.trucks.reduce((x, r) => x + r.goodsPaise, 0),
@@ -302,13 +310,15 @@ export function MillAccountPage({ id }: { id: string }) {
               <Table>
                 <thead>
                   <tr>
-                    <Th>{t("load.date")}</Th><Th>{t("load.truckNo")}</Th><Th>{t("load.fromDays")}</Th>
-                    <Th numeric>{t("load.loaded")}</Th><Th numeric>{t("load.rate")}</Th><Th numeric>{t("stock.goodsValue")}</Th>
-                    <Th>{t("load.parchaNo")}</Th><Th numeric>{t("load.grandTotal")}</Th>
+                    <Th {...truckSort.th("date")}>{t("load.date")}</Th><Th {...truckSort.th("truck")}>{t("load.truckNo")}</Th>
+                    <Th {...truckSort.th("from")}>{t("load.fromDays")}</Th>
+                    <Th numeric {...truckSort.th("loaded")}>{t("load.loaded")}</Th><Th numeric {...truckSort.th("rate")}>{t("load.rate")}</Th>
+                    <Th numeric {...truckSort.th("goods")}>{t("stock.goodsValue")}</Th>
+                    <Th {...truckSort.th("parcha")}>{t("load.parchaNo")}</Th><Th numeric {...truckSort.th("total")}>{t("load.grandTotal")}</Th>
                   </tr>
                 </thead>
                 <tbody>
-                  {a.trucks.map((x) => (
+                  {truckSort.sorted.map((x) => (
                     <Tr key={x.loadId} className={cn(x.mismatch && "bg-bad-soft/40")}>
                       <Td className="whitespace-nowrap">{dmy(x.loadDate)}</Td>
                       <Td className="font-mono"><Link href={`/loads/${x.loadId}`} className="text-brand hover:underline">{x.truckNo ?? "—"}</Link></Td>
@@ -351,13 +361,15 @@ export function MillAccountPage({ id }: { id: string }) {
           <Table>
             <thead>
               <tr>
-                <Th>{t("daily.date")}</Th><Th numeric>{t("load.slips")}</Th><Th numeric>{t("stock.bought")}</Th>
-                <Th numeric title={!s.jinsId ? t("stock.pickJinsForDara") : undefined}>{t("stock.dayAvg")}</Th><Th>{t("stock.trucksThatDay")}</Th><Th numeric>{t("stock.onTrucks")}</Th>
-                <Th numeric>{t("stock.leftThatDay")}</Th><Th numeric>{t("stock.running")}</Th><Th />
+                <Th {...daySort.th("date")}>{t("daily.date")}</Th><Th numeric {...daySort.th("slips")}>{t("load.slips")}</Th>
+                <Th numeric {...daySort.th("bought")}>{t("stock.bought")}</Th>
+                <Th numeric {...daySort.th("avg")} title={!s.jinsId ? t("stock.pickJinsForDara") : undefined}>{t("stock.dayAvg")}</Th><Th>{t("stock.trucksThatDay")}</Th>
+                <Th numeric {...daySort.th("loaded")}>{t("stock.onTrucks")}</Th>
+                <Th numeric {...daySort.th("left")}>{t("stock.leftThatDay")}</Th><Th numeric {...daySort.th("running")}>{t("stock.running")}</Th><Th />
               </tr>
             </thead>
             <tbody>
-              {days.data.days.map((d) => (
+              {daySort.sorted.map((d) => (
                 <tr key={d.date} className="border-b border-line/70 align-top">
                   <td className="whitespace-nowrap px-3 py-2"><Link href={`/daily?date=${d.date}`} className="hover:text-brand">{dmy(d.date)}</Link></td>
                   <td className="num px-3 py-2 text-right">{d.slips}</td>

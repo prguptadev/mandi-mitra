@@ -4,6 +4,7 @@ import { Plus, Search, Users2, Sparkles, Lock, Unlock, Trash2, Pencil, Tag, Refr
 import { Link } from "wouter";
 import { api, ApiError, type Adati, type AdatiAlias } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
+import { useSort } from "@/lib/useSort.ts";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
@@ -282,6 +283,10 @@ export function SuppliersPage() {
   });
 
   const rows = list.data ?? [];
+  const sort = useSort(rows, {
+    nameHi: (r) => r.nameHi, nameHinglish: (r) => r.nameHinglish, village: (r) => r.village || r.villageHi,
+    phone: (r) => r.phone, opening: (r) => r.openingBalancePaise, aliases: (r) => r.aliasCount,
+  }, { storageKey: "suppliers" });
 
   const csv = useMemo(() => {
     const header = ["Sr", ...(nameMode === "hi" ? ["Name (Hindi)"] : nameMode === "hinglish" ? ["Name"] : ["Name (Hindi)", "Name (Hinglish)"]),
@@ -375,17 +380,17 @@ export function SuppliersPage() {
             <thead>
               <tr>
                 <Th className="w-10">#</Th>
-                {nameMode !== "hinglish" && <Th>{t("adati.nameHi")}</Th>}
-                {nameMode !== "hi" && <Th>{t("adati.nameHinglish")}</Th>}
-                <Th>{t("adati.village")}</Th>
-                <Th>{t("adati.phone")}</Th>
-                <Th numeric>{t("adati.openingBalance")}{f.symbol && <span className="ml-1 font-normal normal-case text-faint">{f.symbol}</span>}</Th>
-                <Th align="center">{t("adati.aliases")}</Th>
+                {nameMode !== "hinglish" && <Th {...sort.th("nameHi")}>{t("adati.nameHi")}</Th>}
+                {nameMode !== "hi" && <Th {...sort.th("nameHinglish")}>{t("adati.nameHinglish")}</Th>}
+                <Th {...sort.th("village")}>{t("adati.village")}</Th>
+                <Th {...sort.th("phone")}>{t("adati.phone")}</Th>
+                <Th numeric {...sort.th("opening")}>{t("adati.openingBalance")}{f.symbol && <span className="ml-1 font-normal normal-case text-faint">{f.symbol}</span>}</Th>
+                <Th align="center" {...sort.th("aliases")}>{t("adati.aliases")}</Th>
                 <Th className="w-20" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => (
+              {sort.sorted.map((r, i) => (
                 <Tr key={r.id} className={cn(!r.active && "opacity-55")}>
                   <Td className="num text-[12px] text-faint">{i + 1}</Td>
                   {nameMode !== "hinglish" && (

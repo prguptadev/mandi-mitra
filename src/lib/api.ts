@@ -170,6 +170,8 @@ export interface ScanRow {
     rstNo: string | null; adatiName: string | null; grossQtl: number | null;
     katauti: number | null; netQtl: number | null; rate: number | null;
     confidence: number | null; struckThrough: boolean | null;
+    /** The printed SR NO the reader put this row on. */
+    srNo?: number | null;
   };
   rstNo: string;
   adatiId: string | null;

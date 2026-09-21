@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Factory, Pencil, Trash2, Calculator, Info } from "lucide-react";
 import { api, ApiError, type Merchant, type ChargeConfig, type ParchaResult, type PctBase } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
+import { useSort } from "@/lib/useSort.ts";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
@@ -449,6 +450,12 @@ export function MillsPage() {
   });
 
   const rows = list.data ?? [];
+  const sort = useSort(rows, {
+    code: (m) => m.code, name: (m) => m.name, city: (m) => m.city,
+    adat: (m) => (m.chargeConfig.adat.enabled ? m.chargeConfig.adat.pct : null),
+    mandiTax: (m) => (m.chargeConfig.mandiTax.enabled ? m.chargeConfig.mandiTax.pct : null),
+    commission: (m) => (m.chargeConfig.commission.enabled ? m.chargeConfig.commission.pct : null),
+  }, { storageKey: "mills" });
 
   return (
     <>
@@ -475,19 +482,19 @@ export function MillsPage() {
           <Table>
             <thead>
               <tr>
-                <Th className="w-20">{t("merchant.code")}</Th>
-                <Th>{t("merchant.name")}</Th>
-                <Th>{t("biz.city")}</Th>
-                <Th numeric>{t("merchant.adat")}</Th>
-                <Th numeric>{t("merchant.mandiTax")}</Th>
-                <Th numeric>{t("merchant.commission")}</Th>
+                <Th className="w-20" {...sort.th("code")}>{t("merchant.code")}</Th>
+                <Th {...sort.th("name")}>{t("merchant.name")}</Th>
+                <Th {...sort.th("city")}>{t("biz.city")}</Th>
+                <Th numeric {...sort.th("adat")}>{t("merchant.adat")}</Th>
+                <Th numeric {...sort.th("mandiTax")}>{t("merchant.mandiTax")}</Th>
+                <Th numeric {...sort.th("commission")}>{t("merchant.commission")}</Th>
                 <Th numeric>{t("merchant.labour1")}</Th>
                 <Th align="center">{t("merchant.dara")}</Th>
                 <Th className="w-20" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((m) => (
+              {sort.sorted.map((m) => (
                 <Tr key={m.id} className={cn(!m.active && "opacity-55")}>
                   <Td><Badge tone="brand" className="num">{m.code}</Badge></Td>
                   <Td>

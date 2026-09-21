@@ -62,7 +62,7 @@ const RESPONSE_SCHEMA = {
         type: "OBJECT",
         properties: {
           page: { type: "INTEGER", description: "1-based number of the image this row is on" },
-          srNo: { type: "INTEGER", nullable: true },
+          srNo: { type: "INTEGER", nullable: true, description: "The printed SR NO of the ruled line this row is on" },
           rstNo: { type: "STRING", nullable: true },
           adatiName: { type: "STRING", nullable: true },
           supplierMatch: { type: "STRING", nullable: true, description: "Exact name from KNOWN SUPPLIERS, or null" },
@@ -78,7 +78,7 @@ const RESPONSE_SCHEMA = {
            we rely on but never compute from: the written net is the arithmetic
            cross-check, and a struck-through row must not silently become a
            purchase. Left optional, the model skips them to save tokens. */
-        required: ["page", "rstNo", "adatiName", "grossQtl", "katauti", "netQtl", "rate", "confidence", "struckThrough"],
+        required: ["page", "srNo", "rstNo", "adatiName", "grossQtl", "katauti", "netQtl", "rate", "confidence", "struckThrough"],
         /* Without an explicit order the API fills fields alphabetically, so the
            model would state its confidence before reading a single digit. */
         propertyOrdering: ["page", "srNo", "rstNo", "adatiName", "supplierMatch", "grossQtl", "katauti", "netQtl", "rate", "struckThrough", "notes", "confidence"],
@@ -91,12 +91,17 @@ const RESPONSE_SCHEMA = {
 
 const PROMPT = `You are reading a handwritten daily purchase register from a grain commission agent (arhtiya) in Uttar Pradesh, India. The form is printed in English; every entry is handwritten, mostly in Devanagari with some Latin digits.
 
-Read the table and return one object per data row, in the order they appear.
+You are given ONE page of the sheet. Set "page" to 1 on every row.
 
-You are given ONE page of the sheet. Read every handwritten row on it, top to bottom. Set "page" to 1 on every row.
+READ THE TABLE ONE PRINTED LINE AT A TIME. This matters more than anything else:
+- The SR NO column on the left is printed (1, 2, 3 …). It is your anchor. For every printed line that has ANY handwriting on it — including a line that is crossed out — return exactly one object, with srNo set to that printed number, in SR NO order.
+- Read each line straight across, left to right, staying on that one ruled line: the name, RST, weight, katauti, net and rate of an object must all come from the SAME printed line as its srNo.
+- NEVER take a value from the line above or below to fill a gap. A cell that is empty, crossed out or scribbled over is null for that line. The lines after it keep their own values; nothing moves up or down.
+- A crossed-out line still gets its own object (struckThrough true, whatever is legible, null for the rest). Leaving it out, or giving its name to the next line's numbers, shifts every line below it — the worst possible error.
+- Handwriting often leans over the ruled lines. Decide which line a value belongs to by the line it sits on and by the SR NO beside it, not by the nearest text. The same supplier on two consecutive lines is normal: give each line its own object.
 
 Columns, left to right:
-- SR NO — printed row number.
+- SR NO — printed row number: return it as srNo on every row.
 - ADATI NAME — the supplier's name, handwritten in Hindi. Always return it in Devanagari, never in Latin letters. Copy the spelling as written; do not correct it.
   One exception: a trailing "T.C", "ट.C", "टी.सी" or "TC" is the abbreviation for Trading Company. Write it out as "ट्रेडिंग कंपनी". For example "शिवम T.C" becomes "शिवम ट्रेडिंग कंपनी".
   This column is never blank on a real row. If the name is hard to read, give your best reading in Devanagari and lower the confidence for that row rather than returning null.
@@ -109,10 +114,10 @@ Columns, left to right:
 Rules:
 - Report what is WRITTEN. Do not calculate, correct or reconcile anything. If the net weight on the paper looks wrong, still report what is written.
 - A digit you cannot read: return null for that field rather than guessing.
-- struckThrough is required on every row: true if the row is struck through or crossed out on the paper, false otherwise. Never leave it out.
-- Skip printed headers and blank ruled rows. Only rows with handwriting.
+- struckThrough is required on every row: true if the row is struck through or crossed out on the paper, false otherwise. Never leave it out. A line whose name or RST is crossed out and that has no weight written is a struck line.
+- Skip printed headers and blank ruled lines with no handwriting at all. Every line with handwriting is returned, even a crossed-out one.
 - confidence is YOUR certainty about that whole row, 0 to 1. Be strict: use below 0.6 when any digit or letter is genuinely unclear. An honest low score is more useful than a confident guess, because low-confidence pages are read again with a stronger model.
-- A ditto mark (〃, ", ,, or "do") in a cell means "same as the row above": return the value from the row above.
+- A ditto mark (〃, ", ,, or "do") actually written in a cell means "same as the row above": return the value from the row above. This is the ONLY case where a value comes from another line.
 - One cell crossed out and rewritten is NOT a struck-through row: return the rewritten value and set struckThrough false. Only a line through the whole row means struckThrough true.
 - Decimal points in this handwriting are often faint. A gross weight is nearly always between 1 and 60 quintal with two decimals, so 1920 almost certainly means 19.20.
 

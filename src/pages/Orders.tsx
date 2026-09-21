@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, ClipboardList, Pencil, Trash2, Lock, LockOpen } from "lucide-react";
 import { api, ApiError, type Merchant, type Jins, type OrderRow } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
+import { useSort } from "@/lib/useSort.ts";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
@@ -132,6 +133,10 @@ export function OrdersPage() {
   });
 
   const rows = orders.data ?? [];
+  const sort = useSort(rows, {
+    no: (o) => o.poNo, date: (o) => o.poDate, mill: (o) => o.millCode, jins: (o) => o.jinsCode,
+    ordered: (o) => o.qtyGrams, sent: (o) => o.sentGrams, balance: (o) => o.balanceGrams, loads: (o) => o.loads, status: (o) => o.status,
+  }, { storageKey: "orders" });
   return (
     <div>
       <PageHeader title={t("po.title")} sub={t("po.sub")}
@@ -164,13 +169,15 @@ export function OrdersPage() {
           <Table>
             <thead>
               <tr>
-                <Th>{t("po.no")}</Th><Th>{t("po.date")}</Th><Th>{t("load.mill")}</Th><Th>{t("load.jins")}</Th>
-                <Th numeric>{t("po.ordered")}</Th><Th numeric>{t("po.sent")}</Th><Th numeric>{t("po.balance")}</Th>
-                <Th className="w-32" /><Th numeric>{t("po.loads")}</Th><Th>{t("po.status")}</Th><Th />
+                <Th {...sort.th("no")}>{t("po.no")}</Th><Th {...sort.th("date")}>{t("po.date")}</Th>
+                <Th {...sort.th("mill")}>{t("load.mill")}</Th><Th {...sort.th("jins")}>{t("load.jins")}</Th>
+                <Th numeric {...sort.th("ordered")}>{t("po.ordered")}</Th><Th numeric {...sort.th("sent")}>{t("po.sent")}</Th>
+                <Th numeric {...sort.th("balance")}>{t("po.balance")}</Th>
+                <Th className="w-32" /><Th numeric {...sort.th("loads")}>{t("po.loads")}</Th><Th {...sort.th("status")}>{t("po.status")}</Th><Th />
               </tr>
             </thead>
             <tbody>
-              {rows.map((o) => (
+              {sort.sorted.map((o) => (
                 <Tr key={o.id}>
                   <Td className="font-mono font-medium">{o.poNo || <span className="font-sans font-normal text-faint">{t("po.noNumber")}</span>}</Td>
                   <Td className="whitespace-nowrap">{dmy(o.poDate)}</Td>

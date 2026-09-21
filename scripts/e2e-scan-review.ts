@@ -264,7 +264,7 @@ console.log("\nWhole-page checks and decimal points");
     { rstNo: "640", adatiName: "अरविन्द ट्रेडिंग", grossQtl: 14.85, katauti: 15, netQtl: 14.70, rate: 3470, confidence: 0.9 },
   ].map((r, i) => ({
     id: `r${i}`, page: 1,
-    ocr: { rstNo: r.rstNo, adatiName: r.adatiName, grossQtl: r.grossQtl, katauti: r.katauti, netQtl: r.netQtl, rate: r.rate, confidence: r.confidence, struckThrough: false },
+    ocr: { rstNo: r.rstNo, adatiName: r.adatiName, grossQtl: r.grossQtl, katauti: r.katauti, netQtl: r.netQtl, rate: r.rate, confidence: r.confidence, struckThrough: false, srNo: i + 1 },
     rstNo: r.rstNo, adatiId: null, adatiRawText: r.adatiName, grossGrams: Math.round(r.grossQtl * 100_000),
     katautiOverride: null, ratePaisePerQtl: r.rate * 100, excluded: false, nameCorrected: false, modelPick: null, confirmed: [],
   }));
@@ -290,6 +290,23 @@ console.log("\nWhole-page checks and decimal points");
   const s3 = await call("GET", `/scans/${id2}`);
   check("after the fix, RST 626 is clear", s3.rows.find((r: any) => r.rstNo === "626").blocking, false);
   check("with the right date and total, the page raises nothing", s3.pageChecks.length, 0);
+
+  /* The G.R.M sheet's line 6 is crossed out. A reader that drops it and slides
+     line 6's name onto line 7's figures shows up as a jump in the printed row
+     numbers (5 → 7): that row is held back until checked against the paper. */
+  const slid = s3.rows.map((r: any, i: number) => ({ ...r, confirmed: r.confirmed ?? [], ocr: { ...r.ocr, srNo: [5, 7, 8][i] } }));
+  await call("PUT", `/scans/${id2}/rows`, { rows: slid });
+  const s4 = await call("GET", `/scans/${id2}`);
+  const jumped = s4.rows.find((r: any) => r.ocr.srNo === 7);
+  check("a jump in the printed row numbers (5 → 7) is caught", jumped.issues.some((i: any) => i.code === "sr_gap"), true);
+  check("  ...and holds that row back", jumped.blocking, true);
+  check("  ...but not the rows around it", s4.rows.filter((r: any) => r.ocr.srNo !== 7).every((r: any) => !r.issues.some((i: any) => i.code.startsWith("sr_"))), true);
+  await call("PUT", `/scans/${id2}/rows`, { rows: s4.rows.map((r: any) => (r.ocr.srNo === 7 ? { ...r, confirmed: [...(r.confirmed ?? []), "name"] } : r)) });
+  check("checked against the paper (✓ on the name), the row is free", (await call("GET", `/scans/${id2}`)).rows.find((r: any) => r.ocr.srNo === 7).blocking, false);
+  const unnumbered = s3.rows.map((r: any) => ({ ...r, ocr: { ...r.ocr, srNo: null } }));
+  await call("PUT", `/scans/${id2}/rows`, { rows: unnumbered });
+  const quiet = await call("GET", `/scans/${id2}`);
+  check("a page read without row numbers (an older read) raises nothing about them", quiet.pageChecks.length === 0 && quiet.rows.every((r: any) => !r.issues.some((i: any) => i.code.startsWith("sr_"))), true);
   await call("DELETE", `/scans/${id2}`);
 }
 

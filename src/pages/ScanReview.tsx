@@ -524,13 +524,13 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
         </Card>
       ) : showScan ? (
         <SplitPane storageKey="mandi.split.scanReview" title={t("scan.dragToResize")}
-          className="lg:h-[calc(100vh-15rem)]"
+          className="lg:sticky lg:top-[4.25rem] lg:h-[calc(100vh-5rem)]"
           left={<div className="h-[45vh] lg:h-full lg:pr-0">
             <PageViewer scanId={scanId} pages={b.pages} onPage={(fn) => { scrollToPage.current = fn; }} />
           </div>}
           right={<div className="h-[70vh] lg:h-full">{grid}</div>} />
       ) : (
-        <div className="lg:h-[calc(100vh-15rem)]">{grid}</div>
+        <div className="lg:sticky lg:top-[4.25rem] lg:h-[calc(100vh-5rem)]">{grid}</div>
       )}
     </>
   );

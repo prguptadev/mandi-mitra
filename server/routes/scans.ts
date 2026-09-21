@@ -17,7 +17,7 @@ import {
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
 import { deriveSlip } from "./slips.ts";
-import { normRst, checkPages, type PageMeta } from "../lib/scanRows.ts";
+import { normRst, checkPages, srBreaks, type PageMeta } from "../lib/scanRows.ts";
 import { can, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 
 export const scanRoutes = new Hono<Env>();
@@ -170,10 +170,23 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   const range = await usualRateRange(businessId, batch.jinsId, batch.slipDate);
   // page, then position on the page — the same order everywhere
   const ordered = [...rows].sort((a, b) => (a.page ?? 1) - (b.page ?? 1) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
-  const checked: CheckedRow[] = ordered.map((r) => checkRow(r, {
-    katauti, resolve: resolver.resolve, byId: resolver.byId, existingRst, dupeInBatch,
-    rateFloorPaise: range.floor, rateCeilPaise: range.ceil,
-  }));
+  const breaks = srBreaks(rows);
+  const checked: CheckedRow[] = ordered.map((r) => {
+    const c = checkRow(r, {
+      katauti, resolve: resolver.resolve, byId: resolver.byId, existingRst, dupeInBatch,
+      rateFloorPaise: range.floor, rateCeilPaise: range.ceil,
+    });
+    /* A row where the printed numbering breaks may carry the next line's
+       figures under this line's name. It must be looked at against the
+       paper: checking its name (picking or accepting it) clears it. */
+    const br = breaks.find((b) => b.rowId === r.id);
+    if (br && !c.excluded) {
+      const done = (r.confirmed ?? []).includes("name");
+      c.issues.push({ code: br.code, level: done ? "warn" : "error", message: "The row numbers break here: check this row's name and figures against the paper", params: br.params });
+      c.blocking = c.issues.some((i) => i.level === "error");
+    }
+    return c;
+  });
   const pageChecks = checkPages(JSON.parse(batch.pageMeta ?? "[]") as PageMeta[], checked, batch.slipDate);
 
   const active = checked.filter((r) => !r.excluded);

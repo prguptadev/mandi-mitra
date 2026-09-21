@@ -22,6 +22,8 @@ export const ReviewRowSchema = z.object({
     rate: z.number().nullable(),
     confidence: z.number().nullable(),
     struckThrough: z.boolean().nullable(),
+    /** The printed SR NO the reader put this row on — the anchor for row alignment. */
+    srNo: z.number().nullable().optional(),
   }),
   /** What will actually be written, after any human edit. */
   rstNo: z.string(),
@@ -82,6 +84,7 @@ export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
       rate: r.rate ?? null,
       confidence: r.confidence ?? null,
       struckThrough: r.struckThrough ?? null,
+      srNo: r.srNo ?? null,
     },
     rstNo: normRst(r.rstNo),
     adatiId: null,
@@ -286,6 +289,33 @@ export function checkPages(meta: PageMeta[], rows: CheckedRow[], slipDate: strin
     }
     const d = writtenDate(m.date);
     if (d && slipDate && d !== slipDate) out.push({ page: m.page, code: "page_date", params: { written: d, scan: slipDate } });
+  }
+  return out;
+}
+
+/**
+ * The printed SR NO is the anchor that keeps a row's name and its numbers on
+ * the same line. If the numbers the reader gave jump, repeat or run backwards
+ * on a page, rows may have slid: one line's name with the next line's
+ * weights. Every row from the break onwards is suspect until checked.
+ */
+export function srBreaks(rows: ReviewRow[]) {
+  const out: { page: number; code: "sr_gap" | "sr_repeat" | "sr_back"; rowId: string; params: Record<string, string | number> }[] = [];
+  const pages = [...new Set(rows.map((r) => r.page ?? 1))];
+  for (const page of pages) {
+    const mine = rows.filter((r) => (r.page ?? 1) === page).sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+    // pages read without row numbers (older reads) are simply not checked
+    const numbered = mine.filter((r) => r.ocr.srNo != null);
+    let prev: number | null = null;
+    for (const r of numbered) {
+      const n = r.ocr.srNo!;
+      if (prev != null) {
+        if (n === prev) out.push({ page, code: "sr_repeat", rowId: r.id, params: { sr: n } });
+        else if (n < prev) out.push({ page, code: "sr_back", rowId: r.id, params: { sr: n, prev } });
+        else if (n > prev + 1) out.push({ page, code: "sr_gap", rowId: r.id, params: { from: prev, to: n, missing: n - prev - 1 } });
+      }
+      prev = n;
+    }
   }
   return out;
 }

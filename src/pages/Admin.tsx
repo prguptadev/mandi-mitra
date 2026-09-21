@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { api, ApiError, type UserRow, type Role, type AuditRow, type PermissionMeta, type GroupMeta, type Jins, type Business } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
+import { useSort } from "@/lib/useSort.ts";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
@@ -102,6 +103,9 @@ export function UsersPage() {
 
   const rows = users.data ?? [];
   const now = Math.floor(Date.now() / 1000);
+  const sort = useSort(rows, {
+    name: (u) => u.name, role: (u) => u.roleLabel, phone: (u) => u.phone, active: (u) => (u.membershipActive ? 0 : 1),
+  }, { storageKey: "users" });
 
   return (
     <>
@@ -120,16 +124,16 @@ export function UsersPage() {
           <Table>
             <thead>
               <tr>
-                <Th>{t("auth.yourName")}</Th>
-                <Th>{t("users.role")}</Th>
-                <Th>{t("auth.phone")}</Th>
+                <Th {...sort.th("name")}>{t("auth.yourName")}</Th>
+                <Th {...sort.th("role")}>{t("users.role")}</Th>
+                <Th {...sort.th("phone")}>{t("auth.phone")}</Th>
                 <Th align="center">{t("users.overrides")}</Th>
-                <Th align="center">{t("common.active")}</Th>
+                <Th align="center" {...sort.th("active")}>{t("common.active")}</Th>
                 <Th className="w-24" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((u) => {
+              {sort.sorted.map((u) => {
                 const locked = u.lockedUntil !== null && u.lockedUntil > now;
                 return (
                   <Tr key={u.membershipId} className={cn(!u.membershipActive && "opacity-55")}>
@@ -451,6 +455,9 @@ export function CommoditiesPage() {
   const [err, setErr] = useState<string | null>(null);
 
   const list = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins?all=1") });
+  const jsort = useSort(list.data ?? [], {
+    code: (j) => j.code, name: (j) => pick(j.name, j.nameHi), crop: (j) => j.crop, active: (j) => (j.active ? 0 : 1),
+  }, { storageKey: "jins" });
 
   const save = useMutation({
     mutationFn: () => api.post("/jins", f),
@@ -481,14 +488,14 @@ export function CommoditiesPage() {
           <Table>
             <thead>
               <tr>
-                <Th className="w-24">{t("jins.code")}</Th>
-                <Th>{t("jins.name")}</Th>
-                <Th>{t("jins.crop")}</Th>
-                <Th align="center" className="w-24">{t("common.active")}</Th>
+                <Th className="w-24" {...jsort.th("code")}>{t("jins.code")}</Th>
+                <Th {...jsort.th("name")}>{t("jins.name")}</Th>
+                <Th {...jsort.th("crop")}>{t("jins.crop")}</Th>
+                <Th align="center" className="w-24" {...jsort.th("active")}>{t("common.active")}</Th>
               </tr>
             </thead>
             <tbody>
-              {list.data?.map((j) => (
+              {jsort.sorted.map((j) => (
                 <Tr key={j.id} className={cn(!j.active && "opacity-55")}>
                   <Td><Badge tone="brand" className="num">{j.code}</Badge></Td>
                   <Td><span className="font-medium">{pick(j.name, j.nameHi)}</span></Td>

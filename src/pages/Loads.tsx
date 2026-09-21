@@ -169,6 +169,11 @@ export function LoadsPage() {
   if (poId) qs.set("poId", poId);
   const loads = useQuery({ queryKey: ["loads", qs.toString()], queryFn: () => api.get<LoadListRow[]>(`/loads?${qs}`) });
   const rows = loads.data ?? [];
+  const sort = useSort(rows, {
+    date: (r) => r.loadDate, truck: (r) => r.truckNo, mill: (r) => r.millCode, jins: (r) => r.jinsCode,
+    from: (r) => r.stockDates[0], loaded: (r) => r.loadedGrams, net: (r) => r.millNetGrams,
+    parcha: (r) => r.parcha?.parchaNo, total: (r) => r.parcha?.grandTotalPaise,
+  }, { storageKey: "loads" });
   const billed = rows.filter((r) => r.parcha);
   const totalBilled = billed.reduce((s, r) => s + (r.parcha?.grandTotalPaise ?? 0), 0);
 
@@ -217,13 +222,15 @@ export function LoadsPage() {
           <Table>
             <thead>
               <tr>
-                <Th>{t("load.date")}</Th><Th>{t("load.truckNo")}</Th><Th>{t("load.mill")}</Th><Th>{t("load.jins")}</Th>
-                <Th>{t("load.fromDays")}</Th><Th numeric>{t("load.loaded")}</Th><Th numeric>{t("load.millNet")}</Th>
-                <Th>{t("load.parchaNo")}</Th><Th numeric>{t("load.grandTotal")}</Th>
+                <Th {...sort.th("date")}>{t("load.date")}</Th><Th {...sort.th("truck")}>{t("load.truckNo")}</Th>
+                <Th {...sort.th("mill")}>{t("load.mill")}</Th><Th {...sort.th("jins")}>{t("load.jins")}</Th>
+                <Th {...sort.th("from")}>{t("load.fromDays")}</Th><Th numeric {...sort.th("loaded")}>{t("load.loaded")}</Th>
+                <Th numeric {...sort.th("net")}>{t("load.millNet")}</Th>
+                <Th {...sort.th("parcha")}>{t("load.parchaNo")}</Th><Th numeric {...sort.th("total")}>{t("load.grandTotal")}</Th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {sort.sorted.map((r) => (
                 <Tr key={r.id} onClick={() => navigate(`/loads/${r.id}`)}>
                   <Td className="whitespace-nowrap">{dmy(r.loadDate)}</Td>
                   <Td className="font-mono font-medium">{r.truckNo ?? <span className="text-faint">—</span>}</Td>

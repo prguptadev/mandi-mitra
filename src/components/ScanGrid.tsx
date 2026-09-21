@@ -36,6 +36,9 @@ function flagFor(r: ScanRow, f: Field, t: (k: never, v?: Record<string, string |
   }
   if (f === "name") {
     if (!r.chosen && !r.match) return { level: "bad", why: t("scan.fix.pickName" as never) };
+    // the printed numbering breaks here: this line's name may sit on the next line's figures
+    const br = r.issues.find((i) => i.code === "sr_gap" || i.code === "sr_repeat" || i.code === "sr_back");
+    if (!done && br) return { level: "bad", why: t(`issue.${br.code}` as never, br.params as Record<string, string | number>), confirmable: true };
     if (!done && !r.chosen && r.match?.via === "fuzzy")
       return { level: "doubt", why: t("issue.name_fuzzy" as never, { name: r.adatiRawText }) };
   }
@@ -110,7 +113,7 @@ export function ScanGrid({
       <thead>
         <tr className="bg-raised/80">
           {([
-            ["#", "w-9", false], [t("scan.slipCol"), "w-24", false], [t("daily.supplier"), "min-w-[200px]", false],
+            [t("scan.srCol"), "w-9", false], [t("scan.slipCol"), "w-24", false], [t("daily.supplier"), "min-w-[200px]", false],
             [t("daily.gross"), "w-24", true], [t("daily.bags"), "w-16", true], [t("daily.katautiWt"), "w-20", true],
             [t("daily.net"), "w-24", true], [`${t("daily.rate")}${f.symbol ? " " + f.symbol : ""}`, "w-24", true],
             [`${t("daily.amount")}${f.symbol ? " " + f.symbol : ""}`, "w-28", true], [t("scan.conf"), "w-14", true], ["", "w-10", false],
@@ -151,7 +154,9 @@ export function ScanGrid({
               )}
 
               <tr className={cn("transition-colors hover:bg-raised/30", r.excluded && "bg-raised/50 opacity-55")}>
-                <td className="num border-b border-line/70 px-2 py-1 text-[11px] text-faint">{i + 1}</td>
+                <td className={cn("num border-b border-line/70 px-2 py-1 text-[11px]",
+                  r.issues.some((x) => x.code.startsWith("sr_")) ? "font-bold text-bad" : "text-faint")}
+                  title={t("scan.srNoHint")}>{r.ocr.srNo ?? i + 1}</td>
 
                 <td className="border-b border-line/70 px-1 py-1">
                   <div className="relative">
@@ -198,6 +203,7 @@ export function ScanGrid({
                         onBlurEmpty={() => setEditingName(null)}
                       />
                     )}
+                    {!dead && <Accept flag={fl.name} label={t("scan.acceptRow")} onAccept={() => onPatch(r.id, {}, "name")} />}
                   </div>
                 </td>
 
