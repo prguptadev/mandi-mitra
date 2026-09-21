@@ -30,6 +30,8 @@ jobs:
         run: npx tsx src/lib/devanagari.check.ts
       - name: OCR retry behaviour
         run: npx tsx server/lib/gemini.check.ts
+      - name: New permissions reach the right roles
+        run: npx tsx server/lib/rbacSync.check.ts
       - name: End-to-end (isolated test database)
         run: npm run test:e2e
       - name: Build web bundle

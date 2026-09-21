@@ -19,7 +19,7 @@ export function BackupCard() {
   const { t, lang } = useI18n();
   const { can } = useSession();
   const qc = useQueryClient();
-  const q = useQuery({ queryKey: ["backup"], queryFn: () => api.get<BackupState>("/backup"), enabled: can("settings.write") });
+  const q = useQuery({ queryKey: ["backup"], queryFn: () => api.get<BackupState>("/backup"), enabled: can("backup.manage") });
   const [folder, setFolder] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const run = useMutation({
@@ -32,7 +32,7 @@ export function BackupCard() {
     onSuccess: async () => { setErr(null); setFolder(null); await qc.invalidateQueries({ queryKey: ["backup"] }); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
-  if (!can("settings.write")) return null;
+  if (!can("backup.manage")) return null;
   const b = q.data;
   const when = (iso: string) => new Date(iso).toLocaleString(lang === "hi" ? "hi-IN" : "en-IN", { dateStyle: "medium", timeStyle: "short" });
   const shown = folder ?? b?.folder ?? "";

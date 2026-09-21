@@ -217,7 +217,7 @@ export function MillLedgerPage() {
   return (
     <div>
       <PageHeader title={t("mm.title")} sub={t("mm.sub")}
-        action={can("payment.write") && (
+        action={can("millreceipt.write") && (
           <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setReceiving(true)}>{t("mm.receive")}</Button>
         )} />
       {list.data && (
@@ -340,7 +340,7 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
                 <Td numeric className="text-muted" title={r.deductionNote ?? undefined}>{r.deductionPaise ? f.money(r.deductionPaise) : "—"}{r.deductionNote ? <span className="block text-[10px]">{r.deductionNote}</span> : null}</Td>
                 <Td className="text-[12px] text-muted">{r.createdByName ?? ""}</Td>
                 <Td className="whitespace-nowrap text-right">
-                  {r.voidedAt ? <Badge tone="bad">{t("money.cancelled")}</Badge> : can("payment.write") && (
+                  {r.voidedAt ? <Badge tone="bad">{t("money.cancelled")}</Badge> : can("millreceipt.write") && (
                     <>
                       <Button variant="ghost" size="icon" title={t("common.edit")} onClick={() => setEditing(r)}><Pencil className="h-3.5 w-3.5" /></Button>
                       <Button variant="ghost" size="icon" title={t("money.cancel")} onClick={() => setVoiding(r)}><Ban className="h-3.5 w-3.5 text-bad" /></Button>
@@ -449,7 +449,7 @@ export function MillStatementPage({ id }: { id: string }) {
             <Link href={`/stock/${id}`}><Button size="sm">{t("mm.stockLink")}</Button></Link>
             {can("export.data") && <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={download} disabled={!s}>CSV</Button>}
             <Button size="sm" icon={<Printer className="h-3.5 w-3.5" />} onClick={print} disabled={!s}>{t("parcha.print")}</Button>
-            {can("payment.write") && <Button size="sm" variant="primary" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setReceiving({})}>{t("mm.receive")}</Button>}
+            {can("millreceipt.write") && <Button size="sm" variant="primary" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setReceiving({})}>{t("mm.receive")}</Button>}
           </div>
         } />
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
@@ -519,7 +519,7 @@ export function MillStatementPage({ id }: { id: string }) {
                       <Td numeric className={cn("text-muted", e.voided && "line-through")}>{e.kind === "receipt" && e.deductionPaise ? f.amount(e.deductionPaise) : e.kind === "shortage" ? f.amount(e.creditPaise) : ""}</Td>
                       <Td numeric><MillBalance paise={e.balancePaise} /></Td>
                       <Td className="no-print whitespace-nowrap text-right">
-                        {e.kind === "receipt" && !e.voided && can("payment.write") && (
+                        {e.kind === "receipt" && !e.voided && can("millreceipt.write") && (
                           <>
                             <Button variant="ghost" size="icon" title={t("common.edit")} onClick={() => setReceiving({ editing: asRow(e) })}><Pencil className="h-3.5 w-3.5" /></Button>
                             <Button variant="ghost" size="icon" title={t("money.cancel")} onClick={() => setVoiding(e)}><Ban className="h-3.5 w-3.5 text-bad" /></Button>
@@ -571,7 +571,7 @@ export function MillStatementPage({ id }: { id: string }) {
                           : <span className={cn(b.receivedPaise > 0 && "text-warn")}>{f.money(b.duePaise)}</span>}
                       </Td>
                       <Td className="text-right">
-                        {b.duePaise > 0 && can("payment.write") && (
+                        {b.duePaise > 0 && can("millreceipt.write") && (
                           <Button size="sm" variant="ghost" onClick={() => setReceiving({ loadId: b.loadId })}>{t("mm.receiveShort")}</Button>
                         )}
                       </Td>

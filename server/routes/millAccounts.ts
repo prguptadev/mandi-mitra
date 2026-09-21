@@ -100,7 +100,7 @@ export async function millBalances(biz: string, asOf?: string) {
   };
 }
 
-millLedgerRoutes.get("/", can("ledger.read"), async (c) => {
+millLedgerRoutes.get("/", can("millledger.read"), async (c) => {
   const asOf = c.req.query("asOf");
   if (asOf && !ISO_DATE.test(asOf)) throw bad("Date must be YYYY-MM-DD");
   return c.json(await millBalances(c.get("auth")!.businessId!, asOf));
@@ -111,7 +111,7 @@ millLedgerRoutes.get("/", can("ledger.read"), async (c) => {
  * receipt in the period with the running balance, plus each parcha's own
  * outstanding (bill − receipts marked against its truck).
  */
-millLedgerRoutes.get("/:merchantId", can("ledger.read"), async (c) => {
+millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const merchantId = param(c, "merchantId");
   const from = c.req.query("from") || undefined;
@@ -228,7 +228,7 @@ async function checkRefs(biz: string, merchantId: string, loadId: string | null 
 const label = (code: string, r: { receiptDate: string; amountPaise: number; deductionPaise: number }) =>
   `${r.receiptDate} ${code} ₹${(r.amountPaise / 100).toFixed(2)}${r.deductionPaise ? ` + held ₹${(r.deductionPaise / 100).toFixed(2)}` : ""}`;
 
-millReceiptRoutes.get("/", can("payment.read"), async (c) => {
+millReceiptRoutes.get("/", can("millledger.read", "millreceipt.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const w = [eq(R.businessId, biz)];
   const from = c.req.query("from");
@@ -268,7 +268,7 @@ millReceiptRoutes.get("/", can("payment.read"), async (c) => {
   });
 });
 
-millReceiptRoutes.post("/", can("payment.write"), async (c) => {
+millReceiptRoutes.post("/", can("millreceipt.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const body = Body.parse(await c.req.json());
   if (body.amountPaise + body.deductionPaise <= 0) throw bad("Enter the amount received", "zero");
@@ -286,7 +286,7 @@ millReceiptRoutes.post("/", can("payment.write"), async (c) => {
   return c.json({ id });
 });
 
-millReceiptRoutes.put("/:id", can("payment.write"), async (c) => {
+millReceiptRoutes.put("/:id", can("millreceipt.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const id = param(c, "id");
   const [before] = await db.select().from(R).where(and(eq(R.id, id), eq(R.businessId, biz))).limit(1);
@@ -312,7 +312,7 @@ millReceiptRoutes.put("/:id", can("payment.write"), async (c) => {
   return c.json({ ok: true });
 });
 
-millReceiptRoutes.post("/:id/void", can("payment.write"), async (c) => {
+millReceiptRoutes.post("/:id/void", can("millreceipt.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const id = param(c, "id");
   const { reason } = z.object({ reason: z.string().trim().min(3, "Say why it is cancelled").max(300) }).parse(await c.req.json());

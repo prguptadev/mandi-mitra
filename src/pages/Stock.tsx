@@ -68,7 +68,7 @@ export function StockPage() {
   const { can } = useSession();
   const list = useQuery({ queryKey: ["stock", "all", s.qs.toString()], queryFn: () => api.get<StockRow[]>(`/stock?${s.qs}`) });
   // what each mill owes us, for its card — only for those who may see money
-  const money = useQuery({ queryKey: ["mill-ledger", "all"], queryFn: () => api.get<MillLedgerList>("/mill-ledger"), enabled: can("ledger.read") });
+  const money = useQuery({ queryKey: ["mill-ledger", "all"], queryFn: () => api.get<MillLedgerList>("/mill-ledger"), enabled: can("millledger.read") });
   const owed = new Map((money.data?.rows ?? []).map((r) => [r.id, r]));
   const rows = list.data ?? [];
   const sort = useSort(rows, {
@@ -208,7 +208,7 @@ export function MillAccountPage({ id }: { id: string }) {
   const money = useQuery({
     queryKey: ["mill-ledger", id, "card"],
     queryFn: () => api.get<{ totals: { billedPaise: number; receivedPaise: number; deductedPaise: number; closingPaise: number } }>(`/mill-ledger/${id}`),
-    enabled: !isNone && can("ledger.read"),
+    enabled: !isNone && can("millledger.read"),
   });
   const [receiving, setReceiving] = useState(false);
   const days = useQuery({
@@ -256,7 +256,7 @@ export function MillAccountPage({ id }: { id: string }) {
         sub={isNone ? t("stock.noMillHelp") : t("stock.millSub")}
         action={!isNone && (
           <div className="flex flex-wrap gap-2">
-            {can("ledger.read") && <Link href={`/mill-accounts/${id}`}><Button icon={<Landmark className="h-4 w-4" />}>{t("mm.title")}</Button></Link>}
+            {can("millledger.read") && <Link href={`/mill-accounts/${id}`}><Button icon={<Landmark className="h-4 w-4" />}>{t("mm.title")}</Button></Link>}
             {can("load.write") && <Button variant="primary" icon={<Truck className="h-4 w-4" />} onClick={() => setTruckFrom("")}>{t("load.new")}</Button>}
           </div>
         )} />
@@ -293,7 +293,7 @@ export function MillAccountPage({ id }: { id: string }) {
                 <p className={cn("num text-2xl font-semibold", money.data.totals.closingPaise < 0 ? "text-warn" : "text-brand")}>{f.money(money.data.totals.closingPaise)}</p>
                 <p className="text-[12px] text-muted">{t("mm.billed")} {f.money(money.data.totals.billedPaise)} · {t("mm.received")} {f.money(money.data.totals.receivedPaise)}{money.data.totals.deductedPaise ? ` · ${t("mm.heldShort")} ${f.money(money.data.totals.deductedPaise)}` : ""}</p>
                 <p className="text-[11px] text-faint">{t("mm.allTimeNote")}</p>
-                {can("payment.write") && <Button size="sm" variant="secondary" className="mt-2" onClick={() => setReceiving(true)}>{t("mm.receive")}</Button>}
+                {can("millreceipt.write") && <Button size="sm" variant="secondary" className="mt-2" onClick={() => setReceiving(true)}>{t("mm.receive")}</Button>}
               </div>
             )}
           </div>

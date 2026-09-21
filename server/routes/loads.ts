@@ -456,7 +456,8 @@ parchaRoutes.get("/", can("parcha.read"), async (c) => {
   // the mill's weight cut, valued as the mill account values it
   const { billed } = await import("./millAccounts.ts");
   const cut = new Map((await billed(biz)).map((b) => [b.id, b.shortagePaise]));
-  return c.json(rows.map((r) => r.status === "approved"
+  const money = c.get("auth")!.permissions.has("millledger.read");
+  return c.json(rows.map((r) => r.status === "approved" && money
     ? { ...r, shortagePaise: cut.get(r.id) ?? 0, receivedPaise: gotBy.get(r.loadId) ?? 0, duePaise: r.grandTotalPaise - (cut.get(r.id) ?? 0) - (gotBy.get(r.loadId) ?? 0) }
     : { ...r, shortagePaise: null, receivedPaise: null, duePaise: null }));
 });

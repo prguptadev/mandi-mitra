@@ -916,6 +916,8 @@ export function ParchaRegisterPage() {
   const total = approved.reduce((s, r) => s + r.grandTotalPaise, 0);
   const dueTotal = approved.reduce((s, r) => s + (r.duePaise ?? 0), 0);
   const [viewing, setViewing] = useState<string | null>(null);
+  const { can } = useSession();
+  const money = can("millledger.read");
   const sort = useSort(rows, {
     no: (r) => r.parchaNo, date: (r) => r.invoiceDate, mill: (r) => r.millCode, truck: (r) => r.truckNo,
     status: (r) => r.status, total: (r) => r.grandTotalPaise, received: (r) => r.receivedPaise, due: (r) => r.duePaise,
@@ -944,7 +946,7 @@ export function ParchaRegisterPage() {
                 <Th {...sort.th("no")}>{t("parcha.invoiceNo")}</Th><Th {...sort.th("date")}>{t("parcha.invoiceDate")}</Th>
                 <Th {...sort.th("mill")}>{t("load.mill")}</Th><Th {...sort.th("truck")}>{t("load.truckNo")}</Th>
                 <Th {...sort.th("status")}>{t("po.status")}</Th><Th numeric {...sort.th("total")}>{t("load.grandTotal")}</Th>
-                <Th numeric {...sort.th("received")}>{t("parcha.received")}</Th><Th numeric {...sort.th("due")}>{t("parcha.due")}</Th>
+                {money && <><Th numeric {...sort.th("received")}>{t("parcha.received")}</Th><Th numeric {...sort.th("due")}>{t("parcha.due")}</Th></>}
                 <Th className="w-10" />
               </tr>
             </thead>
@@ -960,8 +962,10 @@ export function ParchaRegisterPage() {
                     {r.voidReason && <span className="ml-2 text-[12px] text-muted">{r.voidReason}</span>}
                   </Td>
                   <Td numeric className={cn("font-medium", r.status === "void" && "line-through")}>{f.money(r.grandTotalPaise)}</Td>
-                  <Td numeric className="text-ok">{r.receivedPaise ? f.money(r.receivedPaise) : r.status === "approved" ? "—" : ""}</Td>
-                  <Td numeric className="font-medium">{r.duePaise == null ? "" : r.duePaise <= 0 ? <Badge tone="ok">{t("mm.paid")}</Badge> : f.money(r.duePaise)}</Td>
+                  {money && <>
+                    <Td numeric className="text-ok">{r.receivedPaise ? f.money(r.receivedPaise) : r.status === "approved" ? "—" : ""}</Td>
+                    <Td numeric className="font-medium">{r.duePaise == null ? "" : r.duePaise <= 0 ? <Badge tone="ok">{t("mm.paid")}</Badge> : f.money(r.duePaise)}</Td>
+                  </>}
                   <Td className="text-right">
                     <span onClick={(e) => e.stopPropagation()}>
                       <Button size="icon" variant="ghost" title={t("parcha.view")} onClick={() => setViewing(r.id)}><Eye className="h-3.5 w-3.5" /></Button>
@@ -974,8 +978,10 @@ export function ParchaRegisterPage() {
               <tr className="bg-raised/50 text-[13px] font-semibold">
                 <td colSpan={5} className="px-3 py-2 text-right text-muted">{t("parcha.registerTotal", { n: approved.length })}</td>
                 <td className="num px-3 py-2 text-right">{f.money(total)}</td>
-                <td className="num px-3 py-2 text-right text-ok">{f.money(approved.reduce((s, r) => s + (r.receivedPaise ?? 0), 0))}</td>
-                <td className="num px-3 py-2 text-right">{f.money(dueTotal)}</td>
+                {money && <>
+                  <td className="num px-3 py-2 text-right text-ok">{f.money(approved.reduce((s, r) => s + (r.receivedPaise ?? 0), 0))}</td>
+                  <td className="num px-3 py-2 text-right">{f.money(dueTotal)}</td>
+                </>}
                 <td />
               </tr>
             </tfoot>

@@ -91,7 +91,7 @@ export function ChallanPage() {
     cut: (r) => r.deductionGrams, finalNet: (r) => r.finalNetGrams, cutValue: (r) => r.deductionValuePaise,
     finalGoods: (r) => r.finalGoodsPaise, parcha: (r) => r.parchaNo, grand: (r) => r.grandTotalPaise, finalTotal: (r) => r.finalTotalPaise,
   }, { storageKey: "challan" });
-  const editable = can("load.write");
+  const editable = can("challan.write");
   const T = list.data?.totals;
 
   const download = () => {

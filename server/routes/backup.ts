@@ -10,9 +10,9 @@ import { BACKUP_DIR, BACKUP_NAME, backupNow, checkFolder, listBackups, readBacku
    settings sees, takes or downloads them. */
 export const backupRoutes = new Hono<Env>();
 
-backupRoutes.get("/", can("settings.write"), (c) => c.json({ ...readBackupConfig(), backups: listBackups().slice(0, 40) }));
+backupRoutes.get("/", can("backup.manage"), (c) => c.json({ ...readBackupConfig(), backups: listBackups().slice(0, 40) }));
 
-backupRoutes.put("/", can("settings.write"), async (c) => {
+backupRoutes.put("/", can("backup.manage"), async (c) => {
   const { folder } = z.object({ folder: z.string().trim().max(400).nullable() }).parse(await c.req.json());
   if (folder) {
     const problem = checkFolder(folder);
@@ -23,13 +23,13 @@ backupRoutes.put("/", can("settings.write"), async (c) => {
   return c.json({ ok: true });
 });
 
-backupRoutes.post("/run", can("settings.write"), async (c) => {
+backupRoutes.post("/run", can("backup.manage"), async (c) => {
   const r = await backupNow("manual");
   await audit({ actor: actor(c), action: "backup.run", entity: "settings", entityId: "backup", entityLabel: `Backup ${r.name} (${Math.round(r.bytes / 1024)} KB)` });
   return c.json({ ...r, ...readBackupConfig() });
 });
 
-backupRoutes.get("/file/:name", can("settings.write"), async (c) => {
+backupRoutes.get("/file/:name", can("backup.manage"), async (c) => {
   const name = param(c, "name");
   if (!BACKUP_NAME.test(name)) throw bad("Not a backup file", "bad_name");
   const file = path.join(BACKUP_DIR, name);

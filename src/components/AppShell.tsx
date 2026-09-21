@@ -37,7 +37,7 @@ const NAV: NavGroup[] = [
   { labelKey: "nav.accounts", items: [
     { href: "/ledger", labelKey: "nav.ledger", icon: BookOpen, perm: "ledger.read" },
     { href: "/payments", labelKey: "nav.payments", icon: Wallet, perm: "payment.read" },
-    { href: "/mill-accounts", labelKey: "nav.millAccounts", icon: Landmark, perm: "ledger.read" },
+    { href: "/mill-accounts", labelKey: "nav.millAccounts", icon: Landmark, perm: "millledger.read" },
   ] },
   { labelKey: "nav.admin", items: [
     { href: "/users", labelKey: "nav.users", icon: UserCog, perm: "users.read" },

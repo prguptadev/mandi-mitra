@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { eq, and, gte, lte, sql, inArray, isNull } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
-import { can, bad, notFound, type Env } from "../lib/http.ts";
+import { can, bad, notFound, HttpError, type Env } from "../lib/http.ts";
 import { incoming, trucks, race, worstAhead, dayAverages, type Filter, type TruckSummary } from "../lib/tracking.ts";
 import { linesWithWeights } from "../lib/parcha.ts";
 import { dispatchedByPo, poLabel } from "./orders.ts";
@@ -213,7 +213,7 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
 
   const noMill = inRows.filter((r) => !r.merchantId);
   // what each mill still owes us, all time — money is shown only to those who may see it
-  const canMoney = auth.permissions.has("ledger.read");
+  const canMoney = auth.permissions.has("millledger.read");
   const owed = canMoney ? await millBalances(biz) : null;
   const payments = await db.select({ p: sql<number>`coalesce(sum(${schema.payments.amountPaise}), 0)` }).from(schema.payments)
     .where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt), ...(f.from ? [gte(schema.payments.payDate, f.from)] : []), ...(f.to ? [lte(schema.payments.payDate, f.to)] : [])));
@@ -297,6 +297,8 @@ dashboardRoutes.get("/mill/:id", can("stock.read"), async (c) => {
  */
 dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
+  // it shows both sides: what suppliers are owed and what mills owe
+  if (!c.get("auth")!.permissions.has("millledger.read")) throw new HttpError(403, "You do not have permission: millledger.read", "forbidden");
   const f = filterOf(c);
   const S = schema.purchaseSlips;
   const P = schema.payments;

@@ -74,7 +74,7 @@ challanRoutes.get("/", can("load.read"), async (c) => {
 });
 
 /** The mill's weight cut on one truck. Allowed at any time, even after the parcha is approved. */
-challanRoutes.put("/:loadId", can("load.write"), async (c) => {
+challanRoutes.put("/:loadId", can("challan.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const loadId = param(c, "loadId");
   const body = z.object({

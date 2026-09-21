@@ -16,6 +16,7 @@ export const PERMISSIONS = [
   { key: "parcha.void",     group: "parcha",   en: "Void kaccha parcha",        hi: "कच्चा पर्चा रद्द करें" },
   { key: "po.read",         group: "load",     en: "View purchase orders",      hi: "PO देखें" },
   { key: "po.write",        group: "load",     en: "Add / edit purchase orders",hi: "PO जोड़ें / बदलें" },
+  { key: "challan.write",   group: "load",     en: "Enter the mill's weight cut (challan)", hi: "मिल की वज़न कटौती भरें (चालान)" },
   { key: "stock.read",      group: "stock",    en: "View stock",                hi: "स्टॉक देखें" },
   { key: "adati.read",      group: "masters",  en: "View suppliers",            hi: "आढ़ती देखें" },
   { key: "adati.write",     group: "masters",  en: "Add / edit suppliers",      hi: "आढ़ती जोड़ें / बदलें" },
@@ -25,9 +26,11 @@ export const PERMISSIONS = [
   { key: "merchant.delete", group: "masters",  en: "Delete mills",              hi: "मिल हटाएँ" },
   { key: "jins.read",       group: "masters",  en: "View commodities",          hi: "जिंस देखें" },
   { key: "jins.write",      group: "masters",  en: "Add / edit commodities",    hi: "जिंस जोड़ें / बदलें" },
-  { key: "payment.read",    group: "accounts", en: "View payments",             hi: "भुगतान देखें" },
-  { key: "payment.write",   group: "accounts", en: "Record payments",           hi: "भुगतान दर्ज करें" },
+  { key: "payment.read",    group: "accounts", en: "View payments to suppliers", hi: "आढ़तियों को भुगतान देखें" },
+  { key: "payment.write",   group: "accounts", en: "Record / cancel payments to suppliers", hi: "आढ़तियों को भुगतान दर्ज / रद्द करें" },
   { key: "ledger.read",     group: "accounts", en: "View supplier ledger",      hi: "आढ़ती खाता देखें" },
+  { key: "millledger.read", group: "accounts", en: "View mill accounts (what mills owe)", hi: "मिल खाता देखें (मिलों से लेना)" },
+  { key: "millreceipt.write", group: "accounts", en: "Record / cancel money from mills", hi: "मिल से आया पैसा दर्ज / रद्द करें" },
   { key: "export.data",     group: "accounts", en: "Export CSV / Excel",        hi: "CSV / Excel निकालें" },
   { key: "users.read",      group: "admin",    en: "View users",                hi: "उपयोगकर्ता देखें" },
   { key: "users.manage",    group: "admin",    en: "Add / edit users",          hi: "उपयोगकर्ता प्रबंधित करें" },
@@ -36,6 +39,8 @@ export const PERMISSIONS = [
   { key: "business.write",  group: "admin",    en: "Edit business profile",     hi: "व्यापार प्रोफ़ाइल बदलें" },
   { key: "audit.read",      group: "admin",    en: "View audit trail",          hi: "ऑडिट देखें" },
   { key: "settings.write",  group: "admin",    en: "Change settings",           hi: "सेटिंग बदलें" },
+  { key: "backup.manage",   group: "admin",    en: "Backups and the cloud copy (all data)", hi: "बैकअप और क्लाउड कॉपी (सारा डेटा)" },
+  { key: "app.update",      group: "admin",    en: "Install app updates",       hi: "ऐप अपडेट करें" },
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number]["key"];
@@ -69,6 +74,7 @@ export const ROLE_PRESETS = [
       "parcha.read", "parcha.create", "parcha.approve", "po.read", "po.write",
       "stock.read", "adati.read", "adati.write", "merchant.read", "merchant.write",
       "jins.read", "jins.write", "payment.read", "payment.write", "ledger.read",
+      "millledger.read", "millreceipt.write", "challan.write",
       "export.data", "users.read", "business.read", "audit.read",
     ),
   },
@@ -78,6 +84,7 @@ export const ROLE_PRESETS = [
       "dashboard.view", "slip.read", "load.read", "parcha.read", "po.read",
       "stock.read", "adati.read", "merchant.read", "jins.read",
       "payment.read", "payment.write", "ledger.read", "export.data", "business.read",
+      "millledger.read", "millreceipt.write",
     ),
   },
   {
@@ -94,6 +101,7 @@ export const ROLE_PRESETS = [
     permissions: P(
       "dashboard.view", "slip.read", "load.read", "parcha.read", "po.read",
       "stock.read", "adati.read", "merchant.read", "jins.read", "ledger.read",
+      "millledger.read",
     ),
   },
 ] as const;
@@ -107,4 +115,9 @@ export function effectivePermissions(
   for (const o of overrides) if (o.effect === "allow") set.add(o.permission);
   for (const o of overrides) if (o.effect === "deny") set.delete(o.permission);
   return set;
+}
+
+/** Every permission a preset role should have, by role key. */
+export function presetPermissions(roleKey: string): readonly string[] {
+  return ROLE_PRESETS.find((r) => r.key === roleKey)?.permissions ?? [];
 }

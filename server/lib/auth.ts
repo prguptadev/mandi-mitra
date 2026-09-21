@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { db, schema } from "../db/client.ts";
 import { eq, and } from "drizzle-orm";
 import { newId, nowSec } from "./ids.ts";
-import { effectivePermissions } from "./rbac.ts";
+import { ALL_PERMISSIONS, effectivePermissions } from "./rbac.ts";
 
 const SESSION_DAYS = 30;
 const MAX_ATTEMPTS = 5;
@@ -87,7 +87,10 @@ export async function resolveSession(token: string | undefined): Promise<AuthCon
         .where(eq(schema.rolePermissions.roleId, m.roleId));
       const overrides = await db.select().from(schema.userPermissionOverrides)
         .where(eq(schema.userPermissionOverrides.membershipId, m.id));
-      permissions = effectivePermissions(rolePerms.map((p) => p.permission), overrides);
+      // the owner can do everything, including what later versions add
+      permissions = r?.key === "owner"
+        ? new Set<string>(ALL_PERMISSIONS)
+        : effectivePermissions(rolePerms.map((p) => p.permission), overrides);
     }
   }
 

@@ -350,7 +350,7 @@ export function DashboardPage() {
         </div>
       )}
 
-      {can("ledger.read") && k && <MoneyCard qs={qs.toString()} stockPaise={k.leftGrams > 0 && k.avgBuyPaisePerQtl ? Math.round((k.leftGrams / 100_000) * k.avgBuyPaisePerQtl) : 0} unbilledPaise={k.unbilledGoodsPaise} />}
+      {can("ledger.read") && can("millledger.read") && k && <MoneyCard qs={qs.toString()} stockPaise={k.leftGrams > 0 && k.avgBuyPaisePerQtl ? Math.round((k.leftGrams / 100_000) * k.avgBuyPaisePerQtl) : 0} unbilledPaise={k.unbilledGoodsPaise} />}
 
       <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
         {d ? <FlagsCard flags={d.flags} /> : <Card><SkeletonTable rows={4} /></Card>}

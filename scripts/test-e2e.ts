@@ -60,6 +60,7 @@ try {
   run("scripts/e2e-mill-money.ts");
   run("scripts/e2e-gemini.ts");
   run("scripts/e2e-scanner-backup.ts");
+  run("scripts/e2e-rbac.ts");
   // last: every stored figure the tests produced, re-worked independently
   execFileSync("sqlite3", [path.join(DATA, "mandi.db"), `.backup ${path.join(DATA, "audit-copy.db")}`]);
   run2("scripts/money-check.ts", path.join(DATA, "audit-copy.db"));

@@ -134,8 +134,8 @@ export default function App() {
           <Route path="/stock/:mill">{(p) => <Guard perm="stock.read"><MillAccountPage id={p.mill} /></Guard>}</Route>
           <Route path="/ledger">{() => <Guard perm="ledger.read"><LedgerPage /></Guard>}</Route>
           <Route path="/payments">{() => <Guard perm="payment.read"><PaymentsPage /></Guard>}</Route>
-          <Route path="/mill-accounts">{() => <Guard perm="ledger.read"><MillLedgerPage /></Guard>}</Route>
-          <Route path="/mill-accounts/:id">{(p) => <Guard perm="ledger.read"><MillStatementPage id={p.id} /></Guard>}</Route>
+          <Route path="/mill-accounts">{() => <Guard perm="millledger.read"><MillLedgerPage /></Guard>}</Route>
+          <Route path="/mill-accounts/:id">{(p) => <Guard perm="millledger.read"><MillStatementPage id={p.id} /></Guard>}</Route>
           <Route path="/suppliers">{() => <Guard perm="adati.read"><SuppliersPage /></Guard>}</Route>
           <Route path="/mills">{() => <Guard perm="merchant.read"><MillsPage /></Guard>}</Route>
           <Route path="/commodities">{() => <Guard perm="jins.read"><CommoditiesPage /></Guard>}</Route>
