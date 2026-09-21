@@ -1,0 +1,36 @@
+# Builds the Windows installer (MandiMitra-Setup-x.y.z.exe) on a Windows
+# machine, checks the packaged app starts and answers, and keeps the
+# installer as a download on the run's page.
+name: Windows app
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run build:desktop-server
+      - name: Build the installer
+        run: npx electron-builder --win --publish never
+      - name: The packaged app starts and answers
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem release/win-unpacked -Filter MandiMitra.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -PassThru -Wait -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "smoke test failed with exit code $($p.ExitCode)" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MandiMitra-Windows-installer
+          path: release/*.exe
+          if-no-files-found: error

@@ -11,12 +11,14 @@
     "db:push": "tsx server/db/migrate.ts",
     "db:seed": "tsx server/db/seed.ts",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "tsx scripts/test-e2e.ts"
+    "test:e2e": "tsx scripts/test-e2e.ts",
+    "build:desktop-server": "node scripts/build-desktop-server.mjs",
+    "desktop:pack": "npm run build && npm run build:desktop-server && electron-builder --win --publish never"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
     "@tanstack/react-query": "^5.62.7",
-    "better-sqlite3": "^11.7.0",
+    "better-sqlite3": "^13.0.3",
     "chokidar": "^4.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -40,10 +42,15 @@
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.0",
     "drizzle-kit": "^0.30.6",
+    "electron": "^44.4.3",
+    "electron-builder": "^26.15.3",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.5"
-  }
+  },
+  "main": "electron/main.cjs",
+  "description": "Mandi Mitra — daily list, OCR, stock, kaccha parcha and accounts for a grain commission agent",
+  "author": "Vijay Laxmi Dal Mill"
 }

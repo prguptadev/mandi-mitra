@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import fs from "node:fs";
+import path from "node:path";
 import { ZodError } from "zod";
 import { withSession, HttpError, type Env } from "./lib/http.ts";
 import { authRoutes } from "./routes/auth.ts";
@@ -69,6 +71,27 @@ export function createApp() {
     console.error("[api]", err);
     return c.json({ error: "Something went wrong on the server", code: "internal" }, 500);
   });
+
+  /* The desktop app serves its own screens from the built files, from the
+     same address as the API, so no separate web server is needed. */
+  const STATIC = process.env.MANDI_STATIC_DIR ? path.resolve(process.env.MANDI_STATIC_DIR) : null;
+  if (STATIC) {
+    const TYPES: Record<string, string> = {
+      ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
+      ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2", ".woff": "font/woff", ".json": "application/json", ".webmanifest": "application/manifest+json",
+    };
+    app.get("*", (c) => {
+      const url = new URL(c.req.url).pathname;
+      if (url.startsWith("/api/")) return c.json({ error: "Not found", code: "not_found" }, 404);
+      let file = path.resolve(STATIC, "." + decodeURIComponent(url));
+      // never outside the built folder; unknown paths are app routes, so the app itself
+      if (!file.startsWith(STATIC + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(STATIC, "index.html");
+      const immutable = file.includes(`${path.sep}assets${path.sep}`);
+      return new Response(new Uint8Array(fs.readFileSync(file)), {
+        headers: { "Content-Type": TYPES[path.extname(file)] ?? "application/octet-stream", "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-cache" },
+      });
+    });
+  }
 
   app.notFound((c) => c.json({ error: "Not found", code: "not_found" }, 404));
   return app;

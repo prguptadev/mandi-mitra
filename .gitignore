@@ -10,3 +10,7 @@ data/.secret.key
 data-test/
 data/backups/
 data-uitest/
+desktop-build/
+release/
+data/backup.json
+data/scanner-wia.ps1

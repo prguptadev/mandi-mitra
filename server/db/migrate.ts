@@ -27,6 +27,7 @@ export function runMigrations() {
 }
 
 // pathToFileURL, not string concat — the data dir can contain spaces
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// run directly (npm run db:push), not when bundled into the desktop server
+if (process.argv[1]?.endsWith("migrate.ts") && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runMigrations();
 }

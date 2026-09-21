@@ -1,0 +1,30 @@
+# Windows installer for Mandi Mitra. Built on Windows by .github/workflows/desktop.yml.
+appId: in.vijaylaxmi.mandimitra
+productName: Mandi Mitra
+executableName: MandiMitra
+copyright: Vijay Laxmi Dal Mill
+directories:
+  output: release
+files:
+  - electron/**
+  - desktop-build/**
+  - dist/**
+  - package.json
+asarUnpack:
+  # served and read from disk by the server; the native database module must be real files
+  - dist/**
+  - desktop-build/**
+  - node_modules/better-sqlite3/**
+npmRebuild: true
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: MandiMitra-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Mandi Mitra

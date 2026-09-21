@@ -9,7 +9,8 @@ const port = Number(process.env.PORT ?? 8787);
 runMigrations();
 const recovered = recoverInterruptedScans();
 if (recovered) console.log(`[scan] reset ${recovered} interrupted read(s)`);
-serve({ fetch: createApp().fetch, port });
+// the desktop app listens on this computer only (MANDI_HOST=127.0.0.1)
+serve({ fetch: createApp().fetch, port, ...(process.env.MANDI_HOST ? { hostname: process.env.MANDI_HOST } : {}) });
 startAutoBackups();
 console.log(`  api   http://localhost:${port}`);
 console.log(`  db    ${DB_PATH}`);
