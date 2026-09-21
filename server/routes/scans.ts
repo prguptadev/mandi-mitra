@@ -21,6 +21,13 @@ import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
 import { normRst, checkPages, slipMarks, type PageMeta } from "../lib/scanRows.ts";
 import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 
+/** Pages read so far. A sheet read before pages were counted (before 21-09-2026)
+ *  was read in full, but its count was left at 0 when the count was added. */
+function pagesRead(b: { status: string; pagesDone: number; parsedRows: string | null; filePaths: string }) {
+  if (b.pagesDone === 0 && (b.status === "review" || b.status === "committed") && b.parsedRows) return (JSON.parse(b.filePaths) as unknown[]).length;
+  return b.pagesDone;
+}
+
 export const scanRoutes = new Hono<Env>();
 
 /* Reading a full sheet takes 20-60s. It runs detached from the request so the
@@ -744,7 +751,7 @@ scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
     slipDate: batch.slipDate, merchantId: batch.merchantId, jinsId: batch.jinsId,
     model: batch.model, errorText: batch.errorText, warningText: batch.warningText,
     running: inFlight.has(batch.id),
-    pagesDone: batch.pagesDone,
+    pagesDone: pagesRead(batch),
     tokensIn: batch.tokensIn, tokensOut: batch.tokensOut,
     createdAt: batch.createdAt, reviewedAt: batch.reviewedAt,
     pages: files.map((f, i) => ({ index: i, name: f.name, mimeType: f.mimeType, bytes: f.bytes })),
@@ -856,8 +863,11 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
   if (!batch.jinsId) throw bad("Set the commodity before adding it to the daily list", "no_jins");
 
   const pageCount = (JSON.parse(batch.filePaths) as unknown[]).length;
-  if (batch.status !== "review" || batch.pagesDone < pageCount) {
-    throw new HttpError(409, `Only ${batch.pagesDone} of ${pageCount} pages are read. Read the rest before adding this sheet.`, "incomplete");
+  const read = pagesRead(batch);
+  if (batch.status !== "review" || read < pageCount) {
+    throw new HttpError(409, read === 0
+      ? "This sheet has not been read yet. Press “Read the sheet” first, then check the rows and add it."
+      : `Only ${read} of ${pageCount} pages are read. Press “Read again” to read the rest, then add the sheet.`, "incomplete");
   }
 
   await checkSlipRefs(biz, { jinsId: batch.jinsId, merchantId: batch.merchantId });

@@ -160,7 +160,8 @@ check("missing rate warns, not blocks", byRst("644")[0].blocking, false);
 check("net cross-check counted", `${v1.summary.netAgreeing}/${v1.summary.netChecked}`, "9/10");
 
 console.log("\nCommit is refused while a page is unread");
-sqlite.prepare("update scan_batches set pages_done = 0 where id = ?").run(scanId);
+// the reader stopped part-way: the sheet is left "failed" with fewer pages done
+sqlite.prepare("update scan_batches set pages_done = 0, status = 'failed' where id = ?").run(scanId);
 try {
   await call("POST", `/scans/${scanId}/commit`);
   console.log(" FAIL  a half-read sheet was committed"); bad++;
@@ -168,6 +169,16 @@ try {
   const ok = (e as Error).message.includes("incomplete");
   if (!ok) bad++;
   console.log(` ${ok ? "PASS" : "FAIL"}  refused: incomplete`);
+}
+// a sheet read in full before pages were counted says 0 pages: it is not "unread"
+sqlite.prepare("update scan_batches set pages_done = 0, status = 'review' where id = ?").run(scanId);
+try {
+  await call("POST", `/scans/${scanId}/commit`);
+  console.log(" FAIL  a sheet with broken rows was committed"); bad++;
+} catch (e) {
+  const ok = !(e as Error).message.includes("incomplete");
+  if (!ok) bad++;
+  console.log(` ${ok ? "PASS" : "FAIL"}  an old fully-read sheet is not refused as unread`);
 }
 sqlite.prepare("update scan_batches set pages_done = json_array_length(file_paths) where id = ?").run(scanId);
 
