@@ -42,7 +42,7 @@ export const api = {
 
 export interface Me {
   user: { id: string; name: string; nameHi: string | null; phone: string | null; isRoot: boolean; lang: "en" | "hi"; theme: "light" | "dark" | "system" };
-  businesses: { businessId: string; roleKey: string; roleLabel: string; name: string; nameHi: string | null; shortCode: string; setupComplete: boolean }[];
+  businesses: { businessId: string; roleKey: string; roleLabel: string; roleLabelHi?: string | null; name: string; nameHi: string | null; shortCode: string; setupComplete: boolean }[];
   activeBusinessId: string | null;
   business: Business | null;
   role: { key: string; label: string; labelHi: string | null } | null;
@@ -61,7 +61,8 @@ export interface Adati {
   id: string; nameHi: string; nameHinglish: string; nameHinglishLocked: boolean;
   firmSuffix: string | null; village: string | null; villageHi: string | null;
   phone: string | null; accountNo: string | null; ifsc: string | null;
-  openingBalancePaise: number; notes: string | null; active: boolean;
+  /** Null for someone who may not see money (no ledger or payments permission). */
+  openingBalancePaise: number | null; notes: string | null; active: boolean;
   aliasCount?: number; createdAt: number; updatedAt: number;
 }
 
@@ -200,9 +201,13 @@ export interface ScanRow {
 export interface ScanSummary {
   total: number; included: number; excluded: number;
   blocking: number; warnings: number; clean: number;
+  /** Page checks (rows slid, date, total) not yet confirmed against the paper. */
+  pagesBlocking?: number;
   autoMatchedNames: number; netAgreeing: number; netChecked: number;
   totalNetGrams: number; totalAmountPaise: number; meanConfidence: number;
 }
+
+export interface PageCheck { page: number; code: "page_total" | "page_date" | "page_rows"; params: Record<string, string | number>; confirmed: boolean }
 
 export interface ScanBatch {
   id: string; status: string; sourceKind: string;
@@ -215,8 +220,8 @@ export interface ScanBatch {
   pages: { index: number; name: string; mimeType: string; bytes: number }[];
   rows: ScanRow[];
   summary: ScanSummary | null;
-  /** Whole-page checks: the header date and the bottom total against the rows. */
-  pageChecks?: { page: number; code: "page_total" | "page_date"; params: Record<string, string | number> }[];
+  /** Whole-page checks: rows that may have slid, the header date and the bottom total. */
+  pageChecks?: PageCheck[];
   rateRange?: { floorPaise: number; ceilPaise: number; from: "recent" | "default" } | null;
 }
 
@@ -271,6 +276,7 @@ export interface TryModelResult {
 }
 
 export interface OrderRow {
+  millNameHi?: string | null;
   id: string; merchantId: string; jinsId: string; poNo: string; poDate: string;
   qtyGrams: number; ratePaisePerQtl: number | null; validTill: string | null;
   status: "open" | "closed"; notes: string | null;
@@ -295,6 +301,7 @@ export interface StockDay {
 }
 
 export interface StockRow {
+  millNameHi?: string | null;
   merchantId: string | null; millCode: string | null; millName: string | null;
   slips: number; boughtNet: number; boughtAmount: number; avgRatePaisePerQtl: number;
   loadedNet: number; trucks: number; stockNet: number;
@@ -307,6 +314,7 @@ export interface StockMillDay {
 }
 
 export interface ParchaRegisterRow {
+  millNameHi?: string | null;
   id: string; loadId: string; parchaNo: string; version: number; invoiceDate: string | null;
   grandTotalPaise: number; status: "approved" | "void"; approvedAt: number | null;
   voidedAt: number | null; voidReason: string | null;

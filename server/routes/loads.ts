@@ -140,7 +140,7 @@ loadRoutes.get("/", can("load.read"), async (c) => {
   const rows = await db.select({
     l: schema.loads,
     millCode: schema.merchants.code,
-    millName: schema.merchants.name,
+    millName: schema.merchants.name, millNameHi: schema.merchants.nameHi,
     jinsCode: schema.jins.code,
   })
     .from(schema.loads)
@@ -148,7 +148,8 @@ loadRoutes.get("/", can("load.read"), async (c) => {
     .innerJoin(schema.jins, eq(schema.jins.id, schema.loads.jinsId))
     .where(and(...where))
     .orderBy(desc(schema.loads.loadDate), desc(schema.loads.createdAt))
-    .limit(500);
+    // a season is a few hundred trucks; the screens total what they get, so send them all
+    .limit(20_000);
 
   const ids = rows.map((r) => r.l.id);
   const lines = ids.length ? await linesWithWeights(inArray(schema.loadLines.loadId, ids)) : [];
@@ -158,14 +159,18 @@ loadRoutes.get("/", can("load.read"), async (c) => {
   }).from(schema.parchas).where(and(inArray(schema.parchas.loadId, ids), eq(schema.parchas.status, "approved"))) : [];
   const parchaByLoad = new Map(parchas.map((p) => [p.loadId, p]));
 
+  // parcha money (grand total, advance, dara) is for those who may read parchas
+  const bills = c.get("auth")!.permissions.has("parcha.read");
   return c.json(rows.map((r) => {
     const mine = lines.filter((x) => x.loadId === r.l.id);
+    const p = parchaByLoad.get(r.l.id) ?? null;
     return {
       ...r.l,
-      millCode: r.millCode, millName: r.millName, jinsCode: r.jinsCode,
+      ...(bills ? {} : { advancePaise: null, daraPaise: null }),
+      millCode: r.millCode, millName: r.millName, millNameHi: r.millNameHi, jinsCode: r.jinsCode,
       stockDates: [...new Set(mine.map((x) => x.stockDate))].sort(),
       loadedGrams: mine.reduce((s, x) => s + x.weightGrams, 0),
-      parcha: parchaByLoad.get(r.l.id) ?? null,
+      parcha: p && !bills ? { ...p, grandTotalPaise: null } : p,
     };
   }));
 });
@@ -175,7 +180,10 @@ loadRoutes.get("/:id", can("load.read"), async (c) => {
   const s = await loadState(biz, param(c, "id"));
   if (!s) throw notFound("Load not found");
   const canSeeParcha = c.get("auth")!.permissions.has("parcha.read");
-  return c.json(canSeeParcha ? s : { ...s, doc: null, approved: null, history: [] });
+  if (canSeeParcha) return c.json(s);
+  // the truck and its rows, without the bill: no totals, charges or mill terms
+  const { chargeConfig: _terms, ...mill } = s.mill as typeof s.mill & { chargeConfig?: unknown };
+  return c.json({ ...s, mill, doc: null, approved: null, history: [], stale: null, load: { ...s.load, advancePaise: null, daraPaise: null } });
 });
 
 /** The mill's stock by purchase day, for picking where a row's weight comes from. */
@@ -228,6 +236,13 @@ loadRoutes.put("/:id", can("load.write"), async (c) => {
   assertDraft(before);
   const body = Header.partial().merge(Weighment.partial()).merge(ParchaFields.partial()).parse(await c.req.json());
 
+  // a truck with a parcha on record or money against it stays with its mill: moving it
+  // would credit one mill's account with another's bill or payment
+  if (body.merchantId !== undefined && body.merchantId !== before.merchantId) {
+    const [p] = await db.select({ id: schema.parchas.id }).from(schema.parchas).where(eq(schema.parchas.loadId, id)).limit(1);
+    const [r] = await db.select({ id: schema.millReceipts.id }).from(schema.millReceipts).where(eq(schema.millReceipts.loadId, id)).limit(1);
+    if (p || r) throw new HttpError(409, "This truck has a parcha on record or money received against it, so its mill cannot change. Make a new truck for the other mill.", "load_has_history");
+  }
   const touchesParcha = ["invoiceNo", "invoiceDate", "advancePaise", "daraPaise"]
     .some((k) => (body as Record<string, unknown>)[k] !== undefined);
   if (touchesParcha && !auth.permissions.has("parcha.create")) {
@@ -347,6 +362,8 @@ loadRoutes.delete("/:id", can("load.delete"), async (c) => {
   assertDraft(l);
   const [p] = await db.select({ id: schema.parchas.id }).from(schema.parchas).where(eq(schema.parchas.loadId, l.id)).limit(1);
   if (p) throw new HttpError(409, "This load has a voided parcha on record, so it is kept.", "load_has_history");
+  const [r] = await db.select({ id: schema.millReceipts.id }).from(schema.millReceipts).where(eq(schema.millReceipts.loadId, l.id)).limit(1);
+  if (r) throw new HttpError(409, "Money from the mill is recorded against this truck. Move or cancel that receipt first.", "load_has_receipts");
   await db.delete(schema.loads).where(eq(schema.loads.id, l.id));
   await audit({ actor: actor(c), action: "load.delete", entity: "load", entityId: l.id,
     entityLabel: `${l.loadDate} ${l.truckNo ?? ""}`.trim(), before: l });
@@ -385,11 +402,6 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
   if (other) {
     return c.json({ error: `Parcha #${parchaNo} is already used for another truck. Change the parcha number to the next one and approve again.`, code: "number_taken", parchaNo }, 409);
   }
-  const [last] = await db.select({ v: sql<number>`max(${schema.parchas.version})` }).from(schema.parchas)
-    .where(and(eq(schema.parchas.businessId, biz), eq(schema.parchas.parchaNo, parchaNo)));
-  const version = (last?.v ?? 0) + 1;
-  const doc: ParchaDoc = { ...s.doc, version };
-
   // with sync on, the number is claimed in the cloud first (needs the internet)
   try {
     await claimParchaNumber(biz, parchaNo, id);
@@ -399,23 +411,44 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
     return c.json({ error: msg, code, parchaNo }, 409);
   }
 
+  // the claim waited on the network: look again, and freeze only what is there now
+  const now = await loadState(biz, id);
+  if (!now || now.load.status !== "draft" || now.blockers.length || !now.doc || now.doc.invoiceNo !== parchaNo
+    || now.doc.result.grandTotalPaise !== s.doc.result.grandTotalPaise || JSON.stringify(now.doc.lines) !== JSON.stringify(s.doc.lines)) {
+    return c.json({ error: "The truck changed while the parcha number was being reserved. Check it and approve again.", code: "changed" }, 409);
+  }
+  const s2 = now;
   const pid = newId();
   const at = nowSec();
-  db.transaction((tx) => {
-    tx.insert(schema.parchas).values({
-      id: pid, businessId: biz, loadId: id, parchaNo, version,
-      invoiceDate: doc.invoiceDate,
-      snapshot: JSON.stringify(doc),
-      grandTotalPaise: doc.result.grandTotalPaise,
-      status: "approved", approvedBy: auth.user.id, approvedAt: at,
-    }).run();
-    // the stored mill figures are what stock and PO balances read: make them the billed ones
-    tx.update(schema.loads).set({
-      status: "billed", invoiceDate: doc.invoiceDate, updatedAt: at,
-      bags: s.weighment.bags, millBardanaGrams: s.weighment.bardanaGrams, millNetGrams: s.weighment.netGrams,
-    })
-      .where(eq(schema.loads.id, id)).run();
-  });
+  // one synchronous transaction: no other request runs between the check and the write
+  let frozen: { version: number; doc: ParchaDoc } | null = null;
+  try {
+    frozen = db.transaction((tx) => {
+      const last = tx.select({ v: sql<number>`max(${schema.parchas.version})` }).from(schema.parchas)
+        .where(and(eq(schema.parchas.businessId, biz), eq(schema.parchas.parchaNo, parchaNo))).get();
+      const version = (last?.v ?? 0) + 1;
+      const doc: ParchaDoc = { ...s2.doc!, version };
+      // the stored mill figures are what stock and PO balances read: make them the billed ones
+      const moved = tx.update(schema.loads).set({
+        status: "billed", invoiceDate: doc.invoiceDate, updatedAt: at,
+        bags: s2.weighment.bags, millBardanaGrams: s2.weighment.bardanaGrams, millNetGrams: s2.weighment.netGrams,
+      }).where(and(eq(schema.loads.id, id), eq(schema.loads.status, "draft"))).run();
+      if (moved.changes !== 1) return null; // approved a moment ago by another request
+      tx.insert(schema.parchas).values({
+        id: pid, businessId: biz, loadId: id, parchaNo, version,
+        invoiceDate: doc.invoiceDate,
+        snapshot: JSON.stringify(doc),
+        grandTotalPaise: doc.result.grandTotalPaise,
+        status: "approved", approvedBy: auth.user.id, approvedAt: at,
+      }).run();
+      return { version, doc };
+    });
+  } catch (e) {
+    // the one-approved-parcha-per-truck rule
+    if (!/UNIQUE/i.test(String((e as Error).message))) throw e;
+  }
+  if (!frozen) return c.json({ error: "This truck was approved a moment ago.", code: "already_approved" }, 409);
+  const { version, doc } = frozen;
   await audit({ actor: actor(c), action: "parcha.approve", entity: "parcha", entityId: pid,
     entityLabel: `Parcha ${parchaNo}${version > 1 ? ` v${version}` : ""} — ${s.mill.code} ${l.truckNo ?? ""}`.trim(),
     after: { parchaNo, version, grandTotalPaise: doc.result.grandTotalPaise, loadId: id, rows: doc.lines.length } });
@@ -453,14 +486,15 @@ parchaRoutes.get("/", can("parcha.read"), async (c) => {
     version: schema.parchas.version, invoiceDate: schema.parchas.invoiceDate,
     grandTotalPaise: schema.parchas.grandTotalPaise, status: schema.parchas.status,
     approvedAt: schema.parchas.approvedAt, voidedAt: schema.parchas.voidedAt, voidReason: schema.parchas.voidReason,
-    truckNo: schema.loads.truckNo, millCode: schema.merchants.code, millName: schema.merchants.name,
+    truckNo: schema.loads.truckNo, millCode: schema.merchants.code, millName: schema.merchants.name, millNameHi: schema.merchants.nameHi,
   })
     .from(schema.parchas)
     .innerJoin(schema.loads, eq(schema.loads.id, schema.parchas.loadId))
     .innerJoin(schema.merchants, eq(schema.merchants.id, schema.loads.merchantId))
     .where(and(...where))
     .orderBy(desc(schema.parchas.invoiceDate), desc(schema.parchas.approvedAt))
-    .limit(500);
+    // a season is a few hundred trucks; the screens total what they get, so send them all
+    .limit(20_000);
   // money the mill has sent against each truck (cancelled receipts count for nothing)
   const R = schema.millReceipts;
   const loadIds = [...new Set(rows.map((r) => r.loadId))];
@@ -520,6 +554,13 @@ parchaRoutes.post("/:id/void", can("parcha.void"), async (c) => {
       .where(eq(schema.parchas.id, id)).run();
     tx.update(schema.loads).set({ status: "draft", updatedAt: at }).where(eq(schema.loads.id, p.loadId)).run();
   });
+  // back to a draft: its stored mill figures follow today's terms again, as any draft's do
+  const again = await loadState(biz, p.loadId);
+  if (again) {
+    await db.update(schema.loads).set({
+      bags: again.weighment.bags, millBardanaGrams: again.weighment.bardanaGrams, millNetGrams: again.weighment.netGrams,
+    }).where(eq(schema.loads.id, p.loadId));
+  }
   await audit({ actor: actor(c), action: "parcha.void", entity: "parcha", entityId: id,
     entityLabel: `Parcha ${p.parchaNo}${p.version > 1 ? ` v${p.version}` : ""}`,
     before: { status: "approved" }, after: { status: "void", reason } });

@@ -61,6 +61,18 @@ challanRoutes.get("/", can("load.read"), async (c) => {
   const sum = (k: "weightGrams" | "deductionGrams" | "finalNetGrams" | "goodsPaise" | "deductionValuePaise" | "finalGoodsPaise") =>
     rows.reduce((s, r) => s + r[k], 0);
   const billed = rows.filter((r) => r.grandTotalPaise != null);
+  // the parcha's bill and what the mill owes on it are for those who may read parchas
+  if (!c.get("auth")!.permissions.has("parcha.read")) {
+    return c.json({
+      rows: rows.map((r) => ({ ...r, grandTotalPaise: null, finalTotalPaise: null })),
+      totals: {
+        trucks: rows.length, billed: billed.length,
+        weightGrams: sum("weightGrams"), deductionGrams: sum("deductionGrams"), finalNetGrams: sum("finalNetGrams"),
+        goodsPaise: sum("goodsPaise"), deductionValuePaise: sum("deductionValuePaise"), finalGoodsPaise: sum("finalGoodsPaise"),
+        grandTotalPaise: null, finalTotalPaise: null,
+      },
+    });
+  }
   return c.json({
     rows,
     totals: {

@@ -182,9 +182,12 @@ export function GeminiCard() {
   const [err, setErr] = useState<string | null>(null);
   const [test, setTest] = useState<{ ok: boolean; ms: number; error?: string; reply?: string } | null>(null);
 
+  // the server shows this card to those who set it or scan with it
+  const allowed = can("settings.write") || can("scan.create");
   const q = useQuery({
     queryKey: ["settings", "gemini"],
     queryFn: () => api.get<GeminiSettings>("/settings/gemini"),
+    enabled: allowed,
   });
 
   const [keyWarning, setKeyWarning] = useState<string | null>(null);
@@ -202,6 +205,7 @@ export function GeminiCard() {
   const sources = useQuery({
     queryKey: ["settings", "gemini", "sources"],
     queryFn: () => api.get<{ businessId: string; name: string; shortCode: string; maskedKey: string }[]>("/settings/gemini/sources"),
+    enabled: can("settings.write"),
   });
 
   const copyKey = useMutation({
@@ -216,10 +220,14 @@ export function GeminiCard() {
     onError: (e) => setTest({ ok: false, ms: 0, error: e instanceof ApiError ? e.message : "failed" }),
   });
 
-  const keyModels = useKeyModels(Boolean(q.data?.configured));
+  const keyModels = useKeyModels(allowed && Boolean(q.data?.configured));
 
+  if (!allowed) return null;
   if (q.isLoading) return <Card><div className="p-4"><SkeletonForm fields={4} /></div></Card>;
-  const g = q.data!;
+  if (q.isError || !q.data) {
+    return <Card><CardHeader title={t("settings.gemini")} /><div className="p-4"><Alert tone="bad">{q.error instanceof ApiError ? q.error.message : t("common.somethingWrong")}</Alert></div></Card>;
+  }
+  const g = q.data;
   const editable = can("settings.write");
   const choices = modelChoices(g, keyModels.data, lang);
   // a model Google does not list for this key would only fail; keep it only if it is the saved one

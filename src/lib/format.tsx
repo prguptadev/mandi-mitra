@@ -75,7 +75,8 @@ export function wordAmount(paise: number, cfg: DisplayConfig): string | null {
 export interface Formatter {
   cfg: DisplayConfig;
   /** Money from paise, with the currency symbol when enabled. */
-  money: (paise: number, opts?: { symbol?: boolean; decimals?: number }) => string;
+  /** A hidden or unknown amount (null) shows as a dash, never as ₹0.00. */
+  money: (paise: number | null | undefined, opts?: { symbol?: boolean; decimals?: number }) => string;
   /** Money with no symbol — for table columns that carry the symbol in the header. */
   amount: (paise: number, opts?: { decimals?: number }) => string;
   /** Rate per quintal, from paise. */
@@ -101,6 +102,7 @@ function build(cfg: DisplayConfig): Formatter {
     cfg,
     amount,
     money: (paise, opts) => {
+      if (paise == null) return "—";
       const body = formatNumber(paise / 100, opts?.decimals ?? cfg.moneyDecimals, cfg);
       const withSymbol = (opts?.symbol ?? true) ? symbolPrefix + body : body;
       return wrapNegative(withSymbol, paise < 0, cfg);

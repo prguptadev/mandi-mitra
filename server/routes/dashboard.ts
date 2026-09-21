@@ -5,7 +5,7 @@ import { can, bad, notFound, HttpError, type Env } from "../lib/http.ts";
 import { incoming, trucks, race, worstAhead, dayAverages, type Filter, type TruckSummary } from "../lib/tracking.ts";
 import { linesWithWeights } from "../lib/parcha.ts";
 import { dispatchedByPo, poLabel } from "./orders.ts";
-import { avgFromSums } from "../lib/money.ts";
+import { amountPaise, avgFromSums } from "../lib/money.ts";
 import { millBalances } from "./millAccounts.ts";
 import type { ParchaDoc } from "../lib/parcha.ts";
 
@@ -140,9 +140,19 @@ async function flags(biz: string, jinsId: string | null, opts: { all: TruckSumma
       const stale: FlagItem[] = [];
       for (const a of approved) {
         const doc = JSON.parse(a.snapshot) as ParchaDoc;
-        const moved = doc.lines.find((x) => !typed.some((tl) => tl.loadId === a.loadId && tl.date === x.date && tl.rate != null)
-          && avg(a.merchantId, a.jinsId, x.date) !== x.ratePaisePerQtl);
-        if (moved) stale.push({ loadId: a.loadId, parchaNo: a.parchaNo, truck: a.truckNo, mill: code(a.merchantId), date: moved.date, was: moved.ratePaisePerQtl, now: avg(a.merchantId, a.jinsId, moved.date) });
+        let moved: { date: string; was: number } | undefined;
+        if (doc.stock?.length) {
+          // each day whose average the parcha used (some row on it took the average), as it stood then
+          const used = doc.stock.filter((st) => doc.lines.some((l) => l.date === st.date && l.ratePaisePerQtl === st.avgRatePaisePerQtl));
+          const d = used.find((st) => avg(a.merchantId, a.jinsId, st.date) !== st.avgRatePaisePerQtl);
+          if (d) moved = { date: d.date, was: d.avgRatePaisePerQtl };
+        } else {
+          // older parchas: a row is typed only if a typed row on that day carries exactly its rate
+          const l = doc.lines.find((x) => !typed.some((tl) => tl.loadId === a.loadId && tl.date === x.date && tl.rate === x.ratePaisePerQtl)
+            && avg(a.merchantId, a.jinsId, x.date) !== x.ratePaisePerQtl);
+          if (l) moved = { date: l.date, was: l.ratePaisePerQtl };
+        }
+        if (moved) stale.push({ loadId: a.loadId, parchaNo: a.parchaNo, truck: a.truckNo, mill: code(a.merchantId), date: moved.date, was: moved.was, now: avg(a.merchantId, a.jinsId, moved.date) });
       }
       out.push({ code: "parcha_stale", level: "warn", items: stale });
     }
@@ -245,7 +255,14 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
     owedPaise: owed ? owedBy.get(m.merchantId)?.balancePaise ?? 0 : null,
     receivedPaise: owed ? owedBy.get(m.merchantId)?.receivedPaise ?? 0 : null,
   }));
-  return c.json({ period: { from: f.from ?? null, to: f.to ?? null }, kpis: { ...kpis, avgSalePaisePerQtl: avgSale }, mills: millsOut, flags: await flags(biz, f.jinsId ?? null, { all: allOut, canLedger: auth.permissions.has("ledger.read") }) });
+  // what was billed on parchas is for those who may read parchas
+  const bills = auth.permissions.has("parcha.read");
+  return c.json({
+    period: { from: f.from ?? null, to: f.to ?? null },
+    kpis: { ...kpis, avgSalePaisePerQtl: avgSale, billedPaise: bills ? kpis.billedPaise : null },
+    mills: millsOut.map((m) => (bills ? m : { ...m, billedPaise: null })),
+    flags: await flags(biz, f.jinsId ?? null, { all: allOut, canLedger: auth.permissions.has("ledger.read") }),
+  });
 });
 
 /** One mill: received, loaded (every truck, priced), left, and the race between them. */
@@ -253,6 +270,7 @@ dashboardRoutes.get("/mill/:id", can("stock.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const id = c.req.param("id") ?? "";
   const f = { ...filterOf(c), merchantId: id };
+  const bills = c.get("auth")!.permissions.has("parcha.read");
   const [m] = await db.select().from(schema.merchants).where(and(eq(schema.merchants.id, id), eq(schema.merchants.businessId, biz))).limit(1);
   if (!m) throw notFound("Mill not found");
   const ins = await incoming(biz, f);
@@ -277,14 +295,14 @@ dashboardRoutes.get("/mill/:id", can("stock.read"), async (c) => {
       loadedGrams: loaded,
       goodsPaise: goods,
       avgSalePaisePerQtl: loaded ? Math.floor((goods * 100_000) / loaded + 0.5) : 0,
-      billedPaise: outs.reduce((s, r) => s + (r.grandTotalPaise ?? 0), 0),
+      billedPaise: bills ? outs.reduce((s, r) => s + (r.grandTotalPaise ?? 0), 0) : null,
       trucks: outs.length,
       drafts: outs.filter((r) => r.status !== "billed").length,
       leftGrams: opening.in - opening.out + boughtNet - loaded,
     },
     series,
     worstAhead: worstAhead(series),
-    trucks: outs.sort((a, b) => b.loadDate.localeCompare(a.loadDate)),
+    trucks: outs.sort((a, b) => b.loadDate.localeCompare(a.loadDate)).map((t) => (bills ? t : { ...t, grandTotalPaise: null })),
     incoming: ins.map((r) => ({ date: r.date, slips: r.slips, netGrams: r.netGrams, grossGrams: r.grossGrams, amountPaise: r.amountPaise,
       avgPaisePerQtl: avgFromSums(r.pricedValue, r.pricedNet), unpriced: r.unpriced })).sort((a, b) => b.date.localeCompare(a.date)),
   });
@@ -348,6 +366,30 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
   const adat = parts.get("adat")?.amountPaise ?? 0;
   const listed = goods + [...parts.values()].reduce((s, p) => s + p.amountPaise, 0);
 
+  /* Goods in hand as of `to` (whatever the period and commodity): every
+     purchase day's net that no truck has taken yet, valued at that day's own
+     average rate — slips with no mill included. Trucks loaded but not yet
+     billed (drafts, of any date up to `to`) are counted at their goods value. */
+  const upTo = f.to ? [lte(S.slipDate, f.to)] : [];
+  const days = await db.select({
+    m: S.merchantId, j: S.jinsId, d: S.slipDate, net: sql<number>`sum(${S.netGrams})`,
+    pricedNet: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} else 0 end)`,
+    pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
+  }).from(S).where(and(eq(S.businessId, biz), ...upTo)).groupBy(S.merchantId, S.jinsId, S.slipDate);
+  const loadedLines = await linesWithWeights(and(eq(schema.loads.businessId, biz), ...(f.to ? [lte(schema.loads.loadDate, f.to)] : [])));
+  const dayKey = (m: string | null, j: string, d: string) => `${m ?? "-"}|${j}|${d}`;
+  const loaded = new Map<string, number>();
+  for (const l of loadedLines) loaded.set(dayKey(l.merchantId, l.jinsId, l.stockDate), (loaded.get(dayKey(l.merchantId, l.jinsId, l.stockDate)) ?? 0) + l.weightGrams);
+  let stockValue = 0, stockLeft = 0, unpricedLeft = 0;
+  for (const x of days) {
+    const left = x.net - (loaded.get(dayKey(x.m, x.j, x.d)) ?? 0);
+    if (left === 0) continue;
+    stockLeft += left;
+    if (!x.pricedNet) { unpricedLeft += left; continue; }
+    stockValue += amountPaise(left, avgFromSums(x.pricedValue, x.pricedNet));
+  }
+  const drafts = (await trucks(biz, { to: f.to })).filter((t) => t.status !== "billed");
+
   // cash that has actually moved, all time up to `to`: in from mills, out to suppliers
   const [paidAll] = await db.select({ p: sql<number>`coalesce(sum(${P.amountPaise}), 0)` }).from(P)
     .where(and(eq(P.businessId, biz), isNull(P.voidedAt), ...(f.to ? [lte(P.payDate, f.to)] : [])));
@@ -356,6 +398,10 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
   return c.json({
     period: { from: f.from ?? null, to: f.to ?? null },
     cash: { receivedFromMillsPaise: recAll.reduce((s, r) => s + r.amountPaise, 0), paidToSuppliersPaise: paidAll.p },
+    stock: {
+      valuePaise: stockValue, leftGrams: stockLeft, unpricedGrams: unpricedLeft,
+      unbilledGoodsPaise: drafts.reduce((s, t) => s + t.goodsPaise, 0), draftTrucks: drafts.length,
+    },
     suppliers: {
       openingPaise: sup[0]?.opening ?? 0,
       purchasesPaise: purchases.p, slips: purchases.n,

@@ -65,7 +65,7 @@ orderRoutes.get("/", can("po.read"), async (c) => {
   const rows = await db.select({
     po: schema.purchaseOrders,
     millCode: schema.merchants.code,
-    millName: schema.merchants.name,
+    millName: schema.merchants.name, millNameHi: schema.merchants.nameHi,
     jinsCode: schema.jins.code,
     jinsName: schema.jins.name,
     jinsNameHi: schema.jins.nameHi,

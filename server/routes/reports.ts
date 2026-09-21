@@ -148,7 +148,7 @@ stockRoutes.get("/", can("stock.read"), async (c) => {
   if (f.to) lw.push(lte(L.stockDate, f.to));
   const lines = await linesWithWeights(and(...lw));
 
-  const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code, name: schema.merchants.name })
+  const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code, name: schema.merchants.name, nameHi: schema.merchants.nameHi })
     .from(schema.merchants).where(eq(schema.merchants.businessId, biz));
   const keys = new Set<string | null>([...bought.map((b) => b.merchantId), ...lines.map((x) => x.merchantId)]);
   const out = [...keys].map((mid) => {
@@ -157,7 +157,7 @@ stockRoutes.get("/", can("stock.read"), async (c) => {
     const loaded = mine.reduce((s, x) => s + x.weightGrams, 0);
     const m = mills.find((x) => x.id === mid);
     return {
-      merchantId: mid, millCode: m?.code ?? null, millName: m?.name ?? null,
+      merchantId: mid, millCode: m?.code ?? null, millName: m?.name ?? null, millNameHi: m?.nameHi ?? null,
       slips: b?.slips ?? 0,
       boughtNet: b?.netGrams ?? 0,
       boughtAmount: b?.amountPaise ?? 0,

@@ -20,6 +20,7 @@ import { SkeletonTable, SkeletonForm } from "@/components/Skeletons.tsx";
 import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Checkbox, Textarea,
 } from "@/components/ui/index.tsx";
+import { LoadError } from "@/components/LoadError.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 import { PoProgress, poName } from "@/pages/Orders.tsx";
@@ -108,7 +109,7 @@ export function NewLoadDialog({ open, onClose, preset }: {
         <Field label={t("load.mill")} required>
           <Select value={v.merchantId} onChange={(e) => setV((p) => ({ ...p, merchantId: e.target.value, poId: "", stockDate: "" }))}>
             <option value="">{t("load.pickMill")}</option>
-            {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {m.name}</option>)}
+            {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
           </Select>
         </Field>
         <Field label={t("load.jins")} required>
@@ -146,7 +147,7 @@ export function NewLoadDialog({ open, onClose, preset }: {
 /* ------------------------------------------------------------ list */
 
 export function LoadsPage() {
-  const { t } = useI18n();
+  const { t, pick } = useI18n();
   const f = useFormat();
   const { can } = useSession();
   const [, navigate] = useLocation();
@@ -175,7 +176,8 @@ export function LoadsPage() {
     parcha: (r) => r.parcha?.parchaNo, total: (r) => r.parcha?.grandTotalPaise,
   }, { storageKey: "loads" });
   const billed = rows.filter((r) => r.parcha);
-  const totalBilled = billed.reduce((s, r) => s + (r.parcha?.grandTotalPaise ?? 0), 0);
+  // hidden from roles that may not read parchas (the server sends no totals then): a dash, not ₹0
+  const totalBilled = can("parcha.read") ? billed.reduce((s, r) => s + (r.parcha?.grandTotalPaise ?? 0), 0) : null;
 
   return (
     <div>
@@ -195,7 +197,7 @@ export function LoadsPage() {
           <Field label={t("load.mill")} className="w-52">
             <Select value={mill} onChange={(e) => setMill(e.target.value)} className="h-8 text-[13px]">
               <option value="">{t("common.all")}</option>
-              {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {m.name}</option>)}
+              {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
             </Select>
           </Field>
           <Field label={t("load.status")} className="w-40">
@@ -215,7 +217,7 @@ export function LoadsPage() {
           )}
         </div>
 
-        {loads.isPending ? <SkeletonTable rows={6} /> : !rows.length ? (
+        {loads.isPending ? <SkeletonTable rows={6} /> : loads.isError ? <LoadError error={loads.error} onRetry={() => void loads.refetch()} /> : !rows.length ? (
           <EmptyState icon={<Truck className="h-5 w-5" />} title={t("load.empty")} sub={t("load.emptySub")}
             action={can("load.write") && <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setCreating(true)}>{t("load.new")}</Button>} />
         ) : (
@@ -385,7 +387,7 @@ function PaperDialog({ doc, draft, loadId, onClose }: { doc: ParchaDoc; draft: b
 
 /** Any parcha version exactly as it was frozen — a voided one stamped VOID — to see, print or download again. */
 export function ParchaVersionDialog({ parchaId, onClose }: { parchaId: string; onClose: () => void }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const f = useFormat();
   const q = useQuery({
     queryKey: ["parcha", parchaId],
@@ -396,7 +398,7 @@ export function ParchaVersionDialog({ parchaId, onClose }: { parchaId: string; o
   return (
     <Dialog open onClose={onClose} wide
       title={v ? t(isVoid ? "parcha.viewVoid" : "parcha.previewApproved", { no: `${v.parchaNo}${v.version > 1 ? ` v${v.version}` : ""}` }) : "…"}
-      sub={isVoid ? t("parcha.voidedBecause", { why: v?.voidReason ?? "", who: v?.voidedByName ?? "", when: v?.voidedAt ? new Date(v.voidedAt * 1000).toLocaleString() : "" }) : t("parcha.previewSub")}
+      sub={isVoid ? t("parcha.voidedBecause", { why: v?.voidReason ?? "", who: v?.voidedByName ?? "", when: v?.voidedAt ? new Date(v.voidedAt * 1000).toLocaleString(lang === "hi" ? "hi-IN" : "en-IN", { dateStyle: "medium", timeStyle: "short" }) : "" }) : t("parcha.previewSub")}
       footer={<>
         <a href={`/api/parchas/${parchaId}/parcha.xlsx`} download className="mr-auto">
           <Button icon={<FileSpreadsheet className="h-4 w-4" />}>{t("parcha.excel")}</Button>
@@ -404,7 +406,7 @@ export function ParchaVersionDialog({ parchaId, onClose }: { parchaId: string; o
         <Button onClick={onClose}>{t("common.close")}</Button>
         <Button variant="primary" icon={<Printer className="h-4 w-4" />} onClick={printParcha} disabled={!v}>{t("parcha.print")}</Button>
       </>}>
-      {!v ? <SkeletonTable rows={6} /> : (
+      {q.isError ? <LoadError error={q.error} onRetry={() => void q.refetch()} /> : !v ? <SkeletonTable rows={6} /> : (
         <>
           {isVoid && <Alert tone="bad" className="mb-3">{t("parcha.voidNote", { amt: f.money(v.doc.result.grandTotalPaise) })}</Alert>}
           <div className="print-area overflow-x-auto rounded-lg border border-line bg-white">
@@ -587,7 +589,7 @@ export function LoadDetailPage({ id }: { id: string }) {
               <Field label={t("load.mill")}>
                 <select value={l.merchantId} disabled={!canEdit} className={CELL}
                   onChange={(e) => { if (confirm(t("load.confirmMill"))) commit({ merchantId: e.target.value }); }}>
-                  {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {m.name}</option>)}
+                  {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
                 </select>
               </Field>
               <Field label={t("load.transporter")}>
@@ -694,7 +696,7 @@ export function LoadDetailPage({ id }: { id: string }) {
                     {canEdit && (
                       <td className="px-1 text-right">
                         {st.lines.length > 1 && (
-                          <Button variant="ghost" size="icon" title={t("load.removeRow")} onClick={() => { setErr(null); lineDel.mutate(x.id); }}>
+                          <Button variant="ghost" size="icon" title={t("load.removeRow")} aria-label={t("load.removeRow")} disabled={lineDel.isPending} onClick={() => { setErr(null); lineDel.mutate(x.id); }}>
                             <X className="h-3.5 w-3.5" />
                           </Button>
                         )}
@@ -906,7 +908,7 @@ function VoidDialog({ parchaId, no, onClose, onDone }: { parchaId: string; no: s
 /* ------------------------------------------------------------ register */
 
 export function ParchaRegisterPage() {
-  const { t } = useI18n();
+  const { t, pick } = useI18n();
   const f = useFormat();
   const [, navigate] = useLocation();
   const [from, setFrom] = useState("");
@@ -919,7 +921,8 @@ export function ParchaRegisterPage() {
   const rows = useMemo(() => (list.data ?? []).filter((r) => showVoid || r.status === "approved"), [list.data, showVoid]);
   const approved = rows.filter((r) => r.status === "approved");
   const total = approved.reduce((s, r) => s + r.grandTotalPaise, 0);
-  const dueTotal = approved.reduce((s, r) => s + (r.duePaise ?? 0), 0);
+  // what is still to come on each bill; a bill paid over does not cut another's due (as on the mill statement)
+  const dueTotal = approved.reduce((s, r) => s + Math.max(0, r.duePaise ?? 0), 0);
   const [viewing, setViewing] = useState<string | null>(null);
   const { can } = useSession();
   const money = can("millledger.read");
@@ -941,7 +944,7 @@ export function ParchaRegisterPage() {
           </Field>
           <div className="pb-1.5"><Checkbox checked={showVoid} onChange={setShowVoid} label={t("parcha.showVoid")} /></div>
         </div>
-        {list.isPending ? <SkeletonTable rows={5} /> : !rows.length ? (
+        {list.isPending ? <SkeletonTable rows={5} /> : list.isError ? <LoadError error={list.error} onRetry={() => void list.refetch()} /> : !rows.length ? (
           <EmptyState icon={<FileText className="h-5 w-5" />} title={t("parcha.registerEmpty")} sub={t("parcha.registerEmptySub")}
             action={<Link href="/loads"><Button>{t("nav.loads")}</Button></Link>} />
         ) : (
@@ -960,7 +963,7 @@ export function ParchaRegisterPage() {
                 <Tr key={r.id} onClick={() => navigate(`/loads/${r.loadId}`)} className={cn(r.status === "void" && "opacity-60")}>
                   <Td className="font-mono font-medium">{r.parchaNo}{r.version > 1 ? ` v${r.version}` : ""}</Td>
                   <Td className="whitespace-nowrap">{r.invoiceDate ? dmy(r.invoiceDate) : "—"}</Td>
-                  <Td><Badge tone="brand" className="num">{r.millCode}</Badge> <span className="text-muted">{r.millName}</span></Td>
+                  <Td><Badge tone="brand" className="num">{r.millCode}</Badge> <span className="text-muted">{pick(r.millName, r.millNameHi)}</span></Td>
                   <Td className="font-mono">{r.truckNo ?? "—"}</Td>
                   <Td>
                     <Badge tone={r.status === "approved" ? "ok" : "bad"}>{t(`parcha.status.${r.status}`)}</Badge>

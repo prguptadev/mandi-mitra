@@ -8,10 +8,10 @@ import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import { Button, Badge } from "@/components/ui/index.tsx";
 import { cn } from "@/lib/utils.ts";
 
-export type Field = "rst" | "name" | "gross" | "katauti" | "rate";
+export type Field = "rst" | "name" | "gross" | "katauti" | "rate" | "struck";
 
-/** red = must fix before approving; amber = worth a look; null = fine */
-type Flag = { level: "bad" | "doubt"; why: string; confirmable?: boolean } | null;
+/** red = must fix before approving; amber = worth a look; null = fine. `key` is what the ✓ confirms. */
+type Flag = { level: "bad" | "doubt"; why: string; confirmable?: boolean; key?: Field } | null;
 
 const LOW = 0.75;
 
@@ -19,7 +19,8 @@ const LOW = 0.75;
  * Why a cell deserves attention. Amber is worth a look. Red blocks approval:
  * a value that is plainly wrong must be fixed; a value that only looks wrong
  * (the sheet's net disagrees, a huge weight, an unusual rate) can be accepted
- * with the ✓ beside it — or fixed, and editing counts as accepting.
+ * with the ✓ beside it. Typing a new value is not accepting it: the new value
+ * is checked again like the one that was read.
  */
 function flagFor(r: ScanRow, f: Field, t: (k: never, v?: Record<string, string | number>) => string): Flag {
   const done = (r.confirmed ?? []).includes(f);
@@ -31,16 +32,22 @@ function flagFor(r: ScanRow, f: Field, t: (k: never, v?: Record<string, string |
     if (done) return null;
     if (has("rst_missing")) return { level: "doubt", why: t("scan.fix.rstMissing" as never) };
     if (has("rst_dupe")) return { level: "doubt", why: t("issue.rst_dupe" as never, { rst: r.rstNo }) };
-    if (has("rst_exists")) return { level: "doubt", why: t("issue.rst_exists" as never, { rst: r.rstNo }) };
+    if (has("rst_exists")) return { level: "bad", why: t("issue.rst_exists" as never, { rst: r.rstNo }), confirmable: true };
     if (conf < LOW) return { level: "doubt", why: t("issue.low_confidence" as never) };
   }
   if (f === "name") {
     if (!r.chosen && !r.match) return { level: "bad", why: t("scan.fix.pickName" as never) };
-    // the printed numbering breaks here: this line's name may sit on the next line's figures
-    const br = r.issues.find((i) => i.code === "sr_gap" || i.code === "sr_repeat" || i.code === "sr_back");
-    if (!done && br) return { level: "bad", why: t(`issue.${br.code}` as never, br.params as Record<string, string | number>), confirmable: true };
+    // struck out on the paper, but put back in: only a ✓ says it really belongs
+    if (has("struck_included")) return { level: "bad", why: t("issue.struck_included" as never), confirmable: true, key: "struck" };
+    // this page may have slid (checked for the whole page, in the note above the table)
+    const slid = r.issues.find((i) => i.code === "page_slid");
+    if (slid) return { level: "bad", why: t("issue.page_slid" as never, slid.params as Record<string, string | number>) };
+    const mark = r.issues.find((i) => ["sr_gap", "sr_repeat", "sr_back", "name_only", "figures_only"].includes(i.code));
+    if (mark) return { level: "doubt", why: t(`issue.${mark.code}` as never, mark.params as Record<string, string | number>) };
     if (!done && !r.chosen && r.match?.via === "fuzzy")
       return { level: "doubt", why: t("issue.name_fuzzy" as never, { name: r.adatiRawText }) };
+    const close = r.issues.find((i) => i.code === "name_close");
+    if (!done && close) return { level: "doubt", why: t("issue.name_close" as never, close.params as Record<string, string | number>) };
   }
   if (f === "gross") {
     if (r.grossGrams === null) return { level: "bad", why: t("scan.fix.grossMissing" as never) };
@@ -48,6 +55,8 @@ function flagFor(r: ScanRow, f: Field, t: (k: never, v?: Record<string, string |
     if (!done && r.netAgrees === false)
       return { level: "bad", why: t("scan.whyGross" as never, { net: (r.ocr.netQtl ?? 0).toFixed(2) }), confirmable: true };
     if (!done && has("gross_large")) return { level: "bad", why: t("issue.gross_large" as never), confirmable: true };
+    const unchecked = r.issues.find((i) => i.code === "net_unchecked");
+    if (!done && unchecked) return { level: unchecked.level === "error" ? "bad" : "doubt", why: t("issue.net_unchecked" as never), confirmable: true };
     if (!done && has("gross_small")) return { level: "doubt", why: t("issue.gross_small" as never) };
     if (!done && conf < LOW) return { level: "doubt", why: t("issue.low_confidence" as never) };
   }
@@ -155,13 +164,14 @@ export function ScanGrid({
 
               <tr className={cn("transition-colors hover:bg-raised/30", r.excluded && "bg-raised/50 opacity-55")}>
                 <td className={cn("num border-b border-line/70 px-2 py-1 text-[11px]",
-                  r.issues.some((x) => x.code.startsWith("sr_")) ? "font-bold text-bad" : "text-faint")}
+                  r.issues.some((x) => x.code.startsWith("sr_") || x.code === "name_only" || x.code === "figures_only") ? "font-bold text-bad" : "text-faint")}
                   title={t("scan.srNoHint")}>{r.ocr.srNo ?? i + 1}</td>
 
                 <td className="border-b border-line/70 px-1 py-1">
                   <div className="relative">
+                    {!dead && <Accept flag={fl.rst} label={t("scan.acceptValue")} onAccept={() => onPatch(r.id, {}, "rst")} />}
                     <input value={r.rstNo} disabled={dead} placeholder="RST" title={fl.rst?.why}
-                      onChange={(e) => onPatch(r.id, { rstNo: e.target.value.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "") }, "rst")}
+                      onChange={(e) => onPatch(r.id, { rstNo: e.target.value.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "") })}
                       className={cn(CELL, "text-left", cellClass(fl.rst))} />
                   </div>
                 </td>
@@ -203,7 +213,7 @@ export function ScanGrid({
                         onBlurEmpty={() => setEditingName(null)}
                       />
                     )}
-                    {!dead && <Accept flag={fl.name} label={t("scan.acceptRow")} onAccept={() => onPatch(r.id, {}, "name")} />}
+                    {!dead && <Accept flag={fl.name} label={t("scan.acceptRow")} onAccept={() => onPatch(r.id, {}, fl.name?.key ?? "name")} />}
                   </div>
                 </td>
 
@@ -212,12 +222,12 @@ export function ScanGrid({
                     <NumberInput disabled={dead} title={fl.gross?.why} decimals={2}
                       className={cn(CELL, cellClass(fl.gross))}
                       value={r.grossGrams === null ? null : r.grossGrams / GRAMS_PER_QTL}
-                      onValueChange={(n) => onPatch(r.id, { grossGrams: n === null ? null : Math.round(n * GRAMS_PER_QTL) }, "gross")} />
+                      onValueChange={(n) => onPatch(r.id, { grossGrams: n === null ? null : Math.round(n * GRAMS_PER_QTL) })} />
                     {!dead && <Accept flag={fl.gross} label={t("scan.acceptValue")} onAccept={() => onPatch(r.id, {}, "gross")} />}
                     {!dead && fl.gross && r.grossSuggestGrams != null && (
                       <button type="button" title={t("scan.useSuggest", { v: (r.grossSuggestGrams / GRAMS_PER_QTL).toFixed(2) })}
                         className="mt-0.5 block w-full rounded bg-brand/10 px-1 text-right text-[10px] font-medium text-brand hover:bg-brand/20"
-                        onClick={() => onPatch(r.id, { grossGrams: r.grossSuggestGrams! }, "gross")}>
+                        onClick={() => onPatch(r.id, { grossGrams: r.grossSuggestGrams! })}>
                         → {(r.grossSuggestGrams / GRAMS_PER_QTL).toFixed(2)}
                       </button>
                     )}
@@ -230,7 +240,7 @@ export function ScanGrid({
                       className={cn(CELL, cellClass(fl.katauti), r.katautiOverride === null && !fl.katauti && "text-faint")}
                       placeholder={r.derivedKatautiUnits === null ? "" : String(r.derivedKatautiUnits)}
                       value={r.katautiOverride}
-                      onValueChange={(n) => onPatch(r.id, { katautiOverride: n }, "katauti")} />
+                      onValueChange={(n) => onPatch(r.id, { katautiOverride: n })} />
                     {!dead && <Accept flag={fl.katauti} label={t("scan.acceptValue")} onAccept={() => onPatch(r.id, {}, "katauti")} />}
                   </div>
                 </td>
@@ -250,7 +260,7 @@ export function ScanGrid({
                     <NumberInput disabled={dead || !canRate} title={fl.rate?.why} decimals={2}
                       className={cn(CELL, cellClass(fl.rate))}
                       value={r.ratePaisePerQtl === null ? null : r.ratePaisePerQtl / 100}
-                      onValueChange={(n) => onPatch(r.id, { ratePaisePerQtl: n === null ? null : Math.round(n * 100) }, "rate")} />
+                      onValueChange={(n) => onPatch(r.id, { ratePaisePerQtl: n === null ? null : Math.round(n * 100) })} />
                     {!dead && canRate && <Accept flag={fl.rate} label={t("scan.acceptValue")} onAccept={() => onPatch(r.id, {}, "rate")} />}
                   </div>
                 </td>

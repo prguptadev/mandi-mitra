@@ -293,20 +293,47 @@ console.log("\nWhole-page checks and decimal points");
 
   /* The G.R.M sheet's line 6 is crossed out. A reader that drops it and slides
      line 6's name onto line 7's figures shows up as a jump in the printed row
-     numbers (5 → 7): that row is held back until checked against the paper. */
-  const slid = s3.rows.map((r: any, i: number) => ({ ...r, confirmed: r.confirmed ?? [], ocr: { ...r.ocr, srNo: [5, 7, 8][i] } }));
-  await call("PUT", `/scans/${id2}/rows`, { rows: slid });
+     numbers (5 → 7), or as a name left over with no weight: the whole page is
+     held back until it is checked line by line against the paper. What the
+     model read is set here in the database: the screen cannot change it. */
+  const setOcr = (patch: (r: any, i: number) => Record<string, unknown>) => {
+    const cur = JSON.parse((sqlite.prepare("select parsed_rows as p from scan_batches where id = ?").get(id2) as { p: string }).p);
+    sqlite.prepare("update scan_batches set parsed_rows = ?, page_meta = ? where id = ?")
+      .run(JSON.stringify(cur.map((r: any, i: number) => ({ ...r, ocr: { ...r.ocr, ...patch(r, i) } }))),
+        JSON.stringify([{ page: 1, date: "21-09-2026", millName: "G.R.M", jins: "1509", total: 73.71 }]), id2);
+  };
+  const tamper = s3.rows.map((r: any) => ({ ...r, ocr: { ...r.ocr, grossQtl: 99 } }));
+  await call("PUT", `/scans/${id2}/rows`, { rows: tamper });
+  const kept = JSON.parse((sqlite.prepare("select parsed_rows as p from scan_batches where id = ?").get(id2) as { p: string }).p);
+  check("the model's own reading cannot be rewritten from the screen", kept.every((r: any) => r.ocr.grossQtl !== 99), true);
+
+  setOcr((_r, i) => ({ srNo: [5, 7, 8][i] }));
   const s4 = await call("GET", `/scans/${id2}`);
   const jumped = s4.rows.find((r: any) => r.ocr.srNo === 7);
-  check("a jump in the printed row numbers (5 → 7) is caught", jumped.issues.some((i: any) => i.code === "sr_gap"), true);
-  check("  ...and holds that row back", jumped.blocking, true);
-  check("  ...but not the rows around it", s4.rows.filter((r: any) => r.ocr.srNo !== 7).every((r: any) => !r.issues.some((i: any) => i.code.startsWith("sr_"))), true);
-  await call("PUT", `/scans/${id2}/rows`, { rows: s4.rows.map((r: any) => (r.ocr.srNo === 7 ? { ...r, confirmed: [...(r.confirmed ?? []), "name"] } : r)) });
-  check("checked against the paper (✓ on the name), the row is free", (await call("GET", `/scans/${id2}`)).rows.find((r: any) => r.ocr.srNo === 7).blocking, false);
-  const unnumbered = s3.rows.map((r: any) => ({ ...r, ocr: { ...r.ocr, srNo: null } }));
-  await call("PUT", `/scans/${id2}/rows`, { rows: unnumbered });
+  check("a jump in the printed row numbers (5 → 7) is caught on the row", jumped.issues.some((i: any) => i.code === "sr_gap"), true);
+  check("  ...the page is flagged to be checked line by line", s4.pageChecks.some((p: any) => p.code === "page_rows" && !p.confirmed), true);
+  check("  ...and every row on it waits", s4.rows.every((r: any) => r.blocking && r.issues.some((i: any) => i.code === "page_slid")), true);
+  check("  ...picking a name does not clear it", (await call("PUT", `/scans/${id2}/rows`, { rows: s4.rows.map((r: any) => ({ ...r, confirmed: [...(r.confirmed ?? []), "name"] })) }))
+    .rows.every((r: any) => r.issues.some((i: any) => i.code === "page_slid")), true);
+  const ok4 = await call("PUT", `/scans/${id2}/page-confirm`, { page: 1, what: "rows", on: true });
+  check("checked page 1 line by line: the rows are free", ok4.rows.every((r: any) => !r.issues.some((i: any) => i.code === "page_slid")), true);
+  check("  ...and the page note shows as checked", ok4.pageChecks.find((p: any) => p.code === "page_rows").confirmed, true);
+  await call("PUT", `/scans/${id2}/page-confirm`, { page: 1, what: "rows", on: false });
+
+  setOcr((_r, i) => ({ srNo: [1, 2, 3][i], ...(i === 2 ? { grossQtl: null, netQtl: null } : {}) }));
+  const s5 = await call("GET", `/scans/${id2}`);
+  check("a name left with no weight flags the page (rows may have slid)", s5.pageChecks.some((p: any) => p.code === "page_rows" && p.params.why === "name_only"), true);
+  setOcr((_r, i) => ({ srNo: [1, null, 3][i], ...(i === 2 ? { grossQtl: 14.85, netQtl: 14.70 } : {}) }));
+  const unnumbered = await call("GET", `/scans/${id2}`);
+  check("a row the reader gave no number does not make a gap (1, —, 3)", !unnumbered.rows.some((r: any) => r.issues.some((i: any) => i.code === "sr_gap")), true);
+  setOcr(() => ({ srNo: null }));
   const quiet = await call("GET", `/scans/${id2}`);
-  check("a page read without row numbers (an older read) raises nothing about them", quiet.pageChecks.length === 0 && quiet.rows.every((r: any) => !r.issues.some((i: any) => i.code.startsWith("sr_"))), true);
+  check("a page read without row numbers (an older read) raises nothing about them", quiet.pageChecks.length === 0 && quiet.rows.every((r: any) => !r.issues.some((i: any) => i.code.startsWith("sr_") || i.code === "page_slid")), true);
+
+  // typing a value is not accepting it: an unusual rate typed in still needs its ✓
+  const typedRate = quiet.rows.map((r: any, i: number) => (i === 0 ? { ...r, ratePaisePerQtl: 9_000_000, confirmed: (r.confirmed ?? []).filter((c: string) => c !== "rate") } : r));
+  const afterType = await call("PUT", `/scans/${id2}/rows`, { rows: typedRate });
+  check("a rate typed far out of range still blocks until ✓", afterType.rows[0].blocking && afterType.rows[0].issues.some((i: any) => i.code === "rate_range" && i.level === "error"), true);
   await call("DELETE", `/scans/${id2}`);
 }
 

@@ -6,7 +6,7 @@ import {
   ArrowRight, Trash2, RotateCcw, ScanLine, ChevronLeft, ChevronRight,
   PanelRightClose, PanelRightOpen, UserPlus, FileText,
 } from "lucide-react";
-import { api, ApiError, apiStatus, type ScanBatch, type ScanRow, type ScanIssue, type Jins, type Merchant } from "@/lib/api.ts";
+import { api, ApiError, apiStatus, type ScanBatch, type PageCheck, type ScanRow, type ScanIssue, type Jins, type Merchant } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, parseLooseNumber, GRAMS_PER_QTL } from "@/lib/format.tsx";
@@ -228,13 +228,14 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
 
   const save = useMutation({
     mutationFn: (payload: { rows: ScanRow[]; slipDate?: string | null; merchantId?: string | null; jinsId?: string | null }) =>
-      api.put<{ rows: ScanRow[]; summary: ScanBatch["summary"] }>(`/scans/${scanId}/rows`, payload),
+      api.put<{ rows: ScanRow[]; summary: ScanBatch["summary"]; pageChecks?: PageCheck[] }>(`/scans/${scanId}/rows`, payload),
     onSuccess: (resp, vars) => {
+      setErr(null); // a save that went through clears the last failure
       /* Write the server's answer straight into the cache. Clearing the draft
          and waiting for a refetch left a window where the old rows showed, and
          a click in that window was built on stale data. */
       qc.setQueryData<ScanBatch>(["scan", scanId], (old) => old ? {
-        ...old, rows: resp.rows, summary: resp.summary,
+        ...old, rows: resp.rows, summary: resp.summary, pageChecks: resp.pageChecks ?? old.pageChecks,
         ...(vars.slipDate !== undefined ? { slipDate: vars.slipDate ?? null } : {}),
         ...(vars.merchantId !== undefined ? { merchantId: vars.merchantId ?? null } : {}),
         ...(vars.jinsId !== undefined ? { jinsId: vars.jinsId ?? null } : {}),
@@ -246,13 +247,21 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   });
 
   const run = useMutation({
-    mutationFn: (model?: string) => {
-      const force = batch.data?.status === "review";
-      if (force && !confirm(t("scan.confirmReread"))) return Promise.resolve(null);
-      return api.post(`/scans/${scanId}/run`, { ...(model ? { model } : {}), ...(force ? { force: true } : {}) });
+    mutationFn: async (model?: string) => {
+      const body = model ? { model } : {};
+      try {
+        return await api.post(`/scans/${scanId}/run`, body);
+      } catch (e) {
+        // the server asks whenever a read would replace rows (and the edits on them)
+        if (e instanceof ApiError && e.code === "confirm_reread") {
+          if (!confirm(t("scan.confirmReread"))) return null;
+          return api.post(`/scans/${scanId}/run`, { ...body, force: true });
+        }
+        throw e;
+      }
     },
     onSuccess: async () => { setDraft(null); await qc.invalidateQueries({ queryKey: ["scan", scanId] }); },
-    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+    onError: (e) => setErr(e instanceof ApiError && e.code === "images_elsewhere" ? t("scan.readElsewhere") : e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
   const commit = useMutation({
@@ -269,12 +278,31 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   });
 
   const createSuppliers = useMutation({
-    mutationFn: () => api.post<{ created: number; linked: number }>(`/scans/${scanId}/create-suppliers`),
+    mutationFn: async () => {
+      // the last edits first, or the server works from rows a moment old
+      if (timer.current) {
+        clearTimeout(timer.current);
+        timer.current = null;
+        if (latest.current) await save.mutateAsync({ rows: latest.current });
+      }
+      return api.post<{ created: number; linked: number }>(`/scans/${scanId}/create-suppliers`);
+    },
     onSuccess: async (r) => {
       setDraft(null); setErr(null);
       setNotice(t("scan.suppliersCreated", { created: r.created, linked: r.linked }));
       await qc.invalidateQueries({ queryKey: ["scan", scanId] });
       await qc.invalidateQueries({ queryKey: ["adati"] });
+    },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+
+  /** "I checked this page against the paper": its rows line by line, its date, or its total. */
+  const pageConfirm = useMutation({
+    mutationFn: (o: { page: number; what: "rows" | "date" | "total"; on: boolean }) =>
+      api.put<{ rows: ScanRow[]; summary: ScanBatch["summary"]; pageChecks: PageCheck[] }>(`/scans/${scanId}/page-confirm`, o),
+    onSuccess: (resp) => {
+      qc.setQueryData<ScanBatch>(["scan", scanId], (old) => old ? { ...old, rows: resp.rows, summary: resp.summary, pageChecks: resp.pageChecks } : old);
+      setDraft(null);
     },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
@@ -300,7 +328,13 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
     timer.current = setTimeout(() => save.mutate({ rows: next }), 400);
   };
 
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  // leaving the screen within the 400 ms keeps the last edit: it is sent, not dropped
+  useEffect(() => () => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      if (latest.current) void api.put(`/scans/${scanId}/rows`, { rows: latest.current }).catch(() => undefined);
+    }
+  }, []);
   useEffect(() => {
     if (apiStatus(batch.error) === 404 && !whereis.isFetched) void whereis.refetch();
   }, [batch.error, whereis.isFetched]);
@@ -354,9 +388,9 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
     return (
       <Card className="mx-auto max-w-lg">
         <EmptyState icon={<Check className="h-8 w-8 text-ok" />}
-          title={t("scan.committed", { n: done.created, date: done.date })}
+          title={t("scan.committed", { n: done.created, date: dmyIso(done.date) })}
           sub={done.learned > 0 ? t("scan.learned", { n: done.learned }) : undefined}
-          action={<Button variant="primary" icon={<ArrowRight className="h-4 w-4" />} onClick={() => navigate("/daily")}>{t("scan.openDaily")}</Button>} />
+          action={<Button variant="primary" icon={<ArrowRight className="h-4 w-4" />} onClick={() => navigate(`/daily?date=${done.date}`)}>{t("scan.openDaily")}</Button>} />
       </Card>
     );
   }
@@ -434,6 +468,16 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
             {b.warningText && (
               <p className="max-w-sm rounded-lg border border-warn/40 bg-warn-soft px-3 py-1.5 text-[12px] text-warn">{b.warningText}</p>
             )}
+            {/* "reading", but no read is running here: it stopped, or runs on another computer */}
+            {!b.running && (
+              <div className="mt-2 max-w-sm space-y-2">
+                <p className="text-[12px] text-warn">{t("scan.notRunningHere")}</p>
+                {can("scan.create") && (
+                  <Button size="sm" variant="secondary" icon={<RotateCcw className="h-3.5 w-3.5" />} loading={run.isPending}
+                    onClick={() => { setErr(null); run.mutate(undefined); }}>{t("scan.readAgain")}</Button>
+                )}
+              </div>
+            )}
           </div>
         ) : rows.length === 0 ? (
           reading ? <div className="p-3"><SkeletonTable rows={8} cols={[{ w: "w-14" }, { w: "w-40" }, { w: "w-16", numeric: true }, { w: "w-16", numeric: true }, { w: "w-20", numeric: true }]} /></div>
@@ -460,11 +504,12 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
           )}
           <div className="flex-1" />
           <Button variant="primary" size="lg" loading={commit.isPending}
-            disabled={summary.blocking > 0 || needDate || needJins || summary.included === 0 || save.isPending}
+            disabled={summary.blocking > 0 || (summary.pagesBlocking ?? 0) > 0 || needDate || needJins || summary.included === 0 || save.isPending}
             icon={<Check className="h-4 w-4" />}
             onClick={() => { setErr(null); commit.mutate(); }}>
             {needDate ? t("scan.needDate")
               : needJins ? t("scan.needJins")
+              : (summary.pagesBlocking ?? 0) > 0 ? t("scan.checkPagesFirst", { n: summary.pagesBlocking ?? 0 })
               : summary.blocking > 0 ? t("scan.fixRedStars", { n: summary.blocking })
               : t("scan.commit")}
           </Button>
@@ -482,7 +527,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
             {!locked && (
               <>
                 <Button size="sm" variant="ghost" icon={<Trash2 className="h-3.5 w-3.5 text-bad" />}
-                  onClick={() => { if (confirm(t("scan.confirmDelete"))) remove.mutate(); }} />
+                  onClick={() => { if (confirm(t("scan.confirmDelete"))) remove.mutate(); }} title={t("common.delete")} aria-label={t("common.delete")} />
                 <Button size="sm" variant="secondary" loading={run.isPending}
                   icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => run.mutate(undefined)}>
                   {t("scan.tryAgain")}
@@ -505,7 +550,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
         <Alert tone="bad" className="mb-3">
           <p className="font-semibold">{t("scan.failedTitle")}</p>
           <p className="mt-0.5 break-words leading-relaxed">{b.errorText}</p>
-          {/^Google rejected/.test(b.errorText) && (
+          {/^Google rejected/.test(b.errorText) && can("business.read") && (
             <Button size="sm" variant="secondary" className="mt-2" onClick={() => navigate("/settings")}>{t("nav.settings")}</Button>
           )}
         </Alert>
@@ -514,15 +559,27 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
       {header}
 
       {(b.pageChecks ?? []).length > 0 && !locked && (
-        <Alert tone="warn" className="mb-3">
-          {(b.pageChecks ?? []).map((pc, i) => (
-            <p key={i} className="flex items-start gap-2">
-              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <span>{pc.code === "page_total"
-                ? t("scan.pageTotal", { page: pc.page, written: pc.params.written, net: pc.params.net, gross: pc.params.gross })
-                : t("scan.pageDate", { page: pc.page, written: dmyIso(String(pc.params.written)), scan: dmyIso(String(pc.params.scan)) })}</span>
-            </p>
-          ))}
+        <Alert tone={(b.pageChecks ?? []).some((pc) => !pc.confirmed) ? "warn" : "ok"} className="mb-3">
+          <div className="space-y-2">
+            {(b.pageChecks ?? []).map((pc) => {
+              const what = pc.code === "page_rows" ? "rows" : pc.code === "page_date" ? "date" : "total";
+              return (
+                <div key={`${pc.page}-${pc.code}`} className="flex flex-wrap items-start gap-2">
+                  {pc.confirmed ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ok" /> : <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+                  <span className={cn("min-w-0 flex-1", pc.confirmed && "text-muted")}>
+                    {pc.code === "page_rows" ? t("scan.pageRows", { page: pc.page, sr: pc.params.sr, why: t(`scan.slidWhy.${pc.params.why}` as "scan.slidWhy.name_only") })
+                      : pc.code === "page_total" ? t("scan.pageTotal", { page: pc.page, written: pc.params.written, net: pc.params.net, gross: pc.params.gross })
+                      : t("scan.pageDate", { page: pc.page, written: dmyIso(String(pc.params.written)), scan: dmyIso(String(pc.params.scan)) })}
+                  </span>
+                  <Button size="sm" variant={pc.confirmed ? "ghost" : "secondary"} loading={pageConfirm.isPending && pageConfirm.variables?.page === pc.page && pageConfirm.variables?.what === what}
+                    icon={pc.confirmed ? undefined : <Check className="h-3.5 w-3.5" />}
+                    onClick={() => { setErr(null); pageConfirm.mutate({ page: pc.page, what, on: !pc.confirmed }); }}>
+                    {pc.confirmed ? t("scan.undoChecked") : t(`scan.confirm.${what}`, { page: pc.page })}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
         </Alert>
       )}
 

@@ -61,7 +61,7 @@ export function UpdateCard() {
               <p className="num text-[11px] text-faint">{u.found.name}</p>
               {u.found.verified === false && <Alert tone="warn">{t("upd.notVerifiedHelp")}</Alert>}
               {u.desktop ? (
-                <Button variant="primary" loading={install.isPending} disabled={Boolean(installing)} icon={<Download className="h-4 w-4" />}
+                <Button variant="primary" loading={install.isPending} disabled={Boolean(installing) || u.found.verified === false} icon={<Download className="h-4 w-4" />}
                   onClick={() => { if (confirm(t("upd.confirm", { v: u.found!.version }))) install.mutate(u.found!.name); }}>
                   {t("upd.install", { v: u.found.version })}
                 </Button>

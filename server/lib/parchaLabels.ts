@@ -10,15 +10,30 @@ export interface LabelledLine {
   per?: "pct" | "bag" | "qtl" | "truck";
 }
 
-const num = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0$/, ""));
+/** Up to three decimals, no trailing zeros: 1.5, 0.125 (never rounded to 0.13). */
+const num = (n: number) => String(Number(n.toFixed(3)));
 
 export function printedLabel(l: LabelledLine): string {
   const name = l.label.toUpperCase();
   if (l.rate == null || !l.per) return name;
   if (l.per === "pct") return `${name} @ ${num(l.rate)}%`;
   const unit = l.per === "bag" ? "PER BAG" : l.per === "qtl" ? "PER QUINTAL" : "PER TRUCK";
-  const rs = l.per === "bag" && !Number.isInteger(l.rate) ? l.rate.toFixed(2) : num(l.rate);
+  // "9.50" per bag, as the paper writes paise; a finer rate keeps its digits
+  const rs = l.per === "bag" && !Number.isInteger(l.rate) && Number.isInteger(Math.round(l.rate * 1000) / 10) ? l.rate.toFixed(2) : num(l.rate);
   return `${name} @ Rs ${rs}/- ${unit}`;
+}
+
+/**
+ * What the grand-total rounding added (+) or took (−), in paise, so the paper
+ * adds up line by line: total ± advance (+ dara when it is in the total) + this.
+ */
+export function roundOffPaise(
+  r: { totalPaise?: number; advancePaise: number; daraPaise: number; grandTotalPaise: number },
+  cfg: { advance: { treatment: string }; dara: { includeInGrandTotal?: boolean } },
+): number {
+  if (r.totalPaise == null) return 0;
+  const adv = cfg.advance.treatment === "add" ? r.advancePaise : cfg.advance.treatment === "subtract" ? -r.advancePaise : 0;
+  return r.grandTotalPaise - (r.totalPaise + adv + (cfg.dara.includeInGrandTotal ? r.daraPaise : 0));
 }
 
 /** 1060695.45 -> "10,60,695.45": Indian grouping, always two decimals. */

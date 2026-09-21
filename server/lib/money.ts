@@ -30,9 +30,12 @@ export function pctPaise(basePaise: number, pct: number): number {
   return Number(divHalfUp(BigInt(basePaise) * bp, 1_000_000n));
 }
 
-/** ₹ per unit × units, in paise, without float drift (₹1.25 × 200.42 qtl = ₹250.53). */
+/**
+ * ₹ per unit × units, in paise, without float drift (₹1.25 × 200.42 qtl = ₹250.53).
+ * The rate is kept to 1/100 paise, so ₹0.125 a quintal is not first rounded to 13 paise.
+ */
 export function perUnitPaise(unitsScaled: number, scale: number, rupeesPerUnit: number): number {
-  return Number(divHalfUp(BigInt(unitsScaled) * BigInt(Math.round(rupeesPerUnit * 100)), BigInt(scale)));
+  return Number(divHalfUp(BigInt(unitsScaled) * BigInt(Math.round(rupeesPerUnit * 10_000)), BigInt(scale) * 100n));
 }
 
 /** Σ(net × rate) / Σ net, half up. Summed in BigInt: a season's worth overflows 2^53. */
@@ -48,8 +51,10 @@ export function avgFromSums(valueText: string | number | null | undefined, net: 
   return Number(divHalfUp(BigInt(String(valueText).split(".")[0]), BigInt(net)));
 }
 
+/** "310.74": to the kg, half up, in integers — the same figure the screen and the parcha show. */
 export function fmtQtl(grams: number): string {
-  return (grams / GRAMS_PER_QTL).toFixed(2);
+  const kg = Math.round(Math.abs(grams) / 1000);
+  return `${grams < 0 ? "-" : ""}${Math.floor(kg / 100)}.${String(kg % 100).padStart(2, "0")}`;
 }
 
 export function fmtINR(paise: number, opts: { paise?: boolean } = {}): string {

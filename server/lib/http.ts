@@ -49,6 +49,18 @@ export function can(...perms: string[]) {
   };
 }
 
+/** Route guard needing every one of the permissions (`can` needs any one). */
+export function canAll(...perms: string[]) {
+  return async (c: Context<Env>, next: Next) => {
+    const auth = c.get("auth");
+    if (!auth) throw new HttpError(401, "Please sign in", "no_session");
+    if (!auth.businessId) throw new HttpError(409, "No business selected", "no_business");
+    const missing = perms.filter((p) => !auth.permissions.has(p));
+    if (missing.length) throw new HttpError(403, `You do not have permission: ${missing.join(" and ")}`, "forbidden");
+    await next();
+  };
+}
+
 /** Route params are `string | undefined` in Hono; a missing one is a 400, not a cast. */
 export function param(c: Context<Env>, name: string): string {
   const v = c.req.param(name);

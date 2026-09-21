@@ -1,23 +1,30 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { sqlite, DB_PATH } from "../db/client.ts";
+import Database from "better-sqlite3";
+import { sqlite, DB_PATH, RESTORE_PENDING } from "../db/client.ts";
 
 /* Backups of the whole database (every business in it), taken with SQLite's
    own online backup, so a copy is consistent even while the app is in use.
-     auto-…           every 12 hours while the app runs (30 kept)
+     auto-…           every 12 hours while the app runs (the last 30, plus
+                      one a week for half a year)
      before-update-…  just before a database update is applied (20 kept)
      manual-…         "Back up now" (20 kept)
+   Each is written under a temporary name, checked, then renamed: a file with
+   a backup's name is always a whole, readable database.
    With a second folder set — a pen drive, or a Google Drive / OneDrive folder
-   that syncs itself — every backup is copied there too.
+   that syncs itself — every backup is copied there too, into a sub-folder
+   named after this computer (two computers sharing one Drive folder never
+   prune each other's copies).
    The settings live in a small file next to the database, not inside it:
    restoring an old backup must not change where backups go. */
 
 const DATA_DIR = path.dirname(DB_PATH);
 export const BACKUP_DIR = path.join(DATA_DIR, "backups");
 const CFG_PATH = path.join(DATA_DIR, "backup.json");
-const KEEP = { auto: 30, "before-update": 20, manual: 20 } as const;
+const KEEP = { auto: 30, "before-update": 20, manual: 20, "before-restore": 10 } as const;
 export type BackupKind = keyof typeof KEEP;
-export const BACKUP_NAME = /^(auto|before-update|manual)-\d{8}-\d{6}\.db$/;
+export const BACKUP_NAME = /^(auto|before-update|manual|before-restore)-\d{8}-\d{6}\.db$/;
 
 export interface BackupConfig { folder: string | null; lastAt: string | null; lastError: string | null; copiedAt: string | null }
 
@@ -38,11 +45,38 @@ const stamp = (d = new Date()) => {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 };
 
-/** Keep the newest `keep` backups of one kind in a folder; delete older ones of that kind only. */
-function prune(dir: string, kind: BackupKind) {
-  const mine = fs.readdirSync(dir).filter((f) => BACKUP_NAME.test(f) && f.startsWith(`${kind}-`)).sort();
-  for (const f of mine.slice(0, Math.max(0, mine.length - KEEP[kind]))) fs.rmSync(path.join(dir, f), { force: true });
+const WEEKS_KEPT = 26;
+/**
+ * Keep the newest backups of one kind in a folder, delete older ones of that
+ * kind only — never `keepAlso` (the one just made, even if the PC clock went
+ * back and it sorts oldest). Automatic backups past the newest 30 keep one a
+ * week for half a year.
+ */
+function prune(dir: string, kind: BackupKind, keepAlso?: string) {
+  const mine = fs.readdirSync(dir).filter((f) => BACKUP_NAME.test(f) && f.startsWith(`${kind}-`) && f !== keepAlso).sort();
+  const old = mine.slice(0, Math.max(0, mine.length - KEEP[kind]));
+  const weekly = new Set<string>();
+  if (kind === "auto") {
+    const seen = new Set<string>();
+    for (const f of [...old].reverse()) {
+      const d = f.match(/(\d{4})(\d{2})(\d{2})-/);
+      if (!d) continue;
+      const week = Math.floor(Date.UTC(+d[1], +d[2] - 1, +d[3]) / (7 * 86400_000));
+      if (!seen.has(String(week)) && seen.size < WEEKS_KEPT) { seen.add(String(week)); weekly.add(f); }
+    }
+  }
+  for (const f of old) if (!weekly.has(f)) fs.rmSync(path.join(dir, f), { force: true });
 }
+
+/** A copy is only kept if SQLite can read it through. */
+function verify(file: string) {
+  const d = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    const r = d.pragma("quick_check", { simple: true });
+    if (r !== "ok") throw new Error(`the copy is damaged (${String(r).slice(0, 80)})`);
+  } finally { d.close(); }
+}
+const hostDir = () => os.hostname().replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40) || "this-computer";
 
 /** A second folder must exist and take a file; says why not in plain words. */
 export function checkFolder(folder: string): string | null {
@@ -63,8 +97,16 @@ export async function backupNow(kind: BackupKind) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
   const name = `${kind}-${stamp()}.db`;
   const file = path.join(BACKUP_DIR, name);
-  await sqlite.backup(file);
-  prune(BACKUP_DIR, kind);
+  const tmp = `${file}.tmp`;
+  try {
+    await sqlite.backup(tmp);
+    verify(tmp);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+  prune(BACKUP_DIR, kind, name);
   const c = readBackupConfig();
   let copiedAt = c.copiedAt;
   let lastError: string | null = null;
@@ -73,10 +115,11 @@ export async function backupNow(kind: BackupKind) {
     if (problem) lastError = `Could not copy to ${c.folder}: ${problem}`;
     else {
       try {
-        const out = path.join(c.folder, "MandiMitra-backups");
+        const out = path.join(c.folder, "MandiMitra-backups", hostDir());
         fs.mkdirSync(out, { recursive: true });
-        fs.copyFileSync(file, path.join(out, name));
-        prune(out, kind);
+        fs.copyFileSync(file, path.join(out, `${name}.tmp`));
+        fs.renameSync(path.join(out, `${name}.tmp`), path.join(out, name));
+        prune(out, kind, name);
         copiedAt = new Date().toISOString();
       } catch (e) {
         lastError = `Could not copy to ${c.folder}: ${e instanceof Error ? e.message : "failed"}`;
@@ -89,24 +132,36 @@ export async function backupNow(kind: BackupKind) {
 
 export function listBackups() {
   if (!fs.existsSync(BACKUP_DIR)) return [];
-  return fs.readdirSync(BACKUP_DIR).filter((f) => BACKUP_NAME.test(f)).map((f) => {
-    const st = fs.statSync(path.join(BACKUP_DIR, f));
-    return { name: f, kind: f.split("-").slice(0, -2).join("-") as BackupKind, bytes: st.size, at: st.mtime.toISOString() };
+  return fs.readdirSync(BACKUP_DIR).filter((f) => BACKUP_NAME.test(f)).flatMap((f) => {
+    try {
+      const st = fs.statSync(path.join(BACKUP_DIR, f));
+      return [{ name: f, kind: f.split("-").slice(0, -2).join("-") as BackupKind, bytes: st.size, at: st.mtime.toISOString() }];
+    } catch { return []; } // pruned a moment ago
   }).sort((a, b) => b.at.localeCompare(a.at));
 }
 
 /**
- * A copy of the database file just before an update changes its tables.
- * Runs at start-up, before anything else touches the database, so a plain
- * file copy after a checkpoint is consistent.
+ * A copy of the database just before an update changes its tables. Runs at
+ * start-up, before anything else touches the database. VACUUM INTO writes a
+ * whole, consistent copy (WAL included); it is checked before it counts.
+ * Throws if no good copy could be made: the update must not go ahead then.
  */
 export function backupBeforeUpdate() {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
-  sqlite.pragma("wal_checkpoint(TRUNCATE)");
   const name = `before-update-${stamp()}.db`;
-  fs.copyFileSync(DB_PATH, path.join(BACKUP_DIR, name));
-  prune(BACKUP_DIR, "before-update");
-  return name;
+  const file = path.join(BACKUP_DIR, name);
+  const tmp = `${file}.tmp`;
+  fs.rmSync(tmp, { force: true });
+  try {
+    sqlite.prepare("vacuum into ?").run(tmp);
+    verify(tmp);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+  prune(BACKUP_DIR, "before-update", name);
+  return file;
 }
 
 let timer: NodeJS.Timeout | null = null;
@@ -116,7 +171,9 @@ export function startAutoBackups() {
   const tick = async () => {
     try {
       const last = listBackups().find((b) => b.kind === "auto");
-      if (!last || Date.now() - new Date(last.at).getTime() > 12 * 3600_000) await backupNow("auto");
+      const age = last ? Date.now() - new Date(last.at).getTime() : Infinity;
+      // a "future" backup means the PC clock went back: take one anyway
+      if (age > 12 * 3600_000 || age < 0) await backupNow("auto");
     } catch (e) {
       const c = readBackupConfig();
       writeBackupConfig({ ...c, lastError: e instanceof Error ? e.message : "Backup failed" });
@@ -125,4 +182,21 @@ export function startAutoBackups() {
   setTimeout(() => void tick(), 60_000).unref();
   timer = setInterval(() => void tick(), 3600_000);
   timer.unref();
+}
+
+/**
+ * Puts a backup back: checked now, carried out at the next start (before the
+ * database is opened; see db/client.ts). The desktop app restarts itself.
+ */
+export function scheduleRestore(name: string, migrationsHere: number) {
+  if (!BACKUP_NAME.test(name)) throw new Error("Not a backup file");
+  const file = path.join(BACKUP_DIR, name);
+  if (!fs.existsSync(file)) throw new Error("That backup is no longer there");
+  verify(file);
+  const d = new Database(file, { readonly: true });
+  let theirs = 0;
+  try { theirs = (d.prepare("select count(*) as n from __drizzle_migrations").get() as { n: number }).n; } catch { /* very old */ } finally { d.close(); }
+  if (theirs > migrationsHere) throw new Error("That backup was made by a newer Mandi Mitra. Install that version first.");
+  fs.writeFileSync(RESTORE_PENDING, JSON.stringify({ file, at: new Date().toISOString() }));
+  return { name };
 }

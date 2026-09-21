@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { eq, and, like, or, desc, asc, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
@@ -6,7 +6,16 @@ import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { toHinglish, normKey, similarity, canonicalFirm } from "../lib/translit.ts";
 import { toDevanagari, looksLatin, hasLatin } from "../lib/devanagari.ts";
-import { param, can, actor, notFound, bad, type Env } from "../lib/http.ts";
+import { param, can, actor, notFound, bad, HttpError, type Env } from "../lib/http.ts";
+
+/** A supplier's opening balance is money: shown to those who see the ledger or payments. */
+const seesMoney = (c: Context<Env>) => { const p = c.get("auth")!.permissions; return p.has("ledger.read") || p.has("payment.read"); };
+/** An opening balance is money owed: setting it needs the right to record payments. */
+function assertMoneyAllowed(c: Context<Env>, changing: boolean) {
+  if (changing && !c.get("auth")!.permissions.has("payment.write")) {
+    throw new HttpError(403, "You cannot set a supplier's opening balance (it needs the payments permission)", "forbidden");
+  }
+}
 
 export const adatiRoutes = new Hono<Env>();
 
@@ -51,7 +60,8 @@ adatiRoutes.get("/", can("adati.read"), async (c) => {
     .groupBy(schema.adatiAliases.adatiId);
   const cmap = new Map(counts.map((r) => [r.adatiId, r.n]));
 
-  return c.json(rows.map((r) => ({ ...r, aliasCount: cmap.get(r.id) ?? 0 })));
+  const money = seesMoney(c);
+  return c.json(rows.map((r) => ({ ...r, openingBalancePaise: money ? r.openingBalancePaise : null, aliasCount: cmap.get(r.id) ?? 0 })));
 });
 
 /**
@@ -156,7 +166,7 @@ adatiRoutes.get("/:id", can("adati.read"), async (c) => {
   if (!row) throw notFound("Supplier not found");
   const aliases = await db.select().from(schema.adatiAliases)
     .where(eq(schema.adatiAliases.adatiId, row.id)).orderBy(desc(schema.adatiAliases.hits));
-  return c.json({ ...row, aliases });
+  return c.json({ ...row, openingBalancePaise: seesMoney(c) ? row.openingBalancePaise : null, aliases });
 });
 
 adatiRoutes.post("/", can("adati.write"), async (c) => {
@@ -167,6 +177,7 @@ adatiRoutes.post("/", can("adati.write"), async (c) => {
     .where(and(eq(schema.adati.businessId, biz), eq(schema.adati.nameHi, body.nameHi))).limit(1);
   if (dupe) throw bad("A supplier with that Hindi name already exists", "duplicate");
 
+  assertMoneyAllowed(c, Math.round((body.openingBalanceRupees ?? 0) * 100) !== 0);
   const id = newId();
   const values = {
     id, businessId: biz,
@@ -222,7 +233,10 @@ adatiRoutes.put("/:id", can("adati.write"), async (c) => {
   for (const k of ["firmSuffix", "village", "villageHi", "phone", "accountNo", "ifsc", "notes"] as const) {
     if (body[k] !== undefined) patch[k] = body[k] || null;
   }
-  if (body.openingBalanceRupees !== undefined) patch.openingBalancePaise = Math.round(body.openingBalanceRupees * 100);
+  if (body.openingBalanceRupees !== undefined) {
+    assertMoneyAllowed(c, Math.round(body.openingBalanceRupees * 100) !== before.openingBalancePaise);
+    patch.openingBalancePaise = Math.round(body.openingBalanceRupees * 100);
+  }
   if (body.active !== undefined) patch.active = body.active;
 
   await db.update(schema.adati).set(patch).where(eq(schema.adati.id, id));

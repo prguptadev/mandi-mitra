@@ -15,7 +15,8 @@ const net = require("node:net");
 const { pathToFileURL } = require("node:url");
 
 const smoke = process.argv.includes("--smoke-test");
-if (!smoke && !app.requestSingleInstanceLock()) app.quit();
+// a second copy only brings the first one forward; it never opens the database
+if (!smoke && !app.requestSingleInstanceLock()) app.exit(0);
 // the taskbar groups and labels the app by this id (matches electron-builder's appId)
 if (process.platform === "win32") app.setAppUserModelId("in.vijaylaxmi.mandimitra");
 
@@ -75,6 +76,14 @@ async function waitFor(url, ms) {
 let win = null;
 app.on("second-instance", () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.on("window-all-closed", () => app.quit());
+// write everything into the database file and close it, so no change waits in the side (-wal) file
+app.on("will-quit", () => { try { globalThis.__mandiShutdown?.(); } catch { /* closed already */ } });
+// "Restore a backup" finishes on a fresh start, before the database is opened
+globalThis.__mandiRelaunch = () => {
+  try { globalThis.__mandiShutdown?.(); } catch { /* closed already */ }
+  app.relaunch();
+  app.exit(0);
+};
 
 app.whenReady().then(async () => {
   // the splash first, and painted, before the database work holds up this process
@@ -91,7 +100,7 @@ app.whenReady().then(async () => {
   } catch (e) {
     if (smoke) { console.error("SMOKE FAIL start", e); app.exit(1); return; }
     await status(splash && splash.s, "Mandi Mitra could not start.", true);
-    dialog.showErrorBox("Mandi Mitra could not start", String(e && e.stack || e));
+    dialog.showErrorBox("Mandi Mitra could not start", (e && e.message) ? `${e.message}\n\n${e.stack || ""}` : String(e));
     app.quit();
     return;
   }
@@ -134,13 +143,16 @@ app.whenReady().then(async () => {
     if (splash && !splash.s.isDestroyed()) splash.s.destroy();
   });
   win.webContents.on("did-fail-load", () => status(splash && splash.s, "The screens did not load. Close the app and open it again.", true));
-  // links to outside sites (AI Studio, Google's limits page) open in the normal browser
+  // only the app's own pages load in its window; web links (AI Studio, Google's
+  // limits page) open in the normal browser, and nothing else is opened at all
+  const ours = (url) => { try { return new URL(url).origin === base; } catch { return false; } };
+  const outside = (url) => { try { if (new URL(url).protocol === "https:") shell.openExternal(url); } catch { /* not a URL */ } };
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(base)) shell.openExternal(url);
+    if (!ours(url)) outside(url);
     return { action: "deny" };
   });
   win.webContents.on("will-navigate", (e, url) => {
-    if (!url.startsWith(base)) { e.preventDefault(); shell.openExternal(url); }
+    if (!ours(url)) { e.preventDefault(); outside(url); }
   });
   await win.loadURL(`${base}/`);
 });

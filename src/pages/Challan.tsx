@@ -11,7 +11,8 @@ import { PageHeader } from "@/components/AppShell.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { NumCell } from "@/pages/Loads.tsx";
 import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select, Table, Td, Th, Tr } from "@/components/ui/index.tsx";
-import { cn } from "@/lib/utils.ts";
+import { LoadError } from "@/components/LoadError.tsx";
+import { cn, fmtQtl } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* The challan register: every truck with its full details, and the weight
@@ -96,7 +97,7 @@ export function ChallanPage() {
 
   const download = () => {
     const esc = (v: unknown) => { const x = String(v ?? ""); return /[",\n]/.test(x) ? `"${x.replaceAll('"', '""')}"` : x; };
-    const q2 = (g: number | null) => (g == null ? "" : (g / GRAMS_PER_QTL).toFixed(2));
+    const q2 = (g: number | null) => (g == null ? "" : fmtQtl(g));
     const rs = (p: number | null) => (p == null ? "" : (p / 100).toFixed(2));
     const lines = [
       ["Date", "Truck", "Mill", "Commodity", "Mill gross qtl", "Loaded qtl", "Rate", "Goods value", "Cut qtl", "Cut reason", "Final qtl", "Cut value", "Final value", "Parcha", "Grand total", "Final bill"],
@@ -143,7 +144,7 @@ export function ChallanPage() {
             <Button size="sm" variant="ghost" className="mb-0.5" onClick={() => { setMerchantId(""); setJinsId(""); setFrom(""); setTo(""); setQ(""); }}>{t("ch.clear")}</Button>
           )}
         </div>
-        {list.isPending ? <SkeletonTable rows={6} /> : !rows.length ? (
+        {list.isPending ? <SkeletonTable rows={6} /> : list.isError ? <LoadError error={list.error} onRetry={() => void list.refetch()} /> : !rows.length ? (
           <EmptyState icon={<ClipboardCheck className="h-5 w-5" />} title={t("ch.empty")} sub={t("ch.emptySub")} />
         ) : (
           <div className="overflow-x-auto">

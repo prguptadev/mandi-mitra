@@ -15,7 +15,8 @@ import { useSort } from "@/lib/useSort.ts";
 import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Textarea, Checkbox,
 } from "@/components/ui/index.tsx";
-import { cn, todayISO } from "@/lib/utils.ts";
+import { LoadError } from "@/components/LoadError.tsx";
+import { cn, todayISO, fmtQtl } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* Supplier ledger and payments. What is owed to a supplier is always
@@ -224,13 +225,13 @@ export function LedgerPage() {
       ...s.entries.map((e) => [
         dmy(e.date),
         e.kind === "purchase" ? `RST ${e.rstNo} · ${e.jinsCode}${e.millCode ? ` · ${e.millCode}` : ""}` : `Payment · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
-        e.netGrams != null ? (e.netGrams / 100_000).toFixed(2) : "",
+        e.netGrams != null ? fmtQtl(e.netGrams) : "",
         e.ratePaisePerQtl ? (e.ratePaisePerQtl / 100).toFixed(2) : "",
         e.creditPaise ? (e.creditPaise / 100).toFixed(2) : "",
         e.debitPaise ? (e.debitPaise / 100).toFixed(2) : "",
         (e.balancePaise / 100).toFixed(2),
       ]),
-      ["", "Total", (s.totals.netGrams / 100_000).toFixed(2), "", (s.totals.purchasesPaise / 100).toFixed(2), (s.totals.paymentsPaise / 100).toFixed(2), (s.totals.closingPaise / 100).toFixed(2)],
+      ["", "Total", fmtQtl(s.totals.netGrams), "", (s.totals.purchasesPaise / 100).toFixed(2), (s.totals.paymentsPaise / 100).toFixed(2), (s.totals.closingPaise / 100).toFixed(2)],
     ];
     save(csvOf(lines), `ledger-${(s.supplier.nameHinglish || "supplier").replace(/\s+/g, "-")}${s.from ? `-${s.from}` : ""}${s.to ? `-to-${s.to}` : ""}.csv`);
   };
@@ -275,7 +276,7 @@ export function LedgerPage() {
               <option value="slips">{t("ledger.sortSlips")}</option>
             </Select>
           </div>
-          {list.isPending ? <SkeletonTable rows={8} /> : !rows.length ? (
+          {list.isPending ? <SkeletonTable rows={8} /> : list.isError ? <LoadError error={list.error} onRetry={() => void list.refetch()} /> : !rows.length ? (
             <EmptyState icon={<BookOpen className="h-5 w-5" />} title={t("ledger.empty")} />
           ) : (
             <div className="max-h-[40vh] divide-y divide-line overflow-y-auto xl:max-h-[70vh]">
@@ -458,7 +459,7 @@ export function PaymentsPage() {
   if (adati) qs.set("adatiId", adati);
   const list = useQuery({
     queryKey: ["payments", qs.toString()],
-    queryFn: () => api.get<{ rows: PaymentRow[]; totals: { count: number; amountPaise: number; byMode: Record<Mode, number> } }>(`/payments?${qs}`),
+    queryFn: () => api.get<{ rows: PaymentRow[]; truncated?: boolean; totals: { count: number; amountPaise: number; byMode: Record<Mode, number> } }>(`/payments?${qs}`),
   });
   const del = useMutation({
     mutationFn: ({ id, reason }: { id: string; reason: string }) => api.post(`/payments/${id}/void`, { reason }),
@@ -497,7 +498,7 @@ export function PaymentsPage() {
           </Field>
           <div className="pb-1.5"><Checkbox checked={showVoid} onChange={setShowVoid} label={t("money.showCancelled")} /></div>
         </div>
-        {list.isPending ? <SkeletonTable rows={6} /> : !rows.length ? (
+        {list.isPending ? <SkeletonTable rows={6} /> : list.isError ? <LoadError error={list.error} onRetry={() => void list.refetch()} /> : !rows.length ? (
           <EmptyState icon={<Wallet className="h-5 w-5" />} title={t("pay.empty")} sub={t("pay.emptySub")}
             action={can("payment.write") && <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setPaying({})}>{t("pay.add")}</Button>} />
         ) : (
@@ -547,6 +548,7 @@ export function PaymentsPage() {
             </tfoot>
           </Table>
         )}
+        {list.data?.truncated && <p className="border-t border-line px-3 py-2 text-[11px] text-faint">{t("common.truncated", { n: list.data.rows.length })}</p>}
       </Card>
       {paying && <PaymentDialog onClose={() => setPaying(null)} editing={paying.editing ?? null} adatiId={adati ?? undefined} />}
       {voiding && (

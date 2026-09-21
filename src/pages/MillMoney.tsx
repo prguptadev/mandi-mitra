@@ -14,7 +14,8 @@ import { ReasonDialog } from "@/components/ReasonDialog.tsx";
 import {
   Alert, Badge, Button, Card, CardHeader, Checkbox, Dialog, EmptyState, Field, Input, Select, Table, Tabs, Td, Textarea, Th, Tr,
 } from "@/components/ui/index.tsx";
-import { cn, todayISO } from "@/lib/utils.ts";
+import { LoadError } from "@/components/LoadError.tsx";
+import { cn, todayISO, fmtQtl } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* The mill side of the money. What a mill owes us is always
@@ -232,7 +233,7 @@ export function MillLedgerPage() {
         tabs={[{ value: "balances", label: t("mm.tabBalances") }, { value: "receipts", label: t("mm.tabReceipts") }]} />
       {tab === "balances" ? (
         <Card>
-          {list.isPending ? <SkeletonTable rows={5} /> : !rows.length ? (
+          {list.isPending ? <SkeletonTable rows={5} /> : list.isError ? <LoadError error={list.error} onRetry={() => void list.refetch()} /> : !rows.length ? (
             <EmptyState icon={<Landmark className="h-5 w-5" />} title={t("mm.empty")} sub={t("mm.emptySub")} />
           ) : (
             <Table>
@@ -289,7 +290,7 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
   if (showVoid) qs.set("showVoid", "1");
   const list = useQuery({
     queryKey: ["mill-receipts", qs.toString()],
-    queryFn: () => api.get<{ rows: ReceiptRow[]; totals: { count: number; amountPaise: number; deductionPaise: number } }>(`/mill-receipts?${qs}`),
+    queryFn: () => api.get<{ rows: ReceiptRow[]; truncated?: boolean; totals: { count: number; amountPaise: number; deductionPaise: number } }>(`/mill-receipts?${qs}`),
   });
   const voidIt = useMutation({
     mutationFn: ({ id, reason }: { id: string; reason: string }) => api.post(`/mill-receipts/${id}/void`, { reason }),
@@ -310,7 +311,7 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
         <div className="pb-1.5"><Checkbox checked={showVoid} onChange={setShowVoid} label={t("money.showCancelled")} /></div>
       </div>
       {err && <Alert tone="bad" className="m-3">{err}</Alert>}
-      {list.isPending ? <SkeletonTable rows={5} /> : !rows.length ? (
+      {list.isPending ? <SkeletonTable rows={5} /> : list.isError ? <LoadError error={list.error} onRetry={() => void list.refetch()} /> : !rows.length ? (
         <EmptyState icon={<Landmark className="h-5 w-5" />} title={t("mm.noReceipts")} />
       ) : (
         <Table>
@@ -343,7 +344,7 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
                   {r.voidedAt ? <Badge tone="bad">{t("money.cancelled")}</Badge> : can("millreceipt.write") && (
                     <>
                       <Button variant="ghost" size="icon" title={t("common.edit")} onClick={() => setEditing(r)}><Pencil className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="icon" title={t("money.cancel")} onClick={() => setVoiding(r)}><Ban className="h-3.5 w-3.5 text-bad" /></Button>
+                      <Button variant="ghost" size="icon" title={t("money.cancel")} onClick={() => { setErr(null); setVoiding(r); }}><Ban className="h-3.5 w-3.5 text-bad" /></Button>
                     </>
                   )}
                 </Td>
@@ -360,6 +361,7 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
           </tfoot>
         </Table>
       )}
+      {list.data?.truncated && <p className="border-t border-line px-3 py-2 text-[11px] text-faint">{t("common.truncated", { n: list.data.rows.length })}</p>}
       {editing && <ReceiptDialog onClose={() => setEditing(null)} editing={editing} />}
       {voiding && (
         <ReasonDialog title={t("mm.cancelTitle", { amt: f.money(voiding.amountPaise + voiding.deductionPaise) })} sub={t("mm.cancelSub")}
@@ -417,9 +419,9 @@ export function MillStatementPage({ id }: { id: string }) {
       ...s.entries.map((e) => [
         dmy(e.date),
         e.kind === "parcha" ? `Parcha #${e.parchaNo}${e.truckNo ? ` · ${e.truckNo}` : ""}`
-          : e.kind === "shortage" ? `Mill cut on #${e.parchaNo} · ${((e.deductionGrams ?? 0) / 100_000).toFixed(2)} qtl${e.deductionNote ? ` · ${e.deductionNote}` : ""}`
+          : e.kind === "shortage" ? `Mill cut on #${e.parchaNo} · ${fmtQtl(e.deductionGrams ?? 0)} qtl${e.deductionNote ? ` · ${e.deductionNote}` : ""}`
           : `Receipt · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.parchaNo ? ` · for #${e.parchaNo}` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
-        e.netGrams != null ? (e.netGrams / 100_000).toFixed(2) : "",
+        e.netGrams != null ? fmtQtl(e.netGrams) : "",
         e.debitPaise ? (e.debitPaise / 100).toFixed(2) : "",
         e.kind === "receipt" && !e.voided ? ((e.amountPaise ?? 0) / 100).toFixed(2) : "",
         e.kind === "receipt" && !e.voided && e.deductionPaise ? (e.deductionPaise / 100).toFixed(2) : e.kind === "shortage" ? (e.creditPaise / 100).toFixed(2) : "",
@@ -522,7 +524,7 @@ export function MillStatementPage({ id }: { id: string }) {
                         {e.kind === "receipt" && !e.voided && can("millreceipt.write") && (
                           <>
                             <Button variant="ghost" size="icon" title={t("common.edit")} onClick={() => setReceiving({ editing: asRow(e) })}><Pencil className="h-3.5 w-3.5" /></Button>
-                            <Button variant="ghost" size="icon" title={t("money.cancel")} onClick={() => setVoiding(e)}><Ban className="h-3.5 w-3.5 text-bad" /></Button>
+                            <Button variant="ghost" size="icon" title={t("money.cancel")} onClick={() => { setErr(null); setVoiding(e); }}><Ban className="h-3.5 w-3.5 text-bad" /></Button>
                           </>
                         )}
                         {e.voided && <Badge tone="bad">{t("money.cancelled")}</Badge>}

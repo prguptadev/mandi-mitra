@@ -96,14 +96,32 @@ export async function checkForUpdate() {
   };
 }
 
-/** Backs up, starts the installer quietly, and closes the app for it. */
+/**
+ * Backs up, starts the installer quietly, and closes the app for it. Only an
+ * installer whose fingerprint matches the one GitHub published runs: it is
+ * copied aside first and the copy is checked and run, so the file cannot be
+ * swapped between the check and the start.
+ */
 export async function installUpdate(name: string) {
   if (!isDesktop() || process.platform !== "win32") throw new Error("Updates are installed from the Windows app.");
   const found = findInstaller();
   if (!found || found.name !== name) throw new Error("That installer is no longer in the folder, or is not newer than this version.");
+  const gh = await githubReleases();
+  if (!gh) throw new Error("The installer can only be checked against GitHub with the internet on. Connect and press Install again.");
+  const want = gh.digests.get(found.name.toLowerCase());
+  if (!want) throw new Error(`GitHub has no ${found.name} to check this file against. Download it again from the Releases page.`);
+  const copy = path.join(os.tmpdir(), `MandiMitra-Setup-${found.version}-${crypto.randomBytes(4).toString("hex")}.exe`);
+  fs.copyFileSync(found.file, copy);
+  if (sha256(copy) !== want) {
+    fs.rmSync(copy, { force: true });
+    throw new Error(`${found.name} is not the file GitHub published (damaged or changed). Delete it and download it again from the Releases page.`);
+  }
   await backupNow("before-update");
   // /S = no questions; --force-run = open the new version when it is done
-  spawn(found.file, ["/S", "--force-run"], { detached: true, stdio: "ignore", windowsHide: false }).unref();
-  setTimeout(() => process.exit(0), 1500);
+  spawn(copy, ["/S", "--force-run"], { detached: true, stdio: "ignore", windowsHide: false }).unref();
+  setTimeout(() => {
+    (globalThis as { __mandiShutdown?: () => void }).__mandiShutdown?.();
+    process.exit(0);
+  }, 1500);
   return { installing: found.version };
 }

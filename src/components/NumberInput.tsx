@@ -27,7 +27,7 @@ export const NumberInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
   onValueChange: (n: number | null) => void;
   /** Digits after the point when not being edited. Omit to show as-is. */
   decimals?: number;
-  /** Integers only: the decimal point is not accepted. */
+  /** Whole numbers only: anything after a decimal point is dropped ("50.00" pasted is 50, never 5000). */
   integer?: boolean;
   allowNegative?: boolean;
   /** What an emptied field means. Defaults to null. */
@@ -61,6 +61,7 @@ export const NumberInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
         let raw = e.target.value;
         // keep what a person can legitimately be halfway through typing
         raw = raw.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d)));
+        if (integer && raw.includes(".")) raw = raw.slice(0, raw.indexOf("."));
         raw = raw.replace(integer ? /[^\d,-]/g : /[^\d.,-]/g, "");
         if (!allowNegative) raw = raw.replace(/-/g, "");
         else raw = raw.replace(/(?!^)-/g, "");
@@ -72,7 +73,8 @@ export const NumberInput = forwardRef<HTMLInputElement, Omit<InputHTMLAttributes
         }
         setText(raw);
         const n = raw.trim() === "" || raw === "." || raw === "-" ? emptyValue : parseLooseNumber(raw);
-        onValueChange(n === null ? emptyValue : integer && n !== null ? Math.trunc(n) : n);
+        // the parent gets the value as it will be stored (315.305 qtl → 315.31), not a finer one
+        onValueChange(n === null ? emptyValue : integer ? Math.trunc(n) : decimals !== undefined ? roundTo(n, decimals) : n);
       }}
       onBlur={(e) => {
         // what is stored is what is shown: 100.005 becomes 100.01 in both

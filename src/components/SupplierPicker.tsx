@@ -106,13 +106,21 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
 
   // the picker remembers what was just chosen, so no caller has to
   const [picked, setPicked] = useState<SupplierOption | null>(null);
-  const selected = !value ? null
+  const known = !value ? null
     : (picked?.id === value ? picked : null)
       ?? (suppliers as SupplierOption[] | undefined)?.find((s) => s.id === value)
       ?? matches.find((s) => s.id === value)
       ?? (selectedLabel
         ? { id: value, nameHi: selectedLabel.nameHi, nameHinglish: selectedLabel.nameHinglish ?? "", village: null }
         : null);
+  // set by the page (a filter, a new supplier just made) with no name to hand: look it up
+  const one = useQuery({
+    queryKey: ["adati", "one", value],
+    queryFn: () => api.get<Adati>(`/adati/${value}`),
+    enabled: Boolean(value) && !known,
+    staleTime: 60_000,
+  });
+  const selected = known ?? (value && one.data ? { id: value, nameHi: one.data.nameHi, nameHinglish: one.data.nameHinglish, village: one.data.village } : null);
 
   // show the Hindi name; that is what the paper says
   const display = selected ? (lang === "hi" ? selected.nameHi : selected.nameHi || selected.nameHinglish) : query;
@@ -143,7 +151,8 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
         lang={DEVANAGARI.test(display) ? "hi" : undefined}
         placeholder={placeholder ?? t("daily.searchSupplier")}
         onChange={(e) => {
-          if (selected) onChange(null);
+          // typing always lets go of the supplier that was set, shown or not
+          if (value) onChange(null);
           setQuery(e.target.value);
           setOpen(true);
           /* Space finishes a word: "amit trading " becomes "अमित ट्रेडिंग " in

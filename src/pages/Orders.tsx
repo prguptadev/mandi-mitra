@@ -13,6 +13,7 @@ import { SkeletonTable } from "@/components/Skeletons.tsx";
 import {
   Button, Card, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Textarea,
 } from "@/components/ui/index.tsx";
+import { LoadError } from "@/components/LoadError.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
@@ -78,7 +79,7 @@ function OrderDialog({ open, onClose, editing }: { open: boolean; onClose: () =>
         <Field label={t("load.mill")} required>
           <Select value={f.merchantId} onChange={(e) => setF((p) => ({ ...p, merchantId: e.target.value }))} autoFocus={!editing}>
             <option value="">{t("load.pickMill")}</option>
-            {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {m.name}</option>)}
+            {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
           </Select>
         </Field>
         <Field label={t("load.jins")} required>
@@ -150,7 +151,7 @@ export function OrdersPage() {
           <Field label={t("load.mill")} className="w-56">
             <Select value={mill} onChange={(e) => setMill(e.target.value)} className="h-8 text-[13px]">
               <option value="">{t("common.all")}</option>
-              {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {m.name}</option>)}
+              {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
             </Select>
           </Field>
           <Field label={t("po.status")} className="w-40">
@@ -162,8 +163,10 @@ export function OrdersPage() {
           </Field>
         </div>
 
-        {orders.isPending ? <SkeletonTable rows={5} /> : !rows.length ? (
-          <EmptyState icon={<ClipboardList className="h-5 w-5" />} title={t("po.empty")} sub={t("po.emptySub")}
+        {orders.isPending ? <SkeletonTable rows={5} /> : orders.isError ? <LoadError error={orders.error} onRetry={() => void orders.refetch()} /> : !rows.length ? (
+          <EmptyState icon={<ClipboardList className="h-5 w-5" />}
+            // with a filter on, "no POs yet" would be wrong: there may be closed ones
+            title={status || mill ? t("common.noResults") : t("po.empty")} sub={status || mill ? undefined : t("po.emptySub")}
             action={can("po.write") && <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setDialog({ editing: null })}>{t("po.add")}</Button>} />
         ) : (
           <Table>
@@ -183,7 +186,7 @@ export function OrdersPage() {
                   <Td className="whitespace-nowrap">{dmy(o.poDate)}</Td>
                   <Td className="whitespace-nowrap">
                     <Badge tone="brand" className="num">{o.millCode}</Badge>
-                    <span className="ml-1.5 inline-block max-w-[180px] truncate align-middle text-muted" title={o.millName}>{o.millName}</span>
+                    <span className="ml-1.5 inline-block max-w-[180px] truncate align-middle text-muted" title={pick(o.millName, o.millNameHi)}>{pick(o.millName, o.millNameHi)}</span>
                   </Td>
                   <Td className="whitespace-nowrap"><span title={pick(o.jinsName, o.jinsNameHi)}>{o.jinsCode}</span></Td>
                   <Td numeric>{f.weight(o.qtyGrams)}</Td>
@@ -203,12 +206,12 @@ export function OrdersPage() {
                     {can("po.write") && (
                       <>
                         <Button variant="ghost" size="icon" title={t("common.edit")} onClick={() => setDialog({ editing: o })}><Pencil className="h-3.5 w-3.5" /></Button>
-                        <Button variant="ghost" size="icon" title={o.status === "open" ? t("po.close") : t("po.reopen")}
+                        <Button variant="ghost" size="icon" title={o.status === "open" ? t("po.close") : t("po.reopen")} disabled={act.isPending}
                           onClick={() => { setErr(null); act.mutate({ id: o.id, kind: o.status === "open" ? "close" : "reopen" }); }}>
                           {o.status === "open" ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
                         </Button>
                         {o.loads === 0 && (
-                          <Button variant="ghost" size="icon" title={t("common.delete")}
+                          <Button variant="ghost" size="icon" title={t("common.delete")} disabled={act.isPending}
                             onClick={() => { if (confirm(t("po.confirmDelete", { no: poName(t, o) }))) { setErr(null); act.mutate({ id: o.id, kind: "delete" }); } }}>
                             <Trash2 className="h-3.5 w-3.5 text-bad" />
                           </Button>

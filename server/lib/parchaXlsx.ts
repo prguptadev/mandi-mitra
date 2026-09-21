@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import type { ParchaDoc } from "./parcha.ts";
-import { printedLabel, partyHeading, dmy } from "./parchaLabels.ts";
+import { printedLabel, partyHeading, dmy, roundOffPaise } from "./parchaLabels.ts";
 
 /* The kaccha parcha as an Excel sheet, laid out like invoice 196: the same
    boxes in the same order, eight columns wide, Indian number grouping. Values
@@ -118,9 +118,16 @@ export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean; voided
   }
 
   const r = doc.result;
-  put(`A${row}:E${row}`, "TOTAL DARA", { bold: true, align: "center" });
-  put(`F${row}`, "ADVANCE", { bold: true });
-  put(`G${row}:H${row}`, r.advancePaise && doc.config.advance.treatment !== "exclude" ? rs(r.advancePaise) : "-", { align: "right", fmt: INR });
+  const advSubtract = doc.config.advance.treatment === "subtract";
+  const roundOff = roundOffPaise(r, doc.config);
+  if (roundOff !== 0) {
+    put(`A${row}:E${row}`, "ROUND OFF", { align: "left" });
+    put(`F${row}:H${row}`, rs(roundOff), { align: "right", fmt: INR });
+    row++;
+  }
+  put(`A${row}:E${row}`, doc.config.dara.includeInGrandTotal ? "TOTAL DARA (IN GRAND TOTAL)" : "TOTAL DARA", { bold: true, align: "center" });
+  put(`F${row}`, advSubtract ? "LESS ADVANCE" : "ADVANCE", { bold: true });
+  put(`G${row}:H${row}`, r.advancePaise && doc.config.advance.treatment !== "exclude" ? rs(r.advancePaise) * (advSubtract ? -1 : 1) : "-", { align: "right", fmt: INR });
   row++;
   put(`A${row}:E${row}`, r.daraPaise && doc.config.parcha.showDaraRow && doc.config.dara.mode !== "none" ? rs(r.daraPaise) : "-", { align: "right", fmt: INR });
   put(`F${row}`, "GRAND TOTAL", { bold: true });

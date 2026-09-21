@@ -64,13 +64,17 @@ export async function seedFirstRun() {
     const { hash, salt } = hashPin(FIRST_PIN);
     await db.insert(schema.users).values({ id: x.id, name: x.name, nameHi: x.nameHi, pinHash: hash, pinSalt: salt, isRoot: x.isRoot });
   }
+  let first: string | null = null;
   for (const b of FIRST_BUSINESSES) {
     const businessId = newId();
+    first ??= businessId;
     await db.insert(schema.businesses).values({ id: businessId, ...b });
     const roles = await seedRoles(businessId);
     await seedJins(businessId);
     // full access for now; the owner can narrow the Managers later from Users
     for (const x of users) await db.insert(schema.memberships).values({ id: newId(), userId: x.id, businessId, roleId: roles.owner });
   }
+  // everyone starts in Vijay Laxmi Dal Mill; the switcher is one click away
+  await db.update(schema.users).set({ prefs: JSON.stringify({ lastBusinessId: first }) });
   return true;
 }

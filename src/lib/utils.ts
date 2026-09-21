@@ -4,7 +4,11 @@ import { twMerge } from "tailwind-merge";
 export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 
 export const GRAMS_PER_QTL = 100_000;
-export const fmtQtl = (g: number) => (g / GRAMS_PER_QTL).toFixed(2);
+/** "310.74": to the kg, half up, in integers — the same figure the screen and the parcha show. */
+export const fmtQtl = (g: number) => {
+  const kg = Math.round(Math.abs(g) / 1000);
+  return `${g < 0 ? "-" : ""}${Math.floor(kg / 100)}.${String(kg % 100).padStart(2, "0")}`;
+};
 
 export function fmtINR(paise: number, showPaise = true) {
   const v = Math.abs(paise) / 100;

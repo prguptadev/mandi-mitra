@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { DatabaseBackup, Download, FolderSync, FolderOpen } from "lucide-react";
+import { DatabaseBackup, Download, FolderSync, FolderOpen, History } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
-import { Alert, Badge, Button, Card, CardHeader, Field, Input } from "@/components/ui/index.tsx";
+import { Alert, Badge, Button, Card, CardHeader, Dialog, Field, Input } from "@/components/ui/index.tsx";
 
 /* Backups of the whole database: automatic (every 12 hours), before every
    update, and on demand — optionally copied to a second folder such as a
@@ -13,7 +13,7 @@ import { Alert, Badge, Button, Card, CardHeader, Field, Input } from "@/componen
 interface BackupState {
   folder: string | null; lastAt: string | null; lastError: string | null; copiedAt: string | null;
   folders?: { data: string; db: string; scans: string; backups: string };
-  backups: { name: string; kind: "auto" | "before-update" | "manual"; bytes: number; at: string }[];
+  backups: { name: string; kind: "auto" | "before-update" | "manual" | "before-restore"; bytes: number; at: string }[];
 }
 
 export function BackupCard() {
@@ -26,6 +26,15 @@ export function BackupCard() {
   const run = useMutation({
     mutationFn: () => api.post("/backup/run", {}),
     onSuccess: async () => { setErr(null); await qc.invalidateQueries({ queryKey: ["backup"] }); },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+  /** Going back to a backup: done on the next start, the current data kept aside. */
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [typed, setTyped] = useState("");
+  const [restoreMsg, setRestoreMsg] = useState<string | null>(null);
+  const restore = useMutation({
+    mutationFn: (name: string) => api.post<{ scheduled: boolean; restarting: boolean }>("/backup/restore", { name, confirm: "RESTORE" }),
+    onSuccess: (r) => { setRestoring(null); setTyped(""); setErr(null); setRestoreMsg(r.restarting ? t("backup.restoreRestarting") : t("backup.restoreRestart")); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
   const saveFolder = useMutation({
@@ -66,8 +75,10 @@ export function BackupCard() {
                 <span className="flex items-center gap-1.5">
                   <Badge tone={x.kind === "manual" ? "brand" : x.kind === "before-update" ? "warn" : "neutral"}>{t(`backup.kind.${x.kind}` as "backup.kind.auto")}</Badge>
                   <a href={`/api/backup/file/${x.name}`} download title={t("backup.download")}>
-                    <Button size="icon" variant="ghost"><Download className="h-3.5 w-3.5" /></Button>
+                    <Button size="icon" variant="ghost" aria-label={t("backup.download")}><Download className="h-3.5 w-3.5" /></Button>
                   </a>
+                  <Button size="icon" variant="ghost" title={t("backup.restoreThis")} aria-label={t("backup.restoreThis")}
+                    onClick={() => { setErr(null); setTyped(""); setRestoring(x.name); }}><History className="h-3.5 w-3.5" /></Button>
                 </span>
               </div>
             ))}
@@ -86,7 +97,18 @@ export function BackupCard() {
             ))}
           </div>
         )}
+        {restoreMsg && <Alert tone="ok">{restoreMsg}</Alert>}
         <p className="text-[11px] leading-snug text-faint">{t("backup.restore")}</p>
+        {restoring && (
+          <Dialog open onClose={() => setRestoring(null)} title={t("backup.restoreTitle")} sub={t("backup.restoreSub", { when: when(b!.backups.find((x) => x.name === restoring)?.at ?? new Date().toISOString()) })}
+            footer={<>
+              <Button onClick={() => setRestoring(null)}>{t("common.cancel")}</Button>
+              <Button variant="danger" loading={restore.isPending} disabled={typed !== "RESTORE"} onClick={() => restore.mutate(restoring)}>{t("backup.restoreGo")}</Button>
+            </>}>
+            {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
+            <Field label={t("backup.typeRestore")}><Input value={typed} onChange={(e) => setTyped(e.target.value)} className="num" autoFocus /></Field>
+          </Dialog>
+        )}
       </div>
     </Card>
   );

@@ -12,7 +12,7 @@ const FAKE_GEMINI = 8797;
 // a stand-in scanner: every "scan" returns this small JPEG
 const FAKE_PAGE = path.join(DATA, "fake-scanner-page.jpg");
 const env = {
-  ...process.env, MANDI_DATA_DIR: DATA, MANDI_API: `http://localhost:${PORT}/api`, PORT,
+  ...process.env, MANDI_DATA_DIR: DATA, MANDI_API: `http://127.0.0.1:${PORT}/api`, PORT,
   MANDI_GEMINI_BASE: `http://127.0.0.1:${FAKE_GEMINI}`,
   MANDI_FAKE_SCANNER: FAKE_PAGE, MANDI_NO_AUTO_BACKUP: "1",
   // a real Postgres in-process, standing in for Supabase
@@ -22,8 +22,8 @@ const env = {
   MANDI_NO_SEED: "1",
   // two more "computers" for the sync test: B is a new install (Admin / 7747),
   // C an empty one that joins from the first screen
-  MANDI_API_B: "http://localhost:8802/api", MANDI_DATA_DIR_B: path.resolve("data-test-b"),
-  MANDI_API_C: "http://localhost:8803/api", MANDI_DATA_DIR_C: path.resolve("data-test-c"),
+  MANDI_API_B: "http://127.0.0.1:8802/api", MANDI_DATA_DIR_B: path.resolve("data-test-b"),
+  MANDI_API_C: "http://127.0.0.1:8803/api", MANDI_DATA_DIR_C: path.resolve("data-test-c"),
 };
 // its own process: execFileSync below blocks this one while each test runs
 const fake = spawn("npx", ["tsx", "scripts/fake-gemini.ts", String(FAKE_GEMINI)], { stdio: "ignore" });

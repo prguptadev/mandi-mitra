@@ -1,5 +1,5 @@
 import type { ParchaDoc } from "@/lib/api.ts";
-import { printedLabel, indianMoney, qtl2, dmy, partyHeading } from "@server/lib/parchaLabels.ts";
+import { printedLabel, indianMoney, qtl2, dmy, partyHeading, roundOffPaise } from "@server/lib/parchaLabels.ts";
 import { cn } from "@/lib/utils.ts";
 
 /* The kaccha parcha as it prints: the same boxes, order and wording as the
@@ -15,6 +15,8 @@ const head = "font-bold";
 export function ParchaPaper({ doc, draft, voided, className }: { doc: ParchaDoc; draft?: boolean; voided?: boolean; className?: string }) {
   const w = doc.weights;
   const r = doc.result;
+  const advSubtract = doc.config.advance.treatment === "subtract";
+  const roundOff = roundOffPaise(r, doc.config);
   const lines = [...doc.lines];
   const blanks = Math.max(0, 2 - lines.length);
   const charges = r.lines.filter((l) => l.kind !== "goods" && l.kind !== "total" && l.key !== "dara" && l.key !== "advance");
@@ -115,10 +117,16 @@ export function ParchaPaper({ doc, draft, voided, className }: { doc: ParchaDoc;
               </tr>
             );
           })}
+          {roundOff !== 0 && (
+            <tr>
+              <td colSpan={5} className={cellL}>ROUND OFF</td>
+              <td colSpan={3} className={cellR}>{(roundOff > 0 ? "+" : "-") + money(Math.abs(roundOff))}</td>
+            </tr>
+          )}
           <tr>
-            <td colSpan={5} className={cn(cellC, head)}>TOTAL DARA</td>
-            <td className={cn(cellL, head)}>ADVANCE</td>
-            <td colSpan={2} className={cellR}>{r.advancePaise && doc.config.advance.treatment !== "exclude" ? money(r.advancePaise) : "-"}</td>
+            <td colSpan={5} className={cn(cellC, head)}>{doc.config.dara.includeInGrandTotal ? "TOTAL DARA (IN GRAND TOTAL)" : "TOTAL DARA"}</td>
+            <td className={cn(cellL, head)}>{advSubtract ? "LESS ADVANCE" : "ADVANCE"}</td>
+            <td colSpan={2} className={cellR}>{r.advancePaise && doc.config.advance.treatment !== "exclude" ? (advSubtract ? "-" : "") + money(r.advancePaise) : "-"}</td>
           </tr>
           <tr>
             <td colSpan={5} className={cn(cellR, "h-9")}>{r.daraPaise && doc.config.parcha.showDaraRow && doc.config.dara.mode !== "none" ? money(r.daraPaise) : "-"}</td>

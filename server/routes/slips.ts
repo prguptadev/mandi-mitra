@@ -11,7 +11,7 @@ import { can, actor, param, notFound, bad, HttpError, isoDay, LIMIT, type Env } 
 import { approvedOnDays } from "../lib/parcha.ts";
 
 /** Supplier, commodity and mill must all be this business's own. */
-async function checkSlipRefs(biz: string, r: { adatiId?: string; jinsId?: string; merchantId?: string | null }) {
+export async function checkSlipRefs(biz: string, r: { adatiId?: string; jinsId?: string; merchantId?: string | null }) {
   if (r.adatiId) {
     const [a] = await db.select({ id: schema.adati.id }).from(schema.adati).where(and(eq(schema.adati.id, r.adatiId), eq(schema.adati.businessId, biz))).limit(1);
     if (!a) throw bad("That supplier does not belong to this business", "bad_adati");
@@ -62,11 +62,20 @@ export async function katautiCfg(businessId: string, merchantId?: string | null)
   if (row?.value) {
     const parsed = DisplayConfigSchema.safeParse(JSON.parse(row.value));
     if (parsed.success) {
-      return KatautiSchema.parse({ mode: parsed.data.katautiMode, kgPerUnit: parsed.data.katautiKgPerUnit });
+      return KatautiSchema.parse({ mode: parsed.data.katautiMode, kgPerUnit: parsed.data.katautiKgPerUnit, rounding: parsed.data.katautiRounding });
     }
   }
   const d = defaultDisplayConfig();
-  return KatautiSchema.parse({ mode: d.katautiMode, kgPerUnit: d.katautiKgPerUnit });
+  return KatautiSchema.parse({ mode: d.katautiMode, kgPerUnit: d.katautiKgPerUnit, rounding: d.katautiRounding });
+}
+
+/** The terms a slip was worked out with; slips from before v0.3 without them use `fallback`. */
+export function termsOf(slip: { katautiTerms: string | null }, fallback: Katauti): Katauti {
+  if (!slip.katautiTerms) return fallback;
+  try {
+    const p = KatautiSchema.safeParse(JSON.parse(slip.katautiTerms));
+    return p.success ? p.data : fallback;
+  } catch { return fallback; }
 }
 
 /**
@@ -136,6 +145,7 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     grossGrams: schema.purchaseSlips.grossGrams,
     katautiUnits: schema.purchaseSlips.katautiUnits,
     katautiOverride: schema.purchaseSlips.katautiOverride,
+    katautiTerms: schema.purchaseSlips.katautiTerms,
     bagsCount: schema.purchaseSlips.bagsCount,
     netGrams: schema.purchaseSlips.netGrams,
     ratePaisePerQtl: schema.purchaseSlips.ratePaisePerQtl,
@@ -162,7 +172,7 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
   for (const r of rows) {
     const cacheKey = r.merchantId ?? "-";
     if (!cfgCache.has(cacheKey)) cfgCache.set(cacheKey, await katautiCfg(biz, r.merchantId));
-    const cfg = cfgCache.get(cacheKey)!;
+    const cfg = termsOf(r, cfgCache.get(cacheKey)!);
     const d = deriveSlip(r.grossGrams, cfg, r.ratePaisePerQtl, r.katautiOverride ? r.katautiUnits : null);
     const suggested = deriveSlip(r.grossGrams, cfg, r.ratePaisePerQtl, null);
     // kg per physical bag, only when a bag count was actually recorded
@@ -296,7 +306,7 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
 
   const id = newId();
   const values = {
-    id, businessId: biz,
+    id, businessId: biz, katautiTerms: JSON.stringify(cfg),
     slipDate: body.slipDate, rstNo: body.rstNo,
     adatiId: body.adatiId, jinsId: body.jinsId,
     merchantId: body.merchantId ?? null,
@@ -357,12 +367,17 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
   const override = body.katautiUnits !== undefined
     ? body.katautiUnits
     : (before.katautiOverride ? before.katautiUnits : null);
-  const cfg = await katautiCfg(biz, merged.merchantId);
+  // a new weight or another mill takes today's terms; any other edit (RST, rate,
+  // supplier…) keeps the terms the slip was made with, so its net never moves
+  const reweighed = merged.grossGrams !== before.grossGrams || merged.merchantId !== before.merchantId;
+  const current = await katautiCfg(biz, merged.merchantId);
+  const cfg = reweighed ? current : termsOf(before, current);
   const d = deriveSlip(merged.grossGrams, cfg, merged.ratePaisePerQtl, override);
   if (d.netGrams <= 0) throw bad("Net weight works out to zero or less — check the gross weight", "bad_net");
 
   await db.update(schema.purchaseSlips).set({
     ...merged,
+    katautiTerms: JSON.stringify(cfg),
     katautiUnits: d.katautiUnits,
     katautiOverride: override != null,
     netGrams: d.netGrams, amountPaise: d.amountPaise, updatedAt: nowSec(),
@@ -421,13 +436,18 @@ slipRoutes.post("/reassign", can("slip.write"), async (c) => {
 
   // katauti terms can differ per mill, so net and amount are re-derived per slip
   const cfg = await katautiCfg(biz, merchantId);
-  for (const s of slips) {
-    const d = deriveSlip(s.grossGrams, cfg, s.ratePaisePerQtl, s.katautiOverride ? s.katautiUnits : null);
-    await db.update(schema.purchaseSlips).set({
-      merchantId, katautiUnits: d.katautiUnits,
-      netGrams: d.netGrams, amountPaise: d.amountPaise, updatedAt: nowSec(),
-    }).where(eq(schema.purchaseSlips.id, s.id));
-  }
+  const moved = slips.map((s) => ({ s, d: deriveSlip(s.grossGrams, cfg, s.ratePaisePerQtl, s.katautiOverride ? s.katautiUnits : null) }));
+  const bad0 = moved.find((x) => x.d.netGrams <= 0);
+  if (bad0) throw bad(`RST ${bad0.s.rstNo}: with that mill's katauti the net works out to zero or less`, "bad_net");
+  // every slip moves, or none does
+  db.transaction((tx) => {
+    for (const { s, d } of moved) {
+      tx.update(schema.purchaseSlips).set({
+        merchantId, katautiUnits: d.katautiUnits, katautiTerms: JSON.stringify(cfg),
+        netGrams: d.netGrams, amountPaise: d.amountPaise, updatedAt: nowSec(),
+      }).where(eq(schema.purchaseSlips.id, s.id)).run();
+    }
+  });
   for (const sl of slips) await enqueueSync(biz, "purchase_slip", sl.id, "update", { merchantId });
   await audit({
     actor: actor(c), action: "slip.reassign", entity: "purchase_slip",
@@ -480,13 +500,17 @@ slipRoutes.post("/recompute", can("slip.write"), async (c) => {
   const rows = await db.select().from(schema.purchaseSlips)
     .where(and(eq(schema.purchaseSlips.businessId, biz), eq(schema.purchaseSlips.slipDate, slipDate)));
 
+  // repairs a stored figure that disagrees with the slip's own terms; a later
+  // change to a mill's katauti does not reach back into old slips
   const cfgCache = new Map<string, Katauti>();
   let changed = 0;
+  const fixes: { rstNo: string; before: { net: number; amount: number }; after: { net: number; amount: number } }[] = [];
   for (const r of rows) {
     const key = r.merchantId ?? "-";
     if (!cfgCache.has(key)) cfgCache.set(key, await katautiCfg(biz, r.merchantId));
-    const d = deriveSlip(r.grossGrams, cfgCache.get(key)!, r.ratePaisePerQtl, r.katautiOverride ? r.katautiUnits : null);
+    const d = deriveSlip(r.grossGrams, termsOf(r, cfgCache.get(key)!), r.ratePaisePerQtl, r.katautiOverride ? r.katautiUnits : null);
     if (d.netGrams !== r.netGrams || d.amountPaise !== r.amountPaise || d.katautiUnits !== r.katautiUnits) {
+      fixes.push({ rstNo: r.rstNo, before: { net: r.netGrams, amount: r.amountPaise }, after: { net: d.netGrams, amount: d.amountPaise } });
       await db.update(schema.purchaseSlips)
         .set({ katautiUnits: d.katautiUnits, netGrams: d.netGrams, amountPaise: d.amountPaise, updatedAt: nowSec() })
         .where(eq(schema.purchaseSlips.id, r.id));
@@ -497,7 +521,7 @@ slipRoutes.post("/recompute", can("slip.write"), async (c) => {
   await audit({
     actor: actor(c), action: "slip.recompute", entity: "purchase_slip",
     entityLabel: `${slipDate}: ${changed} of ${rows.length} corrected`,
-    after: { slipDate, scanned: rows.length, changed },
+    after: { slipDate, scanned: rows.length, changed, fixes },
   });
   return c.json({ scanned: rows.length, changed });
 });

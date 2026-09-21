@@ -7,18 +7,18 @@ import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { decryptSecret } from "../lib/secrets.ts";
-import { GeminiConfigSchema, defaultGeminiConfig, DisplayConfigSchema, defaultDisplayConfig } from "../lib/display.ts";
-import { ChargeConfigSchema, KatautiSchema, type Katauti } from "../lib/charges.ts";
+import { GeminiConfigSchema, defaultGeminiConfig } from "../lib/display.ts";
+import { deriveKatauti, type Katauti } from "../lib/charges.ts";
 import { readSheetReliably, recordCall, spentToday, type GeminiCallResult } from "../lib/gemini.ts";
 import { loadResolver } from "../lib/adatiResolve.ts";
 import { normKey, toHinglish } from "../lib/translit.ts";
 import {
-  ReviewRowSchema, ocrToReviewRow, checkRow, findDupes,
+  ReviewRowSchema, ocrToReviewRow, checkRow, findDupes, qtlToGrams,
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
-import { deriveSlip } from "./slips.ts";
-import { normRst, checkPages, srBreaks, type PageMeta } from "../lib/scanRows.ts";
-import { can, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
+import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
+import { normRst, checkPages, slipMarks, type PageMeta } from "../lib/scanRows.ts";
+import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 
 export const scanRoutes = new Hono<Env>();
 
@@ -34,7 +34,7 @@ export function recoverInterruptedScans() {
   // shows "reading" here while it is being read there
   const stale = db.select({ id: schema.scanBatches.id }).from(schema.scanBatches)
     .where(eq(schema.scanBatches.status, "reading")).all()
-    .filter((s) => fs.existsSync(path.join(SCAN_DIR, s.id)));
+    .filter((s) => SAFE_ID.test(s.id) && fs.existsSync(path.join(SCAN_DIR, s.id)));
   if (!stale.length) return 0;
   for (const s of stale) {
     const b = db.select({ pagesDone: schema.scanBatches.pagesDone }).from(schema.scanBatches).where(eq(schema.scanBatches.id, s.id)).get();
@@ -50,6 +50,24 @@ export function recoverInterruptedScans() {
 
 const DATA_DIR = process.env.MANDI_DATA_DIR ?? path.resolve(process.cwd(), "data");
 const SCAN_DIR = path.join(DATA_DIR, "scans");
+/* Scan ids and page names come from the database — and, with sync, from other
+   computers. Only plain names are ever turned into paths inside the scans folder. */
+const SAFE_ID = /^[A-Za-z0-9-]{8,64}$/;
+const SAFE_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,79}$/;
+function scanDir(id: string) {
+  if (!SAFE_ID.test(id)) throw notFound("Scan not found");
+  return path.join(SCAN_DIR, id);
+}
+function scanFile(id: string, name: string) {
+  if (!SAFE_NAME.test(name) || name.includes("..")) throw notFound("Page not found");
+  return path.join(scanDir(id), name);
+}
+/** The pictures stay on the computer that scanned them; another computer only has the rows. */
+function assertImagesHere(id: string, files: { name: string }[]) {
+  if (!files.every((f) => fs.existsSync(scanFile(id, f.name)))) {
+    throw new HttpError(409, "The pictures of this sheet are on the computer that scanned it. Read it again there.", "images_elsewhere");
+  }
+}
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_BYTES = 12 * 1024 * 1024;
 const OK_TYPES = new Set([
@@ -79,27 +97,12 @@ async function setting(businessId: string, key: string) {
   return row?.value ?? null;
 }
 
-async function katautiFor(businessId: string, merchantId: string | null): Promise<Katauti> {
-  if (merchantId) {
-    const [m] = await db.select({ cfg: schema.merchants.chargeConfig }).from(schema.merchants)
-      .where(and(eq(schema.merchants.id, merchantId), eq(schema.merchants.businessId, businessId))).limit(1);
-    if (m) {
-      const p = ChargeConfigSchema.safeParse(JSON.parse(m.cfg));
-      if (p.success) return p.data.katauti;
-    }
-  }
-  const raw = await setting(businessId, "display");
-  const d = raw ? DisplayConfigSchema.safeParse(JSON.parse(raw)) : null;
-  const cfg = d?.success ? d.data : defaultDisplayConfig();
-  return KatautiSchema.parse({
-    mode: cfg.katautiMode, kgPerUnit: cfg.katautiKgPerUnit, rounding: cfg.katautiRounding,
-  });
-}
+const katautiFor = (businessId: string, merchantId: string | null) => katautiCfg(businessId, merchantId);
 
 /** Written next to the images; refreshed whenever the tagging changes. */
 function writeScanMeta(id: string, meta: Record<string, unknown>) {
   try {
-    fs.writeFileSync(path.join(SCAN_DIR, id, "meta.json"), JSON.stringify(meta, null, 2));
+    fs.writeFileSync(path.join(scanDir(id), "meta.json"), JSON.stringify(meta, null, 2));
   } catch (err) {
     console.error("[scan] could not write meta.json", id, err);
   }
@@ -173,24 +176,29 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   const range = await usualRateRange(businessId, batch.jinsId, batch.slipDate);
   // page, then position on the page — the same order everywhere
   const ordered = [...rows].sort((a, b) => (a.page ?? 1) - (b.page ?? 1) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
-  const breaks = srBreaks(rows);
+  const marks = slipMarks(rows);
+  const meta = JSON.parse(batch.pageMeta ?? "[]") as PageMeta[];
+  const rowsChecked = (page: number) => (meta.find((m) => m.page === page)?.confirmed ?? []).includes("rows");
+  const netPages = new Set(rows.filter((r) => r.ocr.netQtl != null).map((r) => r.page ?? 1));
   const checked: CheckedRow[] = ordered.map((r) => {
     const c = checkRow(r, {
       katauti, resolve: resolver.resolve, byId: resolver.byId, existingRst, dupeInBatch,
-      rateFloorPaise: range.floor, rateCeilPaise: range.ceil,
+      rateFloorPaise: range.floor, rateCeilPaise: range.ceil, pageHasNet: netPages.has(r.page ?? 1),
     });
-    /* A row where the printed numbering breaks may carry the next line's
-       figures under this line's name. It must be looked at against the
-       paper: checking its name (picking or accepting it) clears it. */
-    const br = breaks.find((b) => b.rowId === r.id);
-    if (br && !c.excluded) {
-      const done = (r.confirmed ?? []).includes("name");
-      c.issues.push({ code: br.code, level: done ? "warn" : "error", message: "The row numbers break here: check this row's name and figures against the paper", params: br.params });
+    if (!c.excluded) {
+      /* Rows may have slid on this page (a name with no weight, or numbers that
+         break): every row on it waits until the page is checked line by line
+         against the paper. The row where it shows is marked. */
+      const here = marks.find((m) => m.rowId === r.id);
+      if (here) c.issues.push({ code: here.code, level: "warn", message: "The rows may slip out of line here", params: here.params });
+      if (marks.some((m) => m.page === (r.page ?? 1)) && !rowsChecked(r.page ?? 1)) {
+        c.issues.push({ code: "page_slid", level: "error", message: `Check page ${r.page ?? 1} line by line: names may sit on the wrong weights`, params: { page: r.page ?? 1 } });
+      }
       c.blocking = c.issues.some((i) => i.level === "error");
     }
     return c;
   });
-  const pageChecks = checkPages(JSON.parse(batch.pageMeta ?? "[]") as PageMeta[], checked, batch.slipDate);
+  const pageChecks = checkPages(meta, checked, batch.slipDate, marks);
 
   const active = checked.filter((r) => !r.excluded);
   return {
@@ -203,6 +211,8 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
       included: active.length,
       excluded: checked.length - active.length,
       blocking: active.filter((r) => r.blocking).length,
+      /** A page date or total that differs from the sheet and is not yet confirmed. */
+      pagesBlocking: pageChecks.filter((p) => !p.confirmed).length,
       warnings: active.filter((r) => !r.blocking && r.issues.length > 0).length,
       clean: active.filter((r) => r.issues.length === 0).length,
       autoMatchedNames: active.filter((r) => r.adatiId || r.match).length,
@@ -231,6 +241,8 @@ export async function createScan(o: {
   user: { id: string | null; name: string };
   actor: Parameters<typeof audit>[0]["actor"];
 }) {
+  // a mill or commodity from another business (a second tab on the other firm) is refused
+  await checkSlipRefs(o.biz, { merchantId: o.merchantId, jinsId: o.jinsId ?? undefined });
   for (const f of o.pages) {
     if (!f.mimeType) throw bad(`"${f.name}" is a ${f.declared || "unknown"} file. Use JPG, PNG, WEBP, HEIC or a one-page PDF.`, "bad_type");
     if (f.size === 0) throw bad(`"${f.name}" is empty. Scan it again.`, "empty_file");
@@ -340,7 +352,7 @@ export async function appendPage(biz: string, id: string, bytes: Buffer, mimeTyp
   if (files.length >= 10) throw bad("Ten pages at a time is the limit", "too_many");
   if (bytes.length > MAX_BYTES) throw bad("That page is over 12 MB. Scan at 200–300 dpi instead.", "too_big");
   const name = `${String(files.length).padStart(2, "0")}.${mimeType === "image/png" ? "png" : "jpg"}`;
-  fs.writeFileSync(path.join(SCAN_DIR, id, name), bytes);
+  fs.writeFileSync(scanFile(id, name), bytes);
   files.push({ name, mimeType, bytes: bytes.length });
   await db.update(schema.scanBatches).set({ filePaths: JSON.stringify(files) }).where(eq(schema.scanBatches.id, id));
   await refreshScanMeta(biz, id);
@@ -368,18 +380,23 @@ async function performRead(opts: {
   const { biz, id, apiKey, cfg, wanted } = opts;
   const batch = await loadBatch(biz, id);
   const files: { name: string; mimeType: string }[] = JSON.parse(batch.filePaths);
-  const dir = path.join(SCAN_DIR, id);
 
   const resolver = await loadResolver(biz);
   const knownSuppliers = resolver.candidateNames(300);
 
+  // the mill's own katauti terms, for the sheet's self-check below
+  const terms = await katautiFor(biz, batch.merchantId);
   function weakness(r: GeminiCallResult): string | null {
     if (!r.ok || !r.page) return "the first pass failed";
-    const rows = r.page.rows;
+    // struck-out lines carry no weight on purpose: they say nothing about the read
+    const rows = r.page.rows.filter((x) => !x.struckThrough);
     if (!rows.length) return null; // a blank page is not a weak read
-    // the sheet checks itself: net = gross − katauti (1 kg a rounded quintal)
-    const failing = rows.filter((x) => x.grossQtl != null && x.netQtl != null && !x.struckThrough
-      && Math.abs((x.grossQtl - Math.floor(x.grossQtl + 0.5) * 0.01) - x.netQtl) > 0.015).length;
+    // the sheet checks itself: net = gross − katauti, on this mill's terms
+    const failing = rows.filter((x) => {
+      if (x.grossQtl == null || x.netQtl == null) return false;
+      const g = qtlToGrams(x.grossQtl);
+      return Math.abs(g - deriveKatauti(g, terms, null).deductionGrams - qtlToGrams(x.netQtl)) > 1500;
+    }).length;
     if (failing / rows.length > 0.15) return `${failing} rows fail the net-weight check`;
     const mean = rows.reduce((a, x) => a + (x.confidence ?? 0), 0) / rows.length;
     if (mean < cfg.fallbackBelowConfidence) return `average confidence ${mean.toFixed(2)}`;
@@ -403,7 +420,7 @@ async function performRead(opts: {
 
   for (let p = opts.resumeFrom ?? 0; p < files.length; p++) {
     const image = [{
-      base64: fs.readFileSync(path.join(dir, files[p].name)).toString("base64"),
+      base64: fs.readFileSync(scanFile(id, files[p].name)).toString("base64"),
       mimeType: files[p].mimeType,
     }];
 
@@ -580,13 +597,14 @@ export async function startRead(biz: string, id: string, actorInfo: { userId: st
   const cfgRaw = await setting(biz, "gemini");
   const cfg = cfgRaw ? GeminiConfigSchema.parse(JSON.parse(cfgRaw)) : defaultGeminiConfig();
   const wanted = req.model;
-  if (batch.status === "review" && !req.force) {
-    throw new HttpError(409, "This sheet is already read. Reading it again replaces every row and your edits, and uses one read per page.", "confirm_reread");
-  }
-
-  const files: unknown[] = JSON.parse(batch.filePaths);
+  const files: { name: string }[] = JSON.parse(batch.filePaths);
+  assertImagesHere(id, files);
   const partial: ReviewRow[] = batch.parsedRows ? JSON.parse(batch.parsedRows) : [];
   const resume = batch.status === "failed" && batch.pagesDone > 0 && batch.pagesDone < files.length;
+  // a full read replaces every row: ask first whenever there are rows to lose
+  if ((batch.status === "review" || (!resume && partial.length > 0)) && !req.force) {
+    throw new HttpError(409, "This sheet is already read. Reading it again replaces every row and your edits, and uses one read per page.", "confirm_reread");
+  }
 
   await db.update(schema.scanBatches)
     .set(resume
@@ -629,6 +647,7 @@ scanRoutes.post("/:id/try-model", can("scan.create"), async (c) => {
     .parse(await c.req.json());
   const files: { name: string; mimeType: string }[] = JSON.parse(batch.filePaths);
   if (body.page > files.length) throw bad(`This scan has ${files.length} page(s)`, "no_page");
+  assertImagesHere(id, [files[body.page - 1]]);
 
   const keyRaw = await setting(biz, "gemini.apiKey");
   const apiKey = keyRaw ? decryptSecret(keyRaw) : null;
@@ -640,7 +659,7 @@ scanRoutes.post("/:id/try-model", can("scan.create"), async (c) => {
   const file = files[body.page - 1];
   const r = await readSheetReliably({
     apiKey, model: body.model, knownSuppliers: resolver.candidateNames(300),
-    images: [{ base64: fs.readFileSync(path.join(SCAN_DIR, id, file.name)).toString("base64"), mimeType: file.mimeType }],
+    images: [{ base64: fs.readFileSync(scanFile(id, file.name)).toString("base64"), mimeType: file.mimeType }],
     maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
   }, (x) => recordCall({ businessId: biz, apiKey, result: x }), { sleep: (ms) => new Promise((res) => setTimeout(res, Math.min(ms, 5_000))) });
 
@@ -767,8 +786,8 @@ scanRoutes.get("/:id/page/:index", can("scan.review", "scan.create"), async (c) 
   const files: { name: string; mimeType: string }[] = JSON.parse(batch.filePaths);
   const file = files[Number(param(c, "index"))];
   if (!file) throw notFound("Page not found");
-  const full = path.join(SCAN_DIR, batch.id, file.name);
-  if (!fs.existsSync(full)) throw notFound("Image file is missing from disk");
+  const full = scanFile(batch.id, file.name);
+  if (!fs.existsSync(full)) throw notFound("This page's picture is on the computer that scanned it");
   return new Response(fs.readFileSync(full), {
     headers: { "Content-Type": file.mimeType, "Cache-Control": "private, max-age=3600" },
   });
@@ -788,9 +807,14 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
     jinsId: z.string().nullish(),
   }).parse(await c.req.json());
 
+  await checkSlipRefs(biz, { jinsId: jinsId ?? undefined, merchantId: merchantId ?? undefined });
+  // what the model read is kept exactly as read: only the operator's columns come from the screen
+  const asRead = new Map((JSON.parse(batch.parsedRows ?? "[]") as ReviewRow[]).map((r) => [r.id, r]));
+  const NOT_READ = { rstNo: null, adatiName: null, grossQtl: null, katauti: null, netQtl: null, rate: null, confidence: null, struckThrough: null, srNo: null };
+  const kept = rows.map((r) => ({ ...r, rstNo: normRst(r.rstNo), ocr: asRead.get(r.id)?.ocr ?? NOT_READ, modelPick: asRead.get(r.id)?.modelPick ?? null }));
   await db.update(schema.scanBatches).set({
     // the reader owns the rows while it runs; the header is the operator's
-    ...(batch.status === "reading" ? {} : { parsedRows: JSON.stringify(rows.map((r) => ({ ...r, rstNo: normRst(r.rstNo) }))) }),
+    ...(batch.status === "reading" ? {} : { parsedRows: JSON.stringify(kept) }),
     ...(slipDate !== undefined ? { slipDate: slipDate ?? null } : {}),
     ...(merchantId !== undefined ? { merchantId: merchantId ?? null } : {}),
     ...(jinsId !== undefined ? { jinsId: jinsId ?? null } : {}),
@@ -801,9 +825,27 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
   return c.json(await checkAll(biz, fresh));
 });
 
+/** The operator checked a page against the paper: its rows line by line, its date, or its total. */
+scanRoutes.put("/:id/page-confirm", can("scan.review"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const id = param(c, "id");
+  const batch = await loadBatch(biz, id);
+  if (batch.status === "committed") throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
+  const { page, what, on } = z.object({ page: z.number().int().min(1), what: z.enum(["rows", "date", "total"]), on: z.boolean() }).parse(await c.req.json());
+  const meta = JSON.parse(batch.pageMeta ?? "[]") as PageMeta[];
+  let m = meta.find((x) => x.page === page);
+  if (!m) { m = { page, date: null, millName: null, jins: null, total: null }; meta.push(m); }
+  const set = new Set(m.confirmed ?? []);
+  if (on) set.add(what); else set.delete(what);
+  m.confirmed = [...set];
+  await db.update(schema.scanBatches).set({ pageMeta: JSON.stringify(meta) }).where(eq(schema.scanBatches.id, id));
+  await audit({ actor: actor(c), action: "scan.page_confirm", entity: "scan_batch", entityId: id, entityLabel: `Page ${page}: ${what} ${on ? "checked" : "unchecked"}` });
+  return c.json(await checkAll(biz, await loadBatch(biz, id)));
+});
+
 /* ------------------------------------------------------------------ commit */
 
-scanRoutes.post("/:id/commit", can("scan.review", "slip.write"), async (c) => {
+scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const userId = c.get("auth")!.user.id;
   const id = param(c, "id");
@@ -817,28 +859,42 @@ scanRoutes.post("/:id/commit", can("scan.review", "slip.write"), async (c) => {
     throw new HttpError(409, `Only ${batch.pagesDone} of ${pageCount} pages are read. Read the rest before adding this sheet.`, "incomplete");
   }
 
+  await checkSlipRefs(biz, { jinsId: batch.jinsId, merchantId: batch.merchantId });
   const { rows, summary, katauti } = await checkAll(biz, batch);
   const toWrite = rows.filter((r) => !r.excluded);
   if (!toWrite.length) throw bad("Every row is excluded — nothing to add", "nothing_to_commit");
+  // the same rules as typing a slip by hand
+  if (toWrite.some((r) => (r.ratePaisePerQtl ?? 0) > 0) && !c.get("auth")!.permissions.has("rate.edit")) {
+    throw new HttpError(403, "This sheet carries rates, and you may not set purchase rates. Ask someone who may to add it.", "forbidden");
+  }
+  const unfit = toWrite.filter((r) => !(r.adatiId ?? r.match?.adatiId) || r.grossGrams === null || r.grossGrams <= 0 || r.grossGrams > LIMIT.grams
+    || (r.ratePaisePerQtl ?? 0) < 0 || (r.ratePaisePerQtl ?? 0) > LIMIT.rate);
+  if (unfit.length) {
+    throw new HttpError(409, `${unfit.length} row${unfit.length === 1 ? " has" : "s have"} no supplier, no weight, or a figure out of range (RST ${unfit.slice(0, 5).map((r) => r.rstNo || "—").join(", ")})`, "has_blocking");
+  }
   if (summary && summary.blocking > 0) {
     throw new HttpError(409, `${summary.blocking} row${summary.blocking === 1 ? "" : "s"} still need fixing before this can be added`, "has_blocking");
+  }
+  if (summary && summary.pagesBlocking > 0) {
+    throw new HttpError(409, "A page's date, total or rows still need checking against the paper before this can be added", "has_blocking");
   }
 
   // work everything out first, then write it all or nothing
   const slipRows: (typeof schema.purchaseSlips.$inferInsert)[] = [];
   const aliasOps: { raw: string; adatiId: string; corrected: boolean }[] = [];
   for (const r of toWrite) {
-    const adatiId = r.adatiId ?? r.match?.adatiId;
-    if (!adatiId || r.grossGrams === null) continue;
-    const d = deriveSlip(r.grossGrams, katauti!, r.ratePaisePerQtl ?? 0, r.katautiOverride);
+    const adatiId = (r.adatiId ?? r.match?.adatiId)!;
+    const d = deriveSlip(r.grossGrams!, katauti!, r.ratePaisePerQtl ?? 0, r.katautiOverride);
+    if (d.netGrams <= 0) throw new HttpError(409, `RST ${r.rstNo}: the net weight works out to zero or less — check the gross`, "has_blocking");
     slipRows.push({
       id: newId(), businessId: biz,
       slipDate: batch.slipDate, rstNo: normRst(r.rstNo),
       adatiId, jinsId: batch.jinsId,
       merchantId: batch.merchantId,
-      grossGrams: r.grossGrams,
+      grossGrams: r.grossGrams!,
       katautiUnits: d.katautiUnits,
       katautiOverride: r.katautiOverride != null,
+      katautiTerms: JSON.stringify(katauti),
       netGrams: d.netGrams,
       ratePaisePerQtl: r.ratePaisePerQtl ?? 0,
       amountPaise: d.amountPaise,
@@ -931,7 +987,7 @@ scanRoutes.put("/:id/order", can("scan.create"), async (c) => {
  * On a new business that is every row, and picking them one by one is not a
  * reasonable ask — the names are already on the paper.
  */
-scanRoutes.post("/:id/create-suppliers", can("adati.write", "scan.review"), async (c) => {
+scanRoutes.post("/:id/create-suppliers", canAll("adati.write", "scan.review"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const userId = c.get("auth")!.user.id;
   const id = param(c, "id");
@@ -1005,7 +1061,7 @@ scanRoutes.delete("/:id", can("scan.create"), async (c) => {
   if (batch.status === "committed") {
     throw new HttpError(409, "This scan is already on the daily list. Delete those rows there instead.", "already_committed");
   }
-  fs.rmSync(path.join(SCAN_DIR, id), { recursive: true, force: true });
+  fs.rmSync(scanDir(id), { recursive: true, force: true });
   await db.delete(schema.scanBatches).where(eq(schema.scanBatches.id, id));
   await audit({ actor: actor(c), action: "scan.delete", entity: "scan_batch", entityId: id, entityLabel: batch.slipDate ?? id });
   return c.json({ ok: true });

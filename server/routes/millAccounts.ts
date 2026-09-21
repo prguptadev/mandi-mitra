@@ -254,17 +254,24 @@ millReceiptRoutes.get("/", can("millledger.read", "millreceipt.write"), async (c
     ? await db.select({ loadId: Pa.loadId, no: Pa.parchaNo }).from(Pa).where(and(inArray(Pa.loadId, loadIds), eq(Pa.status, "approved")))
     : [];
   const noOf = new Map(nos.map((n) => [n.loadId, n.no]));
-  const live = rows.filter((x) => x.r.voidedAt == null);
+  const [agg] = await db.select({
+    n: sql<number>`coalesce(sum(case when ${R.voidedAt} is null then 1 else 0 end), 0)`,
+    a: sql<number>`coalesce(sum(case when ${R.voidedAt} is null then ${R.amountPaise} else 0 end), 0)`,
+    d: sql<number>`coalesce(sum(case when ${R.voidedAt} is null then ${R.deductionPaise} else 0 end), 0)`,
+    all: sql<number>`count(*)`,
+  }).from(R).where(and(...w));
   return c.json({
     rows: rows.map((x) => ({
       ...x.r, millCode: x.code, millName: x.name, millNameHi: x.nameHi, truckNo: x.truckNo,
       parchaNo: x.r.loadId ? noOf.get(x.r.loadId) ?? null : null, createdByName: x.byName,
     })),
+    // totals over every matching receipt, not just the rows sent
     totals: {
-      count: live.length,
-      amountPaise: live.reduce((s, x) => s + x.r.amountPaise, 0),
-      deductionPaise: live.reduce((s, x) => s + x.r.deductionPaise, 0),
+      count: agg.n,
+      amountPaise: agg.a,
+      deductionPaise: agg.d,
     },
+    truncated: agg.all > rows.length,
   });
 });
 

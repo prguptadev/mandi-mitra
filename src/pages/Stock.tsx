@@ -15,6 +15,7 @@ import { downloadDara } from "@/components/DownloadDialog.tsx";
 import { RaceChart, type RacePoint } from "@/components/RaceChart.tsx";
 import { Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, EmptyState, Alert } from "@/components/ui/index.tsx";
 import { NewLoadDialog } from "@/pages/Loads.tsx";
+import { LoadError } from "@/components/LoadError.tsx";
 import { cn } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
@@ -61,7 +62,7 @@ function Filters({ s }: { s: ReturnType<typeof useStockFilters> }) {
 /* ------------------------------------------------------------ all mills */
 
 export function StockPage() {
-  const { t } = useI18n();
+  const { t, pick } = useI18n();
   const f = useFormat();
   const [, navigate] = useLocation();
   const s = useStockFilters();
@@ -97,7 +98,7 @@ export function StockPage() {
                 className="block rounded-xl border border-line bg-surface p-4 shadow-card transition-colors hover:border-brand/60">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <span className="flex min-w-0 items-center gap-2"><Badge tone="brand" className="num">{r.millCode}</Badge>
-                    <span className="truncate text-[14px] font-medium text-ink">{r.millName}</span></span>
+                    <span className="truncate text-[14px] font-medium text-ink">{pick(r.millName, r.millNameHi)}</span></span>
                   <ChevronRight className="h-4 w-4 shrink-0 text-faint" />
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-[12px]">
@@ -113,6 +114,9 @@ export function StockPage() {
                     <div><p className="text-faint">{t("mm.billed")}</p><p className="num">{f.money(m.billedPaise)}</p></div>
                     <div><p className="text-faint">{t("mm.received")}</p><p className="num text-ok">{f.money(m.receivedPaise)}</p></div>
                     <div><p className="text-faint">{t("mm.owes")}</p><p className={cn("num font-semibold", m.balancePaise < 0 ? "text-warn" : "text-brand")}>{f.money(m.balancePaise)}</p></div>
+                    {(m.openingBalancePaise !== 0 || m.shortagePaise !== 0 || m.deductedPaise !== 0) && (
+                      <p className="col-span-3 text-[11px] text-faint">{t("mm.owesAlso", { o: f.money(m.openingBalancePaise), c: f.money(m.shortagePaise), h: f.money(m.deductedPaise) })}</p>
+                    )}
                   </div>
                 )}
               </Link>
@@ -121,7 +125,7 @@ export function StockPage() {
         </div>
       )}
       <Card>
-        {list.isPending ? <SkeletonTable rows={4} /> : !rows.length ? (
+        {list.isPending ? <SkeletonTable rows={4} /> : list.isError ? <LoadError error={list.error} onRetry={() => void list.refetch()} /> : !rows.length ? (
           <EmptyState icon={<Boxes className="h-5 w-5" />} title={t("stock.empty")} sub={t("stock.emptySub")} />
         ) : (
           <Table>
@@ -139,7 +143,7 @@ export function StockPage() {
                 return (
                   <Tr key={key} onClick={() => navigate(`/stock/${key}`)}>
                     <Td className="whitespace-nowrap">
-                      {r.millCode ? <><Badge tone="brand" className="num">{r.millCode}</Badge> <span className="text-muted">{r.millName}</span></>
+                      {r.millCode ? <><Badge tone="brand" className="num">{r.millCode}</Badge> <span className="text-muted">{pick(r.millName, r.millNameHi)}</span></>
                         : <span className="text-warn">{t("stock.noMill")}</span>}
                     </Td>
                     <Td numeric>{r.slips}</Td>
@@ -207,7 +211,7 @@ export function MillAccountPage({ id }: { id: string }) {
   });
   const money = useQuery({
     queryKey: ["mill-ledger", id, "card"],
-    queryFn: () => api.get<{ totals: { billedPaise: number; receivedPaise: number; deductedPaise: number; closingPaise: number } }>(`/mill-ledger/${id}`),
+    queryFn: () => api.get<{ mill: { openingBalancePaise: number }; totals: { billedPaise: number; shortagePaise: number; receivedPaise: number; deductedPaise: number; closingPaise: number } }>(`/mill-ledger/${id}`),
     enabled: !isNone && can("millledger.read"),
   });
   const [receiving, setReceiving] = useState(false);
@@ -264,7 +268,8 @@ export function MillAccountPage({ id }: { id: string }) {
 
       <Card className="mb-5"><Filters s={s} /></Card>
 
-      {!isNone && (!a || !sm ? <SkeletonStats /> : (
+      {!isNone && acct.isError && <Card className="mb-5"><LoadError error={acct.error} onRetry={() => void acct.refetch()} /></Card>}
+      {!isNone && !acct.isError && (!a || !sm ? <SkeletonStats /> : (
         <>
           <div className={cn("grid gap-3 sm:grid-cols-3", money.data && "xl:grid-cols-4")}>
             <div className="rounded-xl border border-line bg-surface p-4 shadow-card">
@@ -291,7 +296,13 @@ export function MillAccountPage({ id }: { id: string }) {
               <div className="rounded-xl border border-line bg-surface p-4 shadow-card">
                 <p className="mb-1 flex items-center gap-2 text-[12px] font-medium uppercase tracking-wide text-muted"><Landmark className="h-4 w-4 text-brand" />{t("mm.owes")}</p>
                 <p className={cn("num text-2xl font-semibold", money.data.totals.closingPaise < 0 ? "text-warn" : "text-brand")}>{f.money(money.data.totals.closingPaise)}</p>
-                <p className="text-[12px] text-muted">{t("mm.billed")} {f.money(money.data.totals.billedPaise)} · {t("mm.received")} {f.money(money.data.totals.receivedPaise)}{money.data.totals.deductedPaise ? ` · ${t("mm.heldShort")} ${f.money(money.data.totals.deductedPaise)}` : ""}</p>
+                <p className="text-[12px] text-muted">
+                  {money.data.mill.openingBalancePaise ? `${t("mm.openingShort")} ${f.money(money.data.mill.openingBalancePaise)} + ` : ""}
+                  {t("mm.billed")} {f.money(money.data.totals.billedPaise)}
+                  {money.data.totals.shortagePaise ? ` − ${t("mm.cutShort")} ${f.money(money.data.totals.shortagePaise)}` : ""}
+                  {` − ${t("mm.received")} ${f.money(money.data.totals.receivedPaise)}`}
+                  {money.data.totals.deductedPaise ? ` − ${t("mm.heldShort")} ${f.money(money.data.totals.deductedPaise)}` : ""}
+                </p>
                 <p className="text-[11px] text-faint">{t("mm.allTimeNote")}</p>
                 {can("millreceipt.write") && <Button size="sm" variant="secondary" className="mt-2" onClick={() => setReceiving(true)}>{t("mm.receive")}</Button>}
               </div>
@@ -355,7 +366,7 @@ export function MillAccountPage({ id }: { id: string }) {
           sub={days.data ? t("stock.proof", {
             bought: f.weight(days.data.totals.boughtNet), loaded: f.weight(days.data.totals.loadedNet), left: f.weight(days.data.totals.stockNet),
           }) : undefined} />
-        {days.isPending ? <SkeletonTable rows={5} /> : !days.data?.days.length ? (
+        {days.isPending ? <SkeletonTable rows={5} /> : days.isError ? <LoadError error={days.error} onRetry={() => void days.refetch()} /> : !days.data?.days.length ? (
           <EmptyState title={t("stock.noDays")} />
         ) : (
           <Table>

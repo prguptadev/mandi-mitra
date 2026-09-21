@@ -138,7 +138,7 @@ function ParchaPreview({ cfg }: { cfg: ChargeConfig }) {
             </tbody>
           </table>
           <p className="mt-2.5 border-t border-line pt-2 text-[11px] leading-relaxed text-faint">
-            {f.weight(res.netGrams, { unit: true })} net · {f.int(res.katte)} katte{res.bore ? ` + ${f.int(res.bore)} bore` : ""} · bardana {f.weight(res.bardanaGrams, { unit: true })}
+            {t("merchant.previewLine", { net: f.weight(res.netGrams, { unit: true }), katte: f.int(res.katte), bore: res.bore ? ` + ${t("merchant.boreN", { n: f.int(res.bore) })}` : "", bardana: f.weight(res.bardanaGrams, { unit: true }) })}
             {f.words(res.grandTotalPaise) && <> · {f.words(res.grandTotalPaise)}</>}
           </p>
         </div>
@@ -420,7 +420,7 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
             <Switch checked={cfg.parcha.showDaraRow} onChange={(v) => patch("parcha", { ...cfg.parcha, showDaraRow: v })}
               label={`${t("merchant.dara")} — ${t("merchant.enabled")}`} />
             <Switch checked={cfg.parcha.showBoreColumns} onChange={(v) => patch("parcha", { ...cfg.parcha, showBoreColumns: v })}
-              label="Bore / katte columns" />
+              label={t("merchant.boreKatteCols")} />
           </div>
           <Field label={t("adati.notes")}>
             <Textarea value={cfg.notes} lang={lang} onChange={(e) => patch("notes", e.target.value)} />
@@ -438,8 +438,14 @@ export function MillsPage() {
   const { can } = useSession();
   const [dialog, setDialog] = useState<{ open: boolean; editing: Merchant | null }>({ open: false, editing: null });
   const [notice, setNotice] = useState<string | null>(null);
+  // a done-message fades; it must not sit there describing an older action
+  useEffect(() => {
+    if (!notice) return;
+    const id = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(id);
+  }, [notice]);
 
-  const list = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants?all=1") });
+  const list = useQuery({ queryKey: ["merchants", "all"], queryFn: () => api.get<Merchant[]>("/merchants?all=1") });
 
   const del = useMutation({
     mutationFn: (id: string) => api.del<{ deactivated: boolean }>(`/merchants/${id}`),
@@ -523,7 +529,7 @@ export function MillsPage() {
                       )}
                       {can("merchant.delete") && (
                         <Button variant="ghost" size="icon" className="h-7 w-7"
-                          onClick={() => { if (confirm(t("common.confirmDelete"))) del.mutate(m.id); }}
+                          onClick={() => { if (confirm(t("merchant.confirmDelete", { name: `${m.code} — ${m.name}` }))) del.mutate(m.id); }}
                           aria-label={t("common.delete")}>
                           <Trash2 className="h-3.5 w-3.5 text-bad/80" />
                         </Button>

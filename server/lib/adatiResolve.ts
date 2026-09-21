@@ -15,6 +15,8 @@ export interface AdatiMatch {
 /** Auto-accept at or above this; below it the operator picks from suggestions. */
 export const AUTO_ACCEPT = 0.82;
 const SUGGEST_FLOOR = 0.6;
+/** The reader's pick from the list counts only if it looks this much like what it wrote. */
+const PICK_CLOSE = 0.75;
 
 /** Loaded once per batch so a 30-row sheet does not hit the DB 30 times. */
 export async function loadResolver(businessId: string) {
@@ -32,18 +34,22 @@ export async function loadResolver(businessId: string) {
 
   const byId = new Map(suppliers.map((s) => [s.id, s]));
   const byRaw = new Map<string, string>();
-  const byNorm = new Map<string, string>();
+  /* The loose key drops vowel signs, so सोनू and सोना share one: every supplier
+     under a key is kept, and a key shared by two is never a match on its own. */
+  const byNorm = new Map<string, Set<string>>();
+  const addNorm = (k: string, id: string) => { if (!byNorm.has(k)) byNorm.set(k, new Set()); byNorm.get(k)!.add(id); };
   for (const a of aliases) {
     if (!byId.has(a.adatiId)) continue;
     byRaw.set(a.rawText, a.adatiId);
-    if (!byNorm.has(a.normKey)) byNorm.set(a.normKey, a.adatiId);
+    addNorm(a.normKey, a.adatiId);
   }
   // the canonical names are matchable even without an alias row
   for (const s of suppliers) {
     if (!byRaw.has(s.nameHi)) byRaw.set(s.nameHi, s.id);
-    const k = normKey(s.nameHi);
-    if (!byNorm.has(k)) byNorm.set(k, s.id);
+    addNorm(normKey(s.nameHi), s.id);
   }
+  const suggestion = (a: (typeof suppliers)[number], confidence: number): AdatiSuggestion =>
+    ({ adatiId: a.id, nameHi: a.nameHi, nameHinglish: a.nameHinglish, village: a.village ?? null, confidence });
 
   /* Named, not a method: callers pass it around unbound (resolve: resolver.resolve). */
   function resolve(raw: string, modelPick?: string | null): { match: AdatiMatch | null; suggestions: AdatiSuggestion[] } {
@@ -64,15 +70,19 @@ export async function loadResolver(businessId: string) {
     // the model's pick counts only if it resembles what was written; else it is a suggestion
     if (pickId && byId.has(pickId) && text) {
       const pk = byId.get(pickId)!;
-      const close = Math.max(similarity(text, pk.nameHi), similarity(text, pk.nameHinglish)) >= 0.5;
-      if (!close) {
-        const rest = resolve(raw, null);
-        const pickSuggestion: AdatiSuggestion = { adatiId: pk.id, nameHi: pk.nameHi, nameHinglish: pk.nameHinglish, village: pk.village ?? null, confidence: 0.5 };
+      const closeness = Math.max(similarity(text, pk.nameHi), similarity(text, pk.nameHinglish));
+      if (closeness >= PICK_CLOSE) {
         return {
-          match: rest.match && rest.match.via !== "fuzzy" ? rest.match : null,
-          suggestions: [pickSuggestion, ...rest.suggestions.filter((x) => x.adatiId !== pk.id)].slice(0, 3),
+          match: { adatiId: pk.id, nameHi: pk.nameHi, nameHinglish: pk.nameHinglish, confidence: Number(closeness.toFixed(3)), via: "model" },
+          suggestions: [],
         };
       }
+      // not like what it wrote (श्याम सिंह picked for राम सिंह): only a suggestion
+      const rest = resolve(raw, null);
+      return {
+        match: rest.match && rest.match.via !== "fuzzy" ? rest.match : null,
+        suggestions: [suggestion(pk, 0.5), ...rest.suggestions.filter((x) => x.adatiId !== pk.id)].slice(0, 3),
+      };
     }
     if (pickId && byId.has(pickId)) {
       const a = byId.get(pickId)!;
@@ -92,12 +102,20 @@ export async function loadResolver(businessId: string) {
       };
     }
 
-    const nk = byNorm.get(normKey(text));
-    if (nk && byId.has(nk)) {
-      const a = byId.get(nk)!;
+    const nk = [...(byNorm.get(normKey(text)) ?? [])].filter((id) => byId.has(id));
+    if (nk.length === 1) {
+      const a = byId.get(nk[0])!;
       return {
         match: { adatiId: a.id, nameHi: a.nameHi, nameHinglish: a.nameHinglish, confidence: 0.95, via: "normkey" },
         suggestions: [],
+      };
+    }
+    if (nk.length > 1) {
+      // two suppliers differ only in their vowel signs: the operator picks
+      return {
+        match: null,
+        suggestions: nk.map((id) => byId.get(id)!).map((a) => suggestion(a, Number(Math.max(similarity(text, a.nameHi), similarity(text, a.nameHinglish)).toFixed(3))))
+          .sort((x, y) => y.confidence - x.confidence).slice(0, 3),
       };
     }
 

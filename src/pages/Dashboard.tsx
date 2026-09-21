@@ -10,6 +10,7 @@ import { useSession } from "@/lib/session.tsx";
 import { useFormat } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { SkeletonStats, SkeletonTable } from "@/components/Skeletons.tsx";
+import { LoadError } from "@/components/LoadError.tsx";
 import { RaceChart, type RacePoint } from "@/components/RaceChart.tsx";
 import { Card, CardHeader, Badge, Select, Input, Button } from "@/components/ui/index.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
@@ -31,6 +32,7 @@ interface MillSummary {
 }
 interface MoneyData {
   cash: { receivedFromMillsPaise: number; paidToSuppliersPaise: number };
+  stock: { valuePaise: number; leftGrams: number; unpricedGrams: number; unbilledGoodsPaise: number; draftTrucks: number };
   suppliers: { openingPaise: number; purchasesPaise: number; slips: number; paidPaise: number; payments: number; toPayPaise: number; paidAheadPaise: number };
   mills: { billedPaise: number; parchas: number; shortagePaise: number; receivedPaise: number; deductedPaise: number; receipts: number; toReceivePaise: number; paidAheadPaise: number };
   billed: { goodsPaise: number; adatPaise: number; parts: { key: string; label: string; labelHi: string | null; amountPaise: number }[]; grandTotalPaise: number; otherPaise: number };
@@ -79,6 +81,7 @@ function Kpi({ icon: Icon, label, value, lines, tone, href }: {
 /** One line of a flag, in words, with where to go to fix it. */
 function useFlagText() {
   const { t } = useI18n();
+  const { can } = useSession();
   const f = useFormat();
   const q = (g: unknown) => f.weight(Number(g ?? 0));
   return (code: string, x: FlagItem): { text: string; href?: string } => {
@@ -95,7 +98,7 @@ function useFlagText() {
       case "po_over": return { text: t("flag.po_over.item", { po: String(x.po), mill: String(x.mill), q: q(x.overGrams) }), href: "/orders" };
       case "paid_ahead": return { text: t("flag.paid_ahead.item", { name: String(x.nameHi), amt: f.money(Number(x.paise)) }), href: `/ledger?adati=${x.adatiId}` };
       case "parcha_stale": return { text: t("flag.parcha_stale.item", { no: String(x.parchaNo), mill: String(x.mill), truck: String(x.truck ?? "—"), d: dmy(String(x.date)), was: f.rate(Number(x.was)), now: f.rate(Number(x.now)) }), href: `/loads/${x.loadId}` };
-      case "scan_failed": return { text: t("flag.scan_failed.item", { d: x.date ? dmy(String(x.date)) : "—" }), href: `/scan/${x.scanId}` };
+      case "scan_failed": return { text: t("flag.scan_failed.item", { d: x.date ? dmy(String(x.date)) : "—" }), href: can("scan.review") ? `/scan/${x.scanId}` : undefined };
       default: return { text: code };
     }
   };
@@ -156,15 +159,19 @@ function FlagsCard({ flags }: { flags: Flag[] }) {
  * Where the money stands, and where the billed money comes from. Balances
  * are all-time; flows (paid, received, billed) follow the period chosen.
  */
-function MoneyCard({ qs, stockPaise, unbilledPaise }: { qs: string; stockPaise: number; unbilledPaise: number }) {
+function MoneyCard({ qs }: { qs: string }) {
   const { t, pick } = useI18n();
   const f = useFormat();
   const q = useQuery({ queryKey: ["dashboard", "money", qs], queryFn: () => api.get<MoneyData>(`/dashboard/money?${qs}`) });
   const m = q.data;
+  if (q.isError) return <Card className="mt-5"><LoadError error={q.error} onRetry={() => void q.refetch()} /></Card>;
   if (!m) return <Card className="mt-5"><SkeletonTable rows={3} /></Card>;
   const toReceive = m.mills.toReceivePaise - m.mills.paidAheadPaise;
   const toPay = m.suppliers.toPayPaise - m.suppliers.paidAheadPaise;
   const cash = m.cash.receivedFromMillsPaise - m.cash.paidToSuppliersPaise;
+  // goods in hand and unbilled trucks, valued on the server as of the period's end
+  const stockPaise = m.stock.valuePaise;
+  const unbilledPaise = m.stock.unbilledGoodsPaise;
   const net = toReceive + stockPaise + unbilledPaise + cash - toPay;
   const grand = m.billed.grandTotalPaise;
   const parts = [
@@ -188,7 +195,9 @@ function MoneyCard({ qs, stockPaise, unbilledPaise }: { qs: string; stockPaise: 
       <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
         {tile(t("dash.millsOwe"), toReceive, t("dash.millsOweSub", { b: f.money(m.mills.billedPaise), r: f.money(m.mills.receivedPaise) }), "/mill-accounts", "text-brand")}
         {tile(t("dash.weOwe"), toPay, t("dash.weOweSub", { p: f.money(m.suppliers.paidPaise) }), "/ledger")}
-        {tile(t("dash.stockValue"), stockPaise + unbilledPaise, unbilledPaise ? t("dash.stockValueSub2", { u: f.money(unbilledPaise) }) : t("dash.stockValueSub"), "/stock")}
+        {tile(t("dash.stockValue"), stockPaise + unbilledPaise,
+          (unbilledPaise ? t("dash.stockValueSub2", { u: f.money(unbilledPaise) }) : t("dash.stockValueSub"))
+            + (m.stock.unpricedGrams > 0 ? ` · ${t("dash.unpricedStock", { q: f.weight(m.stock.unpricedGrams) })}` : ""), "/stock")}
         {tile(t("dash.cash"), cash, t("dash.cashSub", { r: f.money(m.cash.receivedFromMillsPaise), p: f.money(m.cash.paidToSuppliersPaise) }), undefined, cash < 0 ? "text-warn" : undefined)}
         {tile(t("dash.net"), net, t("dash.netSub"), undefined, net < 0 ? "text-bad" : "text-ok")}
       </div>
@@ -308,8 +317,8 @@ export function DashboardPage() {
             </Select>
             {period === "custom" && (
               <>
-                <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-36 text-[13px]" />
-                <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-36 text-[13px]" />
+                <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="h-8 w-36 text-[13px]" aria-label={t("common.from")} title={t("common.from")} />
+                <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="h-8 w-36 text-[13px]" aria-label={t("common.to")} title={t("common.to")} />
               </>
             )}
             <Select value={jinsId} onChange={(e) => setJinsId(e.target.value)} className="h-8 w-40 text-[13px]">
@@ -319,7 +328,7 @@ export function DashboardPage() {
           </div>
         } />
 
-      {!k ? <SkeletonStats /> : (
+      {dash.isError ? <Card><LoadError error={dash.error} onRetry={() => void dash.refetch()} /></Card> : !k ? <SkeletonStats /> : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Kpi icon={PackageOpen} label={t("dash.received")} value={<>{f.weight(k.boughtNetGrams)} <span className="text-[13px] font-normal text-muted">{f.unit}</span></>}
             href="/daily"
@@ -350,10 +359,10 @@ export function DashboardPage() {
         </div>
       )}
 
-      {can("ledger.read") && can("millledger.read") && k && <MoneyCard qs={qs.toString()} stockPaise={k.leftGrams > 0 && k.avgBuyPaisePerQtl ? Math.round((k.leftGrams / 100_000) * k.avgBuyPaisePerQtl) : 0} unbilledPaise={k.unbilledGoodsPaise} />}
+      {can("ledger.read") && can("millledger.read") && k && <MoneyCard qs={qs.toString()} />}
 
       <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-        {d ? <FlagsCard flags={d.flags} /> : <Card><SkeletonTable rows={4} /></Card>}
+        {d ? <FlagsCard flags={d.flags} /> : dash.isError ? null : <Card><SkeletonTable rows={4} /></Card>}
         {can("ledger.read") && (
           <Card className="self-start">
             <CardHeader title={t("dash.topToPay")} action={<Link href="/ledger"><Button size="sm" variant="ghost">{t("dash.seeAll")}</Button></Link>} />
@@ -375,7 +384,7 @@ export function DashboardPage() {
       </div>
 
       <h2 className="mt-7 mb-3 text-[15px] font-semibold text-ink">{t("dash.perMill")}</h2>
-      {!d ? <Card><SkeletonTable rows={6} /></Card> : !d.mills.length ? (
+      {!d ? (dash.isError ? null : <Card><SkeletonTable rows={6} /></Card>) : !d.mills.length ? (
         <Card><p className="p-6 text-center text-[13px] text-muted">{t("dash.noMills")}</p></Card>
       ) : (
         <div className="grid gap-5 xl:grid-cols-2">

@@ -87,5 +87,5 @@ commits while a *must fix* row remains.
 Fresh dev database:
 
 ```bash
-rm -f data/mandi.db* && npm run db:push && npx tsx scripts/dev-bootstrap.ts && npm run db:seed
+# (the real database is never reset from here; the tests build their own: npm run test:e2e)
 ```

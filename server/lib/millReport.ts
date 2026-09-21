@@ -1,7 +1,7 @@
 import ExcelJS from "exceljs";
 import { MILL_REPORT_COLUMNS, type MillReportColumnKey } from "./prefs.ts";
 import { dmy } from "./parchaLabels.ts";
-import { weightedAvgRate } from "./money.ts";
+import { weightedAvgRate, fmtQtl } from "./money.ts";
 
 /* The daily report sent to a mill ("dara"): what was bought for it, one row
    per slip, with the total and the weighted average rate at the foot.
@@ -157,8 +157,8 @@ export function millReportCsv(d: MillReportData): string {
     [],
     cols.map(label),
     ...d.rows.map((r, i) => cols.map((k) => fix2(k, cellValue(k, r, i)))),
-    cols.map((k) => k === lab ? `Total (${t.count})` : k === "gross" ? (t.grossGrams / 100_000).toFixed(2)
-      : k === "katauti" ? t.katautiUnits : k === "net" ? (t.netGrams / 100_000).toFixed(2)
+    cols.map((k) => k === lab ? `Total (${t.count})` : k === "gross" ? fmtQtl(t.grossGrams)
+      : k === "katauti" ? t.katautiUnits : k === "net" ? fmtQtl(t.netGrams)
       : k === "amount" ? (t.amountPaise / 100).toFixed(2) : ""),
     cols.map((k) => k === lab ? "Average rate" : k === "rate" ? (t.avgRatePaisePerQtl / 100).toFixed(2) : ""),
   ];

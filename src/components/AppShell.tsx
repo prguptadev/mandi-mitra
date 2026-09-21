@@ -5,9 +5,11 @@ import {
   Factory, Wheat, BookOpen, Wallet, UserCog, ShieldCheck, ScrollText, Settings,
   Menu, X, Sun, Moon, Languages, ChevronDown, LogOut, Building2, Check, Plus,
   PanelLeftClose, PanelLeftOpen,
-  ClipboardList, Landmark, ClipboardCheck } from "lucide-react";
+  ClipboardList, Landmark, ClipboardCheck, KeyRound } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
+import { ApiError } from "@/lib/api.ts";
 import { SyncIndicator } from "@/components/SyncIndicator.tsx";
+import { MyPinDialog } from "@/components/MyPinDialog.tsx";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useTheme } from "@/lib/theme.tsx";
 import { useSession } from "@/lib/session.tsx";
@@ -52,6 +54,7 @@ function BusinessSwitcher({ onAdd }: { onAdd: () => void }) {
   const { me, switchBusiness } = useSession();
   const { t, pick } = useI18n();
   const [open, setOpen] = useState(false);
+  const [location, navigate] = useLocation();
   if (!me) return null;
 
   const active = me.businesses.find((b) => b.businessId === me.activeBusinessId);
@@ -86,7 +89,18 @@ function BusinessSwitcher({ onAdd }: { onAdd: () => void }) {
             {me.businesses.map((b) => (
               <button
                 key={b.businessId} type="button"
-                onClick={async () => { setOpen(false); if (b.businessId !== me.activeBusinessId) await switchBusiness(b.businessId); }}
+                onClick={async () => {
+                  setOpen(false);
+                  if (b.businessId === me.activeBusinessId) return;
+                  try {
+                    await switchBusiness(b.businessId);
+                    // a truck, scan or mill page belongs to the old business: go to its list
+                    const parts = location.split("/").filter(Boolean);
+                    if (parts.length > 1) navigate(`/${parts[0]}`);
+                  } catch (e) {
+                    window.alert(e instanceof ApiError ? e.message : t("common.somethingWrong"));
+                  }
+                }}
                 className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-raised"
               >
                 <span className="grid h-6 w-6 shrink-0 place-items-center rounded bg-raised text-[10px] font-bold text-muted">
@@ -94,7 +108,7 @@ function BusinessSwitcher({ onAdd }: { onAdd: () => void }) {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px] text-ink">{pick(b.name, b.nameHi)}</span>
-                  <span className="block truncate text-[11px] text-faint">{b.roleLabel}</span>
+                  <span className="block truncate text-[11px] text-faint">{pick(b.roleLabel, b.roleLabelHi)}</span>
                 </span>
                 {b.businessId === me.activeBusinessId && <Check className="h-4 w-4 shrink-0 text-brand" />}
               </button>
@@ -117,6 +131,7 @@ function BusinessSwitcher({ onAdd }: { onAdd: () => void }) {
 const SIDEBAR_KEY = "mandi.sidebar.collapsed";
 
 export function AppShell({ children, onAddBusiness }: { children: ReactNode; onAddBusiness: () => void }) {
+  const [pinOpen, setPinOpen] = useState(false);
   const { t, lang, setLang } = useI18n();
   const { resolved, cycle } = useTheme();
   const { me, can, logout } = useSession();
@@ -257,7 +272,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
           <aside className="absolute left-0 top-0 h-full w-72 border-r border-line bg-surface shadow-pop">
             <div className="flex items-center justify-between border-b border-line px-3 py-2.5">
               <span className="text-sm font-semibold">{t("app.name")}</span>
-              <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)}><X className="h-4 w-4" /></Button>
+              <Button variant="ghost" size="icon" onClick={() => setMobileOpen(false)} title={t("common.close")} aria-label={t("common.close")}><X className="h-4 w-4" /></Button>
             </div>
             {sidebar}
           </aside>
@@ -299,12 +314,17 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
 
           <div className="mx-1 hidden h-6 w-px bg-line sm:block" />
 
-          <div className="hidden items-center gap-2 sm:flex">
+          <button type="button" onClick={() => setPinOpen(true)} title={t("auth.changePin")}
+            className="hidden items-center gap-2 rounded-lg px-1.5 py-0.5 hover:bg-raised sm:flex">
             <div className="text-right leading-tight">
               <p className="text-[13px] font-medium text-ink">{me?.user.name}</p>
               {me?.user.isRoot && <Badge tone="brand" className="mt-0.5">{t("users.owner")}</Badge>}
             </div>
-          </div>
+          </button>
+          <Button variant="ghost" size="icon" className="sm:hidden" onClick={() => setPinOpen(true)} title={t("auth.changePin")} aria-label={t("auth.changePin")}>
+            <KeyRound className="h-4 w-4" />
+          </Button>
+          {pinOpen && <MyPinDialog onClose={() => setPinOpen(false)} />}
           <Button variant="ghost" size="icon" onClick={logout} title={t("auth.signOut")} aria-label={t("auth.signOut")}>
             <LogOut className="h-4 w-4" />
           </Button>
@@ -325,7 +345,8 @@ export function PageHeader({ title, sub, action }: { title: ReactNode; sub?: Rea
         <h1 className="text-xl font-semibold tracking-tight text-ink">{title}</h1>
         {sub && <p className="mt-1 text-[13px] text-muted">{sub}</p>}
       </div>
-      {action && <div className="shrink-0">{action}</div>}
+      {/* on a phone the buttons wrap under the title instead of pushing the page sideways */}
+      {action && <div className="min-w-0 max-w-full">{action}</div>}
     </div>
   );
 }

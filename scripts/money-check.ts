@@ -31,11 +31,24 @@ for (const biz of all<{ id: string; name: string }>("select id, name from busine
 
   // 1. every slip re-worked: katauti, net, amount
   console.log("\n 1. Slips (daily list)");
-  const slips = all<{ id: string; rst_no: string; slip_date: string; adati_id: string; merchant_id: string | null; jins_id: string; gross_grams: number; katauti_units: number; katauti_override: number; net_grams: number; rate_paise_per_qtl: number; amount_paise: number }>(
+  const slips = all<{ id: string; rst_no: string; slip_date: string; adati_id: string; merchant_id: string | null; jins_id: string; gross_grams: number; katauti_units: number; katauti_override: number; net_grams: number; rate_paise_per_qtl: number; amount_paise: number; katauti_terms?: string | null }>(
     "select * from purchase_slips where business_id = ?", biz.id);
+  // slips with no mill: the business's own katauti setting (Settings), else the built-in default
+  const disp = all<{ value: string }>("select value from settings where business_id = ? and key = 'display'", biz.id)[0];
+  const bizK: Katauti = (() => {
+    try {
+      const d = JSON.parse(disp?.value ?? "{}");
+      return { mode: d.katautiMode ?? DEFAULT_K.mode, kgPerUnit: d.katautiKgPerUnit ?? DEFAULT_K.kgPerUnit, rounding: d.katautiRounding ?? DEFAULT_K.rounding } as Katauti;
+    } catch { return DEFAULT_K; }
+  })();
+  // each slip is checked against the terms it was entered under (kept on the slip since v0.3)
+  const termsOf = (s: { merchant_id: string | null; katauti_terms?: string | null }): Katauti => {
+    if (s.katauti_terms) { try { return { ...DEFAULT_K, ...JSON.parse(s.katauti_terms) } as Katauti; } catch { /* fall through */ } }
+    return s.merchant_id ? kOf.get(s.merchant_id) ?? DEFAULT_K : bizK;
+  };
   let slipBad = 0;
   for (const s of slips) {
-    const k = deriveKatauti(s.gross_grams, s.merchant_id ? kOf.get(s.merchant_id) ?? DEFAULT_K : DEFAULT_K, s.katauti_override ? s.katauti_units : null);
+    const k = deriveKatauti(s.gross_grams, termsOf(s), s.katauti_override ? s.katauti_units : null);
     const net = s.gross_grams - k.deductionGrams;
     const amt = amountPaise(net, s.rate_paise_per_qtl);
     if (k.units !== s.katauti_units || net !== s.net_grams || amt !== s.amount_paise) {
@@ -123,7 +136,10 @@ for (const biz of all<{ id: string; name: string }>("select id, name from busine
   let stockValue = 0;
   for (const m of mills) {
     const bought = slips.filter((s) => s.merchant_id === m.id).reduce((s, x) => s + x.net_grams, 0);
-    const boughtValue = slips.filter((s) => s.merchant_id === m.id).reduce((s, x) => s + x.amount_paise, 0);
+    // the average over priced slips only: an unpriced slip is worth nothing yet, not a lower rate
+    const priced = slips.filter((s) => s.merchant_id === m.id && s.rate_paise_per_qtl > 0);
+    const pricedNet = priced.reduce((s, x) => s + x.net_grams, 0);
+    const boughtValue = priced.reduce((s, x) => s + x.amount_paise, 0);
     let loaded = 0;
     for (const l of loads.filter((x) => x.merchant_id === m.id)) {
       const rows = lines.filter((x) => x.load_id === l.id);
@@ -133,7 +149,7 @@ for (const biz of all<{ id: string; name: string }>("select id, name from busine
     }
     if (!bought && !loaded) continue;
     const left = bought - loaded;
-    const avg = bought ? boughtValue / (bought / 100_000) : 0;
+    const avg = pricedNet ? boughtValue / (pricedNet / 100_000) : 0;
     stockValue += Math.max(0, left) / 100_000 * avg;
     ok(`${m.code}: bought ${qt(bought)} − loaded ${qt(loaded)} = ${qt(left)} qtl left${left < 0 ? "  ← more loaded than bought" : ""}`);
   }

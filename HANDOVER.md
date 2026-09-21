@@ -311,16 +311,28 @@ scripts/
   itself. `npm run desktop:pack` / `.github/workflows/desktop.yml` builds the
   NSIS installer on windows-latest and runs the packaged app with
   `--smoke-test`. **Not yet installed on the owner's PC.**
-- **Cloud copy (Supabase)** — `server/lib/cloud.ts`. The PC stays the real
-  database; every 5 min changed rows are upserted into one Postgres table
-  `mm_rows (tbl, row_id, business_id, data jsonb, deleted)`; deletes are
-  marked, not removed. Never sent: sessions, sync_outbox, migrations, the
-  Gemini key, scan_batches.raw_response, images. Connection string
-  encrypted (secrets.ts); push state in `data/cloud-state.db`. Restore
-  (type RESTORE) backs up first, replaces all tables, checks foreign keys,
-  signs everyone out; refused if the copy is from a newer app version.
-  Sizing: ~0.8 MB for the first 3 days incl. setup; est. 100–200 MB a year.
-  Tested against PGlite (real Postgres in-process), `scripts/fake-postgres.ts`.
+- **Two-way cloud sync (Supabase), v0.3** — `server/lib/cloud.ts`. Every
+  computer keeps its own full SQLite and works offline; in the background it
+  pulls (every change since its cursor) then pushes (every record SQLite
+  triggers marked in `_sync_dirty`), every 10 s and 1.5 s after a change.
+  Cloud: `mm_rows (tbl, row_id, data jsonb, deleted, seq, device, hash)`, a
+  sequence handed out under `pg_advisory_xact_lock`, so seq follows commit
+  order; `mm_meta` (schema version), `mm_claims` (parcha numbers),
+  `mm_devices`. Rules: the later `updated_at` wins and the other version goes
+  on the clashes list; an edit beats a delete; **a push never overwrites a
+  version this computer has not seen** (`pushed` keeps the last seen hash per
+  record; an unseen one waits for the next pull); a record that cannot be
+  applied (same mill code made on two computers) is listed and retried every
+  sync, so it arrives once renamed. An older app pauses (schema check). Parcha
+  approval claims its number in `mm_claims` first — needs the internet.
+  Never sent: sessions, the Gemini key, raw model replies, images (pictures
+  stay where scanned; other computers get the rows). Joining: from Settings
+  (type JOIN; this computer's data is backed up, then replaced by the cloud's)
+  or from the first screen of an empty install. Local state in
+  `data/cloud.json` + `data/cloud-state.db`. v0.2's one-way copy upgrades by
+  taking the cloud as already seen (`fromCopy`). e2e: three servers A/B/C on
+  PGlite behind a queue proxy with an "internet" switch
+  (`scripts/fake-postgres.ts`); money audit identical on all three.
 - **Updates** — `server/lib/updater.ts`. Settings › App version and updates
   finds the newest `MandiMitra-Setup-x.y.z.exe` in a folder (Downloads by
   default), checks its SHA-256 against GitHub's release asset digest, backs
@@ -337,6 +349,47 @@ scripts/
 - **Money audit** — `scripts/money-check.ts <copy.db>` re-works every figure
   from raw rows; it runs at the end of `test:e2e` and passed on a copy of the
   real database on 21-09 (122 slips, 3 parchas, 2 mills).
+
+### v0.3 hardening (after a four-part audit: money, data safety, screens, OCR/permissions)
+
+- **Database updates** run with foreign keys off (a table rebuild inside
+  drizzle's transaction would otherwise cascade-delete), then check broken
+  links and per-table row counts; any loss puts the pre-update copy back and
+  stops the app. The pre-update copy is `VACUUM INTO` + `quick_check`, and no
+  copy means no update. Every backup is written as `.tmp`, checked, renamed;
+  weekly copies kept for half a year; the second folder gets a per-computer
+  sub-folder. **Restore** is in Settings › Backups (↺): done at the next
+  start, before the database opens; the replaced one is kept as
+  `before-restore-…`. The database is checkpointed and closed on quit.
+- **Indexes** (migration 0014) for slips by mill and date, trucks by mill and
+  date, payments / receipts / parchas by firm and date, members by firm; the
+  query planner's statistics refresh at start and every 6 hours.
+- **Money**: each slip keeps the katauti terms it was made with
+  (`katauti_terms`), so a later change to a mill's terms never re-prices old
+  slips; the dashboard values stock per purchase day at that day's rate, as
+  of the period's end, including slips with no mill and every draft truck;
+  totals no longer stop at 500/1000 rows; per-unit rates keep 1/100 paise;
+  labels print 0.125 %; the paper shows LESS ADVANCE, ROUND OFF and whether
+  dara is in the total; downloads round weights to the kilo like the screen.
+- **Parcha approval** re-checks the truck after the cloud claim and writes in
+  one transaction; one approved parcha per truck is a database rule; a number
+  used for another truck (even voided) is refused.
+- **OCR**: a page whose rows may have slid — a name with no weight, a weight
+  with no name, or row numbers that jump, repeat or run backwards — blocks
+  until "I checked page N line by line"; a header date or bottom total that
+  disagrees needs its own OK. Typing a value is no longer accepting it. An RST
+  already entered that day, a struck line put back, or a net that could not
+  be read needs a ✓. Names that differ only in vowel signs are offered, never
+  matched; the model's pick must look like what it wrote. The model's reading
+  cannot be rewritten from the screen. A reply with one odd value no longer
+  throws away the page.
+- **Permissions**: commit needs review *and* add-slips (and rate rights when
+  the sheet has rates); roles belong to their firm; only an Owner makes an
+  Owner; only the Admin changes the Admin's PIN; a PIN change signs that
+  person out elsewhere; opening balances and parcha money are hidden from
+  roles without money rights; the API answers only this computer's own pages
+  (Host/Origin check) and listens on 127.0.0.1; the updater runs only an
+  installer whose SHA-256 matches GitHub at install time.
 
 ### How the OCR is made trustworthy
 
@@ -433,16 +486,25 @@ npm run dev                           # api :8787, web :5173
 Fresh database from nothing:
 
 ```bash
-rm -f data/mandi.db* && npm run db:push \
-  && npx tsx scripts/dev-bootstrap.ts \
-  && npm run db:seed
+# (the real database is never reset from here; the tests build their own: npm run test:e2e)
 ```
 
 `db:seed` loads the two mills (G.R.M, L.B) and the 31 supplier names read off
 the real sheets, plus an Operator and an Accountant login so role restrictions
 can be exercised.
 
-### Dev logins (throwaway — delete `data/mandi.db*` before real use)
+### A new install (v0.3)
+
+An empty database starts with **Vijay Laxmi Dal Mill** and **V C
+Enterprises**, and three people, all on PIN **7747** with full access in both
+firms: **Admin** (root) and **Manager 1**, **Manager 2**. Only the Admin can
+add a business. The PIN is in this public repository: change it after the
+first sign-in (click your name, top right). A second computer then joins the
+office's cloud from Settings › Cloud sync, which replaces this starting data
+with the office's. `MANDI_NO_SEED=1` turns the starting data off (the tests
+use it for their first computer).
+
+### Dev logins (test databases only — the demo seed refuses the real data folder)
 
 | User | PIN | Role |
 |---|---|---|
@@ -464,7 +526,8 @@ npm run build
 ```
 
 `npm run test:e2e` is the **only** way to run the e2e scripts: it starts its
-own server on :8799 with `data-test/` and deletes both afterwards. The scripts
+own servers (:8799 with `data-test/`, plus :8802/:8803 with `data-test-b/-c`
+for the sync test) and deletes them afterwards. The scripts
 refuse to run against the real database (`scripts/_guard.ts`). It covers the
 daily list, the OCR review, trucks / PO / parcha / stock (invoice 196 to the
 paisa) and the ledger (hand-worked rupees).
@@ -628,17 +691,20 @@ Never run a data-writing script against the dev server by hand again.
 1. **Install on the owner's Windows PC** and try the Canon scanner there —
    both are built and tested on stand-ins only.
 2. The owner makes the Supabase project and pastes its connection string in
-   Settings › Cloud copy (nobody else can create the account).
-3. Restore from a local backup file inside the app (today: replace
-   `mandi.db` by hand; cloud restore is in the app).
-4. Two computers working at once would need two-way sync; today the cloud
-   is a one-way copy from one PC.
+   Settings › Cloud sync on the first computer; the others join (nobody else
+   can create the account).
+3. The real database still has the demo logins "Munshi Ji" and "Accounts"
+   (PINs in this repo): the owner should deactivate them or change their PINs.
+4. Not done from the v0.3 audit (by choice or for later): certificate pinning
+   for Supabase (TLS is on, the certificate is not checked); scan pictures are
+   not in the database backups (they are in `data/scans`); two people editing
+   the same scan at once — the last save wins; a totals row on Orders.
 
 ### Smaller gaps
 
 - No unit test runner (vitest). Six regression scripts in CI plus `test:e2e`
-  (246 checks, a stand-in Google and a stand-in scanner, then the money
-  audit over everything the tests stored).
+  (355 checks, a stand-in Google, a stand-in scanner, three computers syncing
+  through a stand-in Supabase, then the money audit on each).
 - Printing is via the browser's print dialog ("Save as PDF" for a PDF);
   not yet tried on the owner's printer.
 - Responsive but untested on a real tablet.

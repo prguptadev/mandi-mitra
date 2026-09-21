@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Route, Switch as RouteSwitch, useLocation } from "wouter";
+import { Route, Switch as RouteSwitch, useLocation, Redirect, Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ShieldAlert, WifiOff, Plus } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
@@ -25,24 +25,39 @@ import { MillLedgerPage, MillStatementPage } from "@/pages/MillMoney.tsx";
 import { ChallanPage } from "@/pages/Challan.tsx";
 import { UsersPage, RolesPage, AuditPage, CommoditiesPage, SettingsPage } from "@/pages/Admin.tsx";
 
+/** The dashboard, or — for a role without it — the first screen the role may open. */
+function Home() {
+  const { can } = useSession();
+  const { t } = useI18n();
+  if (can("dashboard.view")) return <DashboardPage />;
+  const first = ([
+    ["/daily", "slip.read"], ["/scan", "scan.create"], ["/loads", "load.read"], ["/stock", "stock.read"],
+    ["/ledger", "ledger.read"], ["/payments", "payment.read"], ["/suppliers", "adati.read"], ["/settings", "business.read"],
+  ] as const).find(([, p]) => can(p));
+  if (first) return <Redirect to={first[0]} />;
+  return <Card><EmptyState icon={<ShieldAlert className="h-5 w-5" />} title={t("err.noPermission")} sub={t("err.askOwner")} /></Card>;
+}
+
 function AddBusinessDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { t } = useI18n();
   const qc = useQueryClient();
   const [f, setF] = useState({ name: "", nameHi: "", shortCode: "" });
   const [err, setErr] = useState<string | null>(null);
 
+  // a cancelled dialog opens empty next time
+  const close = () => { setF({ name: "", nameHi: "", shortCode: "" }); setErr(null); onClose(); };
   const m = useMutation({
     mutationFn: () => api.post("/auth/businesses", {
       name: f.name, nameHi: f.nameHi || undefined, shortCode: f.shortCode,
     }),
-    onSuccess: async () => { await qc.invalidateQueries(); onClose(); setF({ name: "", nameHi: "", shortCode: "" }); },
+    onSuccess: async () => { await qc.invalidateQueries(); close(); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
   return (
-    <Dialog open={open} onClose={onClose} title={t("biz.add")} sub={t("biz.addSub")}
+    <Dialog open={open} onClose={close} title={t("biz.add")} sub={t("biz.addSub")}
       footer={<>
-        <Button onClick={onClose}>{t("common.cancel")}</Button>
+        <Button onClick={close}>{t("common.cancel")}</Button>
         <Button variant="primary" loading={m.isPending}
           disabled={!f.name.trim() || !f.shortCode.trim()}
           onClick={() => { setErr(null); m.mutate(); }}>{t("common.add")}</Button>
@@ -115,13 +130,14 @@ export default function App() {
     <>
       <AppShell onAddBusiness={() => setAddBiz(true)}>
         <ErrorBoundary
-          key={location}
+          // another business is a fresh start for every screen: no ids or filters carry over
+          key={`${me.activeBusinessId}|${location}`}
           fallbackTitle={t("err.crashed")}
           fallbackSub={t("err.crashedSub")}
           reloadLabel={t("err.reload")}
         >
         <RouteSwitch>
-          <Route path="/" component={DashboardPage} />
+          <Route path="/" component={Home} />
           <Route path="/scan">{() => <Guard perm="scan.create"><ScanListPage /></Guard>}</Route>
           <Route path="/scan/:id">{(p) => <Guard perm="scan.review"><ScanReviewPage scanId={p.id} /></Guard>}</Route>
           <Route path="/daily">{() => <Guard perm="slip.read"><DailyListPage /></Guard>}</Route>
@@ -145,7 +161,8 @@ export default function App() {
           <Route path="/settings">{() => <Guard perm="business.read"><SettingsPage /></Guard>}</Route>
           <Route>
             <Card>
-              <EmptyState title={t("dash.comingSoon")} sub={t("app.tagline")} />
+              <EmptyState title={t("err.pageNotFound")} sub={t("err.pageNotFoundSub")}
+                action={<Link href="/"><Button>{t("err.goHome")}</Button></Link>} />
             </Card>
           </Route>
         </RouteSwitch>

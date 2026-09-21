@@ -91,7 +91,10 @@ export const memberships = sqliteTable(
     active: integer("active", { mode: "boolean" }).notNull().default(true),
     createdAt: integer("created_at").notNull().$defaultFn(now),
   },
-  (t) => ({ uq: uniqueIndex("membership_uq").on(t.userId, t.businessId) }),
+  (t) => ({
+    uq: uniqueIndex("membership_uq").on(t.userId, t.businessId),
+    bizIdx: index("membership_biz_idx").on(t.businessId),
+  }),
 );
 
 /** Per-user grant/revoke on top of the role. effect: 'allow' | 'deny'. */
@@ -248,6 +251,12 @@ export const purchaseSlips = sqliteTable(
     status: text("status").notNull().default("open"),
     scanBatchId: text("scan_batch_id"),
     ocrConfidence: real("ocr_confidence"),
+    /**
+     * The katauti terms (JSON) this slip was worked out with. A later change to
+     * the mill's terms does not move it; only a new weight, a move to another
+     * mill or an explicit "recompute" applies the new terms.
+     */
+    katautiTerms: text("katauti_terms"),
     enteredBy: text("entered_by").references(() => users.id),
     createdAt: integer("created_at").notNull().$defaultFn(now),
     updatedAt: integer("updated_at").notNull().$defaultFn(now),
@@ -258,6 +267,7 @@ export const purchaseSlips = sqliteTable(
     dateIdx: index("slip_date_idx").on(t.businessId, t.slipDate),
     loadIdx: index("slip_load_idx").on(t.loadId),
     adatiIdx: index("slip_adati_idx").on(t.adatiId, t.slipDate),
+    millIdx: index("slip_mill_date_idx").on(t.merchantId, t.slipDate),
   }),
 );
 
@@ -285,7 +295,10 @@ export const purchaseOrders = sqliteTable(
     updatedAt: integer("updated_at").notNull().$defaultFn(now),
   },
   // a number, when there is one, is unique per mill; POs without one are told apart by date
-  (t) => ({ uq: uniqueIndex("po_uq").on(t.businessId, t.merchantId, t.poNo).where(sql`${t.poNo} <> ''`) }),
+  (t) => ({
+    uq: uniqueIndex("po_uq").on(t.businessId, t.merchantId, t.poNo).where(sql`${t.poNo} <> ''`),
+    millIdx: index("po_biz_mill_idx").on(t.businessId, t.merchantId),
+  }),
 );
 
 /** One truck to one mill. Slips are allocated to it; the mill's own
@@ -335,6 +348,7 @@ export const loads = sqliteTable(
   (t) => ({
     dateIdx: index("load_date_idx").on(t.businessId, t.loadDate),
     poIdx: index("load_po_idx").on(t.poId),
+    millIdx: index("load_mill_date_idx").on(t.merchantId, t.loadDate),
   }),
 );
 
@@ -392,6 +406,9 @@ export const parchas = sqliteTable(
   (t) => ({
     uq: uniqueIndex("parcha_no_uq").on(t.businessId, t.parchaNo, t.version),
     loadIdx: index("parcha_load_idx").on(t.loadId),
+    dateIdx: index("parcha_biz_date_idx").on(t.businessId, t.invoiceDate),
+    // one live parcha per truck: a second approval can never slip in beside it
+    oneLive: uniqueIndex("parcha_one_approved_uq").on(t.loadId).where(sql`${t.status} = 'approved'`),
   }),
 );
 
@@ -413,7 +430,10 @@ export const payments = sqliteTable(
     voidedBy: text("voided_by").references(() => users.id),
     voidReason: text("void_reason"),
   },
-  (t) => ({ idx: index("payment_adati_idx").on(t.adatiId, t.payDate) }),
+  (t) => ({
+    idx: index("payment_adati_idx").on(t.adatiId, t.payDate),
+    dateIdx: index("payment_biz_date_idx").on(t.businessId, t.payDate),
+  }),
 );
 
 /**
@@ -446,6 +466,7 @@ export const millReceipts = sqliteTable(
   (t) => ({
     idx: index("mill_receipt_mill_idx").on(t.merchantId, t.receiptDate),
     loadIdx: index("mill_receipt_load_idx").on(t.loadId),
+    dateIdx: index("mill_receipt_biz_date_idx").on(t.businessId, t.receiptDate),
   }),
 );
 

@@ -1,4 +1,5 @@
-import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils.ts";
 import { Loader2, X, Check } from "lucide-react";
 
@@ -234,8 +235,19 @@ export function Dialog({
   open: boolean; onClose: () => void; title: ReactNode; sub?: ReactNode;
   children: ReactNode; footer?: ReactNode; wide?: boolean;
 }) {
+  // Escape closes, as the × does (a picker open inside keeps its own Escape)
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeRef.current(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
   if (!open) return null;
-  return (
+  /* Drawn at the page's top level: inside a bar with a blur or transform, a
+     "fixed" box is trapped in that bar instead of covering the screen. */
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:p-6">
       <div className="fixed inset-0 bg-black/45 backdrop-blur-[2px]" onClick={onClose} />
       <div
@@ -257,7 +269,8 @@ export function Dialog({
         <div className="px-5 py-4">{children}</div>
         {footer && <div className="flex items-center justify-end gap-2 px-5 py-3.5 border-t border-line bg-raised/40 rounded-b-2xl">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

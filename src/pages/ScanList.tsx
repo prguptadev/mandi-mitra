@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { LoadError } from "@/components/LoadError.tsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
@@ -115,7 +116,7 @@ export function ScanListPage() {
           <span className="inline-flex items-center gap-2">
             <KeyRound className="h-3.5 w-3.5" />
             {t("scan.noKey")}
-            <Button size="sm" variant="secondary" onClick={() => navigate("/settings")}>{t("nav.settings")}</Button>
+            {can("business.read") && <Button size="sm" variant="secondary" onClick={() => navigate("/settings")}>{t("nav.settings")}</Button>}
           </span>
         </Alert>
       )}
@@ -213,6 +214,8 @@ export function ScanListPage() {
 
         {list.isLoading ? (
           <div className="p-4"><SkeletonList rows={5} /></div>
+        ) : list.isError ? (
+          <LoadError error={list.error} onRetry={() => void list.refetch()} />
         ) : !list.data?.length ? (
           <EmptyState icon={<ScanLine className="h-8 w-8" />}
             title={filtersOn ? t("common.noResults") : t("scan.empty")}
@@ -232,7 +235,7 @@ export function ScanListPage() {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-1.5">
-                    <span className="num text-[13px] font-medium text-ink">{s.slipDate ?? "—"}</span>
+                    <span className="num text-[13px] font-medium text-ink">{s.slipDate ? s.slipDate.split("-").reverse().join("-") : "—"}</span>
                     {s.merchantCode && <Badge tone="neutral" className="num">{s.merchantCode}</Badge>}
                     <Badge tone={STATUS_TONE[s.status] ?? "neutral"}>{t(`scan.status.${s.status}` as never)}</Badge>
                   </span>

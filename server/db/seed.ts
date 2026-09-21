@@ -1,11 +1,19 @@
-/* Optional demo data, taken from the real 20-09-2026 sheets.
-   Run: npm run db:seed        Reset instead: rm -f data/mandi.db*   */
+/* Demo data for the TEST databases only (the end-to-end tests load it).
+   It adds staff logins whose PINs are in this public repository, so it
+   refuses to run against the real data folder. */
+import path from "node:path";
 import { eq, and } from "drizzle-orm";
 import { db, schema } from "./client.ts";
 import { newId } from "../lib/ids.ts";
 import { toHinglish, normKey } from "../lib/translit.ts";
 import { defaultChargeConfig } from "../lib/charges.ts";
 import { hashPin } from "../lib/auth.ts";
+
+const dir = path.resolve(process.env.MANDI_DATA_DIR ?? "data");
+if (dir === path.resolve("data") || !/test/i.test(dir)) {
+  console.error("\n  REFUSING: the demo seed adds logins with published PINs. It only runs on a test data folder (npm run test:e2e).\n");
+  process.exit(2);
+}
 
 const [biz] = await db.select().from(schema.businesses).limit(1);
 if (!biz) {

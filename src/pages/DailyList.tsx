@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Calendar, Trash2, Truck, AlertTriangle, Check,
   RefreshCw, Download, Keyboard, Lock, Plus, X, Image as ImageIcon, CheckSquare,
-  FileSpreadsheet,
+  FileSpreadsheet, Pencil,
 } from "lucide-react";
 import { api, ApiError, type Jins, type Merchant, type SlipRow, type SlipTotals, type SlipDay, type KatautiConfig } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -101,7 +101,8 @@ export function DailyListPage() {
   /** Commodity the list shows; "" = all of them. */
   const [filterJins, setFilterJins] = useState<string>("");
   const [draft, setDraft] = useState<Draft>(emptyDraft);
-  const [editing, setEditing] = useState<{ id: string; draft: Draft } | null>(null);
+  /** `grossShown` is the gross as the edit box first showed it: if it is not touched, the stored grams stay exactly as they are. */
+  const [editing, setEditing] = useState<{ id: string; draft: Draft; grossShown?: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   /** Approved parchas on a day just changed: their frozen figures no longer match it. */
@@ -130,6 +131,18 @@ export function DailyListPage() {
     queryFn: () => api.get<{ rows: SlipRow[]; totals: SlipTotals }>(
       `/slips?${new URLSearchParams({ date, ...(merchantId ? { merchantId } : {}), ...(filterJins ? { jinsId: filterJins } : {}) })}`),
   });
+
+  /* A different day, mill or commodity is a different list: nothing ticked,
+     half-edited or said about the old one may carry over to it (a bulk move
+     would otherwise reach rows no longer on screen). */
+  useEffect(() => {
+    setSelected(new Set());
+    setEditing(null);
+    setErr(null);
+    setNotice(null);
+    setStaleWarn(null);
+    setSheetTotal("");
+  }, [date, merchantId, filterJins]);
 
   // default the commodity to 1509 — it is what almost every sheet carries
   useEffect(() => {
@@ -184,12 +197,13 @@ export function DailyListPage() {
   });
 
   const update = useMutation({
-    mutationFn: ({ id, draft: dr }: { id: string; draft: Draft }) => {
+    mutationFn: ({ id, draft: dr, grossShown }: { id: string; draft: Draft; grossShown?: string }) => {
       const dd = derive(dr, katautiCfg);
       return api.put(`/slips/${id}`, {
         rstNo: dr.rstNo.trim(), adatiId: dr.adatiId,
         ...(dr.jinsId ? { jinsId: dr.jinsId } : {}),
-        grossGrams: dd.grossGrams,
+        // an untouched gross is not re-sent: 28.605 shown as 28.61 must not become 28.61
+        ...(grossShown !== undefined && dr.gross === grossShown ? {} : { grossGrams: dd.grossGrams }),
         katautiUnits: dd.overridden ? dd.katautiUnits : null,
         ratePaisePerQtl: dd.ratePaise ?? 0,
       });
@@ -336,7 +350,7 @@ export function DailyListPage() {
       case "adatiHi": return (
         <span className="flex items-center gap-1.5">
           <span lang="hi" className="truncate text-[14px] text-ink">{r.adatiNameHi}</span>
-          {r.scanBatchId && (
+          {r.scanBatchId && can("scan.review") && (
             <Link href={`/scan/${r.scanBatchId}`} title={t("daily.fromScan")}
               className="shrink-0 text-faint transition-colors hover:text-brand">
               <ImageIcon className="h-3.5 w-3.5" />
@@ -368,7 +382,7 @@ export function DailyListPage() {
         ? <span className="text-faint">—</span>
         : <span className="font-semibold">{f.amount(r.amountPaise)}</span>;
       case "bagsCount": return r.bagsCount != null ? f.int(r.bagsCount) : <span className="text-faint">—</span>;
-      case "status": return <span className="text-[11px] text-muted">{r.status}</span>;
+      case "status": return <span className="text-[11px] text-muted">{t(`slip.status.${r.status}` as "slip.status.open")}</span>;
       default: return null;
     }
   }
@@ -377,7 +391,7 @@ export function DailyListPage() {
     key: DailyColumnKey, ed: Draft,
     dd: ReturnType<typeof derive>, r: SlipRow, i: number,
   ) {
-    const upd = (patch: Partial<Draft>) => setEditing({ id: r.id, draft: { ...ed, ...patch } });
+    const upd = (patch: Partial<Draft>) => setEditing((e) => ({ ...e, id: r.id, draft: { ...ed, ...patch } }));
     switch (key) {
       case "sr": return <span className="num text-[11px] text-faint">{i + 1}</span>;
       case "rstNo": return <input className={cn(CELL, "text-left")} value={ed.rstNo} autoFocus
@@ -501,7 +515,7 @@ export function DailyListPage() {
         sub={t("daily.sub")}
         action={
           <div className="flex items-center gap-2">
-            <Button size="sm" variant="ghost" icon={<Keyboard className="h-3.5 w-3.5" />} onClick={() => setShowHelp(true)} />
+            <Button size="sm" variant="ghost" icon={<Keyboard className="h-3.5 w-3.5" />} onClick={() => setShowHelp(true)} title={t("daily.keys")} aria-label={t("daily.keys")} />
             <DailyListSettings />
             {can("export.data") && (
               <>
@@ -625,7 +639,7 @@ export function DailyListPage() {
                 ))}
               </>
             )}
-            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} icon={<X className="h-3.5 w-3.5" />} />
+            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())} icon={<X className="h-3.5 w-3.5" />} title={t("daily.clearSelection")} aria-label={t("daily.clearSelection")} />
           </div>
         </Card>
       )}
@@ -689,8 +703,8 @@ export function DailyListPage() {
                       <td className={cn("border-b border-line/70 px-1", PAD)}>
                         <div className="flex items-center gap-0.5">
                           <Button size="icon" variant="primary" className="h-7 w-7" loading={update.isPending}
-                            onClick={() => update.mutate(editing)}><Check className="h-3.5 w-3.5" /></Button>
-                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditing(null)}>
+                            onClick={() => update.mutate(editing)} title={t("common.save")} aria-label={t("common.save")}><Check className="h-3.5 w-3.5" /></Button>
+                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditing(null)} title={t("common.cancel")} aria-label={t("common.cancel")}>
                             <X className="h-3.5 w-3.5" />
                           </Button>
                         </div>
@@ -723,9 +737,10 @@ export function DailyListPage() {
                     <td className={cn("border-b border-line/70 px-1", PAD)}>
                       <div className="flex items-center justify-end gap-0.5">
                         {can("slip.write") && (
-                          <Button size="icon" variant="ghost" className="h-7 w-7"
+                          <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.edit")} aria-label={t("common.edit")}
                             onClick={() => setEditing({
                               id: r.id,
+                              grossShown: (r.grossGrams / GRAMS_PER_QTL).toFixed(2),
                               draft: {
                                 rstNo: r.rstNo, adatiId: r.adatiId,
                                 gross: (r.grossGrams / GRAMS_PER_QTL).toFixed(2),
@@ -734,11 +749,11 @@ export function DailyListPage() {
                                 jinsId: r.jinsId,
                               },
                             })}>
-                            <RefreshCw className="h-3.5 w-3.5" />
+                            <Pencil className="h-3.5 w-3.5" />
                           </Button>
                         )}
                         {can("slip.delete") && (
-                          <Button size="icon" variant="ghost" className="h-7 w-7"
+                          <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.delete")} aria-label={t("common.delete")}
                             onClick={() => { if (confirm(t("daily.confirmDeleteRow", { rst: r.rstNo }))) remove.mutate(r.id); }}>
                             <Trash2 className="h-3.5 w-3.5 text-bad/80" />
                           </Button>
@@ -844,7 +859,7 @@ export function DailyListPage() {
         </Field>
       </Dialog>
       {downloading && (
-        <DownloadDialog open date={date} merchantId={merchantId} mills={mills.data ?? []}
+        <DownloadDialog open date={date} merchantId={merchantId} mills={mills.data ?? []} jinsId={filterJins} jinsList={jinsList.data ?? []}
           initial={downloading} onClose={() => setDownloading(null)} />
       )}
     </>

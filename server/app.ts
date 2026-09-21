@@ -29,6 +29,23 @@ import { dashboardRoutes } from "./routes/dashboard.ts";
 export function createApp() {
   const app = new Hono<Env>();
 
+  /* Only this computer's own pages may talk to the API. A web page elsewhere
+     can point a name at 127.0.0.1 (DNS rebinding) or post a form here; the
+     Host it asks for, and the Origin a browser adds to a change, give it away.
+     MANDI_HOST=0.0.0.0 (opened to the local network on purpose) switches this off. */
+  const LOCAL = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+  const hostOf = (h: string | undefined) => { try { return h ? new URL(`http://${h}`).hostname : ""; } catch { return ""; } };
+  const openToNetwork = process.env.MANDI_HOST && !LOCAL.has(process.env.MANDI_HOST);
+  app.use("/api/*", async (c, next) => {
+    if (!openToNetwork) {
+      if (!LOCAL.has(hostOf(c.req.header("host")))) return c.json({ error: "Not allowed from here", code: "bad_host" }, 403);
+      const origin = c.req.header("origin");
+      if (c.req.method !== "GET" && origin && origin !== "null" && !LOCAL.has(hostOf(origin.replace(/^https?:\/\//, "")))) {
+        return c.json({ error: "Not allowed from another site", code: "bad_origin" }, 403);
+      }
+    }
+    await next();
+  });
   app.use("/api/*", withSession);
   // with sync on, a change made here goes up within a couple of seconds
   app.use("/api/*", async (c, next) => {

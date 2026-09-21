@@ -131,6 +131,8 @@ export function checkRow(
     dupeInBatch: Set<string>;
     rateFloorPaise: number;
     rateCeilPaise: number;
+    /** False when the reader found no net weight anywhere on this row's page (a sheet without a net column). */
+    pageHasNet?: boolean;
   },
 ): CheckedRow {
   const issues: Issue[] = [];
@@ -177,8 +179,16 @@ export function checkRow(
     };
   }
 
+  // a line the paper strikes out, put back in by hand: the operator must mean it
+  if (row.ocr.struckThrough === true && !confirmedField(row, "struck")) {
+    issues.push({ code: "struck_included", level: "error", message: "This line is struck out on the sheet — confirm it really belongs" });
+  }
+
   if (!row.rstNo) issues.push({ code: "rst_missing", level: "warn", message: "RST number could not be read" });
-  else if (opts.existingRst.has(row.rstNo)) issues.push({ code: "rst_exists", level: "warn", message: `RST ${row.rstNo} is already entered for this date`, params: { rst: row.rstNo } });
+  else if (opts.existingRst.has(row.rstNo)) {
+    // the same sheet added twice would double every purchase on it
+    issues.push({ code: "rst_exists", level: confirmedField(row, "rst") ? "warn" : "error", message: `RST ${row.rstNo} is already entered for this date — confirm it is a different slip`, params: { rst: row.rstNo } });
+  }
   else if (opts.dupeInBatch.has(row.rstNo)) issues.push({ code: "rst_dupe", level: "warn", message: `RST ${row.rstNo} appears twice on this sheet`, params: { rst: row.rstNo } });
 
   if (row.adatiId && !chosen) {
@@ -191,6 +201,9 @@ export function checkRow(
     });
   } else if (resolved.match && resolved.match.via === "fuzzy") {
     issues.push({ code: "name_fuzzy", level: "warn", message: `Matched "${row.adatiRawText}" by similarity — check it`, params: { name: row.adatiRawText } });
+  } else if (resolved.match && !confirmedField(row, "name")
+    && (resolved.match.via === "normkey" || (resolved.match.via === "model" && resolved.match.confidence < 0.9))) {
+    issues.push({ code: "name_close", level: "warn", message: `"${row.adatiRawText}" was matched to ${resolved.match.nameHi} by a close spelling — check it`, params: { name: row.adatiRawText, to: resolved.match.nameHi } });
   }
 
   if (row.grossGrams === null) issues.push({ code: "gross_missing", level: "error", message: "Gross weight could not be read" });
@@ -204,6 +217,13 @@ export function checkRow(
   }
   else if (row.grossGrams < GRAMS_PER_QTL) issues.push({ code: "gross_small", level: "warn", message: "Gross weight is under one quintal — check the decimal point" });
 
+  if (row.grossGrams !== null && row.ocr.netQtl == null && derivedNetGrams !== null && derivedNetGrams > 0) {
+    // nothing on the sheet to check this weight against
+    issues.push({
+      code: "net_unchecked", level: confirmedField(row, "gross") || opts.pageHasNet === false ? "warn" : "error",
+      message: "The sheet's net weight could not be read, so this gross could not be checked — compare it with the paper",
+    });
+  }
   if (netAgrees === false) {
     issues.push({
       // the sheet's own net disagrees: the surest sign of a misread digit
@@ -221,7 +241,7 @@ export function checkRow(
     });
   }
 
-  if (row.ratePaisePerQtl === null) issues.push({ code: "rate_missing", level: "warn", message: "Rate could not be read — it can be filled in later" });
+  if (row.ratePaisePerQtl === null || row.ratePaisePerQtl === 0) issues.push({ code: "rate_missing", level: "warn", message: "Rate could not be read — it can be filled in later" });
   else if (row.ratePaisePerQtl < 0) issues.push({ code: "rate_negative", level: "error", message: "Rate cannot be negative" });
   else if (row.ratePaisePerQtl > 0 && (row.ratePaisePerQtl < opts.rateFloorPaise || row.ratePaisePerQtl > opts.rateCeilPaise)) {
     issues.push({
@@ -264,15 +284,25 @@ export function writtenDate(v: string | null | undefined): string | null {
   return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
-export interface PageMeta { page: number; date: string | null; millName: string | null; jins: string | null; total: number | null }
+export interface PageMeta {
+  page: number; date: string | null; millName: string | null; jins: string | null; total: number | null;
+  /** What the operator checked against the paper for this page: "rows", "date", "total". */
+  confirmed?: string[];
+}
+export type PageCheck = { page: number; code: "page_total" | "page_date" | "page_rows"; params: Record<string, string | number>; confirmed: boolean };
 
 /**
  * Checks a whole page against itself: the date written in its header against
  * the scan's date, and any total written at the bottom against its rows —
  * a row missed by the reader shows up here even when every row looks fine.
  */
-export function checkPages(meta: PageMeta[], rows: CheckedRow[], slipDate: string | null) {
-  const out: { page: number; code: "page_total" | "page_date"; params: Record<string, string | number> }[] = [];
+export function checkPages(meta: PageMeta[], rows: CheckedRow[], slipDate: string | null, marks: SlipMark[] = []) {
+  const out: PageCheck[] = [];
+  const done = (page: number, what: string) => (meta.find((m) => m.page === page)?.confirmed ?? []).includes(what);
+  for (const page of [...new Set(marks.map((m) => m.page))].sort((a, b) => a - b)) {
+    const first = marks.filter((m) => m.page === page).sort((a, b) => Number(a.rowId.slice(1)) - Number(b.rowId.slice(1)))[0];
+    out.push({ page, code: "page_rows", params: { sr: first.params.sr ?? first.params.to ?? "?", why: first.code }, confirmed: done(page, "rows") });
+  }
   for (const m of meta) {
     const mine = rows.filter((r) => (r.page ?? 1) === m.page && !r.excluded);
     if (m.total != null && m.total > 0 && mine.length) {
@@ -284,11 +314,11 @@ export function checkPages(meta: PageMeta[], rows: CheckedRow[], slipDate: strin
         out.push({ page: m.page, code: "page_total", params: {
           written: m.total.toFixed(2), net: (net / GRAMS_PER_QTL).toFixed(2), gross: (gross / GRAMS_PER_QTL).toFixed(2),
           diff: ((written - net) / GRAMS_PER_QTL).toFixed(2),
-        } });
+        }, confirmed: done(m.page, "total") });
       }
     }
     const d = writtenDate(m.date);
-    if (d && slipDate && d !== slipDate) out.push({ page: m.page, code: "page_date", params: { written: d, scan: slipDate } });
+    if (d && slipDate && d !== slipDate) out.push({ page: m.page, code: "page_date", params: { written: d, scan: slipDate }, confirmed: done(m.page, "date") });
   }
   return out;
 }
@@ -297,7 +327,7 @@ export function checkPages(meta: PageMeta[], rows: CheckedRow[], slipDate: strin
  * The printed SR NO is the anchor that keeps a row's name and its numbers on
  * the same line. If the numbers the reader gave jump, repeat or run backwards
  * on a page, rows may have slid: one line's name with the next line's
- * weights. Every row from the break onwards is suspect until checked.
+ * weights. Rows the reader gave no number are counted as the lines between.
  */
 export function srBreaks(rows: ReviewRow[]) {
   const out: { page: number; code: "sr_gap" | "sr_repeat" | "sr_back"; rowId: string; params: Record<string, string | number> }[] = [];
@@ -305,17 +335,44 @@ export function srBreaks(rows: ReviewRow[]) {
   for (const page of pages) {
     const mine = rows.filter((r) => (r.page ?? 1) === page).sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
     // pages read without row numbers (older reads) are simply not checked
-    const numbered = mine.filter((r) => r.ocr.srNo != null);
+    if (!mine.some((r) => r.ocr.srNo != null)) continue;
     let prev: number | null = null;
-    for (const r of numbered) {
-      const n = r.ocr.srNo!;
+    let between = 0;
+    for (const r of mine) {
+      const n = r.ocr.srNo;
+      if (n == null) { between++; continue; }
       if (prev != null) {
         if (n === prev) out.push({ page, code: "sr_repeat", rowId: r.id, params: { sr: n } });
         else if (n < prev) out.push({ page, code: "sr_back", rowId: r.id, params: { sr: n, prev } });
-        else if (n > prev + 1) out.push({ page, code: "sr_gap", rowId: r.id, params: { from: prev, to: n, missing: n - prev - 1 } });
+        // a jump the unnumbered rows in between account for is no gap
+        else if (n > prev + 1 + between) out.push({ page, code: "sr_gap", rowId: r.id, params: { from: prev, to: n, missing: n - prev - 1 - between } });
       }
       prev = n;
+      between = 0;
     }
   }
   return out;
+}
+
+export type SlipMark = { page: number; rowId: string; code: "sr_gap" | "sr_repeat" | "sr_back" | "name_only" | "figures_only"; params: Record<string, string | number> };
+
+/**
+ * Where a page's rows may have slid against each other. Besides breaks in
+ * the numbering, the surest sign is a line with a name and no weight, or a
+ * weight and no name, that the paper does not strike out: when a crossed-out
+ * line is skipped for its figures but not its name, every name below it sits
+ * on the next line's weights and the last name is left over. Such a page is
+ * checked line by line against the paper once, as a whole.
+ */
+export function slipMarks(rows: ReviewRow[]): SlipMark[] {
+  const marks: SlipMark[] = srBreaks(rows).map((b) => ({ ...b }));
+  for (const r of rows) {
+    if (r.ocr.struckThrough === true) continue;
+    const name = Boolean((r.ocr.adatiName ?? "").trim());
+    const figures = r.ocr.grossQtl != null || r.ocr.netQtl != null;
+    const sr = r.ocr.srNo ?? "?";
+    if (name && !figures) marks.push({ page: r.page ?? 1, rowId: r.id, code: "name_only", params: { sr, name: r.ocr.adatiName ?? "" } });
+    else if (!name && r.ocr.grossQtl != null) marks.push({ page: r.page ?? 1, rowId: r.id, code: "figures_only", params: { sr } });
+  }
+  return marks;
 }

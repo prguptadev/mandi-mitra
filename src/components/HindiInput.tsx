@@ -41,10 +41,10 @@ export const HindiInput = forwardRef<HTMLInputElement, {
 
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current);
-    if (!hasLatin(value) || dismissed.current === value) {
-      setSuggestion(null);
-      return;
-    }
+    // a suggestion belongs to the text it was made for: "राम" must not replace "ramesh"
+    setSuggestion(null);
+    if (!hasLatin(value) || dismissed.current === value) return;
+    let stale = false;
     timer.current = setTimeout(async () => {
       setBusy(true);
       try {
@@ -57,14 +57,14 @@ export const HindiInput = forwardRef<HTMLInputElement, {
         } catch {
           r = await api.post("/auth/to-devanagari", { text: value });
         }
-        setSuggestion(r.converted && r.hindi && r.hindi !== value ? r.hindi : null);
+        if (!stale) setSuggestion(r.converted && r.hindi && r.hindi !== value ? r.hindi : null);
       } catch {
-        setSuggestion(null);
+        if (!stale) setSuggestion(null);
       } finally {
-        setBusy(false);
+        if (!stale) setBusy(false);
       }
     }, 220);
-    return () => { if (timer.current) clearTimeout(timer.current); };
+    return () => { stale = true; setBusy(false); if (timer.current) clearTimeout(timer.current); };
   }, [value]);
 
   const accept = () => {

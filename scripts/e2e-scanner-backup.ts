@@ -78,7 +78,9 @@ check("a folder that does not exist is refused", (await raw("PUT", "/backup", { 
 const second = fs.mkdtempSync(path.join(os.tmpdir(), "mandi-e2e-backup-"));
 await call("PUT", "/backup", { folder: second });
 const r2 = await call("POST", "/backup/run");
-check("with a second folder set, each backup is copied there too", fs.existsSync(path.join(second, "MandiMitra-backups", r2.name)), r2.name);
+// into a folder named after this computer: two computers sharing a Drive folder never prune each other's copies
+const hostDir = os.hostname().replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40) || "this-computer";
+check("with a second folder set, each backup is copied there too", fs.existsSync(path.join(second, "MandiMitra-backups", hostDir, r2.name)), r2.name);
 await call("PUT", "/backup", { folder: null });
 fs.rmSync(second, { recursive: true, force: true });
 

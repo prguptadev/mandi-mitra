@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search, Users2, Sparkles, Lock, Unlock, Trash2, Pencil, Tag, RefreshCw, BookOpen } from "lucide-react";
 import { Link } from "wouter";
@@ -37,6 +37,7 @@ function SupplierDialog({
   const { t, lang } = useI18n();
   const qc = useQueryClient();
   const isNew = !editing;
+  const canMoney = useSession().can("payment.write");
 
   const [f, setF] = useState(() => ({
     nameHi: editing?.nameHi ?? "",
@@ -47,7 +48,7 @@ function SupplierDialog({
     phone: editing?.phone ?? "",
     accountNo: editing?.accountNo ?? "",
     ifsc: editing?.ifsc ?? "",
-    openingBalance: editing ? editing.openingBalancePaise / 100 : null as number | null,
+    openingBalance: editing?.openingBalancePaise != null ? editing.openingBalancePaise / 100 : null as number | null,
     notes: editing?.notes ?? "",
     active: editing?.active ?? true,
   }));
@@ -67,7 +68,8 @@ function SupplierDialog({
         phone: f.phone || undefined,
         accountNo: f.accountNo || undefined,
         ifsc: f.ifsc || undefined,
-        openingBalanceRupees: f.openingBalance ?? 0,
+        // only someone who may record payments sets it (the server hides it from the rest)
+        ...(canMoney ? { openingBalanceRupees: f.openingBalance ?? 0 } : {}),
         notes: f.notes || undefined,
         active: f.active,
       };
@@ -151,11 +153,11 @@ function SupplierDialog({
           <Field label={t("adati.phone")}>
             <Input value={f.phone} onChange={(e) => setF((p) => ({ ...p, phone: e.target.value }))} inputMode="tel" mono />
           </Field>
-          <Field label={t("adati.openingBalance")} hint={t("adati.openingBalanceHelp")}>
+          {canMoney && <Field label={t("adati.openingBalance")} hint={t("adati.openingBalanceHelp")}>
             <NumberInput value={f.openingBalance} decimals={2} allowNegative
               onValueChange={(n) => setF((p) => ({ ...p, openingBalance: n }))}
               className="h-9.5 w-full rounded-lg border bg-surface px-3 text-right font-mono text-sm tabular-nums text-ink focus:border-brand" placeholder="0.00" />
-          </Field>
+          </Field>}
           <Field label={t("adati.accountNo")}>
             <Input value={f.accountNo} onChange={(e) => setF((p) => ({ ...p, accountNo: e.target.value }))} mono />
           </Field>
@@ -258,6 +260,12 @@ export function SuppliersPage() {
   const [showInactive, setShowInactive] = useState(false);
   const [dialog, setDialog] = useState<{ open: boolean; editing: Adati | null }>({ open: false, editing: null });
   const [notice, setNotice] = useState<string | null>(null);
+  // a done-message fades; it must not sit there describing an older action
+  useEffect(() => {
+    if (!notice) return;
+    const id = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(id);
+  }, [notice]);
   /** Which spelling the table and CSV use. */
   const [nameMode, setNameMode] = useState<"hi" | "hinglish" | "both">("both");
 
@@ -295,7 +303,7 @@ export function SuppliersPage() {
       i + 1,
       ...(nameMode === "hi" ? [r.nameHi] : nameMode === "hinglish" ? [r.nameHinglish] : [r.nameHi, r.nameHinglish]),
       r.village ?? "", r.phone ?? "", r.accountNo ?? "", r.ifsc ?? "",
-      (r.openingBalancePaise / 100).toFixed(2), r.active ? "Active" : "Inactive",
+      r.openingBalancePaise == null ? "" : (r.openingBalancePaise / 100).toFixed(2), r.active ? "Active" : "Inactive",
     ]);
     const esc = (v: unknown) => {
       const s = String(v ?? "");
@@ -431,7 +439,7 @@ export function SuppliersPage() {
                       )}
                       {can("adati.delete") && (
                         <Button variant="ghost" size="icon" className="h-7 w-7"
-                          onClick={() => { if (confirm(t("common.confirmDelete"))) del.mutate(r.id); }}
+                          onClick={() => { if (confirm(t("adati.confirmDelete", { name: r.nameHi }))) del.mutate(r.id); }}
                           aria-label={t("common.delete")}>
                           <Trash2 className="h-3.5 w-3.5 text-bad/80" />
                         </Button>
@@ -447,7 +455,7 @@ export function SuppliersPage() {
         {rows.length > 0 && (
           <div className="flex items-center justify-between px-3 py-2.5 text-xs text-faint">
             <span>{t("adati.count", { n: rows.length })}</span>
-            <span className="num">{rows.filter((r) => !r.nameHinglishLocked).length} auto · {rows.filter((r) => r.nameHinglishLocked).length} edited</span>
+            <span className="num">{t("adati.autoEdited", { auto: rows.filter((r) => !r.nameHinglishLocked).length, edited: rows.filter((r) => r.nameHinglishLocked).length })}</span>
           </div>
         )}
       </Card>

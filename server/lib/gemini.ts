@@ -13,36 +13,60 @@ import { newId } from "./ids.ts";
  * certainly read correctly; a row where it does not gets flagged for a human.
  */
 
+/* The model's reply is read loosely: "28.60" as a string, a confidence of 95
+   meaning 0.95, a page number of 0. One odd value must not throw away a
+   whole page that cost a read; a row that still cannot be read comes through
+   empty, flagged, so the operator sees it on the screen. */
+const toNum = (v: unknown) => {
+  if (typeof v !== "string") return v;
+  const t = v.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/[,\s]/g, "");
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : v;
+};
+const looseNum = () => z.preprocess(toNum, z.number().nullable()).optional();
+const looseStr = () => z.preprocess((v) => (typeof v === "number" ? String(v) : v), z.string().nullable()).optional();
+
 export const OcrRowSchema = z.object({
   /** 1-based: which of the images this row was read from. */
-  page: z.number().int().min(1).nullable().optional(),
-  srNo: z.number().nullable().optional(),
-  rstNo: z.string().nullable().optional(),
+  page: z.preprocess((v) => { const n = toNum(v); return typeof n === "number" && n >= 1 ? Math.round(n) : null; }, z.number().int().min(1).nullable()).optional(),
+  srNo: looseNum(),
+  rstNo: looseStr(),
   /** Exactly as written, in Devanagari. No transliteration, no correction. */
-  adatiName: z.string().nullable().optional(),
+  adatiName: looseStr(),
   /** The known supplier the model thinks this is, copied exactly from the list. */
-  supplierMatch: z.string().nullable().optional(),
+  supplierMatch: looseStr(),
   /** DHARAM KANTA column, in quintal. */
-  grossQtl: z.number().nullable().optional(),
+  grossQtl: looseNum(),
   /** KATAUTI column, as written. */
-  katauti: z.number().nullable().optional(),
+  katauti: looseNum(),
   /** NET WEIGHT column as written — our cross-check, never trusted directly. */
-  netQtl: z.number().nullable().optional(),
+  netQtl: looseNum(),
   /** RATE column, rupees per quintal. */
-  rate: z.number().nullable().optional(),
-  /** 0..1, the model's own certainty for this row. */
-  confidence: z.number().min(0).max(1).nullable().optional(),
+  rate: looseNum(),
+  /** 0..1, the model's own certainty for this row (95 is taken as 0.95). */
+  confidence: z.preprocess((v) => {
+    const n = toNum(v);
+    if (typeof n !== "number") return n ?? null;
+    return n > 1 && n <= 100 ? n / 100 : Math.min(1, Math.max(0, n));
+  }, z.number().min(0).max(1).nullable()).optional(),
   /** true when the row is struck through on the paper. */
-  struckThrough: z.boolean().nullable().optional(),
-  notes: z.string().nullable().optional(),
+  struckThrough: z.preprocess((v) => (v === "true" ? true : v === "false" ? false : v), z.boolean().nullable()).optional(),
+  notes: looseStr(),
 });
 
+type OcrRowIn = z.infer<typeof OcrRowSchema>;
 export const OcrPageSchema = z.object({
-  date: z.string().nullable().optional(),
-  millName: z.string().nullable().optional(),
-  jins: z.string().nullable().optional(),
-  totalWeightWritten: z.number().nullable().optional(),
-  rows: z.array(OcrRowSchema).default([]),
+  date: looseStr(),
+  millName: looseStr(),
+  jins: looseStr(),
+  totalWeightWritten: looseNum(),
+  rows: z.array(z.unknown()).default([]).transform((rows) => rows.map((r): OcrRowIn => {
+    const p = OcrRowSchema.safeParse(r);
+    if (p.success) return p.data;
+    const o = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
+    return { adatiName: typeof o.adatiName === "string" ? o.adatiName : null, confidence: 0, notes: "This row could not be read cleanly" };
+  })),
 });
 
 export type OcrRow = z.infer<typeof OcrRowSchema>;

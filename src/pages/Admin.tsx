@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import {
   Plus, UserCog, Pencil, ShieldCheck, ScrollText, Search, KeyRound, Unlock,
   ChevronRight, Lock, Wheat, Save,
@@ -24,7 +24,7 @@ import { UpdateCard } from "@/components/UpdateCard.tsx";
 /* ------------------------------------------------------------------- users */
 
 function UserDialog({ open, onClose, editing, roles }: { open: boolean; onClose: () => void; editing: UserRow | null; roles: Role[] }) {
-  const { t } = useI18n();
+  const { t, pick } = useI18n();
   const qc = useQueryClient();
   const isNew = !editing;
   const [f, setF] = useState(() => ({
@@ -69,7 +69,7 @@ function UserDialog({ open, onClose, editing, roles }: { open: boolean; onClose:
         </div>
         <Field label={t("users.role")} required>
           <Select value={f.roleId} onChange={(e) => setF((p) => ({ ...p, roleId: e.target.value }))}>
-            {roles.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+            {roles.map((r) => <option key={r.id} value={r.id}>{pick(r.label, r.labelHi)}</option>)}
           </Select>
         </Field>
         <Field label={isNew ? t("users.setPin") : t("users.resetPin")}
@@ -257,7 +257,11 @@ export function RolesPage() {
           <div className="p-1.5">
             {roles.data?.map((r) => (
               <button key={r.id} type="button"
-                onClick={() => { setSelected(r.id); setDraft(null); setErr(null); }}
+                onClick={() => {
+                  // unsaved ticks on this role would vanish silently: ask first
+                  if (draft && r.id !== selected && !confirm(t("roles.discardChanges"))) return;
+                  setSelected(r.id); setDraft(null); setErr(null);
+                }}
                 className={cn(
                   "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors",
                   role?.id === r.id ? "bg-brand/12 text-brand" : "text-muted hover:bg-raised hover:text-ink",
@@ -335,7 +339,6 @@ export function AuditPage() {
   const [q, setQ] = useState("");
   const [entity, setEntity] = useState("");
   const [userId, setUserId] = useState("");
-  const [cursor, setCursor] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const facets = useQuery({
@@ -343,14 +346,18 @@ export function AuditPage() {
     queryFn: () => api.get<{ entities: string[]; actions: string[]; users: { userId: string; userName: string; n: number }[] }>("/audit/facets"),
   });
 
-  const log = useQuery({
-    queryKey: ["audit", { q, entity, userId, cursor }],
-    queryFn: () => api.get<{ rows: AuditRow[]; nextCursor: number | null }>(
+  // "Load more" adds the older entries below the ones already shown
+  const log = useInfiniteQuery({
+    queryKey: ["audit", { q, entity, userId }],
+    initialPageParam: null as number | null,
+    queryFn: ({ pageParam }) => api.get<{ rows: AuditRow[]; nextCursor: number | null }>(
       `/audit?${new URLSearchParams({
         ...(q ? { q } : {}), ...(entity ? { entity } : {}),
-        ...(userId ? { userId } : {}), ...(cursor ? { before: String(cursor) } : {}),
+        ...(userId ? { userId } : {}), ...(pageParam ? { before: String(pageParam) } : {}),
       })}`),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
+  const logRows = log.data?.pages.flatMap((p) => p.rows) ?? [];
 
   const tone = (action: string) =>
     action.includes("delete") || action.includes("failed") ? "bad"
@@ -366,16 +373,16 @@ export function AuditPage() {
         <div className="flex flex-wrap items-center gap-2 border-b border-line p-3">
           <div className="relative min-w-[200px] flex-1">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
-            <Input value={q} onChange={(e) => { setQ(e.target.value); setCursor(null); }}
+            <Input value={q} onChange={(e) => { setQ(e.target.value); }}
               placeholder={t("audit.searchPlaceholder")} className="pl-8.5" />
           </div>
           <Select value={entity} className="w-auto min-w-[130px]"
-            onChange={(e) => { setEntity(e.target.value); setCursor(null); }}>
+            onChange={(e) => { setEntity(e.target.value); }}>
             <option value="">{t("audit.filterEntity")}: {t("common.all")}</option>
             {facets.data?.entities.map((e) => <option key={e} value={e}>{e}</option>)}
           </Select>
           <Select value={userId} className="w-auto min-w-[130px]"
-            onChange={(e) => { setUserId(e.target.value); setCursor(null); }}>
+            onChange={(e) => { setUserId(e.target.value); }}>
             <option value="">{t("audit.filterUser")}: {t("common.all")}</option>
             {facets.data?.users.map((u) => <option key={u.userId} value={u.userId}>{u.userName}</option>)}
           </Select>
@@ -383,11 +390,11 @@ export function AuditPage() {
 
         {log.isLoading ? (
           <div className="p-4"><SkeletonList rows={8} /></div>
-        ) : !log.data?.rows.length ? (
+        ) : !logRows.length ? (
           <EmptyState icon={<ScrollText className="h-8 w-8" />} title={t("audit.empty")} />
         ) : (
           <div className="divide-y divide-line/70">
-            {log.data.rows.map((r) => (
+            {logRows.map((r) => (
               <div key={r.id}>
                 <button type="button"
                   onClick={() => setExpanded(expanded === r.id ? null : r.id)}
@@ -434,10 +441,10 @@ export function AuditPage() {
           </div>
         )}
 
-        {log.data?.nextCursor && (
+        {log.hasNextPage && (
           <div className="border-t border-line p-3">
-            <Button size="sm" className="w-full justify-center"
-              onClick={() => setCursor(log.data!.nextCursor)}>{t("audit.loadMore")}</Button>
+            <Button size="sm" className="w-full justify-center" loading={log.isFetchingNextPage}
+              onClick={() => void log.fetchNextPage()}>{t("audit.loadMore")}</Button>
           </div>
         )}
       </Card>
@@ -456,8 +463,10 @@ export function CommoditiesPage() {
   const [adding, setAdding] = useState(false);
   const [f, setF] = useState({ code: "", name: "", nameHi: "", crop: "paddy" });
   const [err, setErr] = useState<string | null>(null);
+  // a cancelled dialog opens empty next time
+  const closeAdd = () => { setAdding(false); setF({ code: "", name: "", nameHi: "", crop: "paddy" }); setErr(null); };
 
-  const list = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins?all=1") });
+  const list = useQuery({ queryKey: ["jins", "all"], queryFn: () => api.get<Jins[]>("/jins?all=1") });
   const jsort = useSort(list.data ?? [], {
     code: (j) => j.code, name: (j) => pick(j.name, j.nameHi), crop: (j) => j.crop, active: (j) => (j.active ? 0 : 1),
   }, { storageKey: "jins" });
@@ -515,9 +524,9 @@ export function CommoditiesPage() {
         )}
       </Card>
 
-      <Dialog open={adding} onClose={() => setAdding(false)} title={t("jins.add")}
+      <Dialog open={adding} onClose={closeAdd} title={t("jins.add")}
         footer={<>
-          <Button onClick={() => setAdding(false)}>{t("common.cancel")}</Button>
+          <Button onClick={closeAdd}>{t("common.cancel")}</Button>
           <Button variant="primary" loading={save.isPending}
             disabled={!f.code.trim() || !f.name.trim()}
             onClick={() => { setErr(null); save.mutate(); }}>{t("common.save")}</Button>
@@ -563,8 +572,11 @@ export function SettingsPage() {
   const [f, setF] = useState<Partial<Business>>({});
 
   const v = (k: keyof Business) => (f[k] ?? biz.data?.[k] ?? "") as string;
-  const set = (k: keyof Business) => (e: React.ChangeEvent<HTMLInputElement>) =>
+  // editing again means the last "Saved" no longer describes what is on screen
+  const set = (k: keyof Business) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    setOk(false);
     setF((p) => ({ ...p, [k]: e.target.value }));
+  };
 
   const save = useMutation({
     mutationFn: () => api.put("/business/current", { ...f, setupComplete: true }),

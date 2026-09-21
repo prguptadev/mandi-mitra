@@ -1,6 +1,7 @@
+import { fmtQtl } from "@/lib/utils.ts";
 import { useState } from "react";
 import { Download, FileSpreadsheet } from "lucide-react";
-import { api, ApiError, type Merchant, type SlipRow, type SlipTotals } from "@/lib/api.ts";
+import { api, ApiError, type Merchant, type SlipRow, type SlipTotals, type Jins } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { usePrefs, DAILY_COLUMNS, MILL_REPORT_COLUMNS, type DailyColumnKey } from "@/lib/prefs.tsx";
 import { Button, Dialog, Field, Input, Select, Tabs, Alert, Badge } from "@/components/ui/index.tsx";
@@ -11,7 +12,6 @@ import { dmy } from "@server/lib/parchaLabels.ts";
    report sent to a mill ("dara") as Excel or CSV. Either for one day or a
    from–to range, in the order and columns set in the daily-list settings. */
 
-const Q = 100_000;
 
 function save(blob: Blob, name: string) {
   const a = document.createElement("a");
@@ -40,8 +40,10 @@ export async function downloadDara(opts: {
   save(await res.blob(), name);
 }
 
-export function DownloadDialog({ open, onClose, date, merchantId, mills, initial = "list" }: {
+export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId = "", jinsList = [], initial = "list" }: {
   open: boolean; onClose: () => void; date: string; merchantId: string; mills: Merchant[];
+  /** The commodity the list on screen shows ("" = all), and the choices. */
+  jinsId?: string; jinsList?: Jins[];
   initial?: "list" | "dara";
 }) {
   const { t, pick } = useI18n();
@@ -53,6 +55,9 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, initial
   const [from, setFrom] = useState(date);
   const [to, setTo] = useState(date);
   const [mill, setMill] = useState(merchantId);
+  const [jins, setJins] = useState(jinsId);
+  // a dara is one commodity's rate: never a blend of paddy and wheat
+  const daraJins = jins || jinsList.find((j) => j.code === "1509")?.id || jinsList[0]?.id || "";
   const [names, setNames] = useState<"hi" | "latin">(P.exportNameLang);
   const [sort, setSort] = useState<SlipSortOrder>(P.sortOrder);
   const [format, setFormat] = useState<"xlsx" | "csv">("xlsx");
@@ -65,7 +70,7 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, initial
   const bad = !f0 || !t0 || f0 > t0 || (kind === "dara" && !daraMill);
 
   const listCsv = async () => {
-    const qs = new URLSearchParams({ from: f0, to: t0, ...(mill ? { merchantId: mill } : {}) });
+    const qs = new URLSearchParams({ from: f0, to: t0, ...(mill ? { merchantId: mill } : {}), ...(jins ? { jinsId: jins } : {}) });
     const data = await api.get<{ rows: SlipRow[]; totals: SlipTotals }>(`/slips?${qs}`);
     const nameOf = (r: SlipRow) => (names === "latin" ? r.adatiNameHinglish || r.adatiNameHi : r.adatiNameHi);
     const rows = sortSlips(data.rows, sort, nameOf);
@@ -95,10 +100,10 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, initial
         case "village": return r.adatiVillage ?? "";
         case "mill": return r.merchantCode ?? "";
         case "jins": return r.jinsCode;
-        case "gross": return (r.grossGrams / Q).toFixed(2);
+        case "gross": return fmtQtl(r.grossGrams);
         case "katauti": return r.katautiUnits;
-        case "deduction": return (r.katautiGrams / Q).toFixed(2);
-        case "net": return (r.netGrams / Q).toFixed(2);
+        case "deduction": return fmtQtl(r.katautiGrams);
+        case "net": return fmtQtl(r.netGrams);
         case "rate": return r.ratePending ? "" : (r.ratePaisePerQtl / 100).toFixed(2);
         case "amount": return r.ratePending ? "" : (r.amountPaise / 100).toFixed(2);
         case "bagsCount": return r.bagsCount ?? "";
@@ -109,10 +114,10 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, initial
     const totalVal = (k: Col["key"]): string | number => {
       switch (k) {
         case "rstNo": return "TOTAL";
-        case "gross": return (tot.grossGrams / Q).toFixed(2);
+        case "gross": return fmtQtl(tot.grossGrams);
         case "katauti": return tot.katautiUnits;
-        case "deduction": return (tot.katautiGrams / Q).toFixed(2);
-        case "net": return (tot.netGrams / Q).toFixed(2);
+        case "deduction": return fmtQtl(tot.katautiGrams);
+        case "net": return fmtQtl(tot.netGrams);
         case "rate": return (tot.weightedAvgRatePaise / 100).toFixed(2);
         case "amount": return (tot.amountPaise / 100).toFixed(2);
         case "bagsCount": return tot.bagsCount || "";
@@ -134,7 +139,7 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, initial
   };
 
   const dara = () => downloadDara({
-    merchantId: daraMill, from: f0, to: t0, names, sort, format,
+    merchantId: daraMill, from: f0, to: t0, names, sort, format, ...(daraJins ? { jinsId: daraJins } : {}),
     columns: MILL_REPORT_COLUMNS.filter((c) => P.millReportColumns[c.key]).map((c) => c.key),
   });
 
@@ -186,9 +191,17 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, initial
         <Field label={t("load.mill")} hint={kind === "dara" ? t("dl.daraMill") : undefined}>
           <Select value={kind === "dara" ? daraMill : mill} onChange={(e) => setMill(e.target.value)}>
             {kind === "list" && <option value="">{t("daily.allMills")}</option>}
-            {mills.map((m) => <option key={m.id} value={m.id}>{m.code} — {m.name}</option>)}
+            {mills.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
           </Select>
         </Field>
+        {jinsList.length > 0 && (
+          <Field label={t("daily.jins")}>
+            <Select value={kind === "dara" ? daraJins : jins} onChange={(e) => setJins(e.target.value)}>
+              {kind === "list" && <option value="">{t("daily.allJins")}</option>}
+              {jinsList.map((j) => <option key={j.id} value={j.id}>{pick(j.name, j.nameHi)}</option>)}
+            </Select>
+          </Field>
+        )}
         <Field label={t("dlp.namesIn")}>
           <Select value={names} onChange={(e) => setNames(e.target.value as typeof names)}>
             <option value="hi">{t("common.hindi")}</option>

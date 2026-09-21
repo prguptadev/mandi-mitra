@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { setCookie, deleteCookie, getCookie } from "hono/cookie";
 import { z } from "zod";
-import { eq, and, asc } from "drizzle-orm";
+import { eq, and, asc, ne } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { hashPin, verifyPin, weakPin, createSession, destroySession, registerFailure, clearFailures, lockRemaining } from "../lib/auth.ts";
@@ -129,7 +129,7 @@ authRoutes.get("/me", requireAuth, async (c) => {
   const mems = await db.select({
     businessId: schema.memberships.businessId,
     roleKey: schema.roles.key,
-    roleLabel: schema.roles.label,
+    roleLabel: schema.roles.label, roleLabelHi: schema.roles.labelHi,
     name: schema.businesses.name,
     nameHi: schema.businesses.nameHi,
     shortCode: schema.businesses.shortCode,
@@ -219,6 +219,8 @@ authRoutes.post("/change-pin", requireAuth, async (c) => {
   const { hash, salt } = hashPin(body.newPin);
   await db.update(schema.users).set({ pinHash: hash, pinSalt: salt, updatedAt: nowSec() })
     .where(eq(schema.users.id, auth.user.id));
+  // every other sign-in of this person ends; this one stays
+  await db.delete(schema.sessions).where(and(eq(schema.sessions.userId, auth.user.id), ne(schema.sessions.id, auth.session.id)));
   await audit({ actor: actor(c), action: "pin.change", entity: "user", entityId: auth.user.id, entityLabel: auth.user.name });
   return c.json({ ok: true });
 });
