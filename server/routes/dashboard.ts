@@ -346,8 +346,14 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
   const adat = parts.get("adat")?.amountPaise ?? 0;
   const listed = goods + [...parts.values()].reduce((s, p) => s + p.amountPaise, 0);
 
+  // cash that has actually moved, all time up to `to`: in from mills, out to suppliers
+  const [paidAll] = await db.select({ p: sql<number>`coalesce(sum(${P.amountPaise}), 0)` }).from(P)
+    .where(and(eq(P.businessId, biz), isNull(P.voidedAt), ...(f.to ? [lte(P.payDate, f.to)] : [])));
+  const recAll = await receipts(biz, { upTo: f.to });
+
   return c.json({
     period: { from: f.from ?? null, to: f.to ?? null },
+    cash: { receivedFromMillsPaise: recAll.reduce((s, r) => s + r.amountPaise, 0), paidToSuppliersPaise: paidAll.p },
     suppliers: {
       openingPaise: sup[0]?.opening ?? 0,
       purchasesPaise: purchases.p, slips: purchases.n,

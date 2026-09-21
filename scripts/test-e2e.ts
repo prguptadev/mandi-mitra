@@ -41,6 +41,11 @@ async function up() {
 let failed = 0;
 try {
   await up();
+  const run2 = (script: string, arg: string) => {
+    try {
+      execFileSync("npx", ["tsx", script, arg], { env, stdio: "inherit" });
+    } catch { failed++; }
+  };
   const run = (script: string) => {
     try {
       execFileSync("npx", ["tsx", script], { env, stdio: "inherit" });
@@ -55,6 +60,9 @@ try {
   run("scripts/e2e-mill-money.ts");
   run("scripts/e2e-gemini.ts");
   run("scripts/e2e-scanner-backup.ts");
+  // last: every stored figure the tests produced, re-worked independently
+  execFileSync("sqlite3", [path.join(DATA, "mandi.db"), `.backup ${path.join(DATA, "audit-copy.db")}`]);
+  run2("scripts/money-check.ts", path.join(DATA, "audit-copy.db"));
 } finally {
   // a failing run shows the test server's own last words
   if (failed) console.log("\n--- test server log (last 40 lines) ---\n" + log.trim().split("\n").slice(-40).join("\n"));

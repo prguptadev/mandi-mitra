@@ -26,6 +26,14 @@ interface MillSummary {
   loadedGrams: number; goodsPaise: number; avgSalePaisePerQtl: number; billedPaise: number;
   trucks: number; drafts: number; openingGrams: number; leftGrams: number;
   series: RacePoint[]; worstAhead: { date: string; grams: number } | null;
+  /** All time, and only for those who may see money. */
+  owedPaise: number | null; receivedPaise: number | null;
+}
+interface MoneyData {
+  cash: { receivedFromMillsPaise: number; paidToSuppliersPaise: number };
+  suppliers: { openingPaise: number; purchasesPaise: number; slips: number; paidPaise: number; payments: number; toPayPaise: number; paidAheadPaise: number };
+  mills: { billedPaise: number; parchas: number; shortagePaise: number; receivedPaise: number; deductedPaise: number; receipts: number; toReceivePaise: number; paidAheadPaise: number };
+  billed: { goodsPaise: number; adatPaise: number; parts: { key: string; label: string; labelHi: string | null; amountPaise: number }[]; grandTotalPaise: number; otherPaise: number };
 }
 interface DashboardData {
   period: { from: string | null; to: string | null };
@@ -33,6 +41,7 @@ interface DashboardData {
     slips: number; boughtNetGrams: number; boughtAmountPaise: number; avgBuyPaisePerQtl: number; noMillGrams: number;
     loadedGrams: number; goodsPaise: number; billedPaise: number; trucks: number; drafts: number;
     leftGrams: number; paidPaise: number; avgSalePaisePerQtl: number;
+    toReceivePaise: number | null; unbilledGoodsPaise: number;
   };
   mills: MillSummary[];
   flags: Flag[];
@@ -143,6 +152,69 @@ function FlagsCard({ flags }: { flags: Flag[] }) {
   );
 }
 
+/**
+ * Where the money stands, and where the billed money comes from. Balances
+ * are all-time; flows (paid, received, billed) follow the period chosen.
+ */
+function MoneyCard({ qs, stockPaise, unbilledPaise }: { qs: string; stockPaise: number; unbilledPaise: number }) {
+  const { t, pick } = useI18n();
+  const f = useFormat();
+  const q = useQuery({ queryKey: ["dashboard", "money", qs], queryFn: () => api.get<MoneyData>(`/dashboard/money?${qs}`) });
+  const m = q.data;
+  if (!m) return <Card className="mt-5"><SkeletonTable rows={3} /></Card>;
+  const toReceive = m.mills.toReceivePaise - m.mills.paidAheadPaise;
+  const toPay = m.suppliers.toPayPaise - m.suppliers.paidAheadPaise;
+  const cash = m.cash.receivedFromMillsPaise - m.cash.paidToSuppliersPaise;
+  const net = toReceive + stockPaise + unbilledPaise + cash - toPay;
+  const grand = m.billed.grandTotalPaise;
+  const parts = [
+    { key: "goods", label: t("dash.goodsPart"), amountPaise: m.billed.goodsPaise, tone: "bg-brand" },
+    ...m.billed.parts.map((p, i) => ({ key: p.key, label: pick(p.label, p.labelHi), amountPaise: p.amountPaise, tone: ["bg-ok", "bg-warn", "bg-sky-500", "bg-violet-500", "bg-rose-400", "bg-amber-600", "bg-teal-500", "bg-fuchsia-500"][i % 8] })),
+    ...(m.billed.otherPaise ? [{ key: "other", label: t("dash.otherPart"), amountPaise: m.billed.otherPaise, tone: "bg-faint" }] : []),
+  ];
+  const tile = (label: string, value: number, sub: string, href?: string, tone?: string) => {
+    const body = (
+      <div className="h-full rounded-lg border border-line bg-surface px-3 py-2.5 transition-colors hover:border-faint/60">
+        <p className="text-[11px] font-medium uppercase tracking-wide text-muted">{label}</p>
+        <p className={cn("num text-xl font-semibold", tone)}>{f.money(value)}</p>
+        <p className="text-[11px] text-faint">{sub}</p>
+      </div>
+    );
+    return href ? <Link href={href}>{body}</Link> : body;
+  };
+  return (
+    <Card className="mt-5">
+      <CardHeader title={t("dash.money")} sub={t("dash.moneySub")} />
+      <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
+        {tile(t("dash.millsOwe"), toReceive, t("dash.millsOweSub", { b: f.money(m.mills.billedPaise), r: f.money(m.mills.receivedPaise) }), "/mill-accounts", "text-brand")}
+        {tile(t("dash.weOwe"), toPay, t("dash.weOweSub", { p: f.money(m.suppliers.paidPaise) }), "/ledger")}
+        {tile(t("dash.stockValue"), stockPaise + unbilledPaise, unbilledPaise ? t("dash.stockValueSub2", { u: f.money(unbilledPaise) }) : t("dash.stockValueSub"), "/stock")}
+        {tile(t("dash.cash"), cash, t("dash.cashSub", { r: f.money(m.cash.receivedFromMillsPaise), p: f.money(m.cash.paidToSuppliersPaise) }), undefined, cash < 0 ? "text-warn" : undefined)}
+        {tile(t("dash.net"), net, t("dash.netSub"), undefined, net < 0 ? "text-bad" : "text-ok")}
+      </div>
+      {grand > 0 && (
+        <div className="border-t border-line p-4">
+          <p className="mb-2 text-[13px] font-medium text-ink">{t("dash.billedMadeOf", { amt: f.money(grand), n: m.mills.parchas })}</p>
+          <div className="flex h-3 overflow-hidden rounded-full bg-raised">
+            {parts.filter((x) => x.amountPaise > 0).map((x) => (
+              <div key={x.key} className={x.tone} style={{ width: `${(x.amountPaise / grand) * 100}%` }} title={`${x.label}: ${f.money(x.amountPaise)}`} />
+            ))}
+          </div>
+          <div className="mt-2.5 grid gap-x-6 gap-y-1 text-[12px] sm:grid-cols-2 lg:grid-cols-3">
+            {parts.map((x) => (
+              <p key={x.key} className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-muted"><span className={cn("h-2 w-2 rounded-full", x.tone)} />{x.label}</span>
+                <span className="num text-ink">{f.money(x.amountPaise)} <span className="text-faint">{grand ? `${((x.amountPaise / grand) * 100).toFixed(1)}%` : ""}</span></span>
+              </p>
+            ))}
+          </div>
+          {m.mills.shortagePaise > 0 && <p className="mt-2 text-[12px] text-warn">{t("dash.cutsNote", { amt: f.money(m.mills.shortagePaise) })}</p>}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function MillCard({ m }: { m: MillSummary }) {
   const { t, pick } = useI18n();
   const f = useFormat();
@@ -177,6 +249,11 @@ function MillCard({ m }: { m: MillSummary }) {
           <p className="text-muted">
             {m.openingGrams ? t("dash.openingQ", { q: f.weight(m.openingGrams) }) : m.billedPaise ? t("dash.billed", { amt: f.money(m.billedPaise) }) : " "}
           </p>
+          {m.owedPaise != null && (m.owedPaise !== 0 || m.billedPaise > 0) && (
+            <Link href={`/mill-accounts/${m.merchantId}`} className={cn("num block font-medium hover:underline", m.owedPaise < 0 ? "text-warn" : "text-brand")}>
+              {t("dash.millOwes", { amt: f.money(m.owedPaise) })}
+            </Link>
+          )}
         </div>
       </div>
       <div className="px-2 pt-3 pb-2">
@@ -272,6 +349,8 @@ export function DashboardPage() {
           ) : <div />}
         </div>
       )}
+
+      {can("ledger.read") && k && <MoneyCard qs={qs.toString()} stockPaise={k.leftGrams > 0 && k.avgBuyPaisePerQtl ? Math.round((k.leftGrams / 100_000) * k.avgBuyPaisePerQtl) : 0} unbilledPaise={k.unbilledGoodsPaise} />}
 
       <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
         {d ? <FlagsCard flags={d.flags} /> : <Card><SkeletonTable rows={4} /></Card>}
