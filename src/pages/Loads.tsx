@@ -3,13 +3,14 @@ import { Link, useLocation, useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Truck, ArrowLeft, Printer, FileSpreadsheet, CheckCircle2, Ban, Trash2, X, AlertTriangle,
-  CircleAlert, FileText, Scale, PackagePlus,
+  CircleAlert, FileText, Scale, PackagePlus, Eye,
 } from "lucide-react";
 import {
   api, ApiError, apiStatus, type Merchant, type Jins, type OrderRow, type LoadListRow, type LoadState,
   type ParchaRegisterRow, type LoadBlocker, type LoadWarning, type ParchaDoc, type StockDay, type StockMillDay,
 } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
+import { useSort } from "@/lib/useSort.ts";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
@@ -375,6 +376,39 @@ function PaperDialog({ doc, draft, loadId, onClose }: { doc: ParchaDoc; draft: b
   );
 }
 
+/** Any parcha version exactly as it was frozen — a voided one stamped VOID — to see, print or download again. */
+export function ParchaVersionDialog({ parchaId, onClose }: { parchaId: string; onClose: () => void }) {
+  const { t } = useI18n();
+  const f = useFormat();
+  const q = useQuery({
+    queryKey: ["parcha", parchaId],
+    queryFn: () => api.get<{ id: string; parchaNo: string; version: number; status: "approved" | "void"; voidReason: string | null; voidedAt: number | null; voidedByName: string | null; doc: ParchaDoc }>(`/parchas/${parchaId}`),
+  });
+  const v = q.data;
+  const isVoid = v?.status === "void";
+  return (
+    <Dialog open onClose={onClose} wide
+      title={v ? t(isVoid ? "parcha.viewVoid" : "parcha.previewApproved", { no: `${v.parchaNo}${v.version > 1 ? ` v${v.version}` : ""}` }) : "…"}
+      sub={isVoid ? t("parcha.voidedBecause", { why: v?.voidReason ?? "", who: v?.voidedByName ?? "", when: v?.voidedAt ? new Date(v.voidedAt * 1000).toLocaleString() : "" }) : t("parcha.previewSub")}
+      footer={<>
+        <a href={`/api/parchas/${parchaId}/parcha.xlsx`} download className="mr-auto">
+          <Button icon={<FileSpreadsheet className="h-4 w-4" />}>{t("parcha.excel")}</Button>
+        </a>
+        <Button onClick={onClose}>{t("common.close")}</Button>
+        <Button variant="primary" icon={<Printer className="h-4 w-4" />} onClick={printParcha} disabled={!v}>{t("parcha.print")}</Button>
+      </>}>
+      {!v ? <SkeletonTable rows={6} /> : (
+        <>
+          {isVoid && <Alert tone="bad" className="mb-3">{t("parcha.voidNote", { amt: f.money(v.doc.result.grandTotalPaise) })}</Alert>}
+          <div className="print-area overflow-x-auto rounded-lg border border-line bg-white">
+            <ParchaPaper doc={v.doc} voided={isVoid} />
+          </div>
+        </>
+      )}
+    </Dialog>
+  );
+}
+
 /* ------------------------------------------------------------ detail */
 
 export function LoadDetailPage({ id }: { id: string }) {
@@ -385,6 +419,7 @@ export function LoadDetailPage({ id }: { id: string }) {
   const [, navigate] = useLocation();
   const msg = useLoadMessages();
   const [paper, setPaper] = useState(false);
+  const [viewing, setViewing] = useState<string | null>(null);
   const [approving, setApproving] = useState(false);
   const [voiding, setVoiding] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -513,6 +548,15 @@ export function LoadDetailPage({ id }: { id: string }) {
       {billed && st.approved && (
         <Alert tone="ok" className="mb-4" title={t("load.lockedTitle", { no: st.approved.parchaNo })}>
           {t("load.lockedSub")}
+        </Alert>
+      )}
+      {billed && st.approved && st.stale && (
+        <Alert tone="warn" className="mb-4" title={t("parcha.staleTitle", { no: st.approved.parchaNo })}>
+          <p>{t("parcha.staleBody", { was: f.money(st.stale.wasGrandTotalPaise), now: f.money(st.stale.nowGrandTotalPaise) })}</p>
+          {st.stale.days.map((d) => (
+            <p key={d.date} className="text-[12px]">{t("parcha.staleDay", { d: dmy(d.date), was: f.rate(d.wasRate), now: f.rate(d.nowRate) })}</p>
+          ))}
+          <p className="mt-1 text-[12px]">{t("parcha.staleWhat")}</p>
         </Alert>
       )}
 
@@ -790,7 +834,10 @@ export function LoadDetailPage({ id }: { id: string }) {
                       <Badge tone={p.status === "approved" ? "ok" : "bad"} className="ml-2">{t(p.status === "void" ? "parcha.status.void" : "parcha.status.approved")}</Badge>
                       {p.voidReason && <p className="mt-0.5 text-[12px] text-muted">{p.voidReason}</p>}
                     </div>
-                    <span className="num whitespace-nowrap">{f.money(p.grandTotalPaise)}</span>
+                    <span className="flex items-center gap-1">
+                      <span className={cn("num whitespace-nowrap", p.status === "void" && "line-through")}>{f.money(p.grandTotalPaise)}</span>
+                      <Button size="icon" variant="ghost" title={t("parcha.view")} onClick={() => setViewing(p.id)}><Eye className="h-3.5 w-3.5" /></Button>
+                    </span>
                   </div>
                 ))}
               </div>
@@ -800,6 +847,7 @@ export function LoadDetailPage({ id }: { id: string }) {
       </div>
 
       {paper && shownDoc && <PaperDialog doc={shownDoc} draft={!billed} loadId={id} onClose={() => setPaper(false)} />}
+      {viewing && <ParchaVersionDialog parchaId={viewing} onClose={() => setViewing(null)} />}
       {approving && shownDoc && (
         <Dialog open onClose={() => setApproving(false)} title={t("parcha.approveTitle", { no: invoice.trim() })}
           footer={<>
@@ -859,6 +907,12 @@ export function ParchaRegisterPage() {
   const rows = useMemo(() => (list.data ?? []).filter((r) => showVoid || r.status === "approved"), [list.data, showVoid]);
   const approved = rows.filter((r) => r.status === "approved");
   const total = approved.reduce((s, r) => s + r.grandTotalPaise, 0);
+  const dueTotal = approved.reduce((s, r) => s + (r.duePaise ?? 0), 0);
+  const [viewing, setViewing] = useState<string | null>(null);
+  const sort = useSort(rows, {
+    no: (r) => r.parchaNo, date: (r) => r.invoiceDate, mill: (r) => r.millCode, truck: (r) => r.truckNo,
+    status: (r) => r.status, total: (r) => r.grandTotalPaise, received: (r) => r.receivedPaise, due: (r) => r.duePaise,
+  }, { storageKey: "parcha-register" });
 
   return (
     <div>
@@ -880,12 +934,15 @@ export function ParchaRegisterPage() {
           <Table>
             <thead>
               <tr>
-                <Th>{t("parcha.invoiceNo")}</Th><Th>{t("parcha.invoiceDate")}</Th><Th>{t("load.mill")}</Th>
-                <Th>{t("load.truckNo")}</Th><Th>{t("po.status")}</Th><Th numeric>{t("load.grandTotal")}</Th>
+                <Th {...sort.th("no")}>{t("parcha.invoiceNo")}</Th><Th {...sort.th("date")}>{t("parcha.invoiceDate")}</Th>
+                <Th {...sort.th("mill")}>{t("load.mill")}</Th><Th {...sort.th("truck")}>{t("load.truckNo")}</Th>
+                <Th {...sort.th("status")}>{t("po.status")}</Th><Th numeric {...sort.th("total")}>{t("load.grandTotal")}</Th>
+                <Th numeric {...sort.th("received")}>{t("parcha.received")}</Th><Th numeric {...sort.th("due")}>{t("parcha.due")}</Th>
+                <Th className="w-10" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {sort.sorted.map((r) => (
                 <Tr key={r.id} onClick={() => navigate(`/loads/${r.loadId}`)} className={cn(r.status === "void" && "opacity-60")}>
                   <Td className="font-mono font-medium">{r.parchaNo}{r.version > 1 ? ` v${r.version}` : ""}</Td>
                   <Td className="whitespace-nowrap">{r.invoiceDate ? dmy(r.invoiceDate) : "—"}</Td>
@@ -896,6 +953,13 @@ export function ParchaRegisterPage() {
                     {r.voidReason && <span className="ml-2 text-[12px] text-muted">{r.voidReason}</span>}
                   </Td>
                   <Td numeric className={cn("font-medium", r.status === "void" && "line-through")}>{f.money(r.grandTotalPaise)}</Td>
+                  <Td numeric className="text-ok">{r.receivedPaise ? f.money(r.receivedPaise) : r.status === "approved" ? "—" : ""}</Td>
+                  <Td numeric className="font-medium">{r.duePaise == null ? "" : r.duePaise <= 0 ? <Badge tone="ok">{t("mm.paid")}</Badge> : f.money(r.duePaise)}</Td>
+                  <Td className="text-right">
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <Button size="icon" variant="ghost" title={t("parcha.view")} onClick={() => setViewing(r.id)}><Eye className="h-3.5 w-3.5" /></Button>
+                    </span>
+                  </Td>
                 </Tr>
               ))}
             </tbody>
@@ -903,11 +967,15 @@ export function ParchaRegisterPage() {
               <tr className="bg-raised/50 text-[13px] font-semibold">
                 <td colSpan={5} className="px-3 py-2 text-right text-muted">{t("parcha.registerTotal", { n: approved.length })}</td>
                 <td className="num px-3 py-2 text-right">{f.money(total)}</td>
+                <td className="num px-3 py-2 text-right text-ok">{f.money(approved.reduce((s, r) => s + (r.receivedPaise ?? 0), 0))}</td>
+                <td className="num px-3 py-2 text-right">{f.money(dueTotal)}</td>
+                <td />
               </tr>
             </tfoot>
           </Table>
         )}
       </Card>
+      {viewing && <ParchaVersionDialog parchaId={viewing} onClose={() => setViewing(null)} />}
     </div>
   );
 }

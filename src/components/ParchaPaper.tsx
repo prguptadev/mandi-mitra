@@ -12,7 +12,7 @@ const cellR = cn(B, "px-2 py-[3px] text-right tabular-nums");
 const cellC = cn(B, "px-2 py-[3px] text-center");
 const head = "font-bold";
 
-export function ParchaPaper({ doc, draft, className }: { doc: ParchaDoc; draft?: boolean; className?: string }) {
+export function ParchaPaper({ doc, draft, voided, className }: { doc: ParchaDoc; draft?: boolean; voided?: boolean; className?: string }) {
   const w = doc.weights;
   const r = doc.result;
   const lines = [...doc.lines];
@@ -23,9 +23,11 @@ export function ParchaPaper({ doc, draft, className }: { doc: ParchaDoc; draft?:
   return (
     <div className={cn("parcha-paper relative mx-auto w-full max-w-[720px] bg-white p-6 text-[12.5px] leading-tight text-black", className)}
       style={{ fontFamily: "Calibri, 'Segoe UI', Arial, sans-serif" }}>
-      {draft && (
+      {(draft || voided) && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center overflow-hidden">
-          <span className="rotate-[-24deg] select-none text-[72px] font-black tracking-widest text-black/[0.07]">DRAFT</span>
+          <span className={cn("rotate-[-24deg] select-none text-[72px] font-black tracking-widest", voided ? "text-black/[0.16]" : "text-black/[0.07]")}>
+            {voided ? "VOID" : "DRAFT"}
+          </span>
         </div>
       )}
       <table className="w-full border-collapse">

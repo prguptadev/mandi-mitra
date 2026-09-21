@@ -188,6 +188,8 @@ export interface ScanRow {
   derivedNetGrams: number | null;
   derivedAmountPaise: number | null;
   netAgrees: boolean | null;
+  /** The gross with its decimal point moved so the sheet's own net agrees (2860 → 28.60). */
+  grossSuggestGrams?: number | null;
   netDiffGrams: number | null;
   issues: ScanIssue[];
   blocking: boolean;
@@ -211,6 +213,9 @@ export interface ScanBatch {
   pages: { index: number; name: string; mimeType: string; bytes: number }[];
   rows: ScanRow[];
   summary: ScanSummary | null;
+  /** Whole-page checks: the header date and the bottom total against the rows. */
+  pageChecks?: { page: number; code: "page_total" | "page_date"; params: Record<string, string | number> }[];
+  rateRange?: { floorPaise: number; ceilPaise: number; from: "recent" | "default" } | null;
 }
 
 export interface ScanListRow {

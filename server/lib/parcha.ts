@@ -394,6 +394,20 @@ export async function loadState(businessId: string, loadId: string) {
     warnings,
     doc,
     approved: approved ? { ...approved, snapshot: undefined, doc: JSON.parse(approved.snapshot) as ParchaDoc } : null,
+    /* The approved parcha is frozen. When the figures behind it have moved
+       since (a slip's rate on one of its days, the mill's charges), say what
+       it would be now, so the owner can void and re-approve — or leave it. */
+    stale: (() => {
+      if (!approved || !doc) return null;
+      const was = JSON.parse(approved.snapshot) as ParchaDoc;
+      if (was.result.grandTotalPaise === doc.result.grandTotalPaise && was.totals.goodsPaise === doc.totals.goodsPaise) return null;
+      return {
+        wasGrandTotalPaise: was.result.grandTotalPaise, nowGrandTotalPaise: doc.result.grandTotalPaise,
+        wasGoodsPaise: was.totals.goodsPaise, nowGoodsPaise: doc.totals.goodsPaise,
+        days: doc.lines.filter((x) => was.lines.some((y) => y.date === x.date && y.ratePaisePerQtl !== x.ratePaisePerQtl))
+          .map((x) => ({ date: x.date, wasRate: was.lines.find((y) => y.date === x.date)!.ratePaisePerQtl, nowRate: x.ratePaisePerQtl })),
+      };
+    })(),
     history: history.map((p) => ({ ...p, snapshot: undefined })),
     suggestedInvoiceNo: l.invoiceNo ? null : await suggestInvoiceNo(businessId, l.id),
   };
@@ -428,4 +442,30 @@ export async function stockDays(businessId: string, merchantId: string, jinsId: 
       leftGrams: (b?.netGrams ?? 0) - (loaded.get(d) ?? 0),
     };
   });
+}
+
+/**
+ * Approved parchas whose rows take a purchase day's average rate (no typed
+ * rate) on any of these days. A slip changed on such a day moves that
+ * average, so the frozen parcha no longer matches the daily list.
+ */
+export async function approvedOnDays(businessId: string, days: { merchantId: string | null; jinsId: string; date: string }[]) {
+  const real = days.filter((d): d is { merchantId: string; jinsId: string; date: string } => Boolean(d.merchantId));
+  if (!real.length) return [];
+  const LL = schema.loadLines;
+  const rows = await db.select({
+    loadId: schema.loads.id, truckNo: schema.loads.truckNo, merchantId: schema.loads.merchantId,
+    jinsId: LL.jinsId, date: LL.stockDate, typed: LL.ratePaisePerQtl, parchaNo: schema.parchas.parchaNo,
+  }).from(LL)
+    .innerJoin(schema.loads, eq(schema.loads.id, LL.loadId))
+    .innerJoin(schema.parchas, and(eq(schema.parchas.loadId, schema.loads.id), eq(schema.parchas.status, "approved")))
+    .where(and(eq(LL.businessId, businessId), inArray(LL.stockDate, [...new Set(real.map((d) => d.date))])));
+  const hit = new Map<string, { loadId: string; parchaNo: string; truckNo: string | null; date: string }>();
+  for (const r of rows) {
+    if (r.typed != null) continue;
+    if (real.some((d) => d.merchantId === r.merchantId && d.jinsId === r.jinsId && d.date === r.date)) {
+      hit.set(r.loadId, { loadId: r.loadId, parchaNo: r.parchaNo, truckNo: r.truckNo, date: r.date });
+    }
+  }
+  return [...hit.values()];
 }

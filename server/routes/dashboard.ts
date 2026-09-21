@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { eq, and, gte, lte, sql, inArray, isNull } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { can, bad, notFound, type Env } from "../lib/http.ts";
-import { incoming, trucks, race, worstAhead, type Filter, type TruckSummary } from "../lib/tracking.ts";
+import { incoming, trucks, race, worstAhead, dayAverages, type Filter, type TruckSummary } from "../lib/tracking.ts";
 import { linesWithWeights } from "../lib/parcha.ts";
 import { dispatchedByPo, poLabel } from "./orders.ts";
 import { avgFromSums } from "../lib/money.ts";
@@ -123,6 +123,29 @@ async function flags(biz: string, jinsId: string | null, opts: { all: TruckSumma
   const ahead = suppliers.map((s) => ({ s, bal: s.opening + (bought.find((b) => b.adatiId === s.id)?.p ?? 0) - (paid.find((p) => p.adatiId === s.id)?.p ?? 0) }))
     .filter((x) => x.bal < 0);
   out.push({ code: "paid_ahead", level: "warn", items: ahead.map((x) => ({ adatiId: x.s.id, nameHi: x.s.nameHi, name: x.s.nameHinglish, paise: -x.bal })) });
+  }
+
+  /* approved parchas whose purchase days' average has moved since: a slip
+     on one of those days was priced or changed after the parcha was frozen */
+  {
+    const P = schema.parchas;
+    const L2 = schema.loads;
+    const approved = await db.select({ loadId: P.loadId, parchaNo: P.parchaNo, snapshot: P.snapshot, merchantId: L2.merchantId, jinsId: L2.jinsId, truckNo: L2.truckNo })
+      .from(P).innerJoin(L2, eq(L2.id, P.loadId))
+      .where(and(eq(P.businessId, biz), eq(P.status, "approved"), ...(jinsId ? [eq(L2.jinsId, jinsId)] : [])));
+    if (approved.length) {
+      const typed = await db.select({ loadId: schema.loadLines.loadId, date: schema.loadLines.stockDate, rate: schema.loadLines.ratePaisePerQtl })
+        .from(schema.loadLines).where(inArray(schema.loadLines.loadId, approved.map((a) => a.loadId)));
+      const avg = await dayAverages(biz);
+      const stale: FlagItem[] = [];
+      for (const a of approved) {
+        const doc = JSON.parse(a.snapshot) as ParchaDoc;
+        const moved = doc.lines.find((x) => !typed.some((tl) => tl.loadId === a.loadId && tl.date === x.date && tl.rate != null)
+          && avg(a.merchantId, a.jinsId, x.date) !== x.ratePaisePerQtl);
+        if (moved) stale.push({ loadId: a.loadId, parchaNo: a.parchaNo, truck: a.truckNo, mill: code(a.merchantId), date: moved.date, was: moved.ratePaisePerQtl, now: avg(a.merchantId, a.jinsId, moved.date) });
+      }
+      out.push({ code: "parcha_stale", level: "warn", items: stale });
+    }
   }
 
   // reads that failed or never finished

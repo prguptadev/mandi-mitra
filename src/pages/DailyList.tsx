@@ -103,6 +103,12 @@ export function DailyListPage() {
   const [editing, setEditing] = useState<{ id: string; draft: Draft } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Approved parchas on a day just changed: their frozen figures no longer match it. */
+  const [staleWarn, setStaleWarn] = useState<string | null>(null);
+  const warnStale = (r: unknown) => {
+    const list = (r as { approvedParchas?: { parchaNo: string; truckNo: string | null }[] } | null)?.approvedParchas ?? [];
+    setStaleWarn(list.length ? t("daily.parchaStale", { nos: list.map((p) => `#${p.parchaNo}${p.truckNo ? ` (${p.truckNo})` : ""}`).join(", ") }) : null);
+  };
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sheetTotal, setSheetTotal] = useState("");
   const [showHelp, setShowHelp] = useState(false);
@@ -157,7 +163,7 @@ export function DailyListPage() {
   });
 
   const create = useMutation({
-    mutationFn: () => api.post<{ id: string }>("/slips", {
+    mutationFn: () => api.post<{ id: string; approvedParchas?: { parchaNo: string; truckNo: string | null }[] }>("/slips", {
       slipDate: date, rstNo: draft.rstNo.trim(),
       adatiId: draft.adatiId, jinsId,
       merchantId: merchantId || null,
@@ -165,8 +171,9 @@ export function DailyListPage() {
       katautiUnits: d.overridden ? d.katautiUnits : null,
       ratePaisePerQtl: d.ratePaise ?? 0,
     }),
-    onSuccess: async () => {
+    onSuccess: async (r) => {
       setErr(null);
+      warnStale(r);
       // most rows on a sheet share a rate, so keep it unless told otherwise
       setDraft(P.carryRateForward ? { ...emptyDraft(), rate: draft.rate } : emptyDraft());
       await qc.invalidateQueries({ queryKey: ["slips"] });
@@ -186,13 +193,13 @@ export function DailyListPage() {
         ratePaisePerQtl: dd.ratePaise ?? 0,
       });
     },
-    onSuccess: async () => { setEditing(null); setErr(null); await qc.invalidateQueries({ queryKey: ["slips"] }); },
+    onSuccess: async (r) => { setEditing(null); setErr(null); warnStale(r); await qc.invalidateQueries({ queryKey: ["slips"] }); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
   const remove = useMutation({
     mutationFn: (id: string) => api.del(`/slips/${id}`),
-    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["slips"] }); },
+    onSuccess: async (r) => { warnStale(r); await qc.invalidateQueries({ queryKey: ["slips"] }); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
@@ -201,6 +208,7 @@ export function DailyListPage() {
     onSuccess: async (r, to) => {
       setSelected(new Set());
       setErr(null);
+      warnStale(r);
       const code = jinsList.data?.find((j) => j.id === to)?.code ?? "";
       setNotice(t("daily.jinsMoved", { n: r.updated, code }));
       await qc.invalidateQueries({ queryKey: ["slips"] });
@@ -212,7 +220,7 @@ export function DailyListPage() {
     mutationFn: (toMerchant: string | null) => api.post("/slips/reassign", {
       slipIds: [...selected], merchantId: toMerchant,
     }),
-    onSuccess: async () => { setSelected(new Set()); await qc.invalidateQueries({ queryKey: ["slips"] }); },
+    onSuccess: async (r) => { setSelected(new Set()); warnStale(r); await qc.invalidateQueries({ queryKey: ["slips"] }); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
@@ -539,6 +547,12 @@ export function DailyListPage() {
 
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
       {notice && <Alert tone="ok" className="mb-3">{notice}</Alert>}
+      {staleWarn && (
+        <Alert tone="warn" className="mb-3">
+          <span className="flex items-start justify-between gap-2"><span>{staleWarn}</span>
+            <button type="button" className="shrink-0 text-faint hover:text-ink" onClick={() => setStaleWarn(null)} aria-label={t("common.close")}><X className="h-3.5 w-3.5" /></button></span>
+        </Alert>
+      )}
       {totals && totals.ratePendingRows > 0 && (
         <Alert tone="warn" className="mb-3">
           <p className="font-semibold">{t("daily.ratePendingRows", { n: totals.ratePendingRows })}</p>

@@ -246,5 +246,52 @@ try {
   console.log("\ncleaned up: test scan, its image and its slips removed");
 }
 
+/* Page-level checks and misplaced decimal points, on a second sheet taken
+   from the real G.R.M page of 20-09-2026: row 13 has its net written "4,000"
+   for 40.00, and a reader may drop the point in 19.20. */
+console.log("\nWhole-page checks and decimal points");
+{
+  const fd2 = new FormData();
+  fd2.append("files", new File([PNG], "sheet2.png", { type: "image/png" }));
+  fd2.append("slipDate", DATE);
+  fd2.append("merchantId", grm.id);
+  fd2.append("jinsId", j1509.id);
+  const up2 = await fetch(`${BASE}/scans`, { method: "POST", body: fd2, headers: { cookie } });
+  const { id: id2 } = await up2.json() as { id: string };
+  const two = [
+    { rstNo: "644", adatiName: "सहदेव सिंह ट्रेडिंग", grossQtl: 40.40, katauti: 40, netQtl: 4000, rate: 3300, confidence: 0.9 },
+    { rstNo: "626", adatiName: "फूलसिंह वर्मा", grossQtl: 1920, katauti: 19, netQtl: 19.01, rate: 3500, confidence: 0.9 },
+    { rstNo: "640", adatiName: "अरविन्द ट्रेडिंग", grossQtl: 14.85, katauti: 15, netQtl: 14.70, rate: 3470, confidence: 0.9 },
+  ].map((r, i) => ({
+    id: `r${i}`, page: 1,
+    ocr: { rstNo: r.rstNo, adatiName: r.adatiName, grossQtl: r.grossQtl, katauti: r.katauti, netQtl: r.netQtl, rate: r.rate, confidence: r.confidence, struckThrough: false },
+    rstNo: r.rstNo, adatiId: null, adatiRawText: r.adatiName, grossGrams: Math.round(r.grossQtl * 100_000),
+    katautiOverride: null, ratePaisePerQtl: r.rate * 100, excluded: false, nameCorrected: false, modelPick: null, confirmed: [],
+  }));
+  // the header says 20/9/26 (the scan is dated 21-09) and the bottom total says 75.00
+  sqlite.prepare("update scan_batches set parsed_rows = ?, page_meta = ?, status = 'review', model = 'simulated', pages_done = 1 where id = ?")
+    .run(JSON.stringify(two), JSON.stringify([{ page: 1, date: "20/9/26", millName: "G.R.M", jins: "1509", total: 75 }]), id2);
+  const s2 = await call("GET", `/scans/${id2}`);
+  const r644 = s2.rows.find((r: any) => r.rstNo === "644");
+  const r626 = s2.rows.find((r: any) => r.rstNo === "626");
+  check("a net written as 4,000 for 40.00 still confirms the gross", r644.netAgrees, true);
+  check("  ...so that row is not blocked", r644.blocking, false);
+  check("a gross read as 1920 is offered as 19.20", r626.grossSuggestGrams, 1_920_000);
+  check("  ...and blocks until it is fixed or accepted", r626.blocking, true);
+  check("the header date 20/9/26 is noticed against the scan's 21-09", s2.pageChecks.some((p: any) => p.code === "page_date" && p.params.written === "2026-09-20"), true);
+  check("a bottom total that the rows do not make is noticed", s2.pageChecks.some((p: any) => p.code === "page_total" && p.params.written === "75.00"), true);
+  check("the usual rate range is worked out and sensible", s2.rateRange.floorPaise < 330_000 && s2.rateRange.ceilPaise > 350_000, true);
+
+  // apply the suggestion: the page total now agrees too (40.00 + 19.01 + 14.70 = 73.71 net; written 73.71)
+  const fixed = s2.rows.map((r: any) => ({ ...r, ...(r.rstNo === "626" ? { grossGrams: r.grossSuggestGrams, confirmed: ["gross"] } : {}) }));
+  await call("PUT", `/scans/${id2}/rows`, { rows: fixed });
+  sqlite.prepare("update scan_batches set page_meta = ? where id = ?")
+    .run(JSON.stringify([{ page: 1, date: "21-09-2026", millName: "G.R.M", jins: "1509", total: 73.71 }]), id2);
+  const s3 = await call("GET", `/scans/${id2}`);
+  check("after the fix, RST 626 is clear", s3.rows.find((r: any) => r.rstNo === "626").blocking, false);
+  check("with the right date and total, the page raises nothing", s3.pageChecks.length, 0);
+  await call("DELETE", `/scans/${id2}`);
+}
+
 console.log(bad === 0 ? "\nOCR review pipeline works end to end." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

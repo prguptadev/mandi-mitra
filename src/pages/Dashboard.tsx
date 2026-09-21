@@ -85,6 +85,7 @@ function useFlagText() {
       case "slips_no_mill": return { text: t("flag.slips_no_mill.item", { d: dmy(String(x.date)), n: Number(x.n), q: q(x.grams) }), href: `/daily?date=${x.date}` };
       case "po_over": return { text: t("flag.po_over.item", { po: String(x.po), mill: String(x.mill), q: q(x.overGrams) }), href: "/orders" };
       case "paid_ahead": return { text: t("flag.paid_ahead.item", { name: String(x.nameHi), amt: f.money(Number(x.paise)) }), href: `/ledger?adati=${x.adatiId}` };
+      case "parcha_stale": return { text: t("flag.parcha_stale.item", { no: String(x.parchaNo), mill: String(x.mill), truck: String(x.truck ?? "—"), d: dmy(String(x.date)), was: f.rate(Number(x.was)), now: f.rate(Number(x.now)) }), href: `/loads/${x.loadId}` };
       case "scan_failed": return { text: t("flag.scan_failed.item", { d: x.date ? dmy(String(x.date)) : "—" }), href: `/scan/${x.scanId}` };
       default: return { text: code };
     }

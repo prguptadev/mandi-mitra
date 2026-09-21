@@ -1,0 +1,1 @@
+ALTER TABLE `scan_batches` ADD `page_meta` text;

@@ -183,10 +183,20 @@ const lockedLoad = await status("PUT", `/loads/${t1.id}`, { truckNo: "X" });
 check("the truck is locked too", lockedLoad.status === 409, lockedLoad.status);
 
 // a slip's rate changes after approval: the approved parcha must not move
-await call("PUT", `/slips/${slipIds[0]}`, { ratePaisePerQtl: 360_000 });
+const changed = await call("PUT", `/slips/${slipIds[0]}`, { ratePaisePerQtl: 360_000 });
 const reg0 = await call("GET", "/parchas");
 check("changing a slip later leaves the approved parcha untouched", reg0.find((p: any) => p.parchaNo === "196").grandTotalPaise === 112_785_122);
+check("…but the edit says which approved parcha sits on that day", (changed.approvedParchas ?? []).some((p: any) => p.parchaNo === "196"), changed.approvedParchas);
+const staleSt = await call("GET", `/loads/${t1.id}`);
+check("the truck shows what 196 would be now, beside what it was approved at",
+  staleSt.stale && staleSt.stale.wasGrandTotalPaise === 112_785_122 && staleSt.stale.nowGrandTotalPaise > 112_785_122 && staleSt.stale.days.some((d: any) => d.date === DAY1),
+  staleSt.stale && { was: staleSt.stale.wasGrandTotalPaise, now: staleSt.stale.nowGrandTotalPaise });
+const dashStale = await call("GET", "/dashboard");
+check("the dashboard flags parcha 196 as out of step", dashStale.flags.some((f: any) => f.code === "parcha_stale" && f.items.some((i: any) => i.parchaNo === "196")));
 await call("PUT", `/slips/${slipIds[0]}`, { ratePaisePerQtl: 345_000 });
+check("put back, the warning goes away", (await call("GET", `/loads/${t1.id}`)).stale === null);
+const otherDay = await call("PUT", `/slips/${slipIds[0]}`, { bagsCount: 5 });
+check("an edit that moves no money raises no warning", (otherDay.approvedParchas ?? []).length === 0, otherDay.approvedParchas);
 
 const xres = await raw("GET", `/loads/${t1.id}/parcha.xlsx`);
 const buf = Buffer.from(await xres.arrayBuffer());
@@ -215,6 +225,16 @@ check("re-approved as 196 v2 with the new advance", ap2.parchaNo === "196" && ap
 const reg = await call("GET", "/parchas");
 const mine = reg.filter((p: any) => p.parchaNo === "196");
 check("register keeps v1 (void) and v2 (approved)", mine.length === 2 && mine.some((p: any) => p.status === "void") && mine.some((p: any) => p.status === "approved"));
+const v1 = mine.find((p: any) => p.status === "void");
+const v1doc = await call("GET", `/parchas/${v1.id}`);
+check("the voided v1 can still be opened, as it was frozen", v1doc.status === "void" && v1doc.doc.result.grandTotalPaise === 112_785_122 && v1doc.voidReason === "advance was 12000, not 10000", { status: v1doc.status, why: v1doc.voidReason });
+const v1x = await raw("GET", `/parchas/${v1.id}/parcha.xlsx`);
+const v1buf = Buffer.from(await v1x.arrayBuffer());
+const v1wb = new ExcelJS.Workbook();
+await v1wb.xlsx.load(v1buf as any);
+const v1title = String(v1wb.worksheets[0].getCell("A1").value ?? "");
+check("…and reprinted to Excel, marked VOID", v1x.ok && /VOID/.test(v1title), v1title);
+check("the register shows received and due on approved parchas only", mine.find((p: any) => p.status === "approved").duePaise === mine.find((p: any) => p.status === "approved").grandTotalPaise && v1.duePaise === null);
 
 console.log("\nStock and PO, from the rows");
 // only this test's two days: the daily-list test put other L.B slips in the same database

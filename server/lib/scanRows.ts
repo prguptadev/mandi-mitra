@@ -55,6 +55,8 @@ export interface CheckedRow extends ReviewRow {
   derivedAmountPaise: number | null;
   /** Gemini's net vs ours. Agreement is strong evidence the digits are right. */
   netAgrees: boolean | null;
+  /** A gross with the decimal point moved that makes the sheet's own net agree (1920 → 19.20). */
+  grossSuggestGrams: number | null;
   netDiffGrams: number | null;
   issues: Issue[];
   blocking: boolean;
@@ -92,6 +94,23 @@ export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
     modelPick: r.supplierMatch?.trim() || null,
     confirmed: [],
   };
+}
+
+/**
+ * A lost or misplaced decimal point is the commonest misread of a weight:
+ * "2860" for 28.60. If moving the point makes the sheet's own net agree
+ * with our arithmetic, that is almost certainly the real weight.
+ */
+export function decimalFix(row: ReviewRow, katauti: Katauti): number | null {
+  if (row.grossGrams == null || row.ocr.netQtl == null) return null;
+  const want = qtlToGrams(row.ocr.netQtl);
+  for (const f of [0.01, 0.1, 10, 100]) {
+    const g = Math.round(row.grossGrams * f);
+    if (g < GRAMS_PER_QTL / 2 || g > 100 * GRAMS_PER_QTL) continue;
+    const k = deriveKatauti(g, katauti, null);
+    if (Math.abs(g - k.deductionGrams - want) <= 500) return g;
+  }
+  return null;
 }
 
 /** The operator accepted this field as read (one click), or edited it. */
@@ -135,13 +154,22 @@ export function checkRow(
       const ocrNet = qtlToGrams(row.ocr.netQtl);
       netDiffGrams = ocrNet - derivedNetGrams;
       netAgrees = Math.abs(netDiffGrams) <= 500; // half a kilo
+      /* The net column is only a cross-check. Written without its decimal
+         point ("4,000" for 40.00) it still confirms every digit of the gross,
+         so it counts as agreeing rather than blocking the row. */
+      if (!netAgrees && [0.01, 0.1].some((f) => Math.abs(Math.round(ocrNet * f) - derivedNetGrams!) <= 500)) {
+        netAgrees = true;
+        netDiffGrams = 0;
+      }
     }
   }
+
+  const grossSuggestGrams = netAgrees === false || (row.grossGrams ?? 0) > 100 * GRAMS_PER_QTL ? decimalFix(row, opts.katauti) : null;
 
   if (row.excluded) {
     return {
       ...row, match: resolved.match, chosen, suggestions: resolved.suggestions,
-      derivedKatautiUnits, derivedNetGrams, derivedAmountPaise, netAgrees, netDiffGrams,
+      derivedKatautiUnits, derivedNetGrams, derivedAmountPaise, netAgrees, netDiffGrams, grossSuggestGrams,
       issues: [], blocking: false,
     };
   }
@@ -166,7 +194,10 @@ export function checkRow(
   else if (derivedNetGrams !== null && derivedNetGrams <= 0) issues.push({ code: "net_nonpositive", level: "error", message: "Net weight works out to zero or less" });
   else if (row.grossGrams > 100 * GRAMS_PER_QTL) {
     // likely a lost decimal point (1920 for 19.20): must be confirmed or fixed
-    issues.push({ code: "gross_large", level: confirmedField(row, "gross") ? "warn" : "error", message: "Gross weight looks very large for one slip — confirm it or fix it" });
+    issues.push({
+      code: "gross_large", level: confirmedField(row, "gross") ? "warn" : "error", message: "Gross weight looks very large for one slip — confirm it or fix it",
+      ...(grossSuggestGrams ? { params: { suggest: (grossSuggestGrams / GRAMS_PER_QTL).toFixed(2) } } : {}),
+    });
   }
   else if (row.grossGrams < GRAMS_PER_QTL) issues.push({ code: "gross_small", level: "warn", message: "Gross weight is under one quintal — check the decimal point" });
 
@@ -175,7 +206,7 @@ export function checkRow(
       // the sheet's own net disagrees: the surest sign of a misread digit
       code: "net_mismatch", level: confirmedField(row, "gross") ? "warn" : "error",
       message: `The sheet's net weight differs from the calculation by ${((netDiffGrams ?? 0) / GRAMS_PER_QTL).toFixed(2)} qtl`,
-      params: { diff: ((netDiffGrams ?? 0) / GRAMS_PER_QTL).toFixed(2) },
+      params: { diff: ((netDiffGrams ?? 0) / GRAMS_PER_QTL).toFixed(2), ...(grossSuggestGrams ? { suggest: (grossSuggestGrams / GRAMS_PER_QTL).toFixed(2) } : {}) },
     });
   }
   if (row.ocr.katauti != null && derivedKatautiUnits !== null && row.katautiOverride === null
@@ -190,7 +221,10 @@ export function checkRow(
   if (row.ratePaisePerQtl === null) issues.push({ code: "rate_missing", level: "warn", message: "Rate could not be read — it can be filled in later" });
   else if (row.ratePaisePerQtl < 0) issues.push({ code: "rate_negative", level: "error", message: "Rate cannot be negative" });
   else if (row.ratePaisePerQtl > 0 && (row.ratePaisePerQtl < opts.rateFloorPaise || row.ratePaisePerQtl > opts.rateCeilPaise)) {
-    issues.push({ code: "rate_range", level: confirmedField(row, "rate") ? "warn" : "error", message: "Rate is outside the usual range — confirm it or fix it" });
+    issues.push({
+      code: "rate_range", level: confirmedField(row, "rate") ? "warn" : "error", message: "Rate is outside the usual range — confirm it or fix it",
+      params: { floor: Math.round(opts.rateFloorPaise / 100), ceil: Math.round(opts.rateCeilPaise / 100) },
+    });
   }
 
   if ((row.ocr.confidence ?? 1) < 0.6) {
@@ -199,7 +233,7 @@ export function checkRow(
 
   return {
     ...row, match: resolved.match, chosen, suggestions: resolved.suggestions,
-    derivedKatautiUnits, derivedNetGrams, derivedAmountPaise, netAgrees, netDiffGrams,
+    derivedKatautiUnits, derivedNetGrams, derivedAmountPaise, netAgrees, netDiffGrams, grossSuggestGrams,
     issues,
     blocking: issues.some((i) => i.level === "error"),
   };
@@ -213,4 +247,45 @@ export function findDupes(rows: ReviewRow[]): Set<string> {
     seen.set(r.rstNo, (seen.get(r.rstNo) ?? 0) + 1);
   }
   return new Set([...seen.entries()].filter(([, n]) => n > 1).map(([k]) => k));
+}
+
+/** "21-09-2026", "21/9/26", "२१-०९-२०२६" → "2026-09-21"; null when it does not read as a date. */
+export function writtenDate(v: string | null | undefined): string | null {
+  const t = String(v ?? "").replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).trim();
+  const m = t.match(/(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{2,4})/);
+  if (!m) return null;
+  const d = Number(m[1]), mo = Number(m[2]);
+  let y = Number(m[3]);
+  if (y < 100) y += 2000;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || y < 2000 || y > 2100) return null;
+  return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+export interface PageMeta { page: number; date: string | null; millName: string | null; jins: string | null; total: number | null }
+
+/**
+ * Checks a whole page against itself: the date written in its header against
+ * the scan's date, and any total written at the bottom against its rows —
+ * a row missed by the reader shows up here even when every row looks fine.
+ */
+export function checkPages(meta: PageMeta[], rows: CheckedRow[], slipDate: string | null) {
+  const out: { page: number; code: "page_total" | "page_date"; params: Record<string, string | number> }[] = [];
+  for (const m of meta) {
+    const mine = rows.filter((r) => (r.page ?? 1) === m.page && !r.excluded);
+    if (m.total != null && m.total > 0 && mine.length) {
+      const written = qtlToGrams(m.total);
+      const net = mine.reduce((s, r) => s + (r.derivedNetGrams ?? 0), 0);
+      const gross = mine.reduce((s, r) => s + (r.grossGrams ?? 0), 0);
+      // the sheet may total net or gross; 5 kg of rounding either way is fine
+      if (Math.abs(written - net) > 5000 && Math.abs(written - gross) > 5000) {
+        out.push({ page: m.page, code: "page_total", params: {
+          written: m.total.toFixed(2), net: (net / GRAMS_PER_QTL).toFixed(2), gross: (gross / GRAMS_PER_QTL).toFixed(2),
+          diff: ((written - net) / GRAMS_PER_QTL).toFixed(2),
+        } });
+      }
+    }
+    const d = writtenDate(m.date);
+    if (d && slipDate && d !== slipDate) out.push({ page: m.page, code: "page_date", params: { written: d, scan: slipDate } });
+  }
+  return out;
 }

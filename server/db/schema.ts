@@ -473,6 +473,8 @@ export const scanBatches = sqliteTable(
     warningText: text("warning_text"),
     /** Pages read so far; pages are read one at a time and shown as they land. */
     pagesDone: integer("pages_done").notNull().default(0),
+    /** What the reader saw around the rows of each page: the date in the header and the total at the bottom (JSON array). */
+    pageMeta: text("page_meta"),
     reviewedBy: text("reviewed_by").references(() => users.id),
     reviewedAt: integer("reviewed_at"),
     createdBy: text("created_by").references(() => users.id),

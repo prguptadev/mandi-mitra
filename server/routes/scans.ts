@@ -17,7 +17,7 @@ import {
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
 import { deriveSlip } from "./slips.ts";
-import { normRst } from "../lib/scanRows.ts";
+import { normRst, checkPages, type PageMeta } from "../lib/scanRows.ts";
 import { can, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 
 export const scanRoutes = new Hono<Env>();
@@ -132,6 +132,25 @@ async function loadBatch(businessId: string, id: string) {
 }
 
 /** Re-runs every check. Nothing is cached — the answer must follow the edits. */
+/**
+ * What a rate usually is for this commodity, from this business's own slips
+ * of the last 90 days: 70%–140% of the median. Maize at 1,900 and paddy at
+ * 3,450 are both normal; a fixed range would flag one of them. With too few
+ * slips to judge, a wide default is used.
+ */
+async function usualRateRange(businessId: string, jinsId: string | null, day: string | null) {
+  const S = schema.purchaseSlips;
+  const until = day ?? new Date().toLocaleDateString("en-CA");
+  const since = new Date(new Date(until).getTime() - 90 * 86400_000).toLocaleDateString("en-CA");
+  const rates = (await db.select({ r: S.ratePaisePerQtl }).from(S).where(and(
+    eq(S.businessId, businessId), gte(S.slipDate, since), lte(S.slipDate, until), sql`${S.ratePaisePerQtl} > 0`,
+    ...(jinsId ? [eq(S.jinsId, jinsId)] : []),
+  ))).map((x) => x.r).sort((a, b) => a - b);
+  if (rates.length < 15) return { floor: 100_000, ceil: 1_000_000, from: "default" as const };
+  const median = rates[Math.floor(rates.length / 2)];
+  return { floor: Math.round(median * 0.7), ceil: Math.round(median * 1.4), from: "recent" as const };
+}
+
 async function checkAll(businessId: string, batch: typeof schema.scanBatches.$inferSelect) {
   const rows: ReviewRow[] = batch.parsedRows ? JSON.parse(batch.parsedRows) : [];
   const katauti = await katautiFor(businessId, batch.merchantId);
@@ -148,17 +167,21 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   }
 
   const dupeInBatch = findDupes(rows);
+  const range = await usualRateRange(businessId, batch.jinsId, batch.slipDate);
   // page, then position on the page — the same order everywhere
   const ordered = [...rows].sort((a, b) => (a.page ?? 1) - (b.page ?? 1) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
   const checked: CheckedRow[] = ordered.map((r) => checkRow(r, {
     katauti, resolve: resolver.resolve, byId: resolver.byId, existingRst, dupeInBatch,
-    rateFloorPaise: 200_000, rateCeilPaise: 600_000,
+    rateFloorPaise: range.floor, rateCeilPaise: range.ceil,
   }));
+  const pageChecks = checkPages(JSON.parse(batch.pageMeta ?? "[]") as PageMeta[], checked, batch.slipDate);
 
   const active = checked.filter((r) => !r.excluded);
   return {
     rows: checked,
     katauti,
+    pageChecks,
+    rateRange: { floorPaise: range.floor, ceilPaise: range.ceil, from: range.from },
     summary: {
       total: checked.length,
       included: active.length,
@@ -325,6 +348,10 @@ async function performRead(opts: {
   }
 
   const collected: ReviewRow[] = [...(opts.resumeRows ?? [])];
+  // header date and bottom total of each page, kept for the page checks
+  const pageMeta: PageMeta[] = opts.resumeFrom
+    ? (JSON.parse(batch.pageMeta ?? "[]") as PageMeta[]).filter((m) => m.page <= opts.resumeFrom!)
+    : [];
   const notes: string[] = [];
   let tokensIn = 0, tokensOut = 0;
   let modelUsed = wanted ?? cfg.model;
@@ -444,10 +471,15 @@ async function performRead(opts: {
         // the page is the image's position — never the model's guess
         collected.push(ocrToReviewRow({ ...r, page: p + 1 }, offset + i));
       }
+      pageMeta.push({
+        page: p + 1, date: result.page.date ?? null, millName: result.page.millName ?? null,
+        jins: result.page.jins ?? null, total: result.page.totalWeightWritten ?? null,
+      });
     }
 
     // save after every page so the grid fills in while the rest is read
     await db.update(schema.scanBatches).set({
+      pageMeta: JSON.stringify(pageMeta),
       parsedRows: JSON.stringify(collected),
       pagesDone: p + 1,
       model: modelUsed,
@@ -635,7 +667,7 @@ scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const batch = await loadBatch(biz, param(c, "id"));
   const checked = batch.parsedRows && batch.status !== "reading"
-    ? await checkAll(biz, batch) : { rows: [], summary: null, katauti: null };
+    ? await checkAll(biz, batch) : { rows: [], summary: null, katauti: null, pageChecks: [], rateRange: null };
   const files: { name: string; mimeType: string; bytes: number }[] = JSON.parse(batch.filePaths);
   return c.json({
     id: batch.id, status: batch.status, sourceKind: batch.sourceKind,

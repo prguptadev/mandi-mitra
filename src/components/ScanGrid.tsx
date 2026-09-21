@@ -55,7 +55,10 @@ function flagFor(r: ScanRow, f: Field, t: (k: never, v?: Record<string, string |
   if (f === "rate") {
     if (!done && r.ratePaisePerQtl === null) return { level: "doubt", why: t("issue.rate_missing" as never) };
     if (has("rate_negative")) return { level: "bad", why: t("issue.rate_negative" as never) };
-    if (!done && has("rate_range")) return { level: "bad", why: t("issue.rate_range" as never), confirmable: true };
+    if (!done && has("rate_range")) {
+      const p = r.issues.find((i) => i.code === "rate_range")?.params;
+      return { level: "bad", why: p ? t("issue.rate_rangeOf" as never, { floor: p.floor, ceil: p.ceil }) : t("issue.rate_range" as never), confirmable: true };
+    }
     if (!done && conf < LOW) return { level: "doubt", why: t("issue.low_confidence" as never) };
   }
   return null;
@@ -205,6 +208,13 @@ export function ScanGrid({
                       value={r.grossGrams === null ? null : r.grossGrams / GRAMS_PER_QTL}
                       onValueChange={(n) => onPatch(r.id, { grossGrams: n === null ? null : Math.round(n * GRAMS_PER_QTL) }, "gross")} />
                     {!dead && <Accept flag={fl.gross} label={t("scan.acceptValue")} onAccept={() => onPatch(r.id, {}, "gross")} />}
+                    {!dead && fl.gross && r.grossSuggestGrams != null && (
+                      <button type="button" title={t("scan.useSuggest", { v: (r.grossSuggestGrams / GRAMS_PER_QTL).toFixed(2) })}
+                        className="mt-0.5 block w-full rounded bg-brand/10 px-1 text-right text-[10px] font-medium text-brand hover:bg-brand/20"
+                        onClick={() => onPatch(r.id, { grossGrams: r.grossSuggestGrams! }, "gross")}>
+                        → {(r.grossSuggestGrams / GRAMS_PER_QTL).toFixed(2)}
+                      </button>
+                    )}
                   </div>
                 </td>
 

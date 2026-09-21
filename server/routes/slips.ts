@@ -8,6 +8,7 @@ import { ChargeConfigSchema, KatautiSchema, deriveKatauti, type Katauti } from "
 import { amountPaise, weightedAvgRate, GRAMS_PER_QTL } from "../lib/money.ts";
 import { DisplayConfigSchema, defaultDisplayConfig } from "../lib/display.ts";
 import { can, actor, param, notFound, bad, HttpError, isoDay, LIMIT, type Env } from "../lib/http.ts";
+import { approvedOnDays } from "../lib/parcha.ts";
 
 /** Supplier, commodity and mill must all be this business's own. */
 async function checkSlipRefs(biz: string, r: { adatiId?: string; jinsId?: string; merchantId?: string | null }) {
@@ -317,6 +318,8 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
 
   const claimed = body.netGramsClaimed;
   return c.json({
+    /** Approved parchas on this day: their frozen figures no longer match it. */
+    approvedParchas: await approvedOnDays(biz, [{ merchantId: body.merchantId ?? null, jinsId: body.jinsId, date: body.slipDate }]),
     id,
     netGrams: d.netGrams,
     amountPaise: d.amountPaise,
@@ -371,7 +374,13 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
     entityLabel: `${merged.slipDate} RST ${merged.rstNo}`, before, after,
   });
   await enqueueSync(biz, "purchase_slip", id, "update", after);
-  return c.json({ ok: true, netGrams: d.netGrams, amountPaise: d.amountPaise, katautiUnits: d.katautiUnits, katautiGrams: d.katautiGrams });
+  const touched = before.ratePaisePerQtl !== merged.ratePaisePerQtl || before.netGrams !== d.netGrams || before.slipDate !== merged.slipDate
+    || before.merchantId !== merged.merchantId || before.jinsId !== merged.jinsId;
+  const approvedParchas = touched ? await approvedOnDays(biz, [
+    { merchantId: before.merchantId, jinsId: before.jinsId, date: before.slipDate },
+    { merchantId: merged.merchantId, jinsId: merged.jinsId, date: merged.slipDate },
+  ]) : [];
+  return c.json({ ok: true, netGrams: d.netGrams, amountPaise: d.amountPaise, katautiUnits: d.katautiUnits, katautiGrams: d.katautiGrams, approvedParchas });
 });
 
 slipRoutes.delete("/:id", can("slip.delete"), async (c) => {
@@ -386,7 +395,7 @@ slipRoutes.delete("/:id", can("slip.delete"), async (c) => {
     entityLabel: `${before.slipDate} RST ${before.rstNo}`, before,
   });
   await enqueueSync(biz, "purchase_slip", id, "delete");
-  return c.json({ ok: true });
+  return c.json({ ok: true, approvedParchas: await approvedOnDays(biz, [{ merchantId: before.merchantId, jinsId: before.jinsId, date: before.slipDate }]) });
 });
 
 /** Move a batch of slips to another mill — RST 634 went from G.R.M to L.B this way. */
@@ -426,7 +435,10 @@ slipRoutes.post("/reassign", can("slip.write"), async (c) => {
     before: slips.map((s) => ({ rstNo: s.rstNo, merchantId: s.merchantId })),
     after: { merchantId, count: slips.length },
   });
-  return c.json({ ok: true, updated: slips.length });
+  const days = slips.flatMap((x) => [
+    { merchantId: x.merchantId, jinsId: x.jinsId, date: x.slipDate }, { merchantId, jinsId: x.jinsId, date: x.slipDate },
+  ]);
+  return c.json({ ok: true, updated: slips.length, approvedParchas: await approvedOnDays(biz, days) });
 });
 
 /** Change the commodity of several slips at once. Weight, katauti and amount
@@ -455,7 +467,10 @@ slipRoutes.post("/set-jins", can("slip.write"), async (c) => {
       after: { jinsId, count: moving.length },
     });
   }
-  return c.json({ ok: true, updated: moving.length });
+  const days = moving.flatMap((x) => [
+    { merchantId: x.merchantId, jinsId: x.jinsId, date: x.slipDate }, { merchantId: x.merchantId, jinsId, date: x.slipDate },
+  ]);
+  return c.json({ ok: true, updated: moving.length, approvedParchas: await approvedOnDays(biz, days) });
 });
 
 /** Recompute a whole day from gross + bags + rate. Repairs anything stale. */

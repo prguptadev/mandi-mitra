@@ -11,7 +11,7 @@ const QTL = "0.00";
 const thin = { style: "thin" as const, color: { argb: "FF000000" } };
 const box = { top: thin, left: thin, bottom: thin, right: thin };
 
-export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean } = {}): Promise<Buffer> {
+export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean; voided?: string } = {}): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = "Mandi Mitra";
   // Excel forbids / \\ ? * : [ ] in sheet names and caps them at 31 characters
@@ -44,7 +44,8 @@ export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean } = {})
   const q = (g: number) => Math.round(g / 1000) / 100; // grams -> quintals, 2 dp
   const rs = (p: number) => Math.round(p) / 100;
 
-  put(`A${row}:H${row}`, opts.draft ? `${doc.title}  (DRAFT — not approved)` : doc.title, { bold: true, size: 16, align: "center" });
+  const mark = opts.voided ? `  (VOID — ${opts.voided})` : opts.draft ? "  (DRAFT — not approved)" : "";
+  put(`A${row}:H${row}`, `${doc.title}${mark}`, { bold: true, size: 16, align: "center" });
   ws.getRow(row).height = 26;
   row++;
 

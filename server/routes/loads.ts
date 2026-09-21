@@ -461,6 +461,32 @@ parchaRoutes.get("/", can("parcha.read"), async (c) => {
     : { ...r, shortagePaise: null, receivedPaise: null, duePaise: null }));
 });
 
+/** One parcha version as it was frozen, approved or voided — for viewing and reprinting. */
+async function parchaVersion(biz: string, id: string) {
+  const [p] = await db.select({ p: schema.parchas, voidedByName: schema.users.name }).from(schema.parchas)
+    .leftJoin(schema.users, eq(schema.users.id, schema.parchas.voidedBy))
+    .where(and(eq(schema.parchas.id, id), eq(schema.parchas.businessId, biz))).limit(1);
+  if (!p) throw notFound("Parcha not found");
+  const { snapshot, ...rest } = p.p;
+  return { ...rest, voidedByName: p.voidedByName, doc: JSON.parse(snapshot) as ParchaDoc };
+}
+
+parchaRoutes.get("/:id", can("parcha.read"), async (c) => {
+  return c.json(await parchaVersion(c.get("auth")!.businessId!, param(c, "id")));
+});
+
+parchaRoutes.get("/:id/parcha.xlsx", can("parcha.read"), async (c) => {
+  const v = await parchaVersion(c.get("auth")!.businessId!, param(c, "id"));
+  const buf = await parchaXlsx(v.doc, v.status === "void" ? { voided: v.voidReason ?? "voided" } : {});
+  const name = `parcha-${v.parchaNo}${v.version > 1 ? `-v${v.version}` : ""}${v.status === "void" ? "-VOID" : ""}-${v.doc.mill.code}.xlsx`;
+  return new Response(new Uint8Array(buf), {
+    headers: {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": attachment(name),
+    },
+  });
+});
+
 parchaRoutes.post("/:id/void", can("parcha.void"), async (c) => {
   const auth = c.get("auth")!;
   const biz = auth.businessId!;

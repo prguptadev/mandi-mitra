@@ -170,6 +170,8 @@ function PageOrderer({ scanId, pages, onRead, reading }: {
 
 type Field = GridField;
 
+const dmyIso = (iso: string) => iso.split("-").reverse().join("-");
+
 export function ScanReviewPage({ scanId }: { scanId: string }) {
   const { t, pick } = useI18n();
   const f = useFormat();
@@ -499,6 +501,19 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
       )}
 
       {header}
+
+      {(b.pageChecks ?? []).length > 0 && !locked && (
+        <Alert tone="warn" className="mb-3">
+          {(b.pageChecks ?? []).map((pc, i) => (
+            <p key={i} className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{pc.code === "page_total"
+                ? t("scan.pageTotal", { page: pc.page, written: pc.params.written, net: pc.params.net, gross: pc.params.gross })
+                : t("scan.pageDate", { page: pc.page, written: dmyIso(String(pc.params.written)), scan: dmyIso(String(pc.params.scan)) })}</span>
+            </p>
+          ))}
+        </Alert>
+      )}
 
       {b.status === "uploaded" ? (
         <Card>
