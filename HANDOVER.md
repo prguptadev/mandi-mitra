@@ -271,7 +271,49 @@ scripts/
   chosen script; same order as the screen; sort by name by clicking the header.
 - **Supplier ledger and payments** — Tally-style statement with brought
   forward, running balance, CSV and print; payments by cash / bank / UPI /
-  cheque with balance before and after.
+  cheque with balance before and after. A payment is **cancelled with a
+  reason, never deleted**: it stays struck out and counts for nothing.
+- **Mill accounts (added 21-09)** — what each mill owes = its opening +
+  approved parchas − the mill's weight cuts (challan) − receipts (money +
+  anything held back, e.g. TDS). Receipts can be marked against a truck's
+  parcha, so each parcha shows received and due (also in the register).
+  Receipts are cancelled, never deleted. `server/routes/millAccounts.ts`.
+- **Challan (added 21-09)** — every truck with full details, filterable by
+  mill, commodity, dates and search; the mill's weight cut per truck gives
+  final weight, final value and final bill (cut × the parcha's rate). The
+  parcha itself never changes; the mill account takes the cut off.
+- **Dashboard** — period and commodity filters; received / loaded / left /
+  to pay; **Money**: mills owe, we owe, goods in hand at cost (+ unbilled
+  trucks), cash from trade, net position, and what the billed parchas are
+  made of; flags for anything that does not add up (incl. approved parchas
+  whose day's average moved since — `parcha_stale`); a card per mill with
+  the received-vs-loaded race and what the mill owes.
+- **Stock** — a card per mill (received, loaded, left, billed, received,
+  owes); "All commodities" is the default.
+- **Sorting** — click any table heading: up, down, off, kept per table in
+  the browser (`src/lib/useSort.ts`). A running-balance statement stays in
+  date order on purpose.
+- **Voided parchas** — any version opens, prints and downloads exactly as
+  frozen, stamped VOID. When a slip on a day an approved parcha takes its
+  rate from changes, the edit names the parcha, and the truck shows "was /
+  would be now"; void and re-approve to bill the new figure.
+- **Scanner (Windows)** — "Scan from scanner" on the Scan page drives any
+  WIA scanner (Canon PIXMA / imageCLASS drivers include WIA) through a
+  PowerShell script (`server/lib/scanner.ts`): page 1, page 2 … one sheet,
+  then Read. Needs the app to run on the Windows PC the scanner is on.
+  **Not yet tried on the owner's Canon** — only the stand-in is tested.
+- **Backups** — SQLite online backup every 12 h (30 kept), before every
+  database update (20 kept) and on demand; optional second folder (Google
+  Drive / OneDrive / pen drive). Settings › Backups. Config lives in
+  `data/backup.json`, not in the database.
+- **Desktop app** — Electron (`electron/main.cjs`) runs the server inside the
+  app on 127.0.0.1 with data in AppData; the server serves the built screens
+  itself. `npm run desktop:pack` / `.github/workflows/desktop.yml` builds the
+  NSIS installer on windows-latest and runs the packaged app with
+  `--smoke-test`. **Not yet installed on the owner's PC.**
+- **Money audit** — `scripts/money-check.ts <copy.db>` re-works every figure
+  from raw rows; it runs at the end of `test:e2e` and passed on a copy of the
+  real database on 21-09 (122 slips, 3 parchas, 2 mills).
 
 ### How the OCR is made trustworthy
 
@@ -310,6 +352,28 @@ resolves via `alias` on the very next lookup.
 
 Rows struck through on the paper are detected and excluded by default — this
 worked on the real G.R.M sheet (row 6, RST 634).
+
+**Rows sliding (found 21-09, fixed).** On one read the model gave the
+crossed-out line 6's name to line 7's figures, and every row below slid by
+one. The prompt now anchors every object to the printed SR NO (one object
+per printed line with handwriting, crossed-out lines included; every value
+from that same line; empty or scribbled cells null; nothing from another
+line except a written ditto). `srNo` is required and kept per row; if the
+numbers jump, repeat or run backwards, that row is blocked until checked
+(✓ on its name). Older reads without numbers are not flagged.
+
+**Page checks.** The header date and the bottom total are kept per page
+(`scan_batches.page_meta`) and compared with the scan's date and its rows.
+A gross that has lost its decimal point is offered as a one-click fix when
+the sheet's own net confirms it; a net written without its point ("4,000")
+no longer blocks. The usual rate range is 70–140 % of the median of the
+last 90 days of that commodity (a fixed 2,000–6,000 flagged maize).
+
+**Models.** The owner's key is on the free tier (2.5 Flash: 20 reads a day;
+2.5 Pro: none). Settings › Gemini lists the models the key can call, and a
+backup-model chain reads the page on the next model when one's daily reads
+run out. "Try other models" on a scan compares models on a real page
+without changing it.
 
 ### OCR when Google is busy
 
@@ -538,19 +602,19 @@ Never run a data-writing script against the dev server by hand again.
 
 ### Next to build
 
-1. **Electron + installer** — main process imports the existing Hono app,
-   electron-updater, GitHub Action for the Windows build.
-2. **Scanner integration** (Electron only) — watch folder, open the Canon
-   scan window, WIA via PowerShell.
-3. **Backup / restore** — scheduled local SQLite backup. Before real money.
-4. **Cloud sync** — Postgres plus the outbox pusher.
-5. Supplier deductions on the ledger (if the owner charges suppliers anything),
-   a mill (receivable) ledger from approved parchas, dashboard figures.
+1. **Install on the owner's Windows PC** and try the Canon scanner there —
+   both are built and tested on stand-ins only.
+2. **Auto-update** for the desktop app (electron-updater + GitHub releases).
+3. **Cloud sync** — needs the owner's decision (where the data lives, who
+   pays). Until then the backup folder can be a Google Drive / OneDrive
+   folder, which keeps a copy off the PC. `sync_outbox` is already filled.
+4. Restore from a backup inside the app (today: replace `mandi.db` by hand).
 
 ### Smaller gaps
 
-- No unit test runner (vitest). Five regression scripts in CI plus `test:e2e`
-  (112 checks).
+- No unit test runner (vitest). Six regression scripts in CI plus `test:e2e`
+  (246 checks, a stand-in Google and a stand-in scanner, then the money
+  audit over everything the tests stored).
 - Printing is via the browser's print dialog ("Save as PDF" for a PDF);
   not yet tried on the owner's printer.
 - Responsive but untested on a real tablet.
