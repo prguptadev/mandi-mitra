@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearch } from "wouter";
-import { Download, CheckCircle2, Wrench, ChevronDown } from "lucide-react";
+import { Download, CheckCircle2, Wrench, ChevronDown, CalendarDays } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFYRange } from "@/lib/fy.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
-import { Alert, Badge, Button, Card, CardHeader, Checkbox, Field, Input, Select, Switch } from "@/components/ui/index.tsx";
+import { Alert, Badge, Button, Card, CardHeader, Checkbox, Field, Input, Select, Switch, Table, Td, Th, Tr } from "@/components/ui/index.tsx";
+import { SupplierPicker } from "@/components/SupplierPicker.tsx";
+import { TallyBadge } from "@/pages/DayClose.tsx";
+import { dmy, weekday } from "@/lib/utils.ts";
+import type { Merchant } from "@/lib/api.ts";
 import { defaultTallySettings, type TallySettings } from "@server/lib/tally.ts";
 
 /* Sending the books to Tally Prime. The app writes two files — the ledgers
@@ -24,6 +28,9 @@ interface Preview {
   changed: { kind: Kind; id: string; sent: string; now: string | null; exportedAt: number }[];
 }
 interface ExportResult { ledgersXml: string; vouchersXml: string; entries: { kind: Kind; id: string; fp: string }[]; vouchers: number; ledgers: number }
+type T4 = { new: number; sent: number; changed: number; unpriced: number };
+interface TallyDay { day: string; all: T4; kinds: Partial<Record<Kind, T4>> }
+type Body = { from: string; to: string; kinds: Kind[]; onlyNew: boolean; adatiId?: string | null; merchantId?: string | null };
 
 const save = (text: string, name: string) => {
   const a = document.createElement("a");
@@ -34,11 +41,16 @@ const save = (text: string, name: string) => {
 };
 
 export function TallyPage() {
-  const { t } = useI18n();
+  const { t, pick, lang } = useI18n();
   const { can } = useSession();
   const qc = useQueryClient();
   const ask = useConfirm();
   const { from, setFrom, to, setTo, fy } = useFYRange();
+  // whose entries: everyone's, one supplier's (purchases, payments), or one mill's (sales, cuts, money, purchases for it)
+  const [whose, setWhose] = useState<"all" | "supplier" | "mill">("all");
+  const [adatiId, setAdatiId] = useState<string | null>(null);
+  const [merchantId, setMerchantId] = useState<string>("");
+  const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
   // opened from a day's Tally mark (/tally?day=2026-09-20): just that day
   const day = new URLSearchParams(useSearch()).get("day");
   useEffect(() => { if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) { setFrom(day); setTo(day); } }, [day]);
@@ -46,7 +58,14 @@ export function TallyPage() {
   const [onlyNew, setOnlyNew] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
-  const body = { from, to, kinds, onlyNew };
+  const party = whose === "supplier" && adatiId ? { adatiId } : whose === "mill" && merchantId ? { merchantId } : {};
+  const partyTag = whose === "supplier" && adatiId ? "-supplier" : whose === "mill" && merchantId ? `-${mills.data?.find((m) => m.id === merchantId)?.code ?? "mill"}` : "";
+  const body: Body = { from, to, kinds, onlyNew, ...party };
+  const dq = useQuery({
+    queryKey: ["tally", "days", body],
+    queryFn: () => api.post<{ days: TallyDay[] }>("/tally/days", body),
+    enabled: Boolean(from && to && kinds.length),
+  });
   const pv = useQuery({
     queryKey: ["tally", "preview", body],
     queryFn: () => api.post<Preview>("/tally/preview", body),
@@ -60,10 +79,10 @@ export function TallyPage() {
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
   const exp = useMutation({
-    mutationFn: () => api.post<ExportResult>("/tally/export", body),
-    onSuccess: async (r) => {
+    mutationFn: (b: Body) => api.post<ExportResult>("/tally/export", b),
+    onSuccess: async (r, b) => {
       setErr(null);
-      const span = `${from}-to-${to}`;
+      const span = (b.from === b.to ? b.from : `${b.from}-to-${b.to}`) + partyTag;
       save(r.ledgersXml, `tally-1-ledgers-${span}.xml`);
       setTimeout(() => save(r.vouchersXml, `tally-2-vouchers-${span}.xml`), 400);
       // only once Tally has taken them are they counted as sent
@@ -104,6 +123,27 @@ export function TallyPage() {
                     label={`${t(`tally.kind.${k}`)}${p ? ` — ${p.entries[k] ?? 0}` : ""}`} />
                 ))}
               </div>
+              <div className="space-y-2">
+                <p className="text-[12px] font-semibold text-ink">{t("tally.whose")}</p>
+                <div className="inline-flex rounded-lg border border-line bg-raised/50 p-0.5">
+                  {(["all", "supplier", "mill"] as const).map((w) => (
+                    <button key={w} type="button" onClick={() => setWhose(w)}
+                      className={"rounded-md px-3 py-1.5 text-[13px] font-medium " + (whose === w ? "bg-surface text-ink shadow-card" : "text-muted hover:text-ink")}>
+                      {t(`tally.whose.${w}`)}
+                    </button>
+                  ))}
+                </div>
+                {whose === "supplier" && (
+                  <div className="max-w-sm"><SupplierPicker value={adatiId} onChange={setAdatiId} placeholder={t("tally.pickSupplier")} /></div>
+                )}
+                {whose === "mill" && (
+                  <Select value={merchantId} onChange={(e) => setMerchantId(e.target.value)} className="max-w-sm">
+                    <option value="">{t("tally.pickMill")}</option>
+                    {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
+                  </Select>
+                )}
+                {whose !== "all" && <p className="text-[12px] text-muted">{t(whose === "supplier" ? "tally.whoseSupplierSub" : "tally.whoseMillSub")}</p>}
+              </div>
               <Switch checked={onlyNew} onChange={setOnlyNew} label={t("tally.onlyNew")} />
               {p && (
                 <div className="space-y-1 rounded-lg border border-line bg-raised/40 p-3 text-[13px]">
@@ -114,10 +154,61 @@ export function TallyPage() {
               )}
               <Button variant="primary" size="lg" icon={<Download className="h-4 w-4" />} loading={exp.isPending}
                 disabled={!p || p.vouchers === 0 || !can("export.data")}
-                onClick={() => { setErr(null); setDone(null); exp.mutate(); }}>
+                onClick={() => { setErr(null); setDone(null); exp.mutate(body); }}>
                 {t("tally.download")}
               </Button>
             </div>
+          </Card>
+
+          <Card>
+            <CardHeader title={t("tally.daysTitle")} sub={t("tally.daysSub")} />
+            {!dq.data?.days.length ? (
+              <p className="p-4 text-[13px] text-muted">{dq.isLoading ? "…" : t("tally.daysNone")}</p>
+            ) : (
+              <div className="max-h-[480px] overflow-y-auto">
+                <Table>
+                  <thead>
+                    <tr>
+                      <Th>{t("dc.day")}</Th>
+                      {KINDS.filter((k) => kinds.includes(k)).map((k) => <Th key={k} numeric>{t(`tally.short.${k}`)}</Th>)}
+                      <Th>{t("dc.tally")}</Th>
+                      <Th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dq.data.days.map((d) => (
+                      <Tr key={d.day}>
+                        <Td className="whitespace-nowrap"><span className="num font-medium text-ink">{dmy(d.day)}</span><span className="ml-1.5 text-[11px] text-faint">{weekday(d.day, lang)}</span></Td>
+                        {KINDS.filter((k) => kinds.includes(k)).map((k) => {
+                          const c = d.kinds[k];
+                          const n = c ? c.new + c.sent + c.changed : 0;
+                          return (
+                            <Td key={k} numeric>
+                              {!n ? <span className="text-faint">—</span> : (
+                                <span title={t("tally.cellTip", { sent: c!.sent, fresh: c!.new, changed: c!.changed })}>
+                                  <span className={c!.new || c!.changed ? "font-semibold text-ink" : "text-ok"}>{c!.sent}/{n}</span>
+                                  {c!.unpriced ? <span className="ml-1 text-[11px] text-warn">+{c!.unpriced}</span> : null}
+                                </span>
+                              )}
+                            </Td>
+                          );
+                        })}
+                        <Td><TallyBadge s={d.all} /></Td>
+                        <Td align="right">
+                          {d.all.new > 0 && can("export.data") && (
+                            <Button size="sm" variant="secondary" icon={<Download className="h-3.5 w-3.5" />} loading={exp.isPending && exp.variables?.from === d.day && exp.variables?.to === d.day}
+                              onClick={() => { setErr(null); setDone(null); exp.mutate({ ...body, from: d.day, to: d.day, onlyNew: true }); }}>
+                              {t("tally.sendDay")}
+                            </Button>
+                          )}
+                        </Td>
+                      </Tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </div>
+            )}
+            <p className="flex items-center gap-1.5 border-t border-line px-4 py-2 text-[12px] text-muted"><CalendarDays className="h-3.5 w-3.5" />{t("tally.daysHint")}</p>
           </Card>
 
           {p && p.changed.length > 0 && (

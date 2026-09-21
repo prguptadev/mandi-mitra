@@ -44,7 +44,7 @@ export function SyncIndicator() {
   const Icon = s.state === "syncing" ? RefreshCw : s.state === "offline" ? CloudOff : s.state === "paused" || s.state === "error" ? AlertTriangle : Cloud;
   return (
     <button type="button" title={title} aria-label={title}
-      onClick={() => { if (can("backup.manage")) navigate("/settings"); }}
+      onClick={() => { if (can("backup.manage")) navigate("/settings?tab=data"); }}
       className={cn("inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors hover:bg-raised",
         s.state === "ok" ? "text-ok" : s.state === "syncing" ? "text-brand" : s.state === "offline" ? "text-warn" : "text-bad")}>
       <Icon className={cn("h-4 w-4", s.state === "syncing" && "animate-spin")} />

@@ -4,8 +4,8 @@ import {
   LayoutDashboard, ListOrdered, ScanLine, Truck, FileText, Boxes, Users2,
   Factory, Wheat, BookOpen, Wallet, UserCog, ShieldCheck, ScrollText, Settings,
   Menu, X, Sun, Moon, Languages, ChevronDown, LogOut, Building2, Check, Plus,
-  PanelLeftClose, PanelLeftOpen,
-  ClipboardList, Landmark, ClipboardCheck, KeyRound, FileSpreadsheet, CalendarCheck } from "lucide-react";
+  PanelLeftOpen,
+  ClipboardList, Landmark, ClipboardCheck, KeyRound, FileSpreadsheet, CalendarCheck, PhoneCall } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { ApiError } from "@/lib/api.ts";
 import { SyncIndicator } from "@/components/SyncIndicator.tsx";
@@ -44,6 +44,7 @@ const NAV: NavGroup[] = [
     { href: "/ledger", labelKey: "nav.ledger", icon: BookOpen, perm: "ledger.read" },
     { href: "/payments", labelKey: "nav.payments", icon: Wallet, perm: "payment.read" },
     { href: "/mill-accounts", labelKey: "nav.millAccounts", icon: Landmark, perm: "millledger.read" },
+    { href: "/mill-followup", labelKey: "nav.millFollowup", icon: PhoneCall, perm: "millledger.read" },
     { href: "/tally", labelKey: "nav.tally", icon: FileSpreadsheet, perm: "export.data" },
   ] },
   { labelKey: "nav.admin", items: [
@@ -291,7 +292,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
           <Button variant="ghost" size="icon" className="hidden lg:inline-flex" onClick={toggleSidebar}
             title={collapsed ? t("nav.showSidebar") : t("nav.hideSidebar")}
             aria-label={collapsed ? t("nav.showSidebar") : t("nav.hideSidebar")}>
-            {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+            <Menu className="h-5 w-5" />
           </Button>
 
           <div className="flex min-w-0 items-center gap-2">

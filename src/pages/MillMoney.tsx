@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useFYRange } from "@/lib/fy.tsx";
+import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Download, Landmark, Pencil, Plus, Printer, Ban } from "lucide-react";
@@ -305,6 +306,7 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
   if (to) qs.set("to", to);
   if (merchantId) qs.set("merchantId", merchantId);
   if (showVoid) qs.set("showVoid", "1");
+  const recFlags = useTallyFlags("receipt", from || "2000-01-01", to || "2099-12-31");
   const list = useQuery({
     queryKey: ["mill-receipts", qs.toString()],
     queryFn: () => api.get<{ rows: ReceiptRow[]; truncated?: boolean; totals: { count: number; amountPaise: number; deductionPaise: number } }>(`/mill-receipts?${qs}`),
@@ -348,7 +350,7 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
           <tbody>
             {s.sorted.map((r) => (
               <Tr key={r.id} className={cn(r.voidedAt && "opacity-60")}>
-                <Td className={cn("whitespace-nowrap", r.voidedAt && "line-through")}>{dmy(r.receiptDate)}</Td>
+                <Td className={cn("whitespace-nowrap", r.voidedAt && "line-through")}>{dmy(r.receiptDate)} <TallyMark flag={recFlags[r.id]} /></Td>
                 {!merchantId && <Td><span className="flex items-center gap-2"><Badge className="num">{r.millCode}</Badge>{pick(r.millName, r.millNameHi)}</span></Td>}
                 <Td className="text-[12px]">{r.parchaNo ? <>#{r.parchaNo}{r.truckNo ? <span className="text-muted"> · {r.truckNo}</span> : null}</> : <span className="text-faint">{t("mm.onAccount")}</span>}</Td>
                 <Td><Badge>{t(`mm.mode.${r.mode}`)}</Badge></Td>

@@ -15,8 +15,9 @@ import { HindiInput } from "@/components/HindiInput.tsx";
 import { SkeletonTable, SkeletonList, SkeletonForm } from "@/components/Skeletons.tsx";
 import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge,
-  Dialog, EmptyState, Alert, Switch, Checkbox, Spinner,
+  Dialog, EmptyState, Alert, Switch, Checkbox, Spinner, Tabs,
 } from "@/components/ui/index.tsx";
+import { useLocation, useSearch } from "wouter";
 import { cn, fmtDateTime, relTime } from "@/lib/utils.ts";
 import { NumberFormatCard, GeminiCard } from "./SettingsExtras.tsx";
 import { BackupCard } from "@/components/BackupCard.tsx";
@@ -565,8 +566,17 @@ export function CommoditiesPage() {
 
 /* ---------------------------------------------------------------- settings */
 
+const SETTINGS_TABS = ["business", "money", "scan", "data", "me"] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number];
+
 export function SettingsPage() {
   const { t, lang, setLang } = useI18n();
+  // the tab is in the address (/settings?tab=scan), so a link can open the right one
+  const search = useSearch();
+  const [, navigate] = useLocation();
+  const asked = new URLSearchParams(search).get("tab") as SettingsTab | null;
+  const tab: SettingsTab = asked && SETTINGS_TABS.includes(asked) ? asked : "business";
+  const pickTab = (v: SettingsTab) => navigate(`/settings?tab=${v}`, { replace: true });
   const qc = useQueryClient();
   const { can, refresh } = useSession();
   const [err, setErr] = useState<string | null>(null);
@@ -602,89 +612,111 @@ export function SettingsPage() {
 
   return (
     <>
-      <PageHeader title={t("nav.settings")} sub={t("biz.profile")} />
+      <PageHeader title={t("nav.settings")} sub={t("set.sub")} />
+      <Tabs className="mb-4 overflow-x-auto overflow-y-hidden" value={tab} onChange={pickTab} tabs={[
+        { value: "business", label: t("set.tab.business") },
+        { value: "money", label: t("set.tab.money") },
+        { value: "scan", label: t("set.tab.scan") },
+        { value: "data", label: t("set.tab.data") },
+        { value: "me", label: t("set.tab.me") },
+      ]} />
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      {tab === "business" && (
+        <div className="max-w-3xl">
         <Card>
-          <CardHeader title={t("biz.profile")} sub={t("biz.current")} />
-          {biz.isLoading ? <div className="p-4"><SkeletonForm fields={7} /></div> : (
-            <div className="space-y-4 p-4">
-              {err && <Alert tone="bad">{err}</Alert>}
-              {ok && <Alert tone="ok">{t("common.saved")}</Alert>}
-              <div className="grid gap-4 sm:grid-cols-[1fr_120px]">
-                <Field label={t("auth.businessName")}><Input value={v("name")} onChange={set("name")} disabled={!can("business.write")} /></Field>
-                <Field label={t("auth.shortCode")}>
-                  <Input value={v("shortCode")} mono className="uppercase" disabled={!can("business.write")}
-                    onChange={(e) => setF((p) => ({ ...p, shortCode: e.target.value.toUpperCase() }))} />
-                </Field>
+            <CardHeader title={t("biz.profile")} sub={t("biz.current")} />
+            {biz.isLoading ? <div className="p-4"><SkeletonForm fields={7} /></div> : (
+              <div className="space-y-4 p-4">
+                {err && <Alert tone="bad">{err}</Alert>}
+                {ok && <Alert tone="ok">{t("common.saved")}</Alert>}
+                <div className="grid gap-4 sm:grid-cols-[1fr_120px]">
+                  <Field label={t("auth.businessName")}><Input value={v("name")} onChange={set("name")} disabled={!can("business.write")} /></Field>
+                  <Field label={t("auth.shortCode")}>
+                    <Input value={v("shortCode")} mono className="uppercase" disabled={!can("business.write")}
+                      onChange={(e) => setF((p) => ({ ...p, shortCode: e.target.value.toUpperCase() }))} />
+                  </Field>
+                </div>
+                <Field label={t("auth.businessNameHi")}><HindiInput value={v("nameHi")} onChange={(x) => setF((p) => ({ ...p, nameHi: x }))} disabled={!can("business.write")} /></Field>
+                <Field label={t("biz.addressLine1")}><Input value={v("addressLine1")} onChange={set("addressLine1")} disabled={!can("business.write")} /></Field>
+                <Field label={t("biz.addressLine2")}><Input value={v("addressLine2")} onChange={set("addressLine2")} disabled={!can("business.write")} /></Field>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label={t("biz.city")}><Input value={v("city")} onChange={set("city")} disabled={!can("business.write")} /></Field>
+                  <Field label={t("biz.district")}><Input value={v("district")} onChange={set("district")} disabled={!can("business.write")} /></Field>
+                  <Field label={t("biz.state")}><Input value={v("state")} onChange={set("state")} disabled={!can("business.write")} /></Field>
+                  <Field label={t("biz.pincode")}><Input value={v("pincode")} mono onChange={set("pincode")} disabled={!can("business.write")} /></Field>
+                  <Field label={t("biz.gstin")}><Input value={v("gstin")} mono className="uppercase" onChange={set("gstin")} disabled={!can("business.write")} /></Field>
+                  <Field label={t("biz.panNo")}><Input value={v("panNo")} mono className="uppercase" onChange={set("panNo")} disabled={!can("business.write")} /></Field>
+                  <Field label={t("biz.mandiLicense")}><Input value={v("mandiLicense")} mono onChange={set("mandiLicense")} disabled={!can("business.write")} /></Field>
+                  <Field label={t("auth.phone")}><Input value={v("phone")} mono onChange={set("phone")} disabled={!can("business.write")} /></Field>
+                </div>
+                {can("business.write") && (
+                  <Button variant="primary" loading={save.isPending}
+                    disabled={Object.keys(f).length === 0}
+                    onClick={() => { setErr(null); setOk(false); save.mutate(); }}>{t("common.save")}</Button>
+                )}
               </div>
-              <Field label={t("auth.businessNameHi")}><HindiInput value={v("nameHi")} onChange={(x) => setF((p) => ({ ...p, nameHi: x }))} disabled={!can("business.write")} /></Field>
-              <Field label={t("biz.addressLine1")}><Input value={v("addressLine1")} onChange={set("addressLine1")} disabled={!can("business.write")} /></Field>
-              <Field label={t("biz.addressLine2")}><Input value={v("addressLine2")} onChange={set("addressLine2")} disabled={!can("business.write")} /></Field>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field label={t("biz.city")}><Input value={v("city")} onChange={set("city")} disabled={!can("business.write")} /></Field>
-                <Field label={t("biz.district")}><Input value={v("district")} onChange={set("district")} disabled={!can("business.write")} /></Field>
-                <Field label={t("biz.state")}><Input value={v("state")} onChange={set("state")} disabled={!can("business.write")} /></Field>
-                <Field label={t("biz.pincode")}><Input value={v("pincode")} mono onChange={set("pincode")} disabled={!can("business.write")} /></Field>
-                <Field label={t("biz.gstin")}><Input value={v("gstin")} mono className="uppercase" onChange={set("gstin")} disabled={!can("business.write")} /></Field>
-                <Field label={t("biz.panNo")}><Input value={v("panNo")} mono className="uppercase" onChange={set("panNo")} disabled={!can("business.write")} /></Field>
-                <Field label={t("biz.mandiLicense")}><Input value={v("mandiLicense")} mono onChange={set("mandiLicense")} disabled={!can("business.write")} /></Field>
-                <Field label={t("auth.phone")}><Input value={v("phone")} mono onChange={set("phone")} disabled={!can("business.write")} /></Field>
-              </div>
-              {can("business.write") && (
-                <Button variant="primary" loading={save.isPending}
-                  disabled={Object.keys(f).length === 0}
-                  onClick={() => { setErr(null); setOk(false); save.mutate(); }}>{t("common.save")}</Button>
-              )}
-            </div>
-          )}
-        </Card>
-
-        <div className="space-y-4">
-          <SupplierChargesCard />
-          <NumberFormatCard />
-          <GeminiCard />
-          <BackupCard />
-          <CloudCard />
-          <UpdateCard />
-          <AppearanceCard />
-          <Card>
-            <CardHeader title={t("common.language")} />
-            <div className="flex gap-2 p-4">
-              {(["en", "hi"] as const).map((l) => (
-                <Button key={l} variant={lang === l ? "primary" : "secondary"} onClick={() => setLang(l)}>
-                  {l === "en" ? "English" : "हिन्दी"}
-                </Button>
-              ))}
-            </div>
-          </Card>
-
-          <Card>
-            <CardHeader title={t("auth.changePin")} />
-            <div className="space-y-3.5 p-4">
-              {pinMsg && <Alert tone={pinMsg === t("common.saved") ? "ok" : "bad"}>{pinMsg}</Alert>}
-              <Field label={t("auth.currentPin")}>
-                <Input value={pin.currentPin} type="password" mono inputMode="numeric" maxLength={6}
-                  onChange={(e) => setPin((p) => ({ ...p, currentPin: e.target.value.replace(/\D/g, "") }))} />
-              </Field>
-              <Field label={t("auth.newPin")} hint={t("auth.pinHelp")}>
-                <Input value={pin.newPin} type="password" mono inputMode="numeric" maxLength={6}
-                  onChange={(e) => setPin((p) => ({ ...p, newPin: e.target.value.replace(/\D/g, "") }))} />
-              </Field>
-              <Field label={t("auth.pinAgain")}
-                error={pin.again && pin.again !== pin.newPin ? t("auth.pinMismatch") : undefined}>
-                <Input value={pin.again} type="password" mono inputMode="numeric" maxLength={6}
-                  onChange={(e) => setPin((p) => ({ ...p, again: e.target.value.replace(/\D/g, "") }))} />
-              </Field>
-              <Button variant="primary" icon={<KeyRound className="h-4 w-4" />} loading={changePin.isPending}
-                disabled={pin.newPin.length < 4 || pin.newPin !== pin.again || !pin.currentPin}
-                onClick={() => { setPinMsg(null); changePin.mutate(); }}>
-                {t("auth.changePin")}
-              </Button>
-            </div>
+            )}
           </Card>
         </div>
-      </div>
+      )}
+      {tab === "money" && (
+        <div className="grid items-start gap-4 lg:grid-cols-2">
+          <SupplierChargesCard />
+          <NumberFormatCard />
+        </div>
+      )}
+      {tab === "scan" && <div className="max-w-3xl"><GeminiCard /></div>}
+      {tab === "data" && (
+        <div className="grid items-start gap-4 lg:grid-cols-2">
+          <BackupCard />
+          <div className="space-y-4">
+            <CloudCard />
+            <UpdateCard />
+          </div>
+        </div>
+      )}
+      {tab === "me" && (
+        <div className="grid items-start gap-4 lg:grid-cols-2">
+          <AppearanceCard />
+          <div className="space-y-4">
+          <Card>
+              <CardHeader title={t("common.language")} />
+              <div className="flex gap-2 p-4">
+                {(["en", "hi"] as const).map((l) => (
+                  <Button key={l} variant={lang === l ? "primary" : "secondary"} onClick={() => setLang(l)}>
+                    {l === "en" ? "English" : "हिन्दी"}
+                  </Button>
+                ))}
+              </div>
+            </Card>
+
+            <Card>
+              <CardHeader title={t("auth.changePin")} />
+              <div className="space-y-3.5 p-4">
+                {pinMsg && <Alert tone={pinMsg === t("common.saved") ? "ok" : "bad"}>{pinMsg}</Alert>}
+                <Field label={t("auth.currentPin")}>
+                  <Input value={pin.currentPin} type="password" mono inputMode="numeric" maxLength={6}
+                    onChange={(e) => setPin((p) => ({ ...p, currentPin: e.target.value.replace(/\D/g, "") }))} />
+                </Field>
+                <Field label={t("auth.newPin")} hint={t("auth.pinHelp")}>
+                  <Input value={pin.newPin} type="password" mono inputMode="numeric" maxLength={6}
+                    onChange={(e) => setPin((p) => ({ ...p, newPin: e.target.value.replace(/\D/g, "") }))} />
+                </Field>
+                <Field label={t("auth.pinAgain")}
+                  error={pin.again && pin.again !== pin.newPin ? t("auth.pinMismatch") : undefined}>
+                  <Input value={pin.again} type="password" mono inputMode="numeric" maxLength={6}
+                    onChange={(e) => setPin((p) => ({ ...p, again: e.target.value.replace(/\D/g, "") }))} />
+                </Field>
+                <Button variant="primary" icon={<KeyRound className="h-4 w-4" />} loading={changePin.isPending}
+                  disabled={pin.newPin.length < 4 || pin.newPin !== pin.again || !pin.currentPin}
+                  onClick={() => { setPinMsg(null); changePin.mutate(); }}>
+                  {t("auth.changePin")}
+                </Button>
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
     </>
   );
 }

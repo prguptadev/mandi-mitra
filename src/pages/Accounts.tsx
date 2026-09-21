@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useFYRange } from "@/lib/fy.tsx";
+import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
 import { useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { BookOpen, Wallet, Plus, Pencil, Ban, Download, Printer, Search } from "lucide-react";
@@ -519,6 +520,7 @@ export function PaymentsPage() {
   if (to) qs.set("to", to);
   if (mode) qs.set("mode", mode);
   if (adati) qs.set("adatiId", adati);
+  const payFlags = useTallyFlags("payment", from || "2000-01-01", to || "2099-12-31");
   const list = useQuery({
     queryKey: ["payments", qs.toString()],
     queryFn: () => api.get<{ rows: PaymentRow[]; truncated?: boolean; totals: { count: number; amountPaise: number; byMode: Record<Mode, number> } }>(`/payments?${qs}`),
@@ -575,7 +577,7 @@ export function PaymentsPage() {
             <tbody>
               {sort.sorted.map((p) => (
                 <Tr key={p.id} className={cn(p.voidedAt && "opacity-60")}>
-                  <Td className={cn("whitespace-nowrap", p.voidedAt && "line-through")}>{dmy(p.payDate)}</Td>
+                  <Td className={cn("whitespace-nowrap", p.voidedAt && "line-through")}>{dmy(p.payDate)} <TallyMark flag={payFlags[p.id]} /></Td>
                   <Td><span lang={lang === "hi" ? "hi" : undefined}>{lang === "hi" ? p.adatiNameHi : p.adatiNameHinglish || p.adatiNameHi}</span></Td>
                   <Td><Badge>{t(`pay.mode.${p.mode}`)}</Badge></Td>
                   <Td className="text-muted">{p.reference ?? ""}{p.notes ? <span className="block text-[11px] text-faint">{p.notes}</span> : null}

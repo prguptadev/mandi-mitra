@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFYRange } from "@/lib/fy.tsx";
+import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -939,6 +940,7 @@ export function ParchaRegisterPage() {
   if (from) qs.set("from", from);
   if (to) qs.set("to", to);
   const list = useQuery({ queryKey: ["parchas", qs.toString()], queryFn: () => api.get<ParchaRegisterRow[]>(`/parchas?${qs}`) });
+  const parchaFlags = useTallyFlags("parcha", from || "2000-01-01", to || "2099-12-31");
   const rows = useMemo(() => (list.data ?? []).filter((r) => showVoid || r.status === "approved"), [list.data, showVoid]);
   const approved = rows.filter((r) => r.status === "approved");
   const total = approved.reduce((s, r) => s + r.grandTotalPaise, 0);
@@ -982,7 +984,7 @@ export function ParchaRegisterPage() {
             <tbody>
               {sort.sorted.map((r) => (
                 <Tr key={r.id} onClick={() => navigate(`/loads/${r.loadId}`)} className={cn(r.status === "void" && "opacity-60")}>
-                  <Td className="font-mono font-medium">{r.parchaNo}{r.version > 1 ? ` v${r.version}` : ""}</Td>
+                  <Td className="font-mono font-medium">{r.parchaNo}{r.version > 1 ? ` v${r.version}` : ""} <TallyMark flag={parchaFlags[r.id]} /></Td>
                   <Td className="whitespace-nowrap">{r.invoiceDate ? dmy(r.invoiceDate) : "—"}</Td>
                   <Td><Badge tone="brand" className="num">{r.millCode}</Badge> <span className="text-muted">{pick(r.millName, r.millNameHi)}</span></Td>
                   <Td className="font-mono">{r.truckNo ?? "—"}</Td>
