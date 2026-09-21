@@ -10,6 +10,7 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { GeminiUsageBar } from "@/components/GeminiUsage.tsx";
+import { ScannerPanel } from "@/components/ScannerPanel.tsx";
 import { SkeletonList } from "@/components/Skeletons.tsx";
 import {
   Button, Card, CardHeader, Select, Input, Badge, Alert, EmptyState, Field, Spinner,
@@ -173,6 +174,7 @@ export function ScanListPage() {
                   if (picked.length) upload.mutate(picked);
                 }} />
             </div>
+            <ScannerPanel slipDate={upDate} merchantId={upMill} jinsId={upJins} />
           </div>
         </Card>
       )}

@@ -9,15 +9,19 @@ const PORT = "8799";
 const DATA = path.resolve("data-test");
 // Gemini is a local stand-in: no real key, no real read
 const FAKE_GEMINI = 8797;
+// a stand-in scanner: every "scan" returns this small JPEG
+const FAKE_PAGE = path.join(DATA, "fake-scanner-page.jpg");
 const env = {
   ...process.env, MANDI_DATA_DIR: DATA, MANDI_API: `http://localhost:${PORT}/api`, PORT,
   MANDI_GEMINI_BASE: `http://127.0.0.1:${FAKE_GEMINI}`,
+  MANDI_FAKE_SCANNER: FAKE_PAGE, MANDI_NO_AUTO_BACKUP: "1",
 };
 // its own process: execFileSync below blocks this one while each test runs
 const fake = spawn("npx", ["tsx", "scripts/fake-gemini.ts", String(FAKE_GEMINI)], { stdio: "ignore" });
 
 fs.rmSync(DATA, { recursive: true, force: true });
 fs.mkdirSync(DATA, { recursive: true });
+fs.writeFileSync(FAKE_PAGE, Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==", "base64"));
 // the scans need a real-sized sheet image; copy one if the owner has any, else use a placeholder
 const server = spawn("npx", ["tsx", "server/index.ts"], { env, stdio: ["ignore", "pipe", "pipe"] });
 let log = "";
@@ -50,6 +54,7 @@ try {
   run("scripts/e2e-accounts.ts");
   run("scripts/e2e-mill-money.ts");
   run("scripts/e2e-gemini.ts");
+  run("scripts/e2e-scanner-backup.ts");
 } finally {
   // a failing run shows the test server's own last words
   if (failed) console.log("\n--- test server log (last 40 lines) ---\n" + log.trim().split("\n").slice(-40).join("\n"));

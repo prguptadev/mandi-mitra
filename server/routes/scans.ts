@@ -216,6 +216,84 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
 
 /* ------------------------------------------------------------------ upload */
 
+/**
+ * Saves the pages of one sheet and creates its scan, from an upload or from
+ * the scanner's folder. Checks every page first and saves nothing if one of
+ * them is unusable.
+ */
+export async function createScan(o: {
+  biz: string;
+  pages: { name: string; mimeType: string | null; size: number; bytes: Buffer; declared?: string }[];
+  slipDate: string | null; merchantId: string | null; jinsId: string | null; sourceKind: string;
+  user: { id: string | null; name: string };
+  actor: Parameters<typeof audit>[0]["actor"];
+}) {
+  for (const f of o.pages) {
+    if (!f.mimeType) throw bad(`"${f.name}" is a ${f.declared || "unknown"} file. Use JPG, PNG, WEBP, HEIC or a one-page PDF.`, "bad_type");
+    if (f.size === 0) throw bad(`"${f.name}" is empty. Scan it again.`, "empty_file");
+    if (f.size > MAX_BYTES) throw bad(`"${f.name}" is over 12 MB. Scan at 200–300 dpi instead.`, "too_big");
+    // one read is one page: a multi-page PDF would lose every page after the first
+    if (f.mimeType === "application/pdf" && (f.bytes.toString("latin1").match(/\/Type\s*\/Page\b/g)?.length ?? 0) > 1) {
+      throw bad(`"${f.name}" has more than one page. Save each page as its own image (or PDF) and add them together.`, "multi_page_pdf");
+    }
+  }
+  const id = newId();
+  const dir = path.join(SCAN_DIR, id);
+  fs.mkdirSync(dir, { recursive: true });
+  const saved: { name: string; mimeType: string; bytes: number }[] = [];
+  for (const [i, f] of o.pages.entries()) {
+    const mimeType = f.mimeType!;
+    const ext = mimeType === "application/pdf" ? "pdf"
+      : mimeType === "image/png" ? "png"
+      : mimeType === "image/webp" ? "webp"
+      : mimeType === "image/heic" || mimeType === "image/heif" ? "heic" : "jpg";
+    const name = `${String(i).padStart(2, "0")}.${ext}`;
+    fs.writeFileSync(path.join(dir, name), f.bytes);
+    saved.push({ name, mimeType, bytes: f.size });
+  }
+
+  /* An empty commodity silently blocked approval, with nothing on screen
+     saying why. Default to what this business buys most, then 1509. */
+  let jinsId = o.jinsId;
+  if (!jinsId) {
+    const [top] = await db.select({ id: schema.purchaseSlips.jinsId, n: sql<number>`count(*)`.as("n") })
+      .from(schema.purchaseSlips)
+      .where(eq(schema.purchaseSlips.businessId, o.biz))
+      .groupBy(schema.purchaseSlips.jinsId)
+      .orderBy(desc(sql`n`))
+      .limit(1);
+    const [fallback] = await db.select({ id: schema.jins.id }).from(schema.jins)
+      .where(and(eq(schema.jins.businessId, o.biz), eq(schema.jins.active, true)))
+      .orderBy(sql`case when ${schema.jins.code} = '1509' then 0 else 1 end`, asc(schema.jins.code))
+      .limit(1);
+    jinsId = top?.id ?? fallback?.id ?? null;
+  }
+
+  /* A sidecar so the folder means something when browsed in Finder or
+     Explorer, and so the images can still be tagged if the DB is ever lost. */
+  writeScanMeta(id, {
+    scanId: id, businessId: o.biz, uploadedAt: new Date().toISOString(),
+    uploadedBy: o.user.name,
+    slipDate: o.slipDate, merchantId: o.merchantId, jinsId, sourceKind: o.sourceKind,
+    files: saved,
+  });
+
+  await db.insert(schema.scanBatches).values({
+    id, businessId: o.biz, sourceKind: o.sourceKind,
+    filePaths: JSON.stringify(saved),
+    slipDate: o.slipDate, merchantId: o.merchantId, jinsId,
+    status: "uploaded",
+    createdBy: o.user.id,
+  });
+  await audit({
+    actor: o.actor, action: "scan.upload", entity: "scan_batch", entityId: id,
+    entityLabel: `${saved.length} page${saved.length === 1 ? "" : "s"}${o.slipDate ? ` for ${o.slipDate}` : ""}${o.sourceKind === "scanner" ? " from the scanner folder" : ""}`,
+    after: { files: saved.map((f) => f.name), slipDate: o.slipDate, merchantId: o.merchantId },
+  });
+  return { id, saved };
+}
+
+
 scanRoutes.post("/", can("scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const body = await c.req.parseBody({ all: true });
@@ -236,84 +314,35 @@ scanRoutes.post("/", can("scan.create"), async (c) => {
   }
   if (files.length > 10) throw bad("Ten pages at a time is the limit", "too_many");
 
-  const id = newId();
-  const dir = path.join(SCAN_DIR, id);
-  fs.mkdirSync(dir, { recursive: true });
-
-  const saved: { name: string; mimeType: string; bytes: number }[] = [];
-  for (const [i, file] of files.entries()) {
-    const mimeType = resolveType(file);
-    if (!mimeType) {
-      fs.rmSync(dir, { recursive: true, force: true });
-      throw bad(`"${file.name}" is a ${file.type || "unknown"} file. Use JPG, PNG, WEBP, HEIC or a one-page PDF.`, "bad_type");
-    }
-    if (file.size === 0) {
-      fs.rmSync(dir, { recursive: true, force: true });
-      throw bad(`"${file.name}" is empty. Scan it again.`, "empty_file");
-    }
-    if (file.size > MAX_BYTES) {
-      fs.rmSync(dir, { recursive: true, force: true });
-      throw bad(`"${file.name}" is over 12 MB. Scan at 200–300 dpi instead.`, "too_big");
-    }
-    const ext = mimeType === "application/pdf" ? "pdf"
-      : mimeType === "image/png" ? "png"
-      : mimeType === "image/webp" ? "webp"
-      : mimeType === "image/heic" || mimeType === "image/heif" ? "heic" : "jpg";
-    const name = `${String(i).padStart(2, "0")}.${ext}`;
-    const bytes = Buffer.from(await file.arrayBuffer());
-    // one read is one page: a multi-page PDF would lose every page after the first
-    if (mimeType === "application/pdf" && (bytes.toString("latin1").match(/\/Type\s*\/Page\b/g)?.length ?? 0) > 1) {
-      fs.rmSync(dir, { recursive: true, force: true });
-      throw bad(`"${file.name}" has more than one page. Save each page as its own image (or PDF) and add them together.`, "multi_page_pdf");
-    }
-    fs.writeFileSync(path.join(dir, name), bytes);
-    saved.push({ name, mimeType, bytes: file.size });
-  }
-
   const slipDate = typeof body["slipDate"] === "string" && ISO_DATE.test(body["slipDate"])
     ? body["slipDate"] : null;
   const merchantId = typeof body["merchantId"] === "string" && body["merchantId"] ? body["merchantId"] : null;
-  /* An empty commodity silently blocked approval, with nothing on screen
-     saying why. Default to what this business buys most, then 1509. */
-  let jinsId = typeof body["jinsId"] === "string" && body["jinsId"] ? body["jinsId"] : null;
-  if (!jinsId) {
-    const [top] = await db.select({ id: schema.purchaseSlips.jinsId, n: sql<number>`count(*)`.as("n") })
-      .from(schema.purchaseSlips)
-      .where(eq(schema.purchaseSlips.businessId, biz))
-      .groupBy(schema.purchaseSlips.jinsId)
-      .orderBy(desc(sql`n`))
-      .limit(1);
-    const [fallback] = await db.select({ id: schema.jins.id }).from(schema.jins)
-      .where(and(eq(schema.jins.businessId, biz), eq(schema.jins.active, true)))
-      .orderBy(sql`case when ${schema.jins.code} = '1509' then 0 else 1 end`, asc(schema.jins.code))
-      .limit(1);
-    jinsId = top?.id ?? fallback?.id ?? null;
-  }
+  const jinsId = typeof body["jinsId"] === "string" && body["jinsId"] ? body["jinsId"] : null;
   const sourceKind = typeof body["sourceKind"] === "string" ? body["sourceKind"] : "upload";
-
-  /* A sidecar so the folder means something when browsed in Finder or
-     Explorer, and so the images can still be tagged if the DB is ever lost. */
-  writeScanMeta(id, {
-    scanId: id, businessId: biz, uploadedAt: new Date().toISOString(),
-    uploadedBy: c.get("auth")!.user.name,
-    slipDate, merchantId, jinsId, sourceKind,
-    files: saved,
-  });
-
-  await db.insert(schema.scanBatches).values({
-    id, businessId: biz, sourceKind,
-    filePaths: JSON.stringify(saved),
-    slipDate, merchantId, jinsId,
-    status: "uploaded",
-    createdBy: c.get("auth")!.user.id,
-  });
-  await audit({
-    actor: actor(c), action: "scan.upload", entity: "scan_batch", entityId: id,
-    entityLabel: `${saved.length} page${saved.length === 1 ? "" : "s"}${slipDate ? ` for ${slipDate}` : ""}`,
-    after: { files: saved.map((f) => f.name), slipDate, merchantId },
+  const pages = await Promise.all(files.map(async (file) => ({
+    name: file.name, mimeType: resolveType(file), size: file.size, bytes: Buffer.from(await file.arrayBuffer()), declared: file.type,
+  })));
+  const { id, saved } = await createScan({
+    biz, pages, slipDate, merchantId, jinsId, sourceKind,
+    user: { id: c.get("auth")!.user.id, name: c.get("auth")!.user.name }, actor: actor(c),
   });
   return c.json({ id, pages: saved.length });
 });
+
+/** Adds a page to a scan that has not been read yet (the scanner's "next page"). */
+export async function appendPage(biz: string, id: string, bytes: Buffer, mimeType: string) {
+  const batch = await loadBatch(biz, id);
+  if (batch.status !== "uploaded") throw new HttpError(409, "This sheet is already being read or has been read. Start a new scan for more pages.", "not_open");
+  const files: { name: string; mimeType: string; bytes: number }[] = JSON.parse(batch.filePaths);
+  if (files.length >= 10) throw bad("Ten pages at a time is the limit", "too_many");
+  if (bytes.length > MAX_BYTES) throw bad("That page is over 12 MB. Scan at 200–300 dpi instead.", "too_big");
+  const name = `${String(files.length).padStart(2, "0")}.${mimeType === "image/png" ? "png" : "jpg"}`;
+  fs.writeFileSync(path.join(SCAN_DIR, id, name), bytes);
+  files.push({ name, mimeType, bytes: bytes.length });
+  await db.update(schema.scanBatches).set({ filePaths: JSON.stringify(files) }).where(eq(schema.scanBatches.id, id));
+  await refreshScanMeta(biz, id);
+  return files.length;
+}
 
 /* --------------------------------------------------------------------- run */
 
@@ -532,12 +561,14 @@ async function performRead(opts: {
 }
 
 /** Starts the read and returns immediately. Poll GET /scans/:id for progress. */
-scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
-  const biz = c.get("auth")!.businessId!;
-  const id = param(c, "id");
+/**
+ * Starts reading a scan in the background. Used by the Read button and by
+ * the scanner folder (auto-read). Throws the same errors the button shows.
+ */
+export async function startRead(biz: string, id: string, actorInfo: { userId: string | null; userName: string | null }, req: { model?: string; force?: boolean } = {}) {
   const batch = await loadBatch(biz, id);
   if (batch.status === "committed") throw new HttpError(409, "This scan is already on the daily list", "already_committed");
-  if (inFlight.has(id)) return c.json({ started: true, alreadyRunning: true });
+  if (inFlight.has(id)) return { started: true, alreadyRunning: true };
 
   const keyRaw = await setting(biz, "gemini.apiKey");
   const apiKey = keyRaw ? decryptSecret(keyRaw) : null;
@@ -545,10 +576,8 @@ scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
 
   const cfgRaw = await setting(biz, "gemini");
   const cfg = cfgRaw ? GeminiConfigSchema.parse(JSON.parse(cfgRaw)) : defaultGeminiConfig();
-  const reqBody = (await c.req.json().catch(() => ({}))) as { model?: string; force?: boolean };
-  const wanted = reqBody?.model;
-  const actorInfo = { userId: c.get("auth")!.user.id, userName: c.get("auth")!.user.name };
-  if (batch.status === "review" && !reqBody?.force) {
+  const wanted = req.model;
+  if (batch.status === "review" && !req.force) {
     throw new HttpError(409, "This sheet is already read. Reading it again replaces every row and your edits, and uses one read per page.", "confirm_reread");
   }
 
@@ -559,7 +588,7 @@ scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
   await db.update(schema.scanBatches)
     .set(resume
       ? { status: "reading", errorText: null, warningText: null }
-      : { status: "reading", errorText: null, warningText: null, pagesDone: 0, parsedRows: null })
+      : { status: "reading", errorText: null, warningText: null, pagesDone: 0, parsedRows: null, pageMeta: null })
     .where(eq(schema.scanBatches.id, id));
 
   inFlight.add(id);
@@ -575,8 +604,13 @@ scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
       }).where(eq(schema.scanBatches.id, id));
     })
     .finally(() => inFlight.delete(id));
+  return { started: true };
+}
 
-  return c.json({ started: true });
+scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
+  const reqBody = (await c.req.json().catch(() => ({}))) as { model?: string; force?: boolean };
+  const actorInfo = { userId: c.get("auth")!.user.id, userName: c.get("auth")!.user.name };
+  return c.json(await startRead(c.get("auth")!.businessId!, param(c, "id"), actorInfo, reqBody ?? {}));
 });
 
 /**
