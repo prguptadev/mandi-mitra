@@ -40,6 +40,11 @@ export async function loadResolver(businessId: string) {
 
   return {
     suppliers,
+    /** Name a supplier the operator already picked by hand. */
+    byId(id: string) {
+      const a = byId.get(id);
+      return a ? { adatiId: a.id, nameHi: a.nameHi, nameHinglish: a.nameHinglish } : null;
+    },
     resolve(raw: string): { match: AdatiMatch | null; suggestions: AdatiSuggestion[] } {
       const text = (raw ?? "").trim();
       if (!text) return { match: null, suggestions: [] };

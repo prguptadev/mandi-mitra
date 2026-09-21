@@ -202,6 +202,7 @@ export interface ScanRow {
   excluded: boolean;
   nameCorrected: boolean;
   match: { adatiId: string; nameHi: string; nameHinglish: string; confidence: number; via: "alias" | "normkey" | "fuzzy" } | null;
+  chosen: { adatiId: string; nameHi: string; nameHinglish: string } | null;
   suggestions: { adatiId: string; nameHi: string; nameHinglish: string; village: string | null; confidence: number }[];
   derivedKatautiUnits: number | null;
   derivedNetGrams: number | null;

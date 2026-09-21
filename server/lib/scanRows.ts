@@ -41,6 +41,8 @@ export interface Issue { code: string; level: IssueLevel; message: string; param
 
 export interface CheckedRow extends ReviewRow {
   match: AdatiMatch | null;
+  /** The supplier picked by hand, named — so the screen can show it. */
+  chosen: { adatiId: string; nameHi: string; nameHinglish: string } | null;
   suggestions: AdatiSuggestion[];
   derivedKatautiUnits: number | null;
   derivedNetGrams: number | null;
@@ -84,6 +86,7 @@ export function checkRow(
   opts: {
     katauti: Katauti;
     resolve: (raw: string) => { match: AdatiMatch | null; suggestions: AdatiSuggestion[] };
+    byId: (id: string) => { adatiId: string; nameHi: string; nameHinglish: string } | null;
     /** RST numbers already in the database for this date. */
     existingRst: Set<string>;
     /** RST numbers appearing more than once inside this batch. */
@@ -96,6 +99,7 @@ export function checkRow(
   const resolved = row.adatiId
     ? { match: null as AdatiMatch | null, suggestions: [] as AdatiSuggestion[] }
     : opts.resolve(row.adatiRawText);
+  const chosen = row.adatiId ? opts.byId(row.adatiId) : null;
 
   let derivedKatautiUnits: number | null = null;
   let derivedNetGrams: number | null = null;
@@ -120,7 +124,7 @@ export function checkRow(
 
   if (row.excluded) {
     return {
-      ...row, match: resolved.match, suggestions: resolved.suggestions,
+      ...row, match: resolved.match, chosen, suggestions: resolved.suggestions,
       derivedKatautiUnits, derivedNetGrams, derivedAmountPaise, netAgrees, netDiffGrams,
       issues: [], blocking: false,
     };
@@ -130,7 +134,9 @@ export function checkRow(
   else if (opts.existingRst.has(row.rstNo)) issues.push({ code: "rst_exists", level: "error", message: `RST ${row.rstNo} is already entered for this date`, params: { rst: row.rstNo } });
   else if (opts.dupeInBatch.has(row.rstNo)) issues.push({ code: "rst_dupe", level: "error", message: `RST ${row.rstNo} appears twice on this sheet`, params: { rst: row.rstNo } });
 
-  if (!row.adatiId && !resolved.match) {
+  if (row.adatiId && !chosen) {
+    issues.push({ code: "name_unresolved", level: "error", message: "The chosen supplier no longer exists", params: { name: row.adatiRawText } });
+  } else if (!row.adatiId && !resolved.match) {
     issues.push({
       code: row.adatiRawText ? "name_unresolved" : "name_missing", level: "error",
       message: row.adatiRawText ? `No supplier matches "${row.adatiRawText}"` : "Supplier name could not be read",
@@ -171,7 +177,7 @@ export function checkRow(
   }
 
   return {
-    ...row, match: resolved.match, suggestions: resolved.suggestions,
+    ...row, match: resolved.match, chosen, suggestions: resolved.suggestions,
     derivedKatautiUnits, derivedNetGrams, derivedAmountPaise, netAgrees, netDiffGrams,
     issues,
     blocking: issues.some((i) => i.level === "error"),

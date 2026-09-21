@@ -146,7 +146,7 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
 
   const dupeInBatch = findDupes(rows);
   const checked: CheckedRow[] = rows.map((r) => checkRow(r, {
-    katauti, resolve: resolver.resolve, existingRst, dupeInBatch,
+    katauti, resolve: resolver.resolve, byId: resolver.byId, existingRst, dupeInBatch,
     rateFloorPaise: 200_000, rateCeilPaise: 600_000,
   }));
 
@@ -605,6 +605,11 @@ scanRoutes.post("/:id/create-suppliers", can("adati.write", "scan.review"), asyn
   for (const r of rows) {
     if (r.excluded || r.adatiId || r.match) continue;
     if (rowIds && !rowIds.includes(r.id)) continue;
+    /* A row with a close suggestion is almost certainly an existing supplier
+       spelled badly — "धरमपाल" is "धर्मपाल सिंह". Creating it would put a
+       duplicate in the master and split that supplier's ledger in two. Only
+       names with nothing close are genuinely new. */
+    if (r.suggestions.length > 0) continue;
     const name = r.adatiRawText.trim();
     if (!name) continue;
     const list = wanted.get(name) ?? [];

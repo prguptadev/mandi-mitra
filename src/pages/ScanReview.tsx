@@ -198,9 +198,11 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
     r.ocr.rate != null && r.ratePaisePerQtl !== null &&
     Math.abs(r.ratePaisePerQtl - Math.round(r.ocr.rate * 100)) > 0;
 
-  /** Distinct names the sheet carries that the master does not have yet. */
+  /** Distinct names with nothing close in the master — genuinely new suppliers.
+   *  Rows with a suggestion are left for the operator to pick, never created. */
   const missingNames = new Set(
-    rows.filter((r) => !r.excluded && !r.adatiId && !r.match && r.adatiRawText.trim())
+    rows.filter((r) => !r.excluded && !r.adatiId && !r.chosen && !r.match
+      && r.suggestions.length === 0 && r.adatiRawText.trim())
       .map((r) => r.adatiRawText.trim()),
   ).size;
 
@@ -432,7 +434,8 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
               <tbody>
                 {visible.map((r, i) => {
                   const locked = r.excluded || b.status === "committed";
-                  const name = r.match;
+                  // hand-picked or auto-matched, the name shows the same way
+                  const name = r.chosen ?? r.match;
                   return (
                     <Fragment key={r.id}>
                       <tr className={cn(
@@ -459,7 +462,9 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
                                   )}
                                 </span>
                               </span>
-                              {r.match && (
+                              {r.chosen ? (
+                                <Badge tone="brand" className="shrink-0">{t("scan.pickedByYou")}</Badge>
+                              ) : r.match && (
                                 <Badge tone={r.match.via === "fuzzy" ? "warn" : "ok"} className="shrink-0">
                                   {t(`scan.matchedBy.${r.match.via}` as never)}
                                 </Badge>
@@ -555,7 +560,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
                       </tr>
 
                       {/* only offers, never verdicts: one tap fills the supplier in */}
-                      {!r.excluded && !r.adatiId && !r.match && r.suggestions.length > 0 && (
+                      {!r.excluded && !r.chosen && !r.match && r.suggestions.length > 0 && (
                         <tr>
                           <td className="border-b border-line/70" />
                           <td className="border-b border-line/70" />
