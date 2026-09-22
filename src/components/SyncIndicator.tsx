@@ -22,7 +22,9 @@ export function SyncIndicator() {
   const { can } = useSession();
   const qc = useQueryClient();
   const [, navigate] = useLocation();
-  const q = useQuery({ queryKey: ["cloud-status"], queryFn: () => api.get<Status>("/cloud/status"), refetchInterval: 8_000, retry: false });
+  // asked every 8 s while the window is in front (paused while it is minimised);
+  // coming back to the window asks at once, so the other computer's work shows straight away
+  const q = useQuery({ queryKey: ["cloud-status"], queryFn: () => api.get<Status>("/cloud/status"), refetchInterval: 8_000, refetchOnWindowFocus: true, retry: false });
   const seen = useRef<number | null>(null);
   const s = q.data;
 

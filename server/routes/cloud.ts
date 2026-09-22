@@ -5,7 +5,7 @@ import { audit } from "../lib/audit.ts";
 import { can, actor, bad, requireAuth, HttpError, type Env } from "../lib/http.ts";
 import {
   FREE_BYTES, CloudError, clashList, clearClashes, cloudBusy, cloudDevices, connectCloud, disconnectCloud,
-  joinCloud, readCloudConfig, restoreFromCloud, syncNow, syncStatus,
+  joinCloud, readCloudConfig, restoreFromCloud, syncNow, syncStatus, measureCloudNext,
 } from "../lib/cloud.ts";
 
 /* Cloud sync holds all data, so setting it up sits with backups (backup.manage).
@@ -75,6 +75,7 @@ cloudRoutes.post("/join-fresh", async (c) => {
 
 cloudRoutes.post("/sync", can("backup.manage"), async (c) => {
   try {
+    measureCloudNext();
     const r = await syncNow();
     return c.json({ ...(await view()), ...r });
   } catch (e) { throw fail(e, e instanceof CloudError && e.offline ? "offline" : "cloud_sync"); }

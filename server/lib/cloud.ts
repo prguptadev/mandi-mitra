@@ -276,6 +276,10 @@ async function backfillClaims(conn: string) {
 /* ------------------------------------------------------------ sync */
 
 let running: Promise<SyncResult> | null = null;
+let measureNext = false;
+let lastMeasured = 0;
+/** The next round also measures how full the cloud is (the Settings card's "Sync now"). */
+export const measureCloudNext = () => { measureNext = true; };
 export interface SyncResult { pushed: number; pulled: number; clashes: number; paused?: string }
 export const cloudBusy = () => running !== null;
 export const syncEnabled = () => { const c = readCloudConfig(); return Boolean(c.enc && c.live); };
@@ -328,10 +332,18 @@ async function doSync(): Promise<SyncResult> {
       }
       await client.query("insert into mm_devices (id, name, version, schema, last_seen) values ($1, $2, $3, $4, now()) on conflict (id) do update set name = excluded.name, version = excluded.version, schema = excluded.schema, last_seen = now()",
         [cfg.deviceId, cfg.deviceName, appVersion(), mine]);
-      const size = await client.query("select pg_total_relation_size('mm_rows') + pg_total_relation_size('mm_meta') + pg_total_relation_size('mm_claims') as b, (select count(*) from mm_rows where not deleted) as n");
+      // how full the cloud is: counting every record up there is the costly part of a
+      // quiet round, so it is done only when something moved, when asked, or every 5 minutes
+      const measure = measureNext || pushed.sent > 0 || pulled.applied > 0 || cfg.rowsInCloud == null || Date.now() - lastMeasured > 5 * 60_000;
+      measureNext = false;
+      const size = measure
+        ? (await client.query("select pg_total_relation_size('mm_rows') + pg_total_relation_size('mm_meta') + pg_total_relation_size('mm_claims') as b, (select count(*) from mm_rows where not deleted) as n")).rows[0]
+        : null;
+      if (size) lastMeasured = Date.now();
       patchConfig({
         lastSyncAt: new Date().toISOString(), lastError: null, pausedReason: null,
-        pushedLast: pushed.sent, pulledLast: pulled.applied, sizeBytes: Number(size.rows[0].b), rowsInCloud: Number(size.rows[0].n),
+        pushedLast: pushed.sent, pulledLast: pulled.applied,
+        ...(size ? { sizeBytes: Number(size.b), rowsInCloud: Number(size.n) } : {}),
       });
       return { pushed: pushed.sent, pulled: pulled.applied, clashes: pulled.clashes };
     } finally { client.release(); }
@@ -460,6 +472,8 @@ async function pull(client: pg.PoolClient, cfg: CloudConfig) {
     cursor = Number(r.rows[r.rows.length - 1].seq);
     patchConfig({ cursor, ...(res.applied ? { changeCounter: readCloudConfig().changeCounter + res.applied } : {}) });
     if (r.rows.length < 1000) break;
+    // a long catch-up (days offline): let the screens' requests in between batches
+    await new Promise((done) => setImmediate(done));
   }
   return { applied, clashes };
 }
@@ -689,10 +703,12 @@ export const pendingCount = () => {
 export function syncStatus() {
   const c = readCloudConfig();
   if (!c.enc || !c.live) return { enabled: false as const, state: "off" as SyncState };
-  const st: SyncState = running ? "syncing" : c.pausedReason ? "paused" : c.lastError ? (/No connection/.test(c.lastError) ? "offline" : "error") : "ok";
+  // a quiet round (nothing of ours to send) is not shown: the badge stays still every 10 seconds
+  const pending = pendingCount();
+  const st: SyncState = running && pending > 0 ? "syncing" : c.pausedReason ? "paused" : c.lastError ? (/No connection/.test(c.lastError) ? "offline" : "error") : "ok";
   return {
     enabled: true as const, state: st, lastSyncAt: c.lastSyncAt, changeCounter: c.changeCounter,
-    pausedReason: c.pausedReason, lastError: c.lastError, pending: pendingCount(), clashes: clashCount(),
+    pausedReason: c.pausedReason, lastError: c.lastError, pending, clashes: clashCount(),
   };
 }
 
