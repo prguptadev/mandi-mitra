@@ -5,7 +5,7 @@ import { audit } from "../lib/audit.ts";
 import { can, actor, bad, requireAuth, HttpError, type Env } from "../lib/http.ts";
 import {
   FREE_BYTES, CloudError, clashList, clearClashes, cloudBusy, cloudDevices, connectCloud, disconnectCloud,
-  joinCloud, readCloudConfig, restoreFromCloud, syncNow, syncStatus, measureCloudNext,
+  joinCloud, readCloudConfig, restoreFromCloud, syncNow, syncStatus, measureCloudNext, setSyncLive,
 } from "../lib/cloud.ts";
 
 /* Cloud sync holds all data, so setting it up sits with backups (backup.manage).
@@ -44,6 +44,17 @@ cloudRoutes.put("/", can("backup.manage"), async (c) => {
   await audit({ actor: actor(c), action: "cloud.connect", entity: "settings", entityId: "cloud",
     entityLabel: `Cloud sync ${r.started ? "started from this computer" : "resumed"}: ${readCloudConfig().host}` });
   void syncNow().catch(() => undefined);
+  return c.json(await view());
+});
+
+/** Hold or resume sync on this computer, keeping the connection. */
+cloudRoutes.post("/live", can("backup.manage"), async (c) => {
+  const { on } = z.object({ on: z.boolean() }).parse(await c.req.json());
+  try { setSyncLive(on); } catch (e) { throw fail(e, "cloud_live"); }
+  await audit({
+    actor: actor(c), action: on ? "cloud.resume" : "cloud.hold", entity: "settings", entityId: "cloud",
+    entityLabel: on ? "Sync switched on for this computer" : "Sync held on this computer — nothing goes up or comes down",
+  });
   return c.json(await view());
 });
 

@@ -41,11 +41,17 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
   autoFocus?: boolean;
   /** Fired when the box loses focus with nothing picked. */
   onBlurEmpty?: () => void;
+  /** Start the box with this text — what the reader made of the handwriting,
+   *  there to be corrected rather than retyped. */
+  initialText?: string;
+  /** A name typed and finished (Enter, Tab or leaving the box) with nobody
+   *  picked: the caller saves it, making the supplier if there is none. */
+  onCommitText?: (text: string) => void;
 }>(function SupplierPicker(
-  { suppliers, selectedLabel, value, onChange, onCommit, onCreate, onQueryChange, invalid, disabled, placeholder, className, autoFocus, onBlurEmpty }, ref,
+  { suppliers, selectedLabel, value, onChange, onCommit, onCreate, onQueryChange, invalid, disabled, placeholder, className, autoFocus, onBlurEmpty, initialText, onCommitText }, ref,
 ) {
   const { t, lang } = useI18n();
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialText ?? "");
   const [debounced, setDebounced] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -125,10 +131,12 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
   const selected = known ?? (value && one.data ? { id: value, nameHi: one.data.nameHi, nameHinglish: one.data.nameHinglish, village: one.data.village } : null);
 
   // show the Hindi name; that is what the paper says
-  const display = selected ? (lang === "hi" ? selected.nameHi : selected.nameHi || selected.nameHinglish) : query;
+  const display = selected && !query ? (lang === "hi" ? selected.nameHi : selected.nameHi || selected.nameHinglish) : query;
 
   useEffect(() => { setActive(0); }, [debounced]);
   useEffect(() => { onQueryChange?.(query); }, [query]);
+  // the row came back from the server with a name: the box follows it
+  useEffect(() => { if (value) { setQuery(""); sent.current = ""; } }, [value]);
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-i="${active}"]`)
       ?.scrollIntoView({ block: "nearest" });
@@ -139,6 +147,19 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
     onChange(s.id);
     setQuery("");
     setOpen(false);
+  };
+
+  /* Leaving the box with a name typed and nobody picked saves that name. The
+     text stays on screen: the row is about to come back naming the supplier. */
+  const sent = useRef("");
+  const touched = useRef(false);
+  const commitText = () => {
+    const text = query.trim();
+    if (!onCommitText || !text || text === sent.current) return false;
+    sent.current = text;
+    setOpen(false);
+    onCommitText(text);
+    return true;
   };
 
   return (
@@ -164,10 +185,16 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
           if (!selected) convertFinishedWord(e.target, query, setQuery);
         }}
         autoFocus={autoFocus}
-        onFocus={() => setOpen(true)}
+        onFocus={(e) => {
+          setOpen(true);
+          /* The box opens holding a name — the reading, or the supplier being
+             changed. The first look selects it, so typing replaces it and an
+             arrow key keeps it for a one-letter correction. */
+          if (!touched.current) { touched.current = true; e.target.select(); }
+        }}
         onBlur={() => setTimeout(() => {
           setOpen(false);
-          if (!value) onBlurEmpty?.();
+          if (!value && !commitText()) onBlurEmpty?.();
         }, 120)}
         onKeyDown={(e) => {
           if (e.key === "ArrowDown") {
@@ -181,10 +208,12 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
               choose(matches[active]);
               return;
             }
+            if (!selected && commitText()) { e.preventDefault(); e.stopPropagation(); }
             setOpen(false);
             onCommit?.();
           } else if (e.key === "Tab") {
             setOpen(false); // the typed name stays; the next box gets the focus
+            if (!selected) commitText();
           } else if (e.key === "Escape") {
             if (open) { e.stopPropagation(); setOpen(false); }
           } else if (e.key === "Backspace" && selected) {

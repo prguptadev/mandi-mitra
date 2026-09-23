@@ -342,6 +342,17 @@ console.log("\nWhole-page checks and decimal points");
   const quiet = await call("GET", `/scans/${id2}`);
   check("a page read without row numbers (an older read) raises nothing about them", quiet.pageChecks.length === 0 && quiet.rows.every((r: any) => !r.issues.some((i: any) => i.code.startsWith("sr_") || i.code === "page_slid")), true);
 
+  console.log("\nA name typed over a reading");
+  const nameRows = (await call("GET", `/scans/${id2}`)).rows;
+  const typedName = nameRows.map((r: any, i: number) => (i === 0 ? { ...r, typedName: "टाइप किया आढ़ती", nameCorrected: true } : r));
+  const afterName = await call("PUT", `/scans/${id2}/rows`, { rows: typedName });
+  check("the row comes back pointing at a supplier", Boolean(afterName.rows[0].adatiId), true);
+  check("  ...which was made from the typed name", afterName.suppliersCreated?.[0]?.nameHi, "टाइप किया आढ़ती");
+  check("  ...and the name no longer blocks the row", afterName.rows[0].issues.some((i: any) => i.code === "name_unresolved"), false);
+  const madeId = afterName.rows[0].adatiId;
+  const again = await call("PUT", `/scans/${id2}/rows`, { rows: afterName.rows.map((r: any, i: number) => (i === 1 ? { ...r, typedName: "टाइप किया आढ़ती", nameCorrected: true } : r)) });
+  check("the same name on another row is the same supplier", again.rows[1].adatiId === madeId && (again.suppliersCreated ?? []).length === 0, true);
+
   // typing a value is not accepting it: an unusual rate typed in still needs its ✓
   const typedRate = quiet.rows.map((r: any, i: number) => (i === 0 ? { ...r, ratePaisePerQtl: 9_000_000, confirmed: (r.confirmed ?? []).filter((c: string) => c !== "rate") } : r));
   const afterType = await call("PUT", `/scans/${id2}/rows`, { rows: typedRate });

@@ -98,6 +98,77 @@ function voucherXml(v: TallyVoucher): string {
   ].filter(Boolean).join("\n");
 }
 
+/* Tally's own groups and voucher types. Anything else named in the settings is
+   a name the company may not have, and Tally refuses a voucher whose group or
+   voucher type it cannot find ("reference master is missing") — so those are
+   created in the file before they are used. */
+const STANDARD_GROUPS = new Set([
+  "capital account", "current assets", "current liabilities", "direct expenses", "direct incomes",
+  "fixed assets", "indirect expenses", "indirect incomes", "investments", "loans (liability)",
+  "misc. expenses (asset)", "purchase accounts", "sales accounts", "suspense a/c",
+  "bank accounts", "bank od a/c", "bank occ a/c", "branch / divisions", "cash-in-hand",
+  "deposits (asset)", "duties & taxes", "expenses (direct)", "expenses (indirect)",
+  "income (direct)", "income (indirect)", "loans & advances (asset)", "provisions",
+  "reserves & surplus", "retained earnings", "secured loans", "stock-in-hand", "sundry creditors",
+  "sundry debtors", "unsecured loans", "duties and taxes",
+]);
+const STANDARD_VOUCHER_TYPES = new Set([
+  "purchase", "sales", "payment", "receipt", "journal", "contra", "debit note", "credit note",
+  "purchase order", "sales order", "delivery note", "receipt note", "rejections in", "rejections out",
+  "stock journal", "physical stock", "memorandum", "reversing journal",
+]);
+/** Which primary group a made-up group belongs under, from the ledgers put in it. */
+const groupParent = (name: string) =>
+  /debtor|customer|mill|buyer/i.test(name) ? "Sundry Debtors"
+  : /creditor|supplier|adati|arhat|farmer/i.test(name) ? "Sundry Creditors"
+  : /bank/i.test(name) ? "Bank Accounts"
+  : /cash/i.test(name) ? "Cash-in-Hand"
+  : /tax|duty|duties/i.test(name) ? "Duties & Taxes"
+  : /income/i.test(name) ? "Indirect Incomes"
+  : /expense|charge/i.test(name) ? "Indirect Expenses"
+  : "Current Liabilities";
+/** Which of Tally's own voucher types a made-up one behaves like. */
+const typeParent = (name: string) =>
+  /purchase|kharid|parcha/i.test(name) ? "Purchase"
+  : /sale|bill|invoice/i.test(name) ? "Sales"
+  : /receipt|received|vasooli/i.test(name) ? "Receipt"
+  : /payment|paid|bhugtan/i.test(name) ? "Payment"
+  : "Journal";
+
+const msg = (body: string) => `<TALLYMESSAGE xmlns:UDF="TallyUDF">\n${body}\n</TALLYMESSAGE>`;
+
+const groupXml = (name: string) => msg([
+  `<GROUP NAME="${esc(name)}" ACTION="Create">`,
+  `<NAME.LIST><NAME>${esc(name)}</NAME></NAME.LIST>`,
+  `<PARENT>${esc(groupParent(name))}</PARENT>`,
+  "</GROUP>",
+].join("\n"));
+
+const voucherTypeXml = (name: string) => msg([
+  `<VOUCHERTYPE NAME="${esc(name)}" ACTION="Create">`,
+  `<NAME.LIST><NAME>${esc(name)}</NAME></NAME.LIST>`,
+  `<PARENT>${esc(typeParent(name))}</PARENT>`,
+  "<NUMBERINGMETHOD>Manual</NUMBERINGMETHOD>",
+  "<ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>",
+  "</VOUCHERTYPE>",
+].join("\n"));
+
+const ledgerXml = (l: TallyLedger) => msg([
+  `<LEDGER NAME="${esc(l.name)}" ACTION="Create">`,
+  `<NAME.LIST><NAME>${esc(l.name)}</NAME></NAME.LIST>`,
+  `<PARENT>${esc(l.parent)}</PARENT>`,
+  // only when the ledger is first created: Tally keeps an existing ledger's own opening
+  l.openingPaise ? `<OPENINGBALANCE>${rupees(l.openingPaise)}</OPENINGBALANCE>` : "",
+  "</LEDGER>",
+].filter(Boolean).join("\n"));
+
+/** Groups and voucher types the company may not have yet, in creation order. */
+function missingMasters(ledgers: TallyLedger[], voucherTypes: string[]): string[] {
+  const groups = [...new Set(ledgers.map((l) => l.parent.trim()))].filter((g) => g && !STANDARD_GROUPS.has(g.toLowerCase()));
+  const types = [...new Set(voucherTypes.map((t) => t.trim()))].filter((t) => t && !STANDARD_VOUCHER_TYPES.has(t.toLowerCase()));
+  return [...groups.map(groupXml), ...types.map(voucherTypeXml)];
+}
+
 function envelope(report: "Vouchers" | "All Masters", company: string, body: string) {
   return [
     `<?xml version="1.0" encoding="UTF-8"?>`,
@@ -120,15 +191,19 @@ function envelope(report: "Vouchers" | "All Masters", company: string, body: str
 export const vouchersFile = (company: string, vouchers: TallyVoucher[]) =>
   envelope("Vouchers", company, vouchers.map((v) => voucherXml(tidy(v))).join("\n"));
 
+/**
+ * Everything in one file, in the order Tally needs it: the groups and voucher
+ * types it may not have, then the ledgers, then the vouchers. Imported once,
+ * under Import › Masters, so no ledger can be missing when a voucher lands.
+ */
+export const oneFile = (company: string, ledgers: TallyLedger[], voucherTypes: string[], vouchers: TallyVoucher[]) =>
+  envelope("All Masters", company, [
+    ...missingMasters(ledgers, voucherTypes),
+    ...ledgers.map(ledgerXml),
+    ...vouchers.map((v) => voucherXml(tidy(v))),
+  ].join("\n"));
+
 /** `openingPaise` in Tally's own sign: a credit balance (we owe the party) positive, a debit balance (the party owes us) negative. */
 export interface TallyLedger { name: string; parent: string; openingPaise?: number }
-export const ledgersFile = (company: string, ledgers: TallyLedger[]) => envelope("All Masters", company, ledgers.map((l) => [
-  `<TALLYMESSAGE xmlns:UDF="TallyUDF">`,
-  `<LEDGER NAME="${esc(l.name)}" ACTION="Create">`,
-  `<NAME.LIST><NAME>${esc(l.name)}</NAME></NAME.LIST>`,
-  `<PARENT>${esc(l.parent)}</PARENT>`,
-  // only when the ledger is first created: Tally keeps an existing ledger's own opening
-  l.openingPaise ? `<OPENINGBALANCE>${rupees(l.openingPaise)}</OPENINGBALANCE>` : "",
-  "</LEDGER>",
-  "</TALLYMESSAGE>",
-].filter(Boolean).join("\n")).join("\n"));
+export const ledgersFile = (company: string, ledgers: TallyLedger[], voucherTypes: string[] = []) =>
+  envelope("All Masters", company, [...missingMasters(ledgers, voucherTypes), ...ledgers.map(ledgerXml)].join("\n"));

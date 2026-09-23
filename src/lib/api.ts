@@ -190,6 +190,8 @@ export interface ScanRow {
   ratePaisePerQtl: number | null;
   excluded: boolean;
   nameCorrected: boolean;
+  /** A name typed over the reading; the server turns it into a supplier and clears it. */
+  typedName?: string | null;
   modelPick?: string | null;
   confirmed?: string[];
   match: { adatiId: string; nameHi: string; nameHinglish: string; confidence: number; via: "alias" | "normkey" | "model" | "fuzzy" } | null;

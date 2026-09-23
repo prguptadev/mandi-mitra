@@ -27,7 +27,7 @@ interface Preview {
   ledgers: string[]; charges: { key: string; label: string }[];
   changed: { kind: Kind; id: string; sent: string; now: string | null; exportedAt: number }[];
 }
-interface ExportResult { ledgersXml: string; vouchersXml: string; entries: { kind: Kind; id: string; fp: string }[]; vouchers: number; ledgers: number }
+interface ExportResult { allXml: string; ledgersXml: string; vouchersXml: string; entries: { kind: Kind; id: string; fp: string }[]; vouchers: number; ledgers: number }
 type T4 = { new: number; sent: number; changed: number; unpriced: number };
 interface TallyDay { day: string; all: T4; kinds: Partial<Record<Kind, T4>> }
 type Body = { from: string; to: string; kinds: Kind[]; onlyNew: boolean; adatiId?: string | null; merchantId?: string | null };
@@ -78,13 +78,19 @@ export function TallyPage() {
     onSuccess: async (r) => { setDone(t("tally.marked", { n: r.marked })); await qc.invalidateQueries({ queryKey: ["tally"] }); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
+  /** One file (the normal way), or the old pair for a Tally that refuses it. */
+  const [split, setSplit] = useState(false);
   const exp = useMutation({
     mutationFn: (b: Body) => api.post<ExportResult>("/tally/export", b),
     onSuccess: async (r, b) => {
       setErr(null);
       const span = (b.from === b.to ? b.from : `${b.from}-to-${b.to}`) + partyTag;
-      save(r.ledgersXml, `tally-1-ledgers-${span}.xml`);
-      setTimeout(() => save(r.vouchersXml, `tally-2-vouchers-${span}.xml`), 400);
+      if (split) {
+        save(r.ledgersXml, `tally-1-ledgers-${span}.xml`);
+        setTimeout(() => save(r.vouchersXml, `tally-2-vouchers-${span}.xml`), 400);
+      } else {
+        save(r.allXml, `tally-${span}.xml`);
+      }
       // only once Tally has taken them are they counted as sent
       if (await ask({
         title: t("tally.didImport"),
@@ -148,6 +154,9 @@ export function TallyPage() {
               {p && (
                 <div className="space-y-1 rounded-lg border border-line bg-raised/40 p-3 text-[13px]">
                   <p><b>{p.vouchers}</b> {t("tally.vouchersGo")} · <b>{p.ledgers.length}</b> {t("tally.ledgersGo")}</p>
+                  <p className="mt-1 text-[12px] text-faint">{t("tally.oneFileNote")}</p>
+                  <button type="button" className="mt-1 text-[12px] font-medium text-brand hover:underline"
+                    onClick={() => setSplit((x) => !x)}>{split ? t("tally.useOneFile") : t("tally.useTwoFiles")}</button>
                   {onlyNew && p.alreadySent > 0 && <p className="text-muted">{t("tally.alreadySent", { n: p.alreadySent })}</p>}
                   {p.unpriced > 0 && <p className="text-warn">{t("tally.unpriced", { n: p.unpriced })}</p>}
                 </div>
@@ -155,7 +164,7 @@ export function TallyPage() {
               <Button variant="primary" size="lg" icon={<Download className="h-4 w-4" />} loading={exp.isPending}
                 disabled={!p || p.vouchers === 0 || !can("export.data")}
                 onClick={() => { setErr(null); setDone(null); exp.mutate(body); }}>
-                {t("tally.download")}
+                {split ? t("tally.downloadTwo") : t("tally.download")}
               </Button>
             </div>
           </Card>

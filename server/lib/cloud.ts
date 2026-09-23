@@ -286,6 +286,25 @@ export async function joinCloud(conn: string) {
   return r;
 }
 
+/**
+ * Sync held on this computer, with the connection kept. Nothing goes up or
+ * comes down while it is off; what is done here is queued and sent when it is
+ * switched back on. A computer whose work must NEVER reach the others is
+ * disconnected instead (disconnectCloud), which forgets the queue too.
+ */
+export function setSyncLive(on: boolean) {
+  const c = readCloudConfig();
+  if (!c.enc) throw new CloudError("This computer is not connected to a cloud yet");
+  if (on) {
+    installTriggers();
+    patchConfig({ live: true, lastError: null, pausedReason: null });
+    syncSoon();
+  } else {
+    patchConfig({ live: false });
+  }
+  return readCloudConfig().live;
+}
+
 export function disconnectCloud() {
   dropTriggers();
   patchConfig({ enc: null, host: null, live: false, cursor: 0, pausedReason: null, lastError: null });

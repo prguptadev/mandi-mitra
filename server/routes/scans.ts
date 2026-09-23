@@ -823,7 +823,22 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
   // what the model read is kept exactly as read: only the operator's columns come from the screen
   const asRead = new Map((JSON.parse(batch.parsedRows ?? "[]") as ReviewRow[]).map((r) => [r.id, r]));
   const NOT_READ = { rstNo: null, adatiName: null, village: null, grossQtl: null, katauti: null, netQtl: null, rate: null, confidence: null, struckThrough: null, srNo: null };
-  const kept = rows.map((r) => ({ ...r, rstNo: normRst(r.rstNo), ocr: asRead.get(r.id)?.ocr ?? NOT_READ, modelPick: asRead.get(r.id)?.modelPick ?? null }));
+  /* A name typed over a row is settled here, not at commit: the same spelling
+     twice on one sheet is one supplier, and the row comes back pointing at it. */
+  const made = new Map<string, { id: string; nameHi: string; nameHinglish: string; created: boolean }>();
+  for (const r of rows) {
+    const typed = r.typedName?.trim();
+    if (!typed) continue;
+    if (!made.has(typed)) made.set(typed, await ensureSupplier(biz, typed, actor(c)));
+  }
+  const kept = rows.map((r) => {
+    const m = r.typedName?.trim() ? made.get(r.typedName.trim()) : null;
+    return {
+      ...r, rstNo: normRst(r.rstNo), typedName: null,
+      ...(m ? { adatiId: m.id, adatiRawText: r.adatiRawText || m.nameHi, nameCorrected: true } : {}),
+      ocr: asRead.get(r.id)?.ocr ?? NOT_READ, modelPick: asRead.get(r.id)?.modelPick ?? null,
+    };
+  });
   await db.update(schema.scanBatches).set({
     // the reader owns the rows while it runs; the header is the operator's
     ...(batch.status === "reading" ? {} : { parsedRows: JSON.stringify(kept) }),
@@ -834,7 +849,15 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
 
   const fresh = await loadBatch(biz, id);
   await refreshScanMeta(biz, id);
-  return c.json(await checkAll(biz, fresh));
+  const newOnes = [...made.values()].filter((m) => m.created);
+  if (newOnes.length) {
+    await audit({
+      actor: actor(c), action: "scan.typed_suppliers", entity: "scan_batch", entityId: id,
+      entityLabel: `${newOnes.length} new supplier${newOnes.length === 1 ? "" : "s"} typed on the sheet`,
+      after: { names: newOnes.map((m) => m.nameHinglish) },
+    });
+  }
+  return c.json({ ...(await checkAll(biz, fresh)), suppliersCreated: newOnes.map((m) => ({ id: m.id, nameHi: m.nameHi, nameHinglish: m.nameHinglish })) });
 });
 
 /** The operator checked a page against the paper: its rows line by line, its date, or its total. */

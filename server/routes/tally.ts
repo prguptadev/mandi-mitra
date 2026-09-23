@@ -7,7 +7,7 @@ import { audit } from "../lib/audit.ts";
 import { amountPaise } from "../lib/money.ts";
 import { can, canAll, actor, bad, isoDay, type Env } from "../lib/http.ts";
 import { readSetting, writeSetting } from "./settings.ts";
-import { TallySettingsSchema, defaultTallySettings, vouchersFile, ledgersFile, type TallySettings, type TallyVoucher, type TallyLedger } from "../lib/tally.ts";
+import { TallySettingsSchema, defaultTallySettings, vouchersFile, ledgersFile, type TallySettings, type TallyVoucher, type TallyLedger, oneFile } from "../lib/tally.ts";
 import type { ParchaDoc } from "../lib/parcha.ts";
 
 /* Sending the books to Tally Prime: purchases, payments to suppliers, kaccha
@@ -366,7 +366,13 @@ tallyRoutes.post("/export", guard, async (c) => {
   try { vouchers = vouchersFile(s.cfg.companyName, s.vouchers); } catch (e) { throw bad(e instanceof Error ? e.message : "A voucher does not balance", "unbalanced"); }
   await audit({ actor: actor(c), action: "tally.export", entity: "settings", entityId: "tally",
     entityLabel: `Tally file ${body.from} to ${body.to}: ${s.vouchers.length} vouchers, ${s.ledgers.length} ledgers` });
-  return c.json({ ledgersXml: ledgersFile(s.cfg.companyName, s.ledgers), vouchersXml: vouchers, entries: s.entries, vouchers: s.vouchers.length, ledgers: s.ledgers.length });
+  const types = Object.values(s.cfg.voucherTypes);
+  return c.json({
+    // one file is the normal way: Tally cannot meet a voucher before its ledger
+    allXml: oneFile(s.cfg.companyName, s.ledgers, types, s.vouchers),
+    ledgersXml: ledgersFile(s.cfg.companyName, s.ledgers, types), vouchersXml: vouchers,
+    entries: s.entries, vouchers: s.vouchers.length, ledgers: s.ledgers.length,
+  });
 });
 
 /** After Tally imported the file: these entries are now in Tally. */

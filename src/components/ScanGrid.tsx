@@ -106,7 +106,7 @@ export function ScanGrid({
   locked: boolean;
   canRate: boolean;
   /** `confirm` names the field the operator has now dealt with. */
-  onPatch: (id: string, patch: Partial<ScanRow>, confirm?: Field) => void;
+  onPatch: (id: string, patch: Partial<ScanRow>, confirm?: Field, now?: boolean) => void;
   onPageClick?: (page: number) => void;
 }) {
   const { t } = useI18n();
@@ -210,8 +210,12 @@ export function ScanGrid({
                         disabled={dead}
                         invalid={!name}
                         autoFocus={editingName === r.id}
+                        /* what the reader made of the handwriting is already in the box:
+                           fix a letter and press Enter, no retyping, no dialog */
+                        initialText={name?.nameHi ?? r.adatiRawText}
                         placeholder={r.adatiRawText ? `${r.adatiRawText} · ${toHinglish(r.adatiRawText)}${r.ocr.village ? ` (${r.ocr.village})` : ""}` : t("scan.pickName")}
                         onChange={(v) => { if (v) { onPatch(r.id, { adatiId: v, nameCorrected: true }, "name"); setEditingName(null); } }}
+                        onCommitText={(text) => { onPatch(r.id, { typedName: text, nameCorrected: true }, "name", true); setEditingName(null); }}
                         onBlurEmpty={() => setEditingName(null)}
                       />
                     )}

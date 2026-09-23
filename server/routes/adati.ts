@@ -7,6 +7,8 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { toHinglish, normKey, similarity, canonicalFirm } from "../lib/translit.ts";
 import { toDevanagari, looksLatin, hasLatin } from "../lib/devanagari.ts";
 import { param, can, actor, notFound, bad, HttpError, type Env } from "../lib/http.ts";
+import { closedAmong } from "../lib/dayClose.ts";
+import { mergeSuppliers } from "../lib/supplierFromName.ts";
 
 /** A supplier's opening balance is money: shown to those who see the ledger or payments. */
 const seesMoney = (c: Context<Env>) => { const p = c.get("auth")!.permissions; return p.has("ledger.read") || p.has("payment.read"); };
@@ -287,6 +289,36 @@ adatiRoutes.delete("/:id", can("adati.delete"), async (c) => {
  *  2. normalised key   -> matras/nasals stripped, confusable consonants folded
  *  3. fuzzy similarity -> ranked suggestions above 0.62
  */
+/** What a merge would move, before anything is touched. */
+adatiRoutes.get("/:id/merge-preview", can("adati.read"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const id = param(c, "id");
+  const [a] = await db.select().from(schema.adati)
+    .where(and(eq(schema.adati.id, id), eq(schema.adati.businessId, biz))).limit(1);
+  if (!a) throw notFound("Supplier not found");
+  const slips = await db.select({ id: schema.purchaseSlips.id, slipDate: schema.purchaseSlips.slipDate })
+    .from(schema.purchaseSlips).where(and(eq(schema.purchaseSlips.businessId, biz), eq(schema.purchaseSlips.adatiId, id)));
+  const pays = await db.select({ id: schema.payments.id }).from(schema.payments)
+    .where(and(eq(schema.payments.businessId, biz), eq(schema.payments.adatiId, id)));
+  const aliases = await db.select({ id: schema.adatiAliases.id }).from(schema.adatiAliases)
+    .where(and(eq(schema.adatiAliases.businessId, biz), eq(schema.adatiAliases.adatiId, id)));
+  const days = [...new Set(slips.map((s) => s.slipDate))].sort();
+  const closed = days.length ? await closedAmong(biz, days) : [];
+  return c.json({
+    slips: slips.length, payments: pays.length, spellings: aliases.length,
+    openingBalancePaise: a.openingBalancePaise, days: days.length, closedDays: closed,
+  });
+});
+
+/** Join this supplier into another: slips, payments, spellings and opening move across. */
+adatiRoutes.post("/:id/merge", can("adati.delete"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const id = param(c, "id");
+  const { intoId, confirm } = z.object({ intoId: z.string().min(1), confirm: z.string() }).parse(await c.req.json());
+  if (confirm !== "MERGE") throw bad("Type MERGE to join the two suppliers", "confirm");
+  return c.json(await mergeSuppliers(biz, id, intoId, actor(c)));
+});
+
 adatiRoutes.post("/resolve", can("adati.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const { text, limit } = z.object({ text: z.string(), limit: z.number().optional() })

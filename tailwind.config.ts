@@ -23,7 +23,9 @@ export default {
         "bad-soft": "hsl(var(--bad-soft))",
       },
       fontFamily: {
-        sans: ["Inter", "Noto Sans Devanagari", "system-ui", "sans-serif"],
+        // Mangal is the Devanagari face every Windows PC has, and what Tally and
+        // Word print here; Nirmala UI is the newer one. Latin still comes from Inter.
+        sans: ["Inter", "Noto Sans Devanagari", "Nirmala UI", "Mangal", "system-ui", "sans-serif"],
         num: ["Roboto Mono", "ui-monospace", "monospace"],
       },
       spacing: { "4.5": "1.125rem", "8.5": "2.125rem", "9.5": "2.375rem" },

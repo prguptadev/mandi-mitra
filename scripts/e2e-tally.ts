@@ -102,6 +102,33 @@ const cfg = await call("GET", "/tally/settings");
 await call("PUT", "/tally/settings", { ...cfg, ledgers: { ...cfg.ledgers, purchase: "Purchase A&B" } });
 const named = await call("POST", "/tally/export", { ...all, onlyNew: false });
 check("a ledger name from Settings is used, & written as &amp;", named.vouchersXml.includes("<LEDGERNAME>Purchase A&amp;B</LEDGERNAME>"));
+check("the single file carries the ledgers before the vouchers", (() => {
+  const A = named.allXml as string;
+  const firstVoucher = A.indexOf("<VOUCHER ");
+  const lastLedger = A.lastIndexOf("<LEDGER ");
+  return A.includes("<REPORTNAME>All Masters</REPORTNAME>") && lastLedger > 0 && firstVoucher > lastLedger;
+})());
+check("…and every ledger a voucher uses is in it", (() => {
+  const A = named.allXml as string;
+  const made = new Set([...A.matchAll(/<LEDGER NAME="([^"]+)"/g)].map((m) => m[1]));
+  const used = [...A.matchAll(/<LEDGERNAME>([^<]+)<\/LEDGERNAME>/g)].map((m) => m[1]);
+  return used.every((u) => made.has(u));
+})());
+
+console.log("\nGroups and voucher types the company may not have");
+await call("PUT", "/tally/settings", { ...cfg, supplierGroup: "Arhat Suppliers", voucherTypes: { ...cfg.voucherTypes, purchase: "Kaccha Kharid" } });
+const custom = await call("POST", "/tally/export", { ...all, onlyNew: false });
+check("a group of its own is created before it is used", (() => {
+  const A = custom.allXml as string;
+  return A.includes('<GROUP NAME="Arhat Suppliers"') && A.indexOf("<GROUP ") < A.indexOf("<LEDGER ");
+})());
+check("  ...under a group Tally has", (custom.allXml as string).includes("<PARENT>Sundry Creditors</PARENT>"));
+check("a voucher type of its own is created too", (() => {
+  const A = custom.allXml as string;
+  return A.includes('<VOUCHERTYPE NAME="Kaccha Kharid"') && A.indexOf("<VOUCHERTYPE ") < A.indexOf("<VOUCHER ");
+})());
+check("  ...behaving like a purchase", /<VOUCHERTYPE NAME="Kaccha Kharid"[\s\S]{0,200}<PARENT>Purchase<\/PARENT>/.test(custom.allXml));
+check("Tally's own groups and types are not re-created", !(custom.allXml as string).includes('<GROUP NAME="Sundry Debtors"') && !(custom.allXml as string).includes('<VOUCHERTYPE NAME="Payment"'));
 await call("PUT", "/tally/settings", cfg);
 const op = session();
 await op.login("Munshi Ji", "271830");

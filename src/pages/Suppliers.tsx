@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect } from "react";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search, Users2, Sparkles, Lock, Unlock, Trash2, Pencil, Tag, RefreshCw, BookOpen } from "lucide-react";
+import { Plus, Search, Users2, Sparkles, Lock, Unlock, Trash2, Pencil, Tag, RefreshCw, BookOpen, Merge } from "lucide-react";
 import { Link } from "wouter";
 import { api, ApiError, type Adati, type AdatiAlias } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/AppShell.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
 import { NumberInput } from "@/components/NumberInput.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
+import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import {
   Button, Card, Field, Input, Textarea, Table, Th, Td, Tr, Badge, Dialog,
   EmptyState, Alert, Switch, Checkbox, Spinner,
@@ -252,6 +253,64 @@ function AliasPanel({ adatiId }: { adatiId: string }) {
   );
 }
 
+/* Two rows that are one trader. Nothing is added up again: the slips and
+   payments simply point at the supplier that stays, and the name that goes is
+   kept as one of its spellings, so the same handwriting resolves to it. */
+function MergeDialog({ from, onClose, onDone }: {
+  from: Adati; onClose: () => void; onDone: (msg: string) => void;
+}) {
+  const { t, pick } = useI18n();
+  const f = useFormat();
+  const qc = useQueryClient();
+  const [intoId, setIntoId] = useState<string | null>(null);
+  const [typed, setTyped] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  const what = useQuery({
+    queryKey: ["adati", "merge-preview", from.id],
+    queryFn: () => api.get<{ slips: number; payments: number; spellings: number; openingBalancePaise: number; days: number; closedDays: string[] }>(`/adati/${from.id}/merge-preview`),
+  });
+
+  const merge = useMutation({
+    mutationFn: () => api.post<{ slips: number; payments: number; into: { nameHi: string; nameHinglish: string } }>(`/adati/${from.id}/merge`, { intoId, confirm: typed }),
+    onSuccess: async (r) => {
+      await qc.invalidateQueries({ queryKey: ["adati"] });
+      onDone(t("adati.mergeDone", { from: pick(from.nameHinglish, from.nameHi), into: pick(r.into.nameHinglish, r.into.nameHi), slips: r.slips, payments: r.payments }));
+      onClose();
+    },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+
+  const same = intoId === from.id;
+  return (
+    <Dialog open onClose={onClose} title={t("adati.mergeTitle")} sub={t("adati.mergeSub", { name: pick(from.nameHinglish, from.nameHi) })}
+      footer={<>
+        <Button onClick={onClose}>{t("common.cancel")}</Button>
+        <Button variant="danger" loading={merge.isPending} disabled={!intoId || same || typed !== "MERGE"}
+          onClick={() => merge.mutate()}>{t("adati.mergeGo")}</Button>
+      </>}>
+      {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
+      <div className="mb-3 rounded-lg border border-line bg-raised/40 p-2.5 text-[13px] text-muted">
+        <p><span lang="hi" className="text-[15px] text-ink">{from.nameHi}</span> · {from.nameHinglish}</p>
+        {what.data && (
+          <>
+            <p className="mt-1.5">{t("adati.mergeWhatMoves", { slips: what.data.slips, payments: what.data.payments, spellings: what.data.spellings })}</p>
+            {what.data.openingBalancePaise !== 0 && <p className="mt-1">{t("adati.mergeOpening", { amount: f.money(what.data.openingBalancePaise) })}</p>}
+            {what.data.closedDays.length > 0 && <p className="mt-1 text-warn">{t("adati.mergeClosed", { n: what.data.closedDays.length })}</p>}
+          </>
+        )}
+      </div>
+      <Field label={t("adati.mergeInto")}>
+        <SupplierPicker value={intoId} onChange={setIntoId} invalid={same} autoFocus />
+      </Field>
+      {same && <p className="mt-1 text-[12px] text-bad">{t("adati.mergeSame")}</p>}
+      <Field label={t("adati.mergeTypeIt")} className="mt-3">
+        <Input value={typed} onChange={(e) => setTyped(e.target.value)} className="num" />
+      </Field>
+    </Dialog>
+  );
+}
+
 export function SuppliersPage() {
   const { t, lang } = useI18n();
   const ask = useConfirm();
@@ -261,6 +320,7 @@ export function SuppliersPage() {
   const [q, setQ] = useState("");
   const [showInactive, setShowInactive] = useState(false);
   const [dialog, setDialog] = useState<{ open: boolean; editing: Adati | null }>({ open: false, editing: null });
+  const [merging, setMerging] = useState<Adati | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // a done-message fades; it must not sit there describing an older action
   useEffect(() => {
@@ -440,6 +500,12 @@ export function SuppliersPage() {
                         </Button>
                       )}
                       {can("adati.delete") && (
+                        <Button variant="ghost" size="icon" className="h-7 w-7" title={t("adati.merge")}
+                          onClick={() => setMerging(r)} aria-label={t("adati.merge")}>
+                          <Merge className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      {can("adati.delete") && (
                         <Button variant="ghost" size="icon" className="h-7 w-7"
                           onClick={async () => { if (await ask({ title: t("adati.confirmDelete", { name: r.nameHi }), danger: true, confirmLabel: t("confirm.yesDelete") })) del.mutate(r.id); }}
                           aria-label={t("common.delete")}>
@@ -462,6 +528,7 @@ export function SuppliersPage() {
         )}
       </Card>
 
+      {merging && <MergeDialog from={merging} onClose={() => setMerging(null)} onDone={setNotice} />}
       {dialog.open && (
         <SupplierDialog
           key={dialog.editing?.id ?? "new"}

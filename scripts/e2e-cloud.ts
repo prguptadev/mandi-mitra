@@ -301,6 +301,19 @@ check("afterwards only the sign-in itself goes up", afterRestore.pushed < 10 && 
 await settle();
 sameEverywhere("at the end, all three computers hold exactly the same records");
 
+console.log("\nSync held on one computer (its connection kept)");
+const held = await C.call("POST", "/cloud/live", { on: false });
+check("the switch turns sync off there", held.live === false && (await C.call("GET", "/cloud/status")).state === "off");
+check("  ...and the connection is still saved", held.configured === true);
+const heldSlip = await C.call("POST", "/slips", { slipDate: "2026-09-26", rstNo: "HELD1", adatiId: sup.id, jinsId: j.id, merchantId: lb.id, grossGrams: 500_000, ratePaisePerQtl: 300000 });
+await A.sync();
+check("work done while it is held does not reach the others", A.q("select 1 from purchase_slips where id = ?", heldSlip.id).length === 0);
+await C.call("POST", "/cloud/live", { on: true });
+await settle();
+check("switching it back on sends what was done meanwhile", A.q("select 1 from purchase_slips where id = ?", heldSlip.id).length === 1);
+await C.call("DELETE", `/slips/${heldSlip.id}`);
+await settle();
+
 const off = await C.call("PUT", "/cloud", { connection: null });
 check("sync can be turned off on one computer", off.configured === false && (await C.call("GET", "/cloud/status")).enabled === false);
 check("…keeping its data", C.q("select 1 from purchase_slips where id = ?", slip.id).length === 1);

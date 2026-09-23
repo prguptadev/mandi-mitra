@@ -24,6 +24,15 @@ async function call(method: string, path: string, body?: unknown) {
   return json;
 }
 
+async function raw(method: string, path: string, body?: unknown) {
+  const res = await fetch(BASE + path, {
+    method, headers: { "Content-Type": "application/json", ...(cookie ? { cookie } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  await res.text();
+  return { status: res.status };
+}
+
 const users = await call("GET", "/auth/users");
 const owner = users.find((u: any) => u.name === "Test Owner");
 const PIN = process.argv[2] ?? process.env.MANDI_PIN ?? "482915";
@@ -173,6 +182,33 @@ console.log("\nA typed name is a supplier");
   check("…and a known English spelling finds the existing supplier", e2.supplierCreated, null);
   check("the new suppliers are on the supplier list", (await call("GET", "/adati?all=1")).length, supBefore + 3);
   for (const r of day.rows.filter((x: any) => /^T\d$/.test(x.rstNo))) await call("DELETE", `/slips/${r.id}`);
+
+  console.log("\nTwo rows that are one trader");
+  const mills = await call("GET", "/merchants");
+  const mill = mills[0];
+  const A = await call("POST", "/adati", { nameHi: "मिलाओ आढ़ती क", openingBalanceRupees: 500 });
+  const B = await call("POST", "/adati", { nameHi: "मिलाओ आढ़ती ख", openingBalanceRupees: 300 });
+  const sa = await call("POST", "/slips", { slipDate: "2026-12-02", rstNo: "M1", adatiId: A.id, merchantId: mill.id, jinsId: j.id, grossGrams: 2_000_000, ratePaisePerQtl: 300000 });
+  const sb = await call("POST", "/slips", { slipDate: "2026-12-02", rstNo: "M2", adatiId: B.id, merchantId: mill.id, jinsId: j.id, grossGrams: 1_000_000, ratePaisePerQtl: 300000 });
+  await call("POST", "/payments", { adatiId: B.id, payDate: "2026-12-02", amountPaise: 100000, mode: "cash" });
+  const ledgerOf = async (id: string) => (await call("GET", `/ledger/${id}`)).totals;
+  const beforeA = await ledgerOf(A.id);
+  const beforeB = await ledgerOf(B.id);
+  const pre = await call("GET", `/adati/${B.id}/merge-preview`);
+  check("the box says what would move", [pre.slips, pre.payments], [1, 1]);
+  check("MERGE must be typed", (await raw("POST", `/adati/${B.id}/merge`, { intoId: A.id, confirm: "yes" })).status, 400);
+  const m = await call("POST", `/adati/${B.id}/merge`, { intoId: A.id, confirm: "MERGE" });
+  check("the slip and the payment moved", [m.slips, m.payments], [1, 1]);
+  check("the supplier that went is off the list", (await raw("GET", `/adati/${B.id}`)).status, 404);
+  const afterA = await ledgerOf(A.id);
+  check("nothing of the money is lost: both ledgers add up to the one that stays",
+    afterA.closingPaise, beforeA.closingPaise + beforeB.closingPaise);
+  check("  ...and the survivor now carries both sets of slips", afterA.slips, beforeA.slips + beforeB.slips);
+  check("its opening balance was added on", (await call("GET", `/adati/${A.id}`)).openingBalancePaise, 80000);
+  check("a sheet still being checked has its rows moved too", typeof m.scanRows, "number");
+  const resolved = await call("POST", "/adati/resolve", { text: "मिलाओ आढ़ती ख" });
+  check("the old name now reads as the supplier that stays", resolved.match?.adatiId ?? resolved.suggestions?.[0]?.adatiId, A.id);
+  for (const id of [sa.id, sb.id]) await call("DELETE", `/slips/${id}`);
 }
 console.log(bad === 0 ? "\nDaily list reproduces the sheet exactly." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

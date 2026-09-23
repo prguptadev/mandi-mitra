@@ -39,6 +39,8 @@ export const ReviewRowSchema = z.object({
   excluded: z.boolean().default(false),
   /** Set once the operator picks a name for an unresolved reading. */
   nameCorrected: z.boolean().default(false),
+  /** A name typed over the reading: saved as a supplier the moment it is sent. */
+  typedName: z.string().trim().max(120).nullish(),
   /** The model's pick from the known-supplier list, exactly as it wrote it. */
   modelPick: z.string().nullable().default(null),
   /** Fields the operator has looked at and accepted or changed — no longer doubtful. */

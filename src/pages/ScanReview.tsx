@@ -196,6 +196,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   const [draft, setDraft] = useState<ScanRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [done, setDone] = useState<{ created: number; learned: number; date: string } | null>(null);
   const [showScan, setShowScan] = useState(true);
   const scrollToPage = useRef<((page: number) => void) | null>(null);
@@ -231,9 +232,16 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
 
   const save = useMutation({
     mutationFn: (payload: { rows: ScanRow[]; slipDate?: string | null; merchantId?: string | null; jinsId?: string | null }) =>
-      api.put<{ rows: ScanRow[]; summary: ScanBatch["summary"]; pageChecks?: PageCheck[] }>(`/scans/${scanId}/rows`, payload),
+      api.put<{ rows: ScanRow[]; summary: ScanBatch["summary"]; pageChecks?: PageCheck[]; suppliersCreated?: { id: string; nameHi: string; nameHinglish: string }[] }>(`/scans/${scanId}/rows`, payload),
     onSuccess: (resp, vars) => {
       setErr(null); // a save that went through clears the last failure
+      if (resp.suppliersCreated?.length) {
+        const names = resp.suppliersCreated.map((s) => pick(s.nameHinglish, s.nameHi)).join(", ");
+        setNotice(t("scan.nameMade", { names }));
+        if (noticeTimer.current) clearTimeout(noticeTimer.current);
+        noticeTimer.current = setTimeout(() => setNotice(null), 6000);
+        void qc.invalidateQueries({ queryKey: ["adati"] });
+      }
       /* Write the server's answer straight into the cache. Clearing the draft
          and waiting for a refetch left a window where the old rows showed, and
          a click in that window was built on stale data. */
@@ -318,7 +326,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   /** Local edit now, a debounced round-trip so every check is recomputed on the server. */
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latest = useRef<ScanRow[] | null>(null);
-  const patchRow = (id: string, patch: Partial<ScanRow>, confirm?: Field) => {
+  const patchRow = (id: string, patch: Partial<ScanRow>, confirm?: Field, now = false) => {
     const next = rows.map((r) => {
       if (r.id !== id) return r;
       const confirmed = confirm && !(r.confirmed ?? []).includes(confirm)
@@ -328,7 +336,8 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
     setDraft(next);
     latest.current = next;
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => save.mutate({ rows: next }), 400);
+    // a typed name is saved at once: it makes the supplier, and the row comes back naming it
+    timer.current = setTimeout(() => save.mutate({ rows: next }), now ? 0 : 400);
   };
 
   // leaving the screen within the 400 ms keeps the last edit: it is sent, not dropped
@@ -482,7 +491,10 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   const grid = (
     <Card className="flex h-full flex-col overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-line p-2.5">
-        <p className="text-[13px] font-medium text-ink">{t("scan.extracted")}</p>
+        <div className="min-w-0">
+          <p className="text-[13px] font-medium text-ink">{t("scan.extracted")}</p>
+          <p className="text-[11px] leading-snug text-faint">{t("scan.nameBoxHelp")}</p>
+        </div>
         <div className="flex-1" />
         {save.isPending && <Spinner />}
         <Button size="sm" variant="ghost" onClick={() => setShowScan((v) => !v)}
