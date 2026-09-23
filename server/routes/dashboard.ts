@@ -266,6 +266,77 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
 });
 
 /** One mill: received, loaded (every truck, priced), left, and the race between them. */
+/* The day's rate, mill by mill and commodity by commodity — the figure the
+   office calls the dara. Σ(net × rate) / Σ net over the slips that carry a
+   rate, so it is the same number the parcha and the mill report print. A mill
+   that took two commodities that day gets a line for each. A line whose slips
+   have no rate yet has no average to show, so it is left out and counted. */
+dashboardRoutes.get("/day-averages", can("dashboard.view"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const f = filterOf(c);
+  const days = Math.min(Math.max(Number(c.req.query("days") ?? 7) || 7, 1), 60);
+  const S = schema.purchaseSlips;
+  const w = [eq(S.businessId, biz)];
+  if (f.jinsId) w.push(eq(S.jinsId, f.jinsId));
+  if (f.from) w.push(gte(S.slipDate, f.from));
+  if (f.to) w.push(lte(S.slipDate, f.to));
+  const rows = await db.select({
+    date: S.slipDate, merchantId: S.merchantId, jinsId: S.jinsId,
+    slips: sql<number>`count(*)`,
+    bags: sql<number>`sum(coalesce(${S.bagsCount}, 0))`,
+    grossGrams: sql<number>`sum(${S.grossGrams})`,
+    netGrams: sql<number>`sum(${S.netGrams})`,
+    amountPaise: sql<number>`sum(${S.amountPaise})`,
+    payablePaise: sql<number>`sum(${S.payablePaise})`,
+    pricedSlips: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then 1 else 0 end)`,
+    pricedNet: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} else 0 end)`,
+    pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
+  }).from(S).where(and(...w)).groupBy(S.slipDate, S.merchantId, S.jinsId);
+  if (!rows.length) return c.json({ days: [] });
+
+  const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code, name: schema.merchants.name, nameHi: schema.merchants.nameHi })
+    .from(schema.merchants).where(eq(schema.merchants.businessId, biz));
+  const jinsRows = await db.select({ id: schema.jins.id, code: schema.jins.code, name: schema.jins.name, nameHi: schema.jins.nameHi })
+    .from(schema.jins).where(eq(schema.jins.businessId, biz));
+  const mill = (id: string | null) => mills.find((m) => m.id === id) ?? null;
+  const jins = (id: string) => jinsRows.find((j) => j.id === id) ?? null;
+
+  const dates = [...new Set(rows.map((r) => r.date))].sort((a, b) => b.localeCompare(a)).slice(0, days);
+  const out = dates.map((date) => {
+    const mine = rows.filter((r) => r.date === date);
+    const lines = mine
+      .filter((r) => r.pricedNet > 0)
+      .map((r) => ({
+        millId: r.merchantId, millCode: mill(r.merchantId)?.code ?? null,
+        millName: mill(r.merchantId)?.name ?? null, millNameHi: mill(r.merchantId)?.nameHi ?? null,
+        jinsId: r.jinsId, jinsCode: jins(r.jinsId)?.code ?? "", jinsName: jins(r.jinsId)?.name ?? "", jinsNameHi: jins(r.jinsId)?.nameHi ?? null,
+        slips: r.slips, bags: r.bags, grossGrams: r.grossGrams, netGrams: r.netGrams,
+        amountPaise: r.amountPaise, payablePaise: r.payablePaise,
+        avgRatePaisePerQtl: avgOver([r]),
+        waiting: r.slips - r.pricedSlips,
+      }))
+      .sort((a, b) => (a.millCode ?? "~").localeCompare(b.millCode ?? "~") || a.jinsCode.localeCompare(b.jinsCode));
+    const priced = mine.filter((r) => r.pricedNet > 0);
+    return {
+      date,
+      lines,
+      // the whole day across mills, for the line under the table
+      total: priced.length ? {
+        slips: priced.reduce((s, r) => s + r.pricedSlips, 0),
+        bags: priced.reduce((s, r) => s + r.bags, 0),
+        grossGrams: priced.reduce((s, r) => s + r.grossGrams, 0),
+        netGrams: priced.reduce((s, r) => s + r.netGrams, 0),
+        amountPaise: priced.reduce((s, r) => s + r.amountPaise, 0),
+        payablePaise: priced.reduce((s, r) => s + r.payablePaise, 0),
+        avgRatePaisePerQtl: avgOver(priced),
+      } : null,
+      /** Slips of that day still without a rate: no average can be worked out for them. */
+      waiting: mine.reduce((s, r) => s + (r.slips - r.pricedSlips), 0),
+    };
+  }).filter((d) => d.lines.length > 0 || d.waiting > 0);
+  return c.json({ days: out });
+});
+
 dashboardRoutes.get("/mill/:id", can("stock.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const id = c.req.param("id") ?? "";

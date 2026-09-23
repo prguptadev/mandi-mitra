@@ -25,6 +25,7 @@ import { NumberFormatCard, GeminiCard } from "./SettingsExtras.tsx";
 import { BackupCard } from "@/components/BackupCard.tsx";
 import { AppearanceCard } from "@/components/AppearanceCard.tsx";
 import { CloudCard } from "@/components/CloudCard.tsx";
+import { NetworkCard } from "@/components/NetworkCard.tsx";
 import { UpdateCard } from "@/components/UpdateCard.tsx";
 
 /* ------------------------------------------------------------------- users */
@@ -761,6 +762,7 @@ export function SettingsPage() {
           <BackupCard />
           <div className="space-y-4">
             <CloudCard />
+            <NetworkCard />
             <UpdateCard />
           </div>
         </div>

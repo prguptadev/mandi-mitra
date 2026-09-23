@@ -11,6 +11,7 @@
  */
 const { app, BrowserWindow, shell, dialog, Menu, nativeTheme } = require("electron");
 const path = require("node:path");
+const fs = require("node:fs");
 const net = require("node:net");
 const { pathToFileURL } = require("node:url");
 
@@ -54,7 +55,12 @@ async function startServer() {
   process.env.MANDI_DATA_DIR = path.join(app.getPath("userData"), "data");
   process.env.MANDI_STATIC_DIR = path.join(unpacked, "dist");
   process.env.MANDI_MIGRATIONS_DIR = path.join(unpacked, "desktop-build", "migrations");
-  process.env.MANDI_HOST = "127.0.0.1";
+  /* Normally this computer only. Switched on in Settings, the books are served
+     to the shop's own network as well, so a second laptop uses them directly
+     (one database, nothing to sync). Read here because it decides the bind. */
+  let share = false;
+  try { share = JSON.parse(fs.readFileSync(path.join(process.env.MANDI_DATA_DIR, "network.json"), "utf8")).share === true; } catch { /* off */ }
+  process.env.MANDI_HOST = share ? "0.0.0.0" : "127.0.0.1";
   process.env.MANDI_DESKTOP = "1";
   process.env.MANDI_APP_VERSION = app.getVersion();
   const port = await freePort(8787);

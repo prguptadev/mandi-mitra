@@ -1,6 +1,9 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Hono } from "hono";
 import { z } from "zod";
-import { db, schema } from "../db/client.ts";
+import { db, schema, DB_PATH } from "../db/client.ts";
 import { audit } from "../lib/audit.ts";
 import { can, actor, bad, requireAuth, HttpError, type Env } from "../lib/http.ts";
 import {
@@ -117,4 +120,53 @@ cloudRoutes.put("/device", can("backup.manage"), async (c) => {
   const { patchDeviceName } = await import("../lib/cloud.ts");
   patchDeviceName(name);
   return c.json(await view());
+});
+
+/* ------------------------------------------------ this computer on the network
+
+   A second laptop on the same shop network can use THIS computer's books
+   directly: one database, nothing to sync, whatever one types the other sees
+   on its next refresh. It is off until switched on here, because it opens the
+   API to every machine on that network (a PIN is still needed to get in).
+   The desktop app reads this file when it starts, so it takes a restart. */
+
+const NETWORK_FILE = () => path.join(path.dirname(DB_PATH), "network.json");
+
+function readShare(): boolean {
+  try { return JSON.parse(fs.readFileSync(NETWORK_FILE(), "utf8")).share === true; } catch { return false; }
+}
+
+/** The addresses the other laptop can type, this computer's own on each network. */
+function addresses(): string[] {
+  const out: string[] = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const n of list ?? []) {
+      if (n.family === "IPv4" && !n.internal) out.push(n.address);
+    }
+  }
+  return out;
+}
+
+const networkView = () => {
+  const share = readShare();
+  const live = Boolean(process.env.MANDI_HOST && !["127.0.0.1", "localhost", "::1"].includes(process.env.MANDI_HOST));
+  return {
+    share, live, needsRestart: share !== live,
+    port: Number(process.env.PORT ?? 8787),
+    addresses: addresses(),
+  };
+};
+
+cloudRoutes.get("/network", can("backup.manage"), (c) => c.json(networkView()));
+
+cloudRoutes.put("/network", can("backup.manage"), async (c) => {
+  const { share } = z.object({ share: z.boolean() }).parse(await c.req.json());
+  fs.writeFileSync(NETWORK_FILE(), JSON.stringify({ share }, null, 2));
+  await audit({
+    actor: actor(c), action: share ? "network.share.on" : "network.share.off", entity: "settings", entityId: "network",
+    entityLabel: share
+      ? `This computer's books opened to the local network (${addresses().join(", ") || "no network address"})`
+      : "This computer's books closed to the local network",
+  });
+  return c.json(networkView());
 });

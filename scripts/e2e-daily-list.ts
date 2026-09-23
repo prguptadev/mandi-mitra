@@ -183,6 +183,19 @@ console.log("\nA typed name is a supplier");
   check("the new suppliers are on the supplier list", (await call("GET", "/adati?all=1")).length, supBefore + 3);
   for (const r of day.rows.filter((x: any) => /^T\d$/.test(x.rstNo))) await call("DELETE", `/slips/${r.id}`);
 
+  console.log("\nThe day's rate at the top of the dashboard");
+  const dayAvg = await call("GET", `/dashboard/day-averages?days=7&from=${DATE}&to=${DATE}`);
+  const dayRow = dayAvg.days.find((d: any) => d.date === DATE);
+  const dayList = await call("GET", `/slips?date=${DATE}`);
+  check("the day has a line for the mill and commodity", (dayRow?.lines?.length ?? 0) >= 1, true);
+  check("  ...its average is the daily list's own weighted average", dayRow.total.avgRatePaisePerQtl, dayList.totals.weightedAvgRatePaise);
+  check("  ...and its net weight is the daily list's net", dayRow.lines.reduce((s: number, l: any) => s + l.netGrams, 0), dayList.totals.netGrams);
+  const noRate = await call("POST", "/slips", { slipDate: "2026-12-03", rstNo: "NR1", adatiName: "बिना दर आढ़ती", jinsId: j.id, grossGrams: 1_000_000, ratePaisePerQtl: 0 });
+  const withNoRate = await call("GET", "/dashboard/day-averages?days=30&from=2026-12-03&to=2026-12-03");
+  const nrDay = withNoRate.days.find((d: any) => d.date === "2026-12-03");
+  check("a day whose slips have no rate shows no average, and says how many wait", [nrDay?.lines.length, nrDay?.waiting], [0, 1]);
+  await call("DELETE", `/slips/${noRate.id}`);
+
   console.log("\nTwo rows that are one trader");
   const mills = await call("GET", "/merchants");
   const mill = mills[0];

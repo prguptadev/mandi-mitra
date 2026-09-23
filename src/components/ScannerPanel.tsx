@@ -74,7 +74,7 @@ export function ScannerPanel({ slipDate, merchantId, jinsId }: { slipDate: strin
               disabled={!details.data?.details}
               onClick={async () => {
                 try { await navigator.clipboard.writeText(details.data?.details ?? ""); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ }
-              }}>{copied ? t("wa.copied") : t("wa.copy")}</Button>
+              }}>{copied ? t("common.copied") : t("common.copy")}</Button>
             <Button size="sm" variant="ghost" onClick={() => setShowDetails(false)}>{t("common.close")}</Button>
           </div>
           {details.isError

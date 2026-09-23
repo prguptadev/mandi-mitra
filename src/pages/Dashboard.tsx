@@ -13,6 +13,7 @@ import { SkeletonStats, SkeletonTable } from "@/components/Skeletons.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
 import { useFY } from "@/lib/fy.tsx";
 import { AttentionStrip } from "@/components/AttentionStrip.tsx";
+import { DayAveragesCard } from "@/components/DayAveragesCard.tsx";
 import { RaceChart, type RacePoint } from "@/components/RaceChart.tsx";
 import { Card, CardHeader, Badge, Select, Input, Button } from "@/components/ui/index.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
@@ -339,6 +340,7 @@ export function DashboardPage() {
         } />
 
       <AttentionStrip />
+      <DayAveragesCard qs={qs.toString()} />
       {dash.isError ? <Card><LoadError error={dash.error} onRetry={() => void dash.refetch()} /></Card> : !k ? <SkeletonStats /> : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Kpi icon={PackageOpen} label={t("dash.received")} value={<>{f.weight(k.boughtNetGrams)} <span className="text-[13px] font-normal text-muted">{f.unit}</span></>}
