@@ -159,6 +159,13 @@ const networkView = () => {
 
 cloudRoutes.get("/network", can("backup.manage"), (c) => c.json(networkView()));
 
+/** Which computer's books these are — everyone signed in may ask. */
+cloudRoutes.get("/host", requireAuth, (c) => c.json({
+  deviceName: readCloudConfig().deviceName,
+  /** True when this app is serving the shop's network, not only itself. */
+  shared: readShare(),
+}));
+
 cloudRoutes.put("/network", can("backup.manage"), async (c) => {
   const { share } = z.object({ share: z.boolean() }).parse(await c.req.json());
   fs.writeFileSync(NETWORK_FILE(), JSON.stringify({ share }, null, 2));

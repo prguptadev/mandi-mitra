@@ -301,6 +301,20 @@ check("afterwards only the sign-in itself goes up", afterRestore.pushed < 10 && 
 await settle();
 sameEverywhere("at the end, all three computers hold exactly the same records");
 
+console.log("\nWhose books am I looking at");
+const hostA = await A.call("GET", "/cloud/host");
+const hostB = await B.call("GET", "/cloud/host");
+check("each computer can say which one it is", Boolean(hostA.deviceName) && hostA.deviceName !== hostB.deviceName, { A: hostA, B: hostB });
+check("  ...and whether it is serving the shop's network", typeof hostA.shared === "boolean");
+const netA = await A.call("GET", "/cloud/network");
+check("the network switch is off until it is switched on", netA.share === false && netA.live === false, netA);
+const netOn = await A.call("PUT", "/cloud/network", { share: true });
+check("switching it on asks for a restart, since the bind happens at start-up", netOn.share === true && netOn.needsRestart === true, netOn);
+check("  ...and the computer's own addresses are offered to type", Array.isArray(netOn.addresses));
+check("  ...it now says it is shared", (await A.call("GET", "/cloud/host")).shared === true);
+await A.call("PUT", "/cloud/network", { share: false });
+check("switching it off leaves it closed again", (await A.call("GET", "/cloud/network")).share === false);
+
 console.log("\nOne shop, two computers, the same connection string");
 // both off the internet, both working on the same day, as in the shop
 await internet(false);

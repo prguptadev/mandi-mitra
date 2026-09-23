@@ -9,6 +9,7 @@ import {
 import { cn } from "@/lib/utils.ts";
 import { ApiError } from "@/lib/api.ts";
 import { SyncIndicator } from "@/components/SyncIndicator.tsx";
+import { OnAnotherComputer } from "@/components/OnAnotherComputer.tsx";
 import { useFY, useFYYears } from "@/lib/fy.tsx";
 import { MyPinDialog } from "@/components/MyPinDialog.tsx";
 import { toastError } from "@/components/Toaster.tsx";
@@ -303,6 +304,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
 
           <div className="flex-1" />
 
+          <OnAnotherComputer />
           <FYPicker />
           <SyncIndicator />
 
