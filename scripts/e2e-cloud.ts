@@ -64,7 +64,12 @@ function computer(name: string, base: string, dir: string) {
   const cfgPath = path.join(dir, "cloud.json");
   const cfg = () => JSON.parse(fs.readFileSync(cfgPath, "utf8"));
   const setCfg = (p: Record<string, unknown>) => fs.writeFileSync(cfgPath, JSON.stringify({ ...cfg(), ...p }, null, 2));
-  return { name, raw, call, q, login, sync, cfg, setCfg };
+  /** The computer's own sync bookkeeping (cloud-state.db), not the books. */
+  function stateQ<T = any>(sql: string, ...args: unknown[]): T[] {
+    const d = new Database(path.join(dir, "cloud-state.db"), { readonly: true });
+    try { return d.prepare(sql).all(...args) as T[]; } finally { d.close(); }
+  }
+  return { name, raw, call, q, state: stateQ, login, sync, cfg, setCfg };
 }
 const A = computer("A", process.env.MANDI_API!, process.env.MANDI_DATA_DIR!);
 const B = computer("B", process.env.MANDI_API_B!, process.env.MANDI_DATA_DIR_B!);
@@ -254,7 +259,11 @@ const taken = await A.raw("POST", `/loads/${truck.id}/approve`, { invoiceNo: "70
 check("a number already used on another computer is refused", taken.status === 409 && taken.json.code === "number_taken", taken.json);
 await internet(false);
 const offline = await A.raw("POST", `/loads/${truck.id}/approve`, { invoiceNo: "7002" });
-check("approving with no internet is refused, saying why", offline.status === 409 && offline.json.code === "offline", offline.json);
+check("a parcha can be approved with no internet — the shop does not wait for the Wi-Fi",
+  offline.status === 200 && offline.json.parchaNo === "7002", offline.json);
+check("  ...and the number is held here until it can be claimed",
+  A.state("select 1 from claims_waiting where value = ?", "7002").length === 1,
+  A.state("select business_id, value, load_id from claims_waiting"));
 const offSlip = await A.raw("POST", "/slips", { slipDate: "2026-10-06", rstNo: "9102", adatiId: sup.id, jinsId: j.id, merchantId: lb.id, grossGrams: 400_000, ratePaisePerQtl: 340_000 });
 check("everything else keeps working with no internet", offSlip.status === 200);
 const offSync = await A.raw("POST", "/cloud/sync");
@@ -264,8 +273,38 @@ check("the status shows offline, with the waiting changes", offStatus.state === 
 await internet(true);
 await A.sync();
 check("back online, the waiting slip goes up", (await cloud("select 1 from mm_rows where row_id = $1", [offSlip.json.id])).length === 1);
-const ok = await A.call("POST", `/loads/${truck.id}/approve`, { invoiceNo: "7002" });
-check("approving works once online", ok.parchaNo === "7002");
+check("back online, the waiting number is claimed in the cloud",
+  (await cloud("select load_id from mm_claims where business_id = $1 and value = '7002'", [biz]))[0]?.load_id === truck.id,
+  await cloud("select value, load_id from mm_claims where business_id = $1", [biz]));
+check("  ...and nothing is left waiting", A.state("select 1 from claims_waiting").length === 0);
+// a second truck, approved offline onto a number another computer had taken
+await A.call("POST", "/slips", { slipDate: "2026-10-07", rstNo: "9103", adatiId: sup.id, jinsId: j.id, merchantId: lb.id, grossGrams: 1_000_000, ratePaisePerQtl: 340_000 });
+const truck2 = await A.call("POST", "/loads", { loadDate: "2026-10-07", merchantId: lb.id, jinsId: j.id, stockDate: "2026-10-07", truckNo: "UP82T0002" });
+// the single row takes the rest of the day's stock, so it always matches the weighbridge
+await A.call("PUT", `/loads/${truck2.id}`, { millGrossGrams: 950_000, katteCount: 20, advancePaise: 0, daraPaise: 0 });
+const t2ready = await A.call("GET", `/loads/${truck2.id}`);
+check("the second test truck is ready to approve", t2ready.blockers.every((b: any) => b.code === "no_invoice_no"), t2ready.blockers);
+await cloud("insert into mm_claims (business_id, kind, value, load_id, device) values ($1, 'parcha', '7009', 'someone-elses-truck', 'other-computer') on conflict do nothing", [biz]);
+await internet(false);
+const off2 = await A.raw("POST", `/loads/${truck2.id}/approve`, { invoiceNo: "7009" });
+check("offline, that approval goes through here too", off2.status === 200, off2.json);
+await internet(true);
+await A.sync();
+const clashes = (await A.call("GET", "/cloud/clashes")) as any[];
+check("once online, the clash is reported with what to do about it",
+  clashes.some((c: any) => /Parcha #7009/.test(c.note ?? "") && /next free number/.test(c.note ?? "")),
+  clashes.slice(0, 2).map((c: any) => c.note));
+// putting it right is void → next free number → approve again
+const stuck = (await A.call("GET", `/loads/${truck2.id}`)).approved;
+await A.call("POST", `/parchas/${stuck.id}/void`, { reason: "another computer had that number" });
+const redone = await A.call("POST", `/loads/${truck2.id}/approve`, { invoiceNo: "7010" });
+check("  ...and renumbering it goes through", redone.parchaNo === "7010", redone);
+check("  ...with the new number claimed in the cloud",
+  (await cloud("select load_id from mm_claims where business_id = $1 and value = '7010'", [biz]))[0]?.load_id === truck2.id);
+await A.call("DELETE", "/cloud/clashes");
+
+const ok = { parchaNo: "7002" };
+check("the parcha stands, with its number", ok.parchaNo === "7002");
 check("…and the number is claimed in the cloud", (await cloud("select load_id from mm_claims where business_id = $1 and value = '7002'", [biz]))[0]?.load_id === truck.id);
 await settle();
 check("the parcha arrives on every computer", ALL.every((x) => x.q("select 1 from parchas where load_id = ?", truck.id).length === 1));

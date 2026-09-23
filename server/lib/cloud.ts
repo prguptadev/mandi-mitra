@@ -185,6 +185,9 @@ function state() {
       create table if not exists clashes (id integer primary key, at text not null, tbl text not null, row_id text not null,
         kept text not null, other_device text, lost text not null, note text);
       create table if not exists retry (tbl text not null, row_id text not null, primary key (tbl, row_id)) without rowid;
+      -- parcha numbers approved while the internet was off, to be claimed on the next sync
+      create table if not exists claims_waiting (business_id text not null, value text not null, load_id text not null, at text not null,
+        primary key (business_id, value)) without rowid;
     `);
   }
   return stateDb;
@@ -378,6 +381,7 @@ async function doSync(): Promise<SyncResult> {
         markAll();
         Object.assign(cfg, patchConfig({ cursor: top, fromCopy: false }));
       }
+      await sendWaitingClaims(client);
       const pulled = await pull(client, cfg);
       // another computer's payment may carry a number this one already used
       if (pulled.applied) {
@@ -726,6 +730,15 @@ export async function restoreFromCloud() {
  * so two computers can never bill the same number. Needs the internet.
  * Re-approving the same truck (a new version) keeps its number.
  */
+/**
+ * Claims a parcha number so two computers can never bill the same one.
+ *
+ * The shop must not stop when the Wi-Fi is off: an approval with no internet
+ * takes the number here and the claim waits (claims_waiting), to be sent on
+ * the next sync. If another computer had already taken it by then, that lands
+ * in the clashes list saying which truck to renumber — loudly, afterwards,
+ * rather than blocking the operator now.
+ */
 export async function claimParchaNumber(businessId: string, parchaNo: string, loadId: string) {
   if (!syncEnabled()) return;
   const cfg = readCloudConfig();
@@ -747,8 +760,38 @@ export async function claimParchaNumber(businessId: string, parchaNo: string, lo
     } finally { client.release(); }
   } catch (e) {
     const err = explain(e);
-    throw err.offline ? new CloudError("Approving a parcha needs the internet, so two computers never use the same number. Connect and approve again — everything else keeps working offline.", true) : err;
+    if (!err.offline) throw err;
+    // no internet: take the number now, claim it when there is
+    state().prepare("insert or replace into claims_waiting (business_id, value, load_id, at) values (?, ?, ?, ?)")
+      .run(businessId, parchaNo, loadId, new Date().toISOString());
+    return;
   } finally { await p.end(); }
+}
+
+/** Sends the claims that were waiting for the internet. Called after each sync. */
+async function sendWaitingClaims(client: pg.PoolClient) {
+  const st = state();
+  const waiting = st.prepare("select business_id, value, load_id from claims_waiting").all() as { business_id: string; value: string; load_id: string }[];
+  if (!waiting.length) return 0;
+  const cfg = readCloudConfig();
+  const clash = st.prepare("insert into clashes (at, tbl, row_id, kept, other_device, lost, note) values (?, ?, ?, ?, ?, ?, ?)");
+  const done = st.prepare("delete from claims_waiting where business_id = ? and value = ?");
+  let sent = 0;
+  for (const w of waiting) {
+    const got = await client.query(
+      "insert into mm_claims (business_id, kind, value, load_id, device) values ($1, 'parcha', $2, $3, $4) on conflict do nothing returning load_id",
+      [w.business_id, w.value, w.load_id, cfg.deviceId]);
+    if (!got.rows.length) {
+      const who = await client.query("select load_id, device from mm_claims where business_id = $1 and kind = 'parcha' and value = $2", [w.business_id, w.value]);
+      if (who.rows[0]?.load_id !== w.load_id) {
+        clash.run(new Date().toISOString(), "parchas", w.load_id, "theirs", who.rows[0]?.device ?? null, JSON.stringify({ parchaNo: w.value }),
+          `Parcha #${w.value} was approved here while the internet was off, but another computer had already used that number. Void this parcha, give it the next free number and approve again.`);
+      }
+    }
+    done.run(w.business_id, w.value);
+    sent++;
+  }
+  return sent;
 }
 
 /* ------------------------------------------------------------ status / clashes */
