@@ -16,11 +16,11 @@ import type { ParchaDoc } from "../lib/parcha.ts";
    goes twice, and an entry changed here afterwards is listed for fixing. */
 
 export const tallyRoutes = new Hono<Env>();
-const KINDS = ["slip", "payment", "parcha", "receipt", "cut"] as const;
+export const KINDS = ["slip", "payment", "parcha", "receipt", "cut"] as const;
 type Kind = (typeof KINDS)[number];
 const guard = canAll("export.data", "ledger.read", "millledger.read");
 
-async function settingsOf(biz: string): Promise<TallySettings> {
+export async function settingsOf(biz: string): Promise<TallySettings> {
   const raw = await readSetting(biz, "tally");
   if (!raw) return defaultTallySettings();
   const p = TallySettingsSchema.safeParse(JSON.parse(raw));
@@ -43,7 +43,8 @@ export type Party = { adatiId?: string | null; merchantId?: string | null };
 const parchaDay = sql<string>`coalesce(${schema.parchas.invoiceDate}, ${schema.loads.loadDate})`;
 
 /** Everything in the period that Tally should hold, as vouchers, with each source entry's fingerprint. */
-async function build(biz: string, from: string, to: string, kinds0: Kind[], cfg: TallySettings, skip: Set<string> = new Set(), party: Party = {}) {
+/** Everything a Tally file is made of, for a period. Used by the route and by scripts/tally-check.ts. */
+export async function build(biz: string, from: string, to: string, kinds0: Kind[], cfg: TallySettings, skip: Set<string> = new Set(), party: Party = {}) {
   // a supplier has no sales; a mill has no supplier payments
   const kinds = kinds0.filter((k) => !(party.adatiId && (k === "parcha" || k === "cut" || k === "receipt")) && !(party.merchantId && k === "payment"));
   const L = cfg.ledgers, T = cfg.voucherTypes;
