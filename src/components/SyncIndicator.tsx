@@ -43,14 +43,19 @@ export function SyncIndicator() {
     : s.state === "offline" ? t("sync.tipOffline", { n: s.pending ?? 0 })
     : s.state === "error" ? s.lastError ?? ""
     : ago == null ? t("sync.notYet") : ago < 60 ? t("sync.tipSecs", { n: ago }) : t("sync.tipMins", { n: Math.round(ago / 60) });
-  const Icon = s.state === "syncing" ? RefreshCw : s.state === "offline" ? CloudOff : s.state === "paused" || s.state === "error" ? AlertTriangle : Cloud;
+  /* Nothing here alarms: no internet or a cloud hiccup is shown as a quiet grey
+     cloud with the reason in its tooltip (work goes on and catches up by itself);
+     the details live in Settings › Cloud sync. Only "update needed" is amber,
+     because that one needs a person. */
+  const quiet = s.state === "offline" || s.state === "error";
+  const Icon = s.state === "syncing" ? RefreshCw : quiet ? CloudOff : s.state === "paused" ? AlertTriangle : Cloud;
   return (
     <button type="button" title={title} aria-label={title}
       onClick={() => { if (can("backup.manage")) navigate("/settings?tab=data"); }}
       className={cn("inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] transition-colors hover:bg-raised",
-        s.state === "ok" ? "text-ok" : s.state === "syncing" ? "text-brand" : s.state === "offline" ? "text-warn" : "text-bad")}>
+        s.state === "ok" ? "text-ok" : s.state === "syncing" ? "text-brand" : quiet ? "text-faint" : "text-warn")}>
       <Icon className={cn("h-4 w-4", s.state === "syncing" && "animate-spin")} />
-      <span className="hidden md:inline">{t(`sync.state.${s.state ?? "ok"}`)}</span>
+      <span className="hidden md:inline">{quiet ? t("sync.state.quiet") : t(`sync.state.${s.state ?? "ok"}`)}</span>
       {(s.clashes ?? 0) > 0 && <span className="rounded-full bg-warn px-1.5 text-[10px] font-semibold text-white">{s.clashes}</span>}
     </button>
   );
