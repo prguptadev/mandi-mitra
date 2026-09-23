@@ -28,7 +28,7 @@ jobs:
           v=$(node -p "require('./package.json').version")
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} but package.json says $v"; exit 1; }
       - run: npm ci
-      - name: The scanner script parses and runs on Windows (no scanner here: an empty list)
+      - name: "The scanner script parses and runs on Windows (no scanner here, so an empty list)"
         shell: pwsh
         run: |
           npx tsx scripts/print-scanner-script.ts | Set-Content -Path scanner-wia.ps1 -Encoding utf8
