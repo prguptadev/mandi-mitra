@@ -191,6 +191,7 @@ export function ScanGrid({
                             {r.ocr.adatiName && r.ocr.adatiName !== name.nameHi && (
                               <span lang="hi"> · {t("scan.ocrSaid")}: {r.ocr.adatiName}</span>
                             )}
+                            {r.ocr.village && <span lang="hi"> · {t("scan.village")}: {r.ocr.village}</span>}
                           </span>
                         </span>
                         {r.chosen
@@ -206,7 +207,7 @@ export function ScanGrid({
                         disabled={dead}
                         invalid={!name}
                         autoFocus={editingName === r.id}
-                        placeholder={r.adatiRawText || t("scan.pickName")}
+                        placeholder={r.adatiRawText ? `${r.adatiRawText}${r.ocr.village ? ` (${r.ocr.village})` : ""}` : t("scan.pickName")}
                         onChange={(v) => { if (v) { onPatch(r.id, { adatiId: v, nameCorrected: true }, "name"); setEditingName(null); } }}
                         onBlurEmpty={() => setEditingName(null)}
                       />

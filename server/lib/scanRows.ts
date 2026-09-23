@@ -15,6 +15,7 @@ export const ReviewRowSchema = z.object({
   /** Untouched copy of what the model read. */
   ocr: z.object({
     rstNo: z.string().nullable(),
+    village: z.string().nullable().default(null),
     adatiName: z.string().nullable(),
     grossQtl: z.number().nullable(),
     katauti: z.number().nullable(),
@@ -29,6 +30,8 @@ export const ReviewRowSchema = z.object({
   rstNo: z.string(),
   adatiId: z.string().nullable(),
   adatiRawText: z.string(),
+  /** A village or place the reader saw beside the name, if any. */
+  adatiRawVillage: z.string().nullable().default(null),
   grossGrams: z.number().int().nullable(),
   katautiOverride: z.number().int().nullable(),
   ratePaisePerQtl: z.number().int().nullable(),
@@ -78,6 +81,7 @@ export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
     ocr: {
       rstNo: r.rstNo ?? null,
       adatiName: r.adatiName ?? null,
+      village: r.village ?? null,
       grossQtl: gross,
       katauti: r.katauti ?? null,
       netQtl: r.netQtl ?? null,
@@ -89,6 +93,7 @@ export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
     rstNo: normRst(r.rstNo),
     adatiId: null,
     adatiRawText: (r.adatiName ?? "").trim(),
+    adatiRawVillage: (r.village ?? "").trim() || null,
     grossGrams: gross === null ? null : qtlToGrams(gross),
     katautiOverride: null,
     ratePaisePerQtl: r.rate == null ? null : Math.round(r.rate * 100),
@@ -123,7 +128,7 @@ export function checkRow(
   row: ReviewRow,
   opts: {
     katauti: Katauti;
-    resolve: (raw: string, modelPick?: string | null) => { match: AdatiMatch | null; suggestions: AdatiSuggestion[] };
+    resolve: (raw: string, modelPick?: string | null, village?: string | null) => { match: AdatiMatch | null; suggestions: AdatiSuggestion[] };
     byId: (id: string) => { adatiId: string; nameHi: string; nameHinglish: string } | null;
     /** RST numbers already in the database for this date. */
     existingRst: Set<string>;
@@ -138,7 +143,7 @@ export function checkRow(
   const issues: Issue[] = [];
   const resolved = row.adatiId
     ? { match: null as AdatiMatch | null, suggestions: [] as AdatiSuggestion[] }
-    : opts.resolve(row.adatiRawText, row.modelPick);
+    : opts.resolve(row.adatiRawText, row.modelPick, row.adatiRawVillage);
   const chosen = row.adatiId ? opts.byId(row.adatiId) : null;
 
   let derivedKatautiUnits: number | null = null;

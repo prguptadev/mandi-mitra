@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useFYRange } from "@/lib/fy.tsx";
 import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
 import { Link, useLocation, useSearch } from "wouter";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Plus, Truck, ArrowLeft, Printer, FileSpreadsheet, CheckCircle2, Ban, Trash2, X, AlertTriangle,
   CircleAlert, FileText, Scale, PackagePlus, Eye,
@@ -19,9 +19,7 @@ import { PageHeader } from "@/components/AppShell.tsx";
 import { NumberInput } from "@/components/NumberInput.tsx";
 import { ParchaPaper } from "@/components/ParchaPaper.tsx";
 import { SkeletonTable, SkeletonForm } from "@/components/Skeletons.tsx";
-import {
-  Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Checkbox, Textarea,
-} from "@/components/ui/index.tsx";
+import { Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Checkbox, Textarea, Switch } from "@/components/ui/index.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
@@ -240,7 +238,7 @@ export function LoadsPage() {
                   <Td className="whitespace-nowrap">{dmy(r.loadDate)}</Td>
                   <Td className="font-mono font-medium">{r.truckNo ?? <span className="text-faint">—</span>}</Td>
                   <Td><Badge tone="brand" className="num">{r.millCode}</Badge></Td>
-                  <Td>{r.jinsCode}</Td>
+                  <Td>{(r.jinsCodes ?? [r.jinsCode]).join(" + ")}</Td>
                   <Td className="whitespace-nowrap text-muted">{r.stockDates.map(dmy).join(", ") || "—"}</Td>
                   <Td numeric>{r.loadedGrams ? f.weight(r.loadedGrams) : <span className="text-faint">—</span>}</Td>
                   <Td numeric>{r.millNetGrams == null ? <span className="text-faint">—</span> : f.weight(r.millNetGrams)}</Td>
@@ -453,6 +451,23 @@ export function LoadDetailPage({ id }: { id: string }) {
     queryFn: () => api.get<StockDay[]>(`/loads/${id}/stock-days`),
     enabled: Boolean(st),
   });
+  /* Two or three commodities on one truck: a row may carry another commodity
+     than the truck's own, and takes its purchase days and POs from that one. */
+  const jinsAll = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
+  const extraJins = useMemo(() => [...new Set((st?.lines ?? []).map((x) => x.jinsId).filter((j) => j !== st?.load.jinsId))], [st]);
+  const extraDays = useQueries({ queries: extraJins.map((j) => ({
+    queryKey: ["load", id, "stock-days", st?.load.merchantId, j],
+    queryFn: () => api.get<StockDay[]>(`/loads/${id}/stock-days?jinsId=${j}`), enabled: Boolean(st),
+  })) });
+  const extraPos = useQueries({ queries: extraJins.map((j) => ({
+    queryKey: ["orders", st?.load.merchantId, "for-load", j],
+    queryFn: () => api.get<OrderRow[]>(`/orders?merchantId=${st!.load.merchantId}&jinsId=${j}`), enabled: Boolean(st),
+  })) });
+  const [multiOn, setMultiOn] = useState(false);
+  const multi = multiOn || extraJins.length > 0;
+  const daysFor = (j: string): StockDay[] => (j === st?.load.jinsId ? days.data : extraDays[extraJins.indexOf(j)]?.data) ?? [];
+  const posFor = (j: string): OrderRow[] => ((j === st?.load.jinsId ? pos.data : extraPos[extraJins.indexOf(j)]?.data) ?? [])
+    .filter((o) => o.status === "open" || (st?.lines ?? []).some((x) => x.poId === o.id));
 
   const refresh = async () => {
     await qc.invalidateQueries({ queryKey: ["load", id] });
@@ -524,7 +539,6 @@ export function LoadDetailPage({ id }: { id: string }) {
   const dayOptions = days.data ?? [];
   const nextDay = dayOptions.find((d) => d.leftGrams > 0 && !st.lines.some((x) => x.stockDate === d.date))?.date
     ?? dayOptions[0]?.date ?? l.loadDate;
-  const openPos = (pos.data ?? []).filter((o) => o.status === "open" || st.lines.some((x) => x.poId === o.id));
 
   return (
     <div>
@@ -543,7 +557,7 @@ export function LoadDetailPage({ id }: { id: string }) {
             ? <Badge tone="ok">{t("load.approvedNo", { no: st.approved?.parchaNo ?? "", v: st.approved && st.approved.version > 1 ? ` v${st.approved.version}` : "" })}</Badge>
             : <Badge tone="neutral">{t("load.status.draft")}</Badge>}
         </span>}
-        sub={`${dmy(l.loadDate)} · ${pick(st.mill.name, st.mill.nameHi)} · ${st.jins.code} ${pick(st.jins.name, st.jins.nameHi)}`}
+        sub={`${dmy(l.loadDate)} · ${pick(st.mill.name, st.mill.nameHi)} · ${st.jinsList.length > 1 ? st.jinsList.map((j) => j.code).join(" + ") : `${st.jins.code} ${pick(st.jins.name, st.jins.nameHi)}`}`}
         action={
           <div className="flex flex-wrap gap-2">
             {doc && can("parcha.read") && (
@@ -654,32 +668,47 @@ export function LoadDetailPage({ id }: { id: string }) {
               title={<span className="inline-flex items-center gap-1.5"><PackagePlus className="h-4 w-4 text-brand" />{t("load.goods")}</span>}
               sub={t("load.goodsSub", { mill: st.mill.code })}
               action={canEdit && (
-                <Button size="sm" icon={<Plus className="h-3.5 w-3.5" />} loading={lineAdd.isPending}
-                  onClick={() => { setErr(null); lineAdd.mutate({ stockDate: nextDay }); }}>{t("load.addRow")}</Button>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Switch checked={multi} onChange={setMultiOn} disabled={extraJins.length > 0} label={t("load.multi")} />
+                  <Button size="sm" icon={<Plus className="h-3.5 w-3.5" />} loading={lineAdd.isPending}
+                    onClick={() => { setErr(null); lineAdd.mutate({ stockDate: nextDay }); }}>{t("load.addRow")}</Button>
+                </div>
               )} />
             <Table>
               <thead>
                 <tr>
+                  {multi && <Th>{t("daily.jins")}</Th>}
                   <Th>{t("load.fromDay")}</Th><Th>PO</Th><Th numeric>{t("load.weightQtl")}</Th>
                   <Th numeric>{t("load.rate")}</Th><Th numeric>{t("load.amount")}</Th><Th numeric>{t("load.dayLeft")}</Th>
                   {canEdit && <Th className="w-10" />}
                 </tr>
               </thead>
               <tbody>
-                {st.lines.map((x) => (
+                {st.lines.map((x) => {
+                  const rowDays = daysFor(x.jinsId);
+                  const rowPos = posFor(x.jinsId);
+                  return (
                   <tr key={x.id} className="border-b border-line/70">
+                    {multi && (
+                      <td className="px-2 py-1.5">
+                        <select value={x.jinsId} disabled={!canEdit} className={cn(CELL, "min-w-[110px]")}
+                          onChange={(e) => lineSave.mutate({ lineId: x.id, patch: { jinsId: e.target.value } })}>
+                          {jinsAll.data?.map((j) => <option key={j.id} value={j.id}>{j.code}</option>)}
+                        </select>
+                      </td>
+                    )}
                     <td className="px-2 py-1.5">
                       <select value={x.stockDate} disabled={!canEdit} className={cn(CELL, "min-w-[210px]")}
                         onChange={(e) => lineSave.mutate({ lineId: x.id, patch: { stockDate: e.target.value } })}>
-                        {!dayOptions.some((d) => d.date === x.stockDate) && <option value={x.stockDate}>{dmy(x.stockDate)}</option>}
-                        {dayOptions.map((d) => <option key={d.date} value={d.date}>{dayLabel(f, t, d)}</option>)}
+                        {!rowDays.some((d) => d.date === x.stockDate) && <option value={x.stockDate}>{dmy(x.stockDate)}</option>}
+                        {rowDays.map((d) => <option key={d.date} value={d.date}>{dayLabel(f, t, d)}</option>)}
                       </select>
                     </td>
                     <td className="px-2 py-1.5">
                       <select value={x.poId ?? ""} disabled={!canEdit} className={cn(CELL, "min-w-[120px]")}
                         onChange={(e) => lineSave.mutate({ lineId: x.id, patch: { poId: e.target.value || null } })}>
                         <option value="">—</option>
-                        {openPos.map((o) => <option key={o.id} value={o.id}>{o.poNo ? `PO ${o.poNo}` : poName(t, o)}</option>)}
+                        {rowPos.map((o) => <option key={o.id} value={o.id}>{o.poNo ? `PO ${o.poNo}` : poName(t, o)}</option>)}
                       </select>
                     </td>
                     <td className="w-36 px-2 py-1.5">
@@ -711,11 +740,12 @@ export function LoadDetailPage({ id }: { id: string }) {
                       </td>
                     )}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr className="bg-raised/50 text-[13px] font-semibold">
-                  <td className="px-3 py-2" colSpan={2}>{t("load.total")}</td>
+                  <td className="px-3 py-2" colSpan={multi ? 3 : 2}>{t("load.total")}</td>
                   <td className={cn("num px-3 py-2 text-right", w.netGrams != null && linesTotal !== w.netGrams && "text-bad")}>
                     {f.weight(linesTotal)}
                     {w.netGrams != null && linesTotal !== w.netGrams && <span className="block text-[10px] font-normal">{t("load.millNetIs", { q: f.weight(w.netGrams) })}</span>}
@@ -726,14 +756,16 @@ export function LoadDetailPage({ id }: { id: string }) {
                 </tr>
               </tfoot>
             </Table>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line px-4 py-2.5 text-[13px]">
-              <span className="text-muted">{t("load.millStock", { mill: st.mill.code, jins: st.jins.code })}</span>
-              <span>{t("load.stockBought")} <b className="num">{f.weight(st.stock.boughtNetGrams)}</b></span>
-              <span>{t("load.stockOthers")} <b className="num">{f.weight(st.stock.otherTrucksGrams)}</b></span>
-              <span>{t("load.stockThis")} <b className="num">{f.weight(st.stock.thisTruckGrams)}</b></span>
-              <span className={cn(st.stock.leftGrams < 0 && "text-warn")}>{t("load.stockLeft")} <b className="num">{f.weight(st.stock.leftGrams)}</b></span>
-              <Link href={`/stock/${st.mill.id}`} className="text-brand hover:underline">{t("load.seeStock")}</Link>
-            </div>
+            {st.stockByJins.map((sj) => (
+              <div key={sj.jinsId} className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line px-4 py-2.5 text-[13px]">
+                <span className="text-muted">{t("load.millStock", { mill: st.mill.code, jins: sj.jinsCode })}</span>
+                <span>{t("load.stockBought")} <b className="num">{f.weight(sj.boughtNetGrams)}</b></span>
+                <span>{t("load.stockOthers")} <b className="num">{f.weight(sj.otherTrucksGrams)}</b></span>
+                <span>{t("load.stockThis")} <b className="num">{f.weight(sj.thisTruckGrams)}</b></span>
+                <span className={cn(sj.leftGrams < 0 && "text-warn")}>{t("load.stockLeft")} <b className="num">{f.weight(sj.leftGrams)}</b></span>
+                <Link href={`/stock/${st.mill.id}?jinsId=${sj.jinsId}`} className="text-brand hover:underline">{t("load.seeStock")}</Link>
+              </div>
+            ))}
             {st.pos.map((p) => (
               <div key={p.id} className="flex flex-wrap items-center gap-3 border-t border-line px-4 py-2 text-[13px]">
                 <span className="text-muted">{p.poNo ? `PO ${p.poNo}` : poName(t, p)}</span>
@@ -849,7 +881,7 @@ export function LoadDetailPage({ id }: { id: string }) {
                         { label: t("parcha.no"), value: invoice.trim() || "—" },
                         { label: t("parcha.date"), value: dmy(d.invoiceDate) },
                         { label: t("load.mill"), value: `${st.mill.code} — ${pick(st.mill.name, st.mill.nameHi)}` },
-                        { label: t("daily.jins"), value: pick(st.jins.name, st.jins.nameHi) },
+                        { label: t("daily.jins"), value: st.jinsList.length > 1 ? st.jinsList.map((j) => j.code).join(" + ") : pick(st.jins.name, st.jins.nameHi) },
                         { label: t("load.truckNo"), value: l.truckNo ?? "—" },
                         { label: t("parcha.confirmLines"), value: t("parcha.confirmLinesOf", { n: d.lines.length, days }) },
                         { label: t("parcha.confirmBags"), value: `${f.int(d.weights.katte)}${d.weights.bore ? ` + ${f.int(d.weights.bore)}` : ""}` },

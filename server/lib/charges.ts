@@ -282,7 +282,8 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
     charges += l.sign === "subtract" ? -l.amountPaise : l.amountPaise;
   };
 
-  if (cfg.labour1.enabled) {
+  // no bags of that kind on this truck: the line is left off, not printed as a zero
+  if (cfg.labour1.enabled && bagsOf(cfg.labour1.appliesTo) > 0) {
     const n = bagsOf(cfg.labour1.appliesTo);
     push({
       key: "labour1", label: cfg.labour1.label, labelHi: "लेबर",
@@ -291,7 +292,8 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
       amountPaise: perUnitPaise(n, 1, cfg.labour1.perBagRupees), kind: "charge",
     });
   }
-  if (cfg.labour2.enabled) {
+  // no bags of that kind on this truck: the line is left off, not printed as a zero
+  if (cfg.labour2.enabled && bagsOf(cfg.labour2.appliesTo) > 0) {
     const n = bagsOf(cfg.labour2.appliesTo);
     push({
       key: "labour2", label: cfg.labour2.label, labelHi: "लेबर (दूसरा)",
@@ -300,7 +302,8 @@ export function computeParcha(cfg: ChargeConfig, input: ParchaInput): ParchaResu
       amountPaise: perUnitPaise(n, 1, cfg.labour2.perBagRupees), kind: "charge",
     });
   }
-  if (cfg.sutli.enabled) {
+  // no bags of that kind on this truck: the line is left off, not printed as a zero
+  if (cfg.sutli.enabled && bagsOf(cfg.sutli.appliesTo) > 0) {
     const n = bagsOf(cfg.sutli.appliesTo);
     push({
       key: "sutli", label: cfg.sutli.label, labelHi: "सुतली",

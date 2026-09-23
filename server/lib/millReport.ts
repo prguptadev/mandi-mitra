@@ -11,12 +11,17 @@ export interface MillReportRow {
   slipDate: string;
   rstNo: string;
   adati: string;
+  village: string;
   jinsCode: string;
   grossGrams: number;
   katautiUnits: number;
   netGrams: number;
   ratePaisePerQtl: number;
   amountPaise: number;
+  commissionPaise: number;
+  gaushalaPaise: number;
+  payablePaise: number;
+  bagsCount: number | null;
 }
 
 export interface MillReportData {
@@ -37,6 +42,10 @@ export function reportTotals(rows: MillReportRow[]) {
     katautiUnits: rows.reduce((s, r) => s + r.katautiUnits, 0),
     netGrams: rows.reduce((s, r) => s + r.netGrams, 0),
     amountPaise: rows.reduce((s, r) => s + r.amountPaise, 0),
+    commissionPaise: rows.reduce((s, r) => s + r.commissionPaise, 0),
+    gaushalaPaise: rows.reduce((s, r) => s + r.gaushalaPaise, 0),
+    payablePaise: rows.reduce((s, r) => s + r.payablePaise, 0),
+    bagsCount: rows.reduce((s, r) => s + (r.bagsCount ?? 0), 0),
     /** Σ(net × rate) / Σ net over priced slips, to the paisa. */
     avgRatePaisePerQtl: weightedAvgRate(priced),
     unpriced: rows.length - priced.length,
@@ -55,12 +64,18 @@ function cellValue(k: MillReportColumnKey, r: MillReportRow, i: number): string 
     case "date": return dmy(r.slipDate);
     case "rstNo": return r.rstNo;
     case "adati": return r.adati;
+    case "village": return r.village;
     case "jins": return r.jinsCode;
     case "gross": return q2(r.grossGrams);
     case "katauti": return r.katautiUnits;
+    case "deduction": return q2(r.grossGrams - r.netGrams);
     case "net": return q2(r.netGrams);
     case "rate": return r.ratePaisePerQtl ? rs(r.ratePaisePerQtl) : "";
     case "amount": return r.ratePaisePerQtl ? rs(r.amountPaise) : "";
+    case "commission": return r.ratePaisePerQtl ? rs(r.commissionPaise) : "";
+    case "gaushala": return r.ratePaisePerQtl ? rs(r.gaushalaPaise) : "";
+    case "payable": return r.ratePaisePerQtl ? rs(r.payablePaise) : "";
+    case "bags": return r.bagsCount ?? "";
   }
 }
 
@@ -77,14 +92,15 @@ export async function millReportXlsx(d: MillReportData): Promise<Buffer> {
   });
   const cols = d.columns;
   const widths: Record<MillReportColumnKey, number> = {
-    sr: 6, date: 12, rstNo: 8, adati: 30, jins: 11, gross: 11, katauti: 9, net: 12, rate: 11, amount: 15,
+    sr: 6, date: 12, rstNo: 8, adati: 30, village: 16, jins: 11, gross: 11, katauti: 9, deduction: 11, net: 12, rate: 11, amount: 15,
+    commission: 13, gaushala: 11, payable: 15, bags: 8,
   };
   ws.columns = cols.map((k) => ({ width: widths[k] }));
   const last = String.fromCharCode(64 + cols.length);
   const thin = { style: "thin" as const, color: { argb: "FF999999" } };
   const border = { top: thin, left: thin, bottom: thin, right: thin };
   const INR = '[>=10000000]##\\,##\\,##\\,##0.00;[>=100000]##\\,##\\,##0.00;##,##0.00';
-  const fmt: Partial<Record<MillReportColumnKey, string>> = { gross: "0.00", net: "0.00", rate: INR, amount: INR };
+  const fmt: Partial<Record<MillReportColumnKey, string>> = { gross: "0.00", deduction: "0.00", net: "0.00", rate: INR, amount: INR, commission: INR, gaushala: INR, payable: INR };
 
   ws.mergeCells(`A1:${last}1`);
   ws.getCell("A1").value = heading(d);
@@ -101,7 +117,7 @@ export async function millReportXlsx(d: MillReportData): Promise<Buffer> {
     c.font = { bold: true };
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEFEFEF" } };
     c.border = border;
-    c.alignment = { horizontal: ["gross", "katauti", "net", "rate", "amount", "sr"].includes(k) ? "right" : "left" };
+    c.alignment = { horizontal: ["gross", "katauti", "deduction", "net", "rate", "amount", "commission", "gaushala", "payable", "bags", "sr"].includes(k) ? "right" : "left" };
   });
 
   d.rows.forEach((r, i) => {
@@ -128,6 +144,11 @@ export async function millReportXlsx(d: MillReportData): Promise<Buffer> {
     if (k === "katauti") tc.value = t.katautiUnits;
     if (k === "net") tc.value = q2(t.netGrams);
     if (k === "amount") tc.value = rs(t.amountPaise);
+    if (k === "deduction") tc.value = q2(t.grossGrams - t.netGrams);
+    if (k === "commission") tc.value = rs(t.commissionPaise);
+    if (k === "gaushala") tc.value = rs(t.gaushalaPaise);
+    if (k === "payable") tc.value = rs(t.payablePaise);
+    if (k === "bags") tc.value = t.bagsCount;
     if (k === "rate") ac.value = t.avgRatePaisePerQtl ? rs(t.avgRatePaisePerQtl) : "";
     if (fmt[k]) { tc.numFmt = fmt[k]!; ac.numFmt = fmt[k]!; }
   });
@@ -148,7 +169,7 @@ export function millReportCsv(d: MillReportData): string {
     return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
   };
   const fix2 = (k: MillReportColumnKey, v: string | number) =>
-    typeof v === "number" && ["gross", "net", "rate", "amount"].includes(k) ? v.toFixed(2) : v;
+    typeof v === "number" && ["gross", "deduction", "net", "rate", "amount", "commission", "gaushala", "payable"].includes(k) ? v.toFixed(2) : v;
   const t = reportTotals(d.rows);
   const lab = labelColumn(cols);
   const lines: (string | number)[][] = [
@@ -158,8 +179,9 @@ export function millReportCsv(d: MillReportData): string {
     cols.map(label),
     ...d.rows.map((r, i) => cols.map((k) => fix2(k, cellValue(k, r, i)))),
     cols.map((k) => k === lab ? `Total (${t.count})` : k === "gross" ? fmtQtl(t.grossGrams)
-      : k === "katauti" ? t.katautiUnits : k === "net" ? fmtQtl(t.netGrams)
-      : k === "amount" ? (t.amountPaise / 100).toFixed(2) : ""),
+      : k === "katauti" ? t.katautiUnits : k === "deduction" ? fmtQtl(t.grossGrams - t.netGrams) : k === "net" ? fmtQtl(t.netGrams)
+      : k === "amount" ? (t.amountPaise / 100).toFixed(2) : k === "commission" ? (t.commissionPaise / 100).toFixed(2)
+      : k === "gaushala" ? (t.gaushalaPaise / 100).toFixed(2) : k === "payable" ? (t.payablePaise / 100).toFixed(2) : k === "bags" ? t.bagsCount : ""),
     cols.map((k) => k === lab ? "Average rate" : k === "rate" ? (t.avgRatePaisePerQtl / 100).toFixed(2) : ""),
   ];
   if (!cols.includes("rate")) lines[lines.length - 1][cols.indexOf(lab)] = `Average rate ${(t.avgRatePaisePerQtl / 100).toFixed(2)}`;

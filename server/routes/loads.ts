@@ -85,6 +85,8 @@ async function checkHeaderRefs(biz: string, h: { merchantId: string; jinsId: str
 
 const LineBody = z.object({
   stockDate: isoDay("Pick the purchase day this weight comes from"),
+  /** The row's commodity; the truck's own when left out. */
+  jinsId: z.string().min(1).optional(),
   poId: z.string().nullish(),
   /** grams; null = the rest of the mill's net */
   netGrams: z.number().int().min(1, "Weight must be more than zero").max(LIMIT.grams, "Weight is too large — check the decimal point").nullish(),
@@ -92,6 +94,13 @@ const LineBody = z.object({
   ratePaisePerQtl: z.number().int().min(1).max(LIMIT.rate, "Rate is too large — check the decimal point").nullish(),
 });
 
+async function checkJins(biz: string, jinsId: string) {
+  const [j] = await db.select({ id: schema.jins.id }).from(schema.jins)
+    .where(and(eq(schema.jins.id, jinsId), eq(schema.jins.businessId, biz))).limit(1);
+  if (!j) throw bad("That commodity does not belong to this business", "bad_jins");
+}
+
+/** A PO on a row must be for the row's mill and the row's commodity. */
 async function checkLinePo(biz: string, load: { merchantId: string; jinsId: string }, poId: string | null | undefined) {
   if (!poId) return;
   const [p] = await db.select().from(schema.purchaseOrders)
@@ -154,6 +163,7 @@ loadRoutes.get("/", can("load.read"), async (c) => {
 
   const ids = rows.map((r) => r.l.id);
   const lines = ids.length ? await linesWithWeights(inArray(schema.loadLines.loadId, ids)) : [];
+  const jinsCodes = new Map((await db.select({ id: schema.jins.id, code: schema.jins.code }).from(schema.jins).where(eq(schema.jins.businessId, biz))).map((j) => [j.id, j.code]));
   const parchas = ids.length ? await db.select({
     loadId: schema.parchas.loadId, id: schema.parchas.id, parchaNo: schema.parchas.parchaNo,
     version: schema.parchas.version, grandTotalPaise: schema.parchas.grandTotalPaise,
@@ -169,6 +179,8 @@ loadRoutes.get("/", can("load.read"), async (c) => {
       ...r.l,
       ...(bills ? {} : { advancePaise: null, daraPaise: null }),
       millCode: r.millCode, millName: r.millName, millNameHi: r.millNameHi, jinsCode: r.jinsCode,
+      /** Every commodity on the truck's rows, the truck's own first. */
+      jinsCodes: [...new Set([r.l.jinsId, ...mine.map((x) => x.jinsId)])].map((j) => jinsCodes.get(j) ?? "?"),
       stockDates: [...new Set(mine.map((x) => x.stockDate))].sort(),
       loadedGrams: mine.reduce((s, x) => s + x.weightGrams, 0),
       parcha: p && !bills ? { ...p, grandTotalPaise: null } : p,
@@ -191,7 +203,10 @@ loadRoutes.get("/:id", can("load.read"), async (c) => {
 loadRoutes.get("/:id/stock-days", can("load.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const l = await getLoad(biz, param(c, "id"));
-  return c.json(await stockDays(biz, l.merchantId, l.jinsId, l.id));
+  // ?jinsId= for a row that carries another commodity than the truck's own
+  const jinsId = c.req.query("jinsId") || l.jinsId;
+  if (jinsId !== l.jinsId) await checkJins(biz, jinsId);
+  return c.json(await stockDays(biz, l.merchantId, jinsId, l.id));
 });
 
 /* ------------------------------------------------------------------- write */
@@ -260,10 +275,14 @@ loadRoutes.put("/:id", can("load.write"), async (c) => {
   };
   const refs = await checkHeaderRefs(biz, header);
 
-  // rows follow the truck's commodity; a PO on a row must fit the new mill and commodity
-  if (header.merchantId !== before.merchantId || header.jinsId !== before.jinsId) {
+  // another mill: no PO on any row fits any more; another commodity: the rows that
+  // carried the old one follow it (rows with their own commodity keep theirs)
+  if (header.merchantId !== before.merchantId) {
+    await db.update(schema.loadLines).set({ poId: null, updatedAt: nowSec() }).where(eq(schema.loadLines.loadId, id));
+  }
+  if (header.jinsId !== before.jinsId) {
     await db.update(schema.loadLines).set({ poId: null, jinsId: header.jinsId, updatedAt: nowSec() })
-      .where(eq(schema.loadLines.loadId, id));
+      .where(and(eq(schema.loadLines.loadId, id), eq(schema.loadLines.jinsId, before.jinsId)));
   }
 
   const pick = <K extends keyof typeof body>(k: K, cur: unknown) => (body[k] === undefined ? cur : (body[k] ?? null));
@@ -305,12 +324,14 @@ loadRoutes.post("/:id/lines", can("load.write"), async (c) => {
   assertDraft(l);
   await assertDaysOpen(biz, l.loadDate);
   const body = LineBody.parse(await c.req.json());
-  await checkLinePo(biz, l, body.poId);
+  const jinsId = body.jinsId ?? l.jinsId;
+  if (body.jinsId) await checkJins(biz, jinsId);
+  await checkLinePo(biz, { merchantId: l.merchantId, jinsId }, body.poId);
   const [last] = await db.select({ n: sql<number>`coalesce(max(${schema.loadLines.sort}), -1)` })
     .from(schema.loadLines).where(eq(schema.loadLines.loadId, l.id));
   const lid = newId();
   const values = {
-    id: lid, businessId: biz, loadId: l.id, jinsId: l.jinsId, poId: body.poId ?? null,
+    id: lid, businessId: biz, loadId: l.id, jinsId, poId: body.poId ?? null,
     stockDate: body.stockDate, netGrams: body.netGrams ?? null, ratePaisePerQtl: body.ratePaisePerQtl ?? null,
     sort: (last?.n ?? -1) + 1,
   };
@@ -331,10 +352,19 @@ loadRoutes.put("/:id/lines/:lineId", can("load.write"), async (c) => {
     .where(and(eq(schema.loadLines.id, lineId), eq(schema.loadLines.loadId, l.id))).limit(1);
   if (!before) throw notFound("That row is not on this truck");
   const body = LineBody.partial().parse(await c.req.json());
-  if (body.poId !== undefined) await checkLinePo(biz, l, body.poId);
+  const jinsId = body.jinsId ?? before.jinsId;
+  if (body.jinsId && body.jinsId !== before.jinsId) await checkJins(biz, jinsId);
+  // a row's PO must fit its commodity: a PO given now is checked; one already there is dropped if the commodity moved away from it
+  let poId = body.poId === undefined ? before.poId : (body.poId ?? null);
+  if (body.poId !== undefined) await checkLinePo(biz, { merchantId: l.merchantId, jinsId }, poId);
+  else if (poId && jinsId !== before.jinsId) {
+    const [po] = await db.select({ jinsId: schema.purchaseOrders.jinsId }).from(schema.purchaseOrders).where(eq(schema.purchaseOrders.id, poId)).limit(1);
+    if (po && po.jinsId !== jinsId) poId = null;
+  }
   const patch = {
     stockDate: body.stockDate ?? before.stockDate,
-    poId: body.poId === undefined ? before.poId : (body.poId ?? null),
+    jinsId,
+    poId,
     netGrams: body.netGrams === undefined ? before.netGrams : (body.netGrams ?? null),
     ratePaisePerQtl: body.ratePaisePerQtl === undefined ? before.ratePaisePerQtl : (body.ratePaisePerQtl ?? null),
     updatedAt: nowSec(),

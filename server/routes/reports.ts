@@ -72,10 +72,13 @@ reportRoutes.get("/mill", can("export.data"), async (c) => {
   const raw = await db.select({
     slipDate: schema.purchaseSlips.slipDate, rstNo: schema.purchaseSlips.rstNo,
     nameHi: schema.adati.nameHi, nameLatin: schema.adati.nameHinglish,
+    villageHi: schema.adati.villageHi, village: schema.adati.village,
     jinsCode: schema.jins.code,
     grossGrams: schema.purchaseSlips.grossGrams, katautiUnits: schema.purchaseSlips.katautiUnits,
     netGrams: schema.purchaseSlips.netGrams, ratePaisePerQtl: schema.purchaseSlips.ratePaisePerQtl,
     amountPaise: schema.purchaseSlips.amountPaise, createdAt: schema.purchaseSlips.createdAt,
+    commissionPaise: schema.purchaseSlips.commissionPaise, gaushalaPaise: schema.purchaseSlips.gaushalaPaise,
+    payablePaise: schema.purchaseSlips.payablePaise, bagsCount: schema.purchaseSlips.bagsCount,
   })
     .from(schema.purchaseSlips)
     .innerJoin(schema.adati, eq(schema.adati.id, schema.purchaseSlips.adatiId))
@@ -84,8 +87,10 @@ reportRoutes.get("/mill", can("export.data"), async (c) => {
   const nameOf = (r: typeof raw[number]) => (names === "latin" ? r.nameLatin || r.nameHi : r.nameHi);
   const rows: MillReportRow[] = sortSlips(raw, sort, nameOf).map((r) => ({
     slipDate: r.slipDate, rstNo: r.rstNo, adati: nameOf(r), jinsCode: r.jinsCode,
+    village: (names === "latin" ? r.village || r.villageHi : r.villageHi || r.village) ?? "",
     grossGrams: r.grossGrams, katautiUnits: r.katautiUnits, netGrams: r.netGrams,
     ratePaisePerQtl: r.ratePaisePerQtl, amountPaise: r.amountPaise,
+    commissionPaise: r.commissionPaise, gaushalaPaise: r.gaushalaPaise, payablePaise: r.payablePaise, bagsCount: r.bagsCount,
   }));
 
   const data = { from, to, businessName: biz_.name, millName: mill.name, jinsLabel, columns, rows };

@@ -37,20 +37,27 @@ const ColumnsSchema = z.record(z.string(), z.boolean());
 /** The daily report sent to a mill ("dara"): its own column set, since the
  *  mill wants less than the office does. */
 export const MILL_REPORT_COLUMNS = [
-  { key: "sr",      en: "Sr no",        hi: "क्र सं" },
-  { key: "date",    en: "Date",         hi: "दिनांक" },
-  { key: "rstNo",   en: "RST",          hi: "RST" },
-  { key: "adati",   en: "Adati name",   hi: "आढ़ती का नाम" },
-  { key: "jins",    en: "Commodity",    hi: "जिंस" },
-  { key: "gross",   en: "Kata",         hi: "कांटा" },
-  { key: "katauti", en: "Katauti",      hi: "कटौती" },
-  { key: "net",     en: "Net weight",   hi: "शुद्ध वज़न" },
-  { key: "rate",    en: "Rate",         hi: "दर" },
-  { key: "amount",  en: "Amount",       hi: "राशि" },
+  { key: "sr",         en: "Sr no",            hi: "क्र सं" },
+  { key: "date",       en: "Date",             hi: "दिनांक" },
+  { key: "rstNo",      en: "RST",              hi: "RST" },
+  { key: "adati",      en: "Adati name",       hi: "आढ़ती का नाम" },
+  { key: "village",    en: "Village",          hi: "गाँव" },
+  { key: "jins",       en: "Commodity",        hi: "जिंस" },
+  { key: "gross",      en: "Kata",             hi: "कांटा" },
+  { key: "katauti",    en: "Katauti",          hi: "कटौती" },
+  { key: "deduction",  en: "Deduction weight", hi: "कटौती वज़न" },
+  { key: "net",        en: "Net weight",       hi: "शुद्ध वज़न" },
+  { key: "rate",       en: "Rate",             hi: "दर" },
+  { key: "amount",     en: "Amount",           hi: "राशि" },
+  { key: "commission", en: "Commission",       hi: "कमीशन" },
+  { key: "gaushala",   en: "Gaushala",         hi: "गौशाला" },
+  { key: "payable",    en: "Net amount",       hi: "कुल देय" },
+  { key: "bags",       en: "Bags",             hi: "बोरे" },
 ] as const;
 export type MillReportColumnKey = (typeof MILL_REPORT_COLUMNS)[number]["key"];
 export const DEFAULT_MILL_REPORT_COLUMNS: Record<MillReportColumnKey, boolean> = {
-  sr: true, date: false, rstNo: false, adati: true, jins: true, gross: true, katauti: false, net: true, rate: true, amount: false,
+  sr: true, date: false, rstNo: false, adati: true, village: false, jins: true, gross: true, katauti: false, deduction: false, net: true, rate: true, amount: false,
+  commission: false, gaushala: false, payable: false, bags: false,
 };
 
 export const DailyListPrefsSchema = z.object({

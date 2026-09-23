@@ -19,6 +19,14 @@ export function ParchaPaper({ doc, draft, voided, className }: { doc: ParchaDoc;
   const roundOff = roundOffPaise(r, doc.config);
   const lines = [...doc.lines];
   const blanks = Math.max(0, 2 - lines.length);
+  // two or three commodities on one truck: a total line for each, before the truck's total
+  const codes = [...new Set(lines.map((l) => l.jinsCode))];
+  const perJins = codes.length > 1 ? codes.map((code) => {
+    const mine = lines.filter((l) => l.jinsCode === code);
+    const netGrams = mine.reduce((s, l) => s + l.netGrams, 0);
+    const amountPaise = mine.reduce((s, l) => s + l.amountPaise, 0);
+    return { code, netGrams, amountPaise, rate: netGrams ? Math.round((amountPaise * 100_000) / netGrams) : 0 };
+  }) : [];
   const charges = r.lines.filter((l) => l.kind !== "goods" && l.kind !== "total" && l.key !== "dara" && l.key !== "advance");
   const money = (p: number) => indianMoney(p);
 
@@ -88,7 +96,15 @@ export function ParchaPaper({ doc, draft, voided, className }: { doc: ParchaDoc;
               <td className={cellR}>{qtl2(l.netGrams)}</td>
               <td className={cellR}>{money(l.ratePaisePerQtl)}</td>
               <td className={cellR}>{money(l.amountPaise)}</td>
-              {i === 0 && <td colSpan={2} rowSpan={lines.length + blanks} className={cn(cellC, "text-[16px] font-bold")}>{dmy(doc.invoiceDate)}</td>}
+              {i === 0 && <td colSpan={2} rowSpan={lines.length + blanks + perJins.length} className={cn(cellC, "text-[16px] font-bold")}>{dmy(doc.invoiceDate)}</td>}
+            </tr>
+          ))}
+          {perJins.map((x) => (
+            <tr key={`j${x.code}`}>
+              <td colSpan={3} className={cn(cellC, "font-semibold")}>TOTAL {x.code}</td>
+              <td className={cn(cellR, "font-semibold")}>{qtl2(x.netGrams)}</td>
+              <td className={cellR}>{money(x.rate)}</td>
+              <td className={cn(cellR, "font-semibold")}>{money(x.amountPaise)}</td>
             </tr>
           ))}
           {Array.from({ length: blanks }, (_, i) => (

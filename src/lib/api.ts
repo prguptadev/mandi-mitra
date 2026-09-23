@@ -176,7 +176,7 @@ export interface ScanRow {
   id: string;
   page?: number;
   ocr: {
-    rstNo: string | null; adatiName: string | null; grossQtl: number | null;
+    rstNo: string | null; adatiName: string | null; village?: string | null; grossQtl: number | null;
     katauti: number | null; netQtl: number | null; rate: number | null;
     confidence: number | null; struckThrough: boolean | null;
     /** The printed SR NO the reader put this row on. */
@@ -298,6 +298,8 @@ export interface LoadListRow {
   millGrossGrams: number | null; millNetGrams: number | null; bags: number | null;
   invoiceNo: string | null;
   millCode: string; millName: string; jinsCode: string;
+  /** Every commodity on the truck's rows, the truck's own first. */
+  jinsCodes?: string[];
   stockDates: string[]; loadedGrams: number;
   parcha: { id: string; parchaNo: string; version: number; grandTotalPaise: number } | null;
 }

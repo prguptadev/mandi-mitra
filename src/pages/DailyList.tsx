@@ -614,15 +614,9 @@ export function DailyListPage() {
             <Button size="sm" variant="ghost" icon={<Keyboard className="h-3.5 w-3.5" />} onClick={() => setShowHelp(true)} title={t("daily.keys")} aria-label={t("daily.keys")} />
             <DailyListSettings />
             {can("export.data") && (
-              <>
-                <Button size="sm" icon={<FileSpreadsheet className="h-3.5 w-3.5" />} onClick={() => setDownloading("dara")}
-                  title={t("dl.dara")}>
-                  {t("dl.daraButton")}
-                </Button>
-                <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={() => setDownloading("list")}>
-                  {t("dl.button")}
-                </Button>
-              </>
+              <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={() => setDownloading("list")} title={t("dl.dara")}>
+                {t("dl.button")}
+              </Button>
             )}
           </div>
         }

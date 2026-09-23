@@ -60,8 +60,8 @@ export interface ParchaDoc {
   totals: { netGrams: number; ratePaisePerQtl: number; goodsPaise: number };
   result: ParchaResult;
   config: ChargeConfig;
-  /** Where the rate came from: each day's purchases for the mill, as they stood. */
-  stock?: { date: string; boughtNetGrams: number; avgRatePaisePerQtl: number }[];
+  /** Where the rate came from: each day's purchases for the mill (per commodity), as they stood. */
+  stock?: { date: string; jinsCode?: string; boughtNetGrams: number; avgRatePaisePerQtl: number }[];
 }
 
 export type LoadRow = typeof schema.loads.$inferSelect;
@@ -221,26 +221,37 @@ export async function loadState(businessId: string, loadId: string) {
     .orderBy(asc(schema.loadLines.sort), asc(schema.loadLines.createdAt));
   const weights = resolveWeights(rawLines.map((r) => r.line), w.netGrams);
 
-  // stock: this mill's purchases for the commodity, and every other truck's rows
-  const bought = await boughtByDay(businessId, l.merchantId, l.jinsId);
+  /* A truck can carry two or three commodities: each row has its own, and is
+     priced from that commodity's purchase day for this mill. The truck's
+     commodity is the first row's; stock is kept per commodity. */
+  const jinsIds = [...new Set([l.jinsId, ...rawLines.map((r) => r.line.jinsId)])];
+  const jinsRows = await db.select().from(schema.jins).where(inArray(schema.jins.id, jinsIds));
+  const jinsOf = new Map(jinsRows.map((j) => [j.id, j]));
+  const codeOf = (id: string) => jinsOf.get(id)?.code ?? "?";
+  const bought = new Map<string, Awaited<ReturnType<typeof boughtByDay>>>();
+  for (const jid of jinsIds) bought.set(jid, await boughtByDay(businessId, l.merchantId, jid));
+  // every other truck's rows for this mill, by commodity and day
   const others = await linesWithWeights(and(
     eq(schema.loadLines.businessId, businessId),
     eq(schema.loads.merchantId, l.merchantId),
-    eq(schema.loadLines.jinsId, l.jinsId),
+    inArray(schema.loadLines.jinsId, jinsIds),
     ne(schema.loadLines.loadId, l.id),
   ));
+  const dk = (jid: string, date: string) => `${jid}|${date}`;
   const otherByDay = new Map<string, number>();
-  for (const o of others) otherByDay.set(o.stockDate, (otherByDay.get(o.stockDate) ?? 0) + o.weightGrams);
+  for (const o of others) otherByDay.set(dk(o.jinsId, o.stockDate), (otherByDay.get(dk(o.jinsId, o.stockDate)) ?? 0) + o.weightGrams);
   const thisByDay = new Map<string, number>();
-  rawLines.forEach((r, i) => thisByDay.set(r.line.stockDate, (thisByDay.get(r.line.stockDate) ?? 0) + weights[i]));
+  rawLines.forEach((r, i) => thisByDay.set(dk(r.line.jinsId, r.line.stockDate), (thisByDay.get(dk(r.line.jinsId, r.line.stockDate)) ?? 0) + weights[i]));
 
   const lines = rawLines.map((r, i) => {
-    const day = bought.get(r.line.stockDate);
+    const day = bought.get(r.line.jinsId)?.get(r.line.stockDate);
     const avg = day?.avgRatePaisePerQtl ?? 0;
     const rate = r.line.ratePaisePerQtl ?? avg;
     const weight = weights[i];
+    const k = dk(r.line.jinsId, r.line.stockDate);
     return {
       ...r.line,
+      jinsCode: codeOf(r.line.jinsId),
       poNo: r.poNo, poDate: r.poDate,
       weightGrams: weight,
       weightIsRest: r.line.netGrams == null,
@@ -251,21 +262,26 @@ export async function loadState(businessId: string, loadId: string) {
       day: {
         boughtNetGrams: day?.netGrams ?? 0,
         slips: day?.slips ?? 0,
-        otherTrucksGrams: otherByDay.get(r.line.stockDate) ?? 0,
-        thisTruckGrams: thisByDay.get(r.line.stockDate) ?? 0,
-        leftGrams: (day?.netGrams ?? 0) - (otherByDay.get(r.line.stockDate) ?? 0) - (thisByDay.get(r.line.stockDate) ?? 0),
+        otherTrucksGrams: otherByDay.get(k) ?? 0,
+        thisTruckGrams: thisByDay.get(k) ?? 0,
+        leftGrams: (day?.netGrams ?? 0) - (otherByDay.get(k) ?? 0) - (thisByDay.get(k) ?? 0),
       },
     };
   });
 
-  const boughtTotal = [...bought.values()].reduce((s, d) => s + d.netGrams, 0);
-  const otherTotal = others.reduce((s, o) => s + o.weightGrams, 0);
   const thisTotal = weights.reduce((s, g) => s + g, 0);
+  // the mill's stock of each commodity on this truck, and all of them together
+  const stockByJins = jinsIds.map((jid) => {
+    const b = [...(bought.get(jid)?.values() ?? [])].reduce((s, d) => s + d.netGrams, 0);
+    const o = others.filter((x) => x.jinsId === jid).reduce((s, x) => s + x.weightGrams, 0);
+    const mine = rawLines.reduce((s, r, i) => s + (r.line.jinsId === jid ? weights[i] : 0), 0);
+    return { jinsId: jid, jinsCode: codeOf(jid), boughtNetGrams: b, otherTrucksGrams: o, thisTruckGrams: mine, leftGrams: b - o - mine };
+  });
   const stock = {
-    boughtNetGrams: boughtTotal,
-    otherTrucksGrams: otherTotal,
+    boughtNetGrams: stockByJins.reduce((s, x) => s + x.boughtNetGrams, 0),
+    otherTrucksGrams: stockByJins.reduce((s, x) => s + x.otherTrucksGrams, 0),
     thisTruckGrams: thisTotal,
-    leftGrams: boughtTotal - otherTotal - thisTotal,
+    leftGrams: stockByJins.reduce((s, x) => s + x.leftGrams, 0),
   };
 
   // POs on this truck's rows, and how much of each the other trucks took
@@ -321,8 +337,8 @@ export async function loadState(businessId: string, loadId: string) {
 
   const seenDay = new Set<string>();
   for (const x of lines) {
-    if (seenDay.has(x.stockDate)) continue;
-    seenDay.add(x.stockDate);
+    if (seenDay.has(dk(x.jinsId, x.stockDate))) continue;
+    seenDay.add(dk(x.jinsId, x.stockDate));
     if (x.day.leftGrams < 0) warnings.push({ code: "stock_negative", date: x.stockDate, grams: -x.day.leftGrams });
   }
   for (const p of pos) {
@@ -366,7 +382,7 @@ export async function loadState(businessId: string, loadId: string) {
       },
       lines: lines.map((x, i) => ({
         po: x.poNo || (x.poId && x.poDate ? `${x.poDate.slice(8, 10)}-${x.poDate.slice(5, 7)}` : String(i + 1)),
-        jinsCode: jins.code,
+        jinsCode: x.jinsCode,
         date: x.stockDate,
         netGrams: x.weightGrams,
         ratePaisePerQtl: x.ratePaisePerQtlUsed,
@@ -375,8 +391,9 @@ export async function loadState(businessId: string, loadId: string) {
       totals: { netGrams: thisTotal, ratePaisePerQtl: rate, goodsPaise: goods },
       result,
       config: cfg,
-      stock: [...new Set(lines.map((x) => x.stockDate))].map((d) => ({
-        date: d, boughtNetGrams: bought.get(d)?.netGrams ?? 0, avgRatePaisePerQtl: bought.get(d)?.avgRatePaisePerQtl ?? 0,
+      stock: [...new Map(lines.map((x) => [dk(x.jinsId, x.stockDate), x])).values()].map((x) => ({
+        date: x.stockDate, jinsCode: x.jinsCode,
+        boughtNetGrams: bought.get(x.jinsId)?.get(x.stockDate)?.netGrams ?? 0, avgRatePaisePerQtl: bought.get(x.jinsId)?.get(x.stockDate)?.avgRatePaisePerQtl ?? 0,
       })),
     };
   }
@@ -385,9 +402,12 @@ export async function loadState(businessId: string, loadId: string) {
     load: l,
     mill: { id: mill.id, code: mill.code, name: mill.name, nameHi: mill.nameHi },
     jins: { id: jins.id, code: jins.code, name: jins.name, nameHi: jins.nameHi },
+    /** Every commodity on the truck's rows (the first is the truck's own). */
+    jinsList: jinsIds.map((jid) => ({ id: jid, code: codeOf(jid), name: jinsOf.get(jid)?.name ?? "", nameHi: jinsOf.get(jid)?.nameHi ?? null })),
     config: cfg,
     lines,
     stock,
+    stockByJins,
     weighment: w,
     pos,
     blockers,
@@ -404,8 +424,8 @@ export async function loadState(businessId: string, loadId: string) {
       return {
         wasGrandTotalPaise: was.result.grandTotalPaise, nowGrandTotalPaise: doc.result.grandTotalPaise,
         wasGoodsPaise: was.totals.goodsPaise, nowGoodsPaise: doc.totals.goodsPaise,
-        days: doc.lines.filter((x) => was.lines.some((y) => y.date === x.date && y.ratePaisePerQtl !== x.ratePaisePerQtl))
-          .map((x) => ({ date: x.date, wasRate: was.lines.find((y) => y.date === x.date)!.ratePaisePerQtl, nowRate: x.ratePaisePerQtl })),
+        days: doc.lines.filter((x) => was.lines.some((y) => y.date === x.date && y.jinsCode === x.jinsCode && y.ratePaisePerQtl !== x.ratePaisePerQtl))
+          .map((x) => ({ date: x.date, wasRate: was.lines.find((y) => y.date === x.date && y.jinsCode === x.jinsCode)!.ratePaisePerQtl, nowRate: x.ratePaisePerQtl })),
       };
     })(),
     history: history.map((p) => ({ ...p, snapshot: undefined })),

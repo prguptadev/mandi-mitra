@@ -52,7 +52,15 @@ export async function loadResolver(businessId: string) {
     ({ adatiId: a.id, nameHi: a.nameHi, nameHinglish: a.nameHinglish, village: a.village ?? null, confidence });
 
   /* Named, not a method: callers pass it around unbound (resolve: resolver.resolve). */
-  function resolve(raw: string, modelPick?: string | null): { match: AdatiMatch | null; suggestions: AdatiSuggestion[] } {
+  /** A village written beside the name: among suppliers sharing a name, the one from that village. */
+  const sameVillage = (ids: string[], village?: string | null) => {
+    const v = (village ?? "").trim();
+    if (!v) return null;
+    const vk = normKey(v);
+    const hit = ids.filter((id) => { const a = byId.get(id)!; return [a.villageHi, a.village].some((x) => x && (normKey(x) === vk || similarity(x, v) >= 0.85)); });
+    return hit.length === 1 ? hit[0] : null;
+  };
+  function resolve(raw: string, modelPick?: string | null, village?: string | null): { match: AdatiMatch | null; suggestions: AdatiSuggestion[] } {
     const text = (raw ?? "").trim();
     /* The model saw the handwriting beside the real list. If what it picked
        is an exact supplier name, that beats any string comparison we can do
@@ -78,7 +86,7 @@ export async function loadResolver(businessId: string) {
         };
       }
       // not like what it wrote (श्याम सिंह picked for राम सिंह): only a suggestion
-      const rest = resolve(raw, null);
+      const rest = resolve(raw, null, village);
       return {
         match: rest.match && rest.match.via !== "fuzzy" ? rest.match : null,
         suggestions: [suggestion(pk, 0.5), ...rest.suggestions.filter((x) => x.adatiId !== pk.id)].slice(0, 3),
@@ -111,7 +119,13 @@ export async function loadResolver(businessId: string) {
       };
     }
     if (nk.length > 1) {
-      // two suppliers differ only in their vowel signs: the operator picks
+      // two suppliers share the name: the village written on the paper settles it
+      const byVillage = sameVillage(nk, village);
+      if (byVillage) {
+        const a = byId.get(byVillage)!;
+        return { match: { adatiId: a.id, nameHi: a.nameHi, nameHinglish: a.nameHinglish, confidence: 0.93, via: "normkey" }, suggestions: [] };
+      }
+      // else they differ only in their vowel signs: the operator picks
       return {
         match: null,
         suggestions: nk.map((id) => byId.get(id)!).map((a) => suggestion(a, Number(Math.max(similarity(text, a.nameHi), similarity(text, a.nameHinglish)).toFixed(3))))
@@ -145,8 +159,9 @@ export async function loadResolver(businessId: string) {
       return a ? { adatiId: a.id, nameHi: a.nameHi, nameHinglish: a.nameHinglish } : null;
     },
     /** Supplier names to show the model, most-used first, capped for prompt size. */
+    /** Names for the reader's list, with the village in brackets when the supplier has one. */
     candidateNames(limit = 300): string[] {
-      return suppliers.slice(0, limit).map((s) => s.nameHi);
+      return suppliers.slice(0, limit).map((s) => (s.villageHi || s.village ? `${s.nameHi} (${s.villageHi || s.village})` : s.nameHi));
     },
     resolve,
   };

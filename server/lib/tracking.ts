@@ -51,11 +51,13 @@ export interface TruckSummary {
   loadId: string; merchantId: string; jinsId: string; loadDate: string; truckNo: string | null; status: string;
   millGrossGrams: number | null; millNetGrams: number | null; bags: number | null;
   weightGrams: number; goodsPaise: number; ratePaisePerQtl: number;
+  /** Every commodity on the truck (the header's first); with a commodity filter, only that one. */
+  jinsIds: string[];
   stockDates: string[]; parchaNo: string | null; grandTotalPaise: number | null;
   mismatch: boolean; incomplete: boolean;
   /** Weight the mill cut on arrival, and its note (see loads.millDeductionGrams). */
   deductionGrams: number; deductionNote: string | null;
-  rows: { stockDate: string; weightGrams: number; ratePaisePerQtl: number; dayAvgPaisePerQtl: number; typed: boolean; amountPaise: number }[];
+  rows: { stockDate: string; jinsId: string; weightGrams: number; ratePaisePerQtl: number; dayAvgPaisePerQtl: number; typed: boolean; amountPaise: number }[];
 }
 
 /**
@@ -65,15 +67,19 @@ export interface TruckSummary {
 export async function trucks(businessId: string, f: Filter & { before?: string }): Promise<TruckSummary[]> {
   const L = schema.loads;
   const w: SQL[] = [eq(L.businessId, businessId)];
-  if (f.jinsId) w.push(eq(L.jinsId, f.jinsId));
   if (f.merchantId) w.push(eq(L.merchantId, f.merchantId));
   if (f.from) w.push(gte(L.loadDate, f.from));
   if (f.to) w.push(lte(L.loadDate, f.to));
   if (f.before) w.push(lt(L.loadDate, f.before));
-  const loads = await db.select().from(L).where(and(...w));
+  // a commodity filter is answered from the rows: a truck carrying two commodities counts each under its own
+  const allLoads = await db.select().from(L).where(and(...w));
+  if (!allLoads.length) return [];
+  const allLines = await linesWithWeights(inArray(schema.loadLines.loadId, allLoads.map((l) => l.id)));
+  const lines = f.jinsId ? allLines.filter((x) => x.jinsId === f.jinsId) : allLines;
+  const loads = f.jinsId ? allLoads.filter((l) => lines.some((x) => x.loadId === l.id)) : allLoads;
   if (!loads.length) return [];
   const ids = loads.map((l) => l.id);
-  const lines = await linesWithWeights(inArray(schema.loadLines.loadId, ids));
+  const jinsCode = f.jinsId ? (await db.select({ code: schema.jins.code }).from(schema.jins).where(eq(schema.jins.id, f.jinsId)))[0]?.code : null;
   const avg = await dayAverages(businessId);
   const parchas = await db.select({ loadId: schema.parchas.loadId, parchaNo: schema.parchas.parchaNo, snapshot: schema.parchas.snapshot, grand: schema.parchas.grandTotalPaise })
     .from(schema.parchas).where(and(inArray(schema.parchas.loadId, ids), eq(schema.parchas.status, "approved")));
@@ -87,23 +93,30 @@ export async function trucks(businessId: string, f: Filter & { before?: string }
       const dayAvg = avg(l.merchantId, x.jinsId, x.stockDate);
       const rate = x.ratePaisePerQtl ?? dayAvg;
       return {
-        stockDate: x.stockDate, weightGrams: x.weightGrams, ratePaisePerQtl: rate, dayAvgPaisePerQtl: dayAvg,
+        stockDate: x.stockDate, jinsId: x.jinsId, weightGrams: x.weightGrams, ratePaisePerQtl: rate, dayAvgPaisePerQtl: dayAvg,
         typed: x.ratePaisePerQtl != null, amountPaise: amountPaise(x.weightGrams, rate),
       };
     });
     const p = parchaOf.get(l.id);
     const doc = p ? (JSON.parse(p.snapshot) as ParchaDoc) : null;
-    const weight = doc ? doc.totals.netGrams : rows.reduce((s, r) => s + r.weightGrams, 0);
-    const goods = doc ? doc.totals.goodsPaise : rows.reduce((s, r) => s + r.amountPaise, 0);
+    // an approved truck is what its frozen parcha billed; under a commodity filter, that commodity's lines of it
+    const docLines = doc ? (jinsCode ? doc.lines.filter((x) => x.jinsCode === jinsCode) : doc.lines) : null;
+    const weight = docLines ? docLines.reduce((s, x) => s + x.netGrams, 0) : rows.reduce((s, r) => s + r.weightGrams, 0);
+    const goods = docLines ? docLines.reduce((s, x) => s + x.amountPaise, 0) : rows.reduce((s, r) => s + r.amountPaise, 0);
+    // the whole truck's rate only when the whole truck is meant
+    const rate = doc && !jinsCode ? doc.totals.ratePaisePerQtl : rateOf(goods, weight);
     return {
       loadId: l.id, merchantId: l.merchantId, jinsId: l.jinsId, loadDate: l.loadDate, truckNo: l.truckNo, status: l.status,
+      jinsIds: f.jinsId ? [f.jinsId] : [...new Set([l.jinsId, ...mine.map((x) => x.jinsId)])],
       millGrossGrams: l.millGrossGrams, millNetGrams: l.millNetGrams, bags: l.bags,
-      weightGrams: weight, goodsPaise: goods, ratePaisePerQtl: doc ? doc.totals.ratePaisePerQtl : rateOf(goods, weight),
+      weightGrams: weight, goodsPaise: goods, ratePaisePerQtl: rate,
       stockDates: [...new Set(rows.map((r) => r.stockDate))].sort(),
       parchaNo: p?.parchaNo ?? null, grandTotalPaise: p?.grand ?? null,
       // an approved truck is billed from its frozen parcha; only a draft can still be out of step
-      mismatch: !p && l.millNetGrams != null && rows.length > 0
-        && (rows.reduce((s, r) => s + r.weightGrams, 0) !== l.millNetGrams || rows.some((r) => r.weightGrams <= 0)),
+      mismatch: !p && l.millNetGrams != null && rows.length > 0 && (() => {
+        const whole = allLines.filter((x) => x.loadId === l.id);
+        return whole.reduce((s, r) => s + r.weightGrams, 0) !== l.millNetGrams || whole.some((r) => r.weightGrams <= 0);
+      })(),
       incomplete: l.status !== "billed" && (l.millGrossGrams == null || !l.bags),
       deductionGrams: l.millDeductionGrams, deductionNote: l.millDeductionNote,
       rows,

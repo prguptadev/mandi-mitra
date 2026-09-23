@@ -82,6 +82,7 @@ try {
   run("scripts/e2e-days.ts");
   run("scripts/e2e-isolation.ts");
   run("scripts/e2e-ca.ts");
+  run("scripts/e2e-multi.ts");
   run("scripts/e2e-cloud.ts");
   // last: every stored figure the tests produced, re-worked independently
   // on every computer: the synced copies must add up exactly like the first

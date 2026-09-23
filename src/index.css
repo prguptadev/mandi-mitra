@@ -25,13 +25,13 @@
 }
 
 :root[data-theme="dark"] {
-  --bg: 213 18% 8%;
-  --surface: 213 15% 11%;
-  --raised: 213 13% 15%;
-  --line: 213 11% 21%;
-  --ink: 40 14% 94%;
-  --muted: 213 10% 66%;
-  --faint: 213 9% 46%;
+  --bg: 213 18% 7%;
+  --surface: 213 15% 12%;
+  --raised: 213 13% 18%;
+  --line: 213 11% 26%;
+  --ink: 40 14% 97%;
+  --muted: 213 12% 76%;
+  --faint: 213 10% 58%;
   --brand: 158 48% 48%;
   --brand-ink: 158 70% 8%;
   --ok: 152 46% 50%;
@@ -46,13 +46,13 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]):not([data-theme="dark"]) {
-    --bg: 213 18% 8%;
-    --surface: 213 15% 11%;
-    --raised: 213 13% 15%;
-    --line: 213 11% 21%;
-    --ink: 40 14% 94%;
-    --muted: 213 10% 66%;
-    --faint: 213 9% 46%;
+    --bg: 213 18% 7%;
+    --surface: 213 15% 12%;
+    --raised: 213 13% 18%;
+    --line: 213 11% 26%;
+    --ink: 40 14% 97%;
+    --muted: 213 12% 76%;
+    --faint: 213 10% 58%;
     --brand: 158 48% 48%;
     --brand-ink: 158 70% 8%;
     --ok: 152 46% 50%;

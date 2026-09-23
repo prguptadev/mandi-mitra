@@ -99,6 +99,19 @@ export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean; voided
     if (i === 0) put(`G${row}:H${row + 1}`, dmy(doc.invoiceDate), { bold: true, size: 13, align: "center" });
     row++;
   });
+  const codes = [...new Set(doc.lines.map((l) => l.jinsCode))];
+  if (codes.length > 1) {
+    for (const code of codes) {
+      const mine = doc.lines.filter((l) => l.jinsCode === code);
+      const net = mine.reduce((s, l) => s + l.netGrams, 0), amt = mine.reduce((s, l) => s + l.amountPaise, 0);
+      put(`A${row}:C${row}`, `TOTAL ${code}`, { bold: true, align: "center" });
+      put(`D${row}`, q(net), { align: "right", fmt: QTL });
+      put(`E${row}`, rs(net ? Math.round((amt * 100_000) / net) : 0), { align: "right", fmt: INR });
+      put(`F${row}`, rs(amt), { align: "right", fmt: INR });
+      put(`G${row}:H${row}`, "", {});
+      row++;
+    }
+  }
   put(`A${row}:C${row}`, "TOTAL AMOUNT", { bold: true, align: "center" });
   put(`D${row}`, q(doc.totals.netGrams), { align: "right", fmt: QTL });
   put(`E${row}`, rs(doc.totals.ratePaisePerQtl), { align: "right", fmt: INR });

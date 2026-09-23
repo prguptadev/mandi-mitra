@@ -520,9 +520,10 @@ async function performRead(opts: {
       const kept = p > 0 ? ` Page${p > 1 ? "s" : ""} 1${p > 1 ? `–${p}` : ""} ${p > 1 ? "are" : "is"} kept.` : "";
       const tried = (result.attempts ?? 1) > 1 ? ` Tried ${result.attempts} times.` : "";
       const next = ` Press "Read again" to continue from page ${p + 1}${files.length > 1 ? ` of ${files.length}` : ""}.`;
+      const detail = ` Details: ${result.model}${result.status ? `, HTTP ${result.status}` : ""}${result.finishReason ? `, ${result.finishReason}` : ""}${result.attempts && result.attempts > 1 ? `, ${result.attempts} tries` : ""}.`;
       await db.update(schema.scanBatches).set({
         status: "failed",
-        errorText: `${result.error ?? "Unknown error"}${tried}${kept}${next}`,
+        errorText: `${result.error ?? "Unknown error"}${tried}${kept}${next}${detail}`,
         warningText: null,
         parsedRows: collected.length ? JSON.stringify(collected) : null,
         pagesDone: p, model: result.model, tokensIn, tokensOut,
@@ -532,6 +533,7 @@ async function performRead(opts: {
         actor: { ...opts.actorInfo, businessId: biz },
         action: "scan.read.fail", entity: "scan_batch", entityId: id,
         entityLabel: `page ${p + 1} of ${files.length}: ${result.error ?? "failed"}`,
+        after: { model: result.model, status: result.status ?? null, finishReason: result.finishReason ?? null, attempts: result.attempts ?? 1, ms: result.ms, page: p + 1, of: files.length },
       });
       return;
     } else {
@@ -819,7 +821,7 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
   await checkSlipRefs(biz, { jinsId: jinsId ?? undefined, merchantId: merchantId ?? undefined });
   // what the model read is kept exactly as read: only the operator's columns come from the screen
   const asRead = new Map((JSON.parse(batch.parsedRows ?? "[]") as ReviewRow[]).map((r) => [r.id, r]));
-  const NOT_READ = { rstNo: null, adatiName: null, grossQtl: null, katauti: null, netQtl: null, rate: null, confidence: null, struckThrough: null, srNo: null };
+  const NOT_READ = { rstNo: null, adatiName: null, village: null, grossQtl: null, katauti: null, netQtl: null, rate: null, confidence: null, struckThrough: null, srNo: null };
   const kept = rows.map((r) => ({ ...r, rstNo: normRst(r.rstNo), ocr: asRead.get(r.id)?.ocr ?? NOT_READ, modelPick: asRead.get(r.id)?.modelPick ?? null }));
   await db.update(schema.scanBatches).set({
     // the reader owns the rows while it runs; the header is the operator's

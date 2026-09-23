@@ -36,6 +36,8 @@ export const OcrRowSchema = z.object({
   adatiName: looseStr(),
   /** The known supplier the model thinks this is, copied exactly from the list. */
   supplierMatch: looseStr(),
+  /** A village or place written beside the name, in Devanagari; not part of the name. */
+  village: looseStr(),
   /** DHARAM KANTA column, in quintal. */
   grossQtl: looseNum(),
   /** KATAUTI column, as written. */
@@ -89,7 +91,8 @@ const RESPONSE_SCHEMA = {
           srNo: { type: "INTEGER", nullable: true, description: "The printed SR NO of the ruled line this row is on" },
           rstNo: { type: "STRING", nullable: true },
           adatiName: { type: "STRING", nullable: true },
-          supplierMatch: { type: "STRING", nullable: true, description: "Exact name from KNOWN SUPPLIERS, or null" },
+          supplierMatch: { type: "STRING", nullable: true, description: "Exact name from KNOWN SUPPLIERS (the part before any bracket), or null" },
+          village: { type: "STRING", nullable: true, description: "Village or place written beside the name, in Devanagari; null when none" },
           grossQtl: { type: "NUMBER", nullable: true },
           katauti: { type: "NUMBER", nullable: true },
           netQtl: { type: "NUMBER", nullable: true },
@@ -105,7 +108,7 @@ const RESPONSE_SCHEMA = {
         required: ["page", "srNo", "rstNo", "adatiName", "grossQtl", "katauti", "netQtl", "rate", "confidence", "struckThrough"],
         /* Without an explicit order the API fills fields alphabetically, so the
            model would state its confidence before reading a single digit. */
-        propertyOrdering: ["page", "srNo", "rstNo", "adatiName", "supplierMatch", "grossQtl", "katauti", "netQtl", "rate", "struckThrough", "notes", "confidence"],
+        propertyOrdering: ["page", "srNo", "rstNo", "adatiName", "village", "supplierMatch", "grossQtl", "katauti", "netQtl", "rate", "struckThrough", "notes", "confidence"],
       },
     },
   },
@@ -128,6 +131,10 @@ Columns, left to right:
 - SR NO — printed row number: return it as srNo on every row.
 - ADATI NAME — the supplier's name, handwritten in Hindi. Always return it in Devanagari, never in Latin letters. Copy the spelling as written; do not correct it.
   One exception: a trailing "T.C", "ट.C", "टी.सी" or "TC" is the abbreviation for Trading Company. Write it out as "ट्रेडिंग कंपनी". For example "शिवम T.C" becomes "शिवम ट्रेडिंग कंपनी".
+  Firm words stay part of the name: ट्रेडर्स, ट्रेडिंग, एंटरप्राइजेज, एण्ड संस, इंडस्ट्रीज, ब्रदर्स. "एन्ड" and "एण्ड" are the same word: write "एण्ड".
+  A village or place name is often written after the person's name — after a comma, a dash, in brackets, on a second line in the same cell, or in smaller writing (e.g. "रामपाल सिंह — नगला", "सूर्य प्रकाश वर्मा (जलेसर)"). That is NOT part of the name: return it in "village" (Devanagari, as written) and keep adatiName as the name alone. Leave "village" null when nothing of the kind is written.
+  Honorifics are part of what is written: keep "श्री", "जी" or "साहब" if they are on the paper; do not add them.
+  Common confusions in this hand: व/ब, न/ण, श/स/ष, ड/ड़, र/ट and a missing anusvara — when a stroke is ambiguous, prefer the reading that is a real Hindi name or a name in KNOWN SUPPLIERS below, and lower the confidence.
   This column is never blank on a real row. If the name is hard to read, give your best reading in Devanagari and lower the confidence for that row rather than returning null.
 - RST NO — the weighbridge (dharam kanta) slip number. It is NOT a row count and is not in sequence. It can be 3 or 4 digits, and one sheet often mixes both, e.g. 626, 627, 1474, 629, 1471. Read every digit; do not drop a leading "1" or "14". Write it with Latin digits 0-9 only, even if it is written in Devanagari digits (६२६ → 626).
 - DHARAM KANTA — gross weight in quintal, normally two decimal places (e.g. 19.20, 46.95).
@@ -304,12 +311,12 @@ export function knownSuppliersBlock(names: string[]): string {
   if (!names.length) return "";
   return `
 
-KNOWN SUPPLIERS — this business already buys from these, so the handwritten name is very likely one of them:
+KNOWN SUPPLIERS — this business already buys from these, so the handwritten name is very likely one of them. A village in brackets after a name is where that supplier is from; it helps tell two suppliers with the same name apart, and it is not part of the name:
 ${names.map((n, i) => `${i + 1}. ${n}`).join("\n")}
 
 For every row:
-- set "adatiName" to what is actually written, in Devanagari, as above;
-- set "supplierMatch" to the name from this list, copied EXACTLY character for character, ONLY when the handwriting clearly is that name. If you are unsure, or it could be one of two names, return null — a wrong pick is worse than none, because the operator then does not look. A trailing T.C / ट्रेडिंग कंपनी on the paper matches a listed name ending in ट्रेडिंग.`;
+- set "adatiName" to what is actually written, in Devanagari, as above (the person's or firm's name only; a village goes in "village");
+- set "supplierMatch" to the name from this list — the part before any bracket — copied EXACTLY character for character, ONLY when the handwriting clearly is that name. If you are unsure, or it could be one of two names, return null — a wrong pick is worse than none, because the operator then does not look. A trailing T.C / ट्रेडिंग कंपनी on the paper matches a listed name ending in ट्रेडिंग. When two listed names are the same and the paper carries a village, pick the one whose bracket says that village.`;
 }
 
 export interface GeminiCallResult {

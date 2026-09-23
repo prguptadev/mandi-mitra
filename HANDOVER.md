@@ -492,6 +492,20 @@ mean confidence                          : 0.90
   future year, switches itself on 1 April.
 - **Server messages in Hindi**: `src/lib/serverHi.ts`, applied in `api.ts`
   when `<html lang="hi">`. A message not in the table shows in English.
+- **Two or three commodities on one truck (v0.3.7)**: `load_lines.jins_id` was
+  always there; now each row may carry its own commodity (toggle on the truck
+  screen), is priced from that commodity's purchase day for the mill, checks
+  its PO against its own commodity, and stock/challan/dashboard count each
+  under its own (`tracking.trucks` answers a commodity filter from the rows).
+  The parcha prints a TOTAL line per commodity when there are two or more.
+  A per-bag charge (labour, sutli) is left off when the truck has no bags of
+  that kind. `scripts/e2e-multi.ts`.
+- **Reader (v0.3.7)**: the prompt separates a village written beside the name
+  into `village`; the known-supplier list carries villages in brackets; the
+  resolver uses a written village to settle two suppliers sharing a name. A
+  failed read's note ends with "Details: model, HTTP status, finish reason".
+- **Dara** shares the daily list's column set (village, deduction, commission,
+  gaushala, net amount, bags added); the daily list has one Download button.
 - **Scanner on the real Canon (v0.3.6)**: the first try on the shop PC failed
   with "Specified cast is not valid". Cause: the WIA script walked
   `DeviceInfos`/`Properties` with `foreach`, which PowerShell's COM interop

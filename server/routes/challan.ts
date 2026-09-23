@@ -44,7 +44,7 @@ challanRoutes.get("/", can("load.read"), async (c) => {
     return {
       loadId: t.loadId, loadDate: t.loadDate, truckNo: t.truckNo, status: t.status,
       merchantId: t.merchantId, millCode: m?.code ?? "?", millName: m?.name ?? "", millNameHi: m?.nameHi ?? null,
-      jinsId: t.jinsId, jinsCode: jinsOf.get(t.jinsId) ?? "",
+      jinsId: t.jinsId, jinsCode: t.jinsIds.map((j) => jinsOf.get(j) ?? "").filter(Boolean).join(" + "),
       stockDates: t.stockDates, millGrossGrams: t.millGrossGrams, millNetGrams: t.millNetGrams, bags: t.bags,
       weightGrams: t.weightGrams, ratePaisePerQtl: t.ratePaisePerQtl, goodsPaise: t.goodsPaise,
       parchaNo: t.parchaNo, grandTotalPaise: t.grandTotalPaise,
