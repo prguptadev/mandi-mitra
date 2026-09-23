@@ -57,6 +57,8 @@ export interface TruckSummary {
   mismatch: boolean; incomplete: boolean;
   /** Weight the mill cut on arrival, and its note (see loads.millDeductionGrams). */
   deductionGrams: number; deductionNote: string | null;
+  /** Freight advance paid to the truck on the mill's behalf, recovered on the parcha (the frozen figure once billed). */
+  advancePaise: number;
   rows: { stockDate: string; jinsId: string; weightGrams: number; ratePaisePerQtl: number; dayAvgPaisePerQtl: number; typed: boolean; amountPaise: number }[];
 }
 
@@ -119,6 +121,7 @@ export async function trucks(businessId: string, f: Filter & { before?: string }
       })(),
       incomplete: l.status !== "billed" && (l.millGrossGrams == null || !l.bags),
       deductionGrams: l.millDeductionGrams, deductionNote: l.millDeductionNote,
+      advancePaise: doc ? doc.result.advancePaise : l.advancePaise,
       rows,
     };
   });

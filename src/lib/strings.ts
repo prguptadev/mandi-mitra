@@ -689,6 +689,7 @@ export const STRINGS = {
     "pay.voucherNo": "No.", "dash.millsAhead": "{a} paid ahead by mills is not counted", "dash.supAhead": "{a} paid ahead to suppliers is not counted", "audit.plain": "What changed", "audit.raw": "Show everything stored", "audit.rawHide": "Hide", "audit.field": "Field", "audit.wasNow": "{was} → {now}", "books.title": "Check the books", "books.sub": "Re-works every slip, parcha, ledger and voucher number from the raw entries, without using the app's own totals, and names anything that does not agree.", "books.run": "Check now", "books.ok": "Every figure re-works exactly.", "books.problems": "{n} problem(s) found — see the red lines.", "books.at": "Checked {at}",
     "load.multi": "Two or more commodities on this truck",
     "scan.village": "village",
+    "ch.advance": "Advance", "ch.advanceHint": "Freight advance paid to the truck on the mill's behalf; the parcha recovers it from the mill",
   },
 
   hi: {
@@ -1382,6 +1383,7 @@ export const STRINGS = {
     "pay.voucherNo": "नं", "dash.millsAhead": "मिलों का {a} ज़्यादा आया, गिना नहीं", "dash.supAhead": "आढ़तियों को {a} ज़्यादा दिया, गिना नहीं", "audit.plain": "क्या बदला", "audit.raw": "सब कुछ दिखाएँ", "audit.rawHide": "छिपाएँ", "audit.field": "खाना", "audit.wasNow": "{was} → {now}", "books.title": "किताबों की जाँच", "books.sub": "हर पर्ची, पर्चा, खाता और वाउचर नंबर कच्ची एंट्री से फिर से निकालता है, ऐप के अपने जोड़ का इस्तेमाल किए बिना, और जो न मिले उसे बताता है।", "books.run": "अभी जाँचें", "books.ok": "हर आँकड़ा ठीक-ठीक मिलता है।", "books.problems": "{n} गड़बड़ी मिली — लाल पंक्तियाँ देखें।", "books.at": "{at} को जाँचा",
     "load.multi": "इस ट्रक पर दो या ज़्यादा जिंस",
     "scan.village": "गाँव",
+    "ch.advance": "एडवांस", "ch.advanceHint": "मिल की ओर से ट्रक को दिया भाड़े का एडवांस; पर्चे से मिल से वसूल होता है",
   },
 } as const;
 

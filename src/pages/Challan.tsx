@@ -28,7 +28,7 @@ interface ChallanRow {
   jinsId: string; jinsCode: string; stockDates: string[];
   millGrossGrams: number | null; millNetGrams: number | null; bags: number | null;
   weightGrams: number; ratePaisePerQtl: number; goodsPaise: number;
-  parchaNo: string | null; grandTotalPaise: number | null;
+  parchaNo: string | null; grandTotalPaise: number | null; advancePaise: number | null;
   deductionGrams: number; deductionNote: string | null; deductionValuePaise: number;
   finalNetGrams: number; finalGoodsPaise: number; finalTotalPaise: number | null;
   incomplete: boolean; mismatch: boolean;
@@ -37,7 +37,7 @@ interface ChallanList {
   rows: ChallanRow[];
   totals: {
     trucks: number; billed: number; weightGrams: number; deductionGrams: number; finalNetGrams: number;
-    goodsPaise: number; deductionValuePaise: number; finalGoodsPaise: number; grandTotalPaise: number; finalTotalPaise: number;
+    goodsPaise: number; deductionValuePaise: number; finalGoodsPaise: number; grandTotalPaise: number; finalTotalPaise: number; advancePaise: number | null;
   };
 }
 
@@ -95,7 +95,7 @@ export function ChallanPage() {
     date: (r) => r.loadDate, truck: (r) => r.truckNo, mill: (r) => r.millCode, jins: (r) => r.jinsCode,
     gross: (r) => r.millGrossGrams, loaded: (r) => r.weightGrams, rate: (r) => r.ratePaisePerQtl, goods: (r) => r.goodsPaise,
     cut: (r) => r.deductionGrams, finalNet: (r) => r.finalNetGrams, cutValue: (r) => r.deductionValuePaise,
-    finalGoods: (r) => r.finalGoodsPaise, parcha: (r) => r.parchaNo, grand: (r) => r.grandTotalPaise, finalTotal: (r) => r.finalTotalPaise,
+    finalGoods: (r) => r.finalGoodsPaise, parcha: (r) => r.parchaNo, advance: (r) => r.advancePaise, grand: (r) => r.grandTotalPaise, finalTotal: (r) => r.finalTotalPaise,
   }, { storageKey: "challan" });
   const editable = can("challan.write");
   const T = list.data?.totals;
@@ -105,11 +105,11 @@ export function ChallanPage() {
     const q2 = (g: number | null) => (g == null ? "" : fmtQtl(g));
     const rs = (p: number | null) => (p == null ? "" : (p / 100).toFixed(2));
     const lines = [
-      ["Date", "Truck", "Mill", "Commodity", "Mill gross qtl", "Loaded qtl", "Rate", "Goods value", "Cut qtl", "Cut reason", "Final qtl", "Cut value", "Final value", "Parcha", "Grand total", "Final bill"],
+      ["Date", "Truck", "Mill", "Commodity", "Mill gross qtl", "Loaded qtl", "Rate", "Goods value", "Cut qtl", "Cut reason", "Final qtl", "Cut value", "Final value", "Parcha", "Advance", "Grand total", "Final bill"],
       ...s.sorted.map((r) => [dmy(r.loadDate), r.truckNo ?? "", r.millCode, r.jinsCode, q2(r.millGrossGrams), q2(r.weightGrams), rs(r.ratePaisePerQtl),
         rs(r.goodsPaise), q2(r.deductionGrams), r.deductionNote ?? "", q2(r.finalNetGrams), rs(r.deductionValuePaise), rs(r.finalGoodsPaise),
-        r.parchaNo ?? "", rs(r.grandTotalPaise), rs(r.finalTotalPaise)]),
-      ...(T ? [["Total", `${T.trucks} trucks`, "", "", "", q2(T.weightGrams), "", rs(T.goodsPaise), q2(T.deductionGrams), "", q2(T.finalNetGrams), rs(T.deductionValuePaise), rs(T.finalGoodsPaise), "", rs(T.grandTotalPaise), rs(T.finalTotalPaise)]] : []),
+        r.parchaNo ?? "", rs(r.advancePaise), rs(r.grandTotalPaise), rs(r.finalTotalPaise)]),
+      ...(T ? [["Total", `${T.trucks} trucks`, "", "", "", q2(T.weightGrams), "", rs(T.goodsPaise), q2(T.deductionGrams), "", q2(T.finalNetGrams), rs(T.deductionValuePaise), rs(T.finalGoodsPaise), "", rs(T.advancePaise), rs(T.grandTotalPaise), rs(T.finalTotalPaise)]] : []),
     ];
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob(["﻿" + lines.map((l) => l.map(esc).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
@@ -170,6 +170,7 @@ export function ChallanPage() {
                   <Th numeric {...s.th("cutValue")}>{t("ch.cutValue")}</Th>
                   <Th numeric {...s.th("finalGoods")}>{t("ch.finalGoods")}</Th>
                   <Th {...s.th("parcha")}>{t("load.parchaNo")}</Th>
+                  <Th numeric {...s.th("advance")} title={t("ch.advanceHint")}>{t("ch.advance")}</Th>
                   <Th numeric {...s.th("grand")}>{t("load.grandTotal")}</Th>
                   <Th numeric {...s.th("finalTotal")} title={t("ch.finalTotalHint")}>{t("ch.finalTotal")}</Th>
                 </tr>
@@ -216,6 +217,7 @@ export function ChallanPage() {
                     <Td numeric className="font-semibold">{f.amount(r.finalGoodsPaise)}</Td>
                     <Td>{r.parchaNo ? <Badge tone="ok">#{r.parchaNo}</Badge>
                       : <Badge tone={r.incomplete || r.mismatch ? "warn" : "neutral"}>{r.incomplete ? t("stock.truckIncomplete") : r.mismatch ? t("stock.truckMismatch") : t("load.status.draft")}</Badge>}</Td>
+                    <Td numeric className="text-muted">{r.advancePaise == null ? <span className="text-faint">—</span> : r.advancePaise ? f.money(r.advancePaise) : "—"}</Td>
                     <Td numeric>{r.grandTotalPaise != null ? f.money(r.grandTotalPaise) : <span className="text-faint">—</span>}</Td>
                     <Td numeric className="font-semibold text-brand">{r.finalTotalPaise != null ? f.money(r.finalTotalPaise) : <span className="text-faint">—</span>}</Td>
                   </Tr>
@@ -234,6 +236,7 @@ export function ChallanPage() {
                     <td className="num whitespace-nowrap px-3 py-2 text-right">{T.deductionValuePaise ? `− ${f.amount(T.deductionValuePaise)}` : "—"}</td>
                     <td className="num px-3 py-2 text-right">{f.amount(T.finalGoodsPaise)}</td>
                     <td />
+                    <td className="num px-3 py-2 text-right">{T.advancePaise ? f.money(T.advancePaise) : "—"}</td>
                     <td className="num px-3 py-2 text-right">{f.money(T.grandTotalPaise)}</td>
                     <td className="num px-3 py-2 text-right text-brand">{f.money(T.finalTotalPaise)}</td>
                   </tr>

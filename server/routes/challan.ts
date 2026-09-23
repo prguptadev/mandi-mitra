@@ -47,7 +47,7 @@ challanRoutes.get("/", can("load.read"), async (c) => {
       jinsId: t.jinsId, jinsCode: t.jinsIds.map((j) => jinsOf.get(j) ?? "").filter(Boolean).join(" + "),
       stockDates: t.stockDates, millGrossGrams: t.millGrossGrams, millNetGrams: t.millNetGrams, bags: t.bags,
       weightGrams: t.weightGrams, ratePaisePerQtl: t.ratePaisePerQtl, goodsPaise: t.goodsPaise,
-      parchaNo: t.parchaNo, grandTotalPaise: t.grandTotalPaise,
+      parchaNo: t.parchaNo, grandTotalPaise: t.grandTotalPaise, advancePaise: t.advancePaise,
       deductionGrams: cut, deductionNote: t.deductionNote, deductionValuePaise: cutValue,
       finalNetGrams: t.weightGrams - cut,
       finalGoodsPaise: t.goodsPaise - cutValue,
@@ -64,12 +64,12 @@ challanRoutes.get("/", can("load.read"), async (c) => {
   // the parcha's bill and what the mill owes on it are for those who may read parchas
   if (!c.get("auth")!.permissions.has("parcha.read")) {
     return c.json({
-      rows: rows.map((r) => ({ ...r, grandTotalPaise: null, finalTotalPaise: null })),
+      rows: rows.map((r) => ({ ...r, grandTotalPaise: null, finalTotalPaise: null, advancePaise: null })),
       totals: {
         trucks: rows.length, billed: billed.length,
         weightGrams: sum("weightGrams"), deductionGrams: sum("deductionGrams"), finalNetGrams: sum("finalNetGrams"),
         goodsPaise: sum("goodsPaise"), deductionValuePaise: sum("deductionValuePaise"), finalGoodsPaise: sum("finalGoodsPaise"),
-        grandTotalPaise: null, finalTotalPaise: null,
+        grandTotalPaise: null, finalTotalPaise: null, advancePaise: null,
       },
     });
   }
@@ -81,6 +81,7 @@ challanRoutes.get("/", can("load.read"), async (c) => {
       goodsPaise: sum("goodsPaise"), deductionValuePaise: sum("deductionValuePaise"), finalGoodsPaise: sum("finalGoodsPaise"),
       grandTotalPaise: billed.reduce((s, r) => s + r.grandTotalPaise!, 0),
       finalTotalPaise: billed.reduce((s, r) => s + r.finalTotalPaise!, 0),
+      advancePaise: rows.reduce((s, r) => s + r.advancePaise, 0),
     },
   });
 });

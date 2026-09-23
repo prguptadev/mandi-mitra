@@ -78,6 +78,11 @@ const ch = (await call("GET", `/challan?merchantId=${lb.id}`)).rows.find((r: any
 check("the challan names both commodities on the truck", ch?.jinsCode === "1509 + 1121", ch?.jinsCode);
 const ch1121 = (await call("GET", `/challan?merchantId=${lb.id}&jinsId=${j1121.id}`)).rows.find((r: any) => r.truckNo === "UP00MULTI");
 check("filtered to 1121, the truck shows only its 1121 weight and value", ch1121?.weightGrams === q(29.70) && ch1121?.goodsPaise === Math.round(q(29.70) / 100_000 * 313333), ch1121);
+const chAll = await call("GET", `/challan?merchantId=${lb.id}`);
+const truck196 = chAll.rows.find((r: any) => r.parchaNo === "196");
+const doc196 = truck196 ? (await call("GET", `/loads/${truck196.loadId}`)).approved?.doc : null;
+check("the challan shows the freight advance the parcha recovers from the mill", Boolean(truck196) && truck196.advancePaise === doc196?.result.advancePaise && truck196.advancePaise > 0, { challan: truck196?.advancePaise, parcha: doc196?.result.advancePaise });
+check("…and adds the advances up", chAll.totals.advancePaise === chAll.rows.reduce((s: number, r: any) => s + (r.advancePaise ?? 0), 0));
 const list = (await call("GET", "/loads")).find((r: any) => r.id === load.id);
 check("the truck list shows 1509 + 1121", list?.jinsCodes.join(" + ") === "1509 + 1121", list?.jinsCodes);
 const bc = await call("GET", "/audit/books-check");

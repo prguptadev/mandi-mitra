@@ -492,6 +492,11 @@ mean confidence                          : 0.90
   future year, switches itself on 1 April.
 - **Server messages in Hindi**: `src/lib/serverHi.ts`, applied in `api.ts`
   when `<html lang="hi">`. A message not in the table shows in English.
+- **Challan shows the freight advance (v0.3.8)**: `tracking.TruckSummary.advancePaise`
+  (the frozen parcha's figure once billed, else the truck's), an Advance
+  column on the challan screen/CSV with a total, hidden from those who may
+  not read parchas. The advance is money paid out to the truck for the mill
+  and recovered on the parcha; it is still not a cash-book entry (gap).
 - **Two or three commodities on one truck (v0.3.7)**: `load_lines.jins_id` was
   always there; now each row may carry its own commodity (toggle on the truck
   screen), is priced from that commodity's purchase day for the mill, checks
