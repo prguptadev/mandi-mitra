@@ -84,6 +84,7 @@ try {
   run("scripts/e2e-ca.ts");
   run("scripts/e2e-multi.ts");
   run("scripts/e2e-cloud.ts");
+  run("scripts/e2e-startup.ts");
   // last: every stored figure the tests produced, re-worked independently
   // on every computer: the synced copies must add up exactly like the first
   for (const d of [DATA, ...OTHERS]) {

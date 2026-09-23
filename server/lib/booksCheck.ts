@@ -198,6 +198,14 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     const noMill = slips.filter((s) => !s.merchant_id);
     if (noMill.length) note(`${noMill.length} slip(s), ${qt(noMill.reduce((s, x) => s + x.net_grams, 0))} qtl, have no mill and sit in no mill's stock`);
 
+    // 5b. records pointing at something that is gone
+    const dangling = all<{ table: string; parent: string }>("pragma foreign_key_check");
+    if (dangling.length) {
+      const by = new Map<string, number>();
+      for (const d of dangling) by.set(`${d.table} → ${d.parent}`, (by.get(`${d.table} → ${d.parent}`) ?? 0) + 1);
+      note(`${dangling.length} record(s) point at something that is no longer there (${[...by].map(([k, n]) => `${k}${n > 1 ? ` x${n}` : ""}`).join(", ")}). No figure above depends on them; they are usually a user or a master deleted long ago.`);
+    }
+
     // 6. voucher numbers: every payment and receipt numbered once, in its year
     section("6. Voucher numbers");
     const dupes = (rows: { voucher_no: number | null; d: string }[]) => {

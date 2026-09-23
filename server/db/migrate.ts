@@ -18,6 +18,20 @@ const rowCounts = () => Object.fromEntries(
 
 export class MigrationError extends Error {}
 
+interface BrokenLink { table: string; rowid: number | null; parent: string; fkid: number }
+/** Records pointing at something that is not there. Read-only. */
+function brokenLinks(): BrokenLink[] {
+  const rows = sqlite.prepare("pragma foreign_key_check").all() as { table: string; rowid: number | null; parent: string; fkid: number }[];
+  return rows.map((r) => ({ table: r.table, rowid: r.rowid ?? null, parent: r.parent, fkid: r.fkid }));
+}
+const describe = (links: BrokenLink[]) => {
+  const by = new Map<string, number>();
+  for (const l of links) by.set(`${l.table} → ${l.parent}`, (by.get(`${l.table} → ${l.parent}`) ?? 0) + 1);
+  return [...by].map(([k, n]) => `${k}${n > 1 ? ` x${n}` : ""}`).join(", ");
+};
+/** Set when the database was already carrying broken links before this start. */
+export let brokenLinksOnStart: BrokenLink[] = [];
+
 export function runMigrations() {
   if (!fs.existsSync(path.join(FOLDER, "meta", "_journal.json"))) {
     console.warn("[db] no migrations found — run: npx drizzle-kit generate");
@@ -36,12 +50,17 @@ export function runMigrations() {
   // PRAGMA foreign_keys cannot be switched off — so a table rebuild (create
   // new, copy, drop old) would cascade-delete every row pointing at the old
   // table. Keys are off for the update and checked right after it instead.
+  /* Links that were already broken before today — a row whose user was deleted,
+     a mill removed years ago. They are not this update's doing, so they must
+     never stop the app: they are reported and the books check names them. */
+  const wasBroken = brokenLinks();
   sqlite.pragma("foreign_keys = OFF");
   let problem: string | null = null;
   try {
     migrate(db, { migrationsFolder: FOLDER });
-    const broken = sqlite.prepare("pragma foreign_key_check").all();
-    if (broken.length) problem = `the update left ${broken.length} broken link(s) between records`;
+    const broken = brokenLinks();
+    const newly = broken.length - wasBroken.length;
+    if (newly > 0) problem = `the update left ${newly} broken link(s) between records (${describe(broken)})`;
     if (!problem && before) {
       const after = rowCounts();
       const lost = Object.keys(before).filter((t) => t in after && after[t] < before[t] && !SHRINK_OK.has(t));
@@ -57,7 +76,16 @@ export function runMigrations() {
       for (const f of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) fs.rmSync(f, { force: true });
       fs.copyFileSync(backup, DB_PATH);
     }
-    throw new MigrationError(`Database update stopped: ${problem}. Your data was put back from ${backup ? path.basename(backup) : "—"}; nothing was lost. Please send this message to support.`);
+    throw new MigrationError(`Database update stopped: ${problem}. ${
+      backup ? `Your data was put back from ${path.basename(backup)}; nothing was lost.` : "Your data is as it was; nothing was changed."
+    } Please send this message to support.`);
+  }
+  brokenLinksOnStart = wasBroken;
+  if (wasBroken.length) {
+    /* Said plainly in the log, once, and again on the Audit screen's "Check
+       the books". Not an alarm: no figure depends on these, and an update
+       must never be blamed for what it did not do. */
+    console.log(`[db] ${wasBroken.length} record(s) point at something that is no longer there (${describe(wasBroken)}). Nothing is blocked; the books check lists them.`);
   }
   console.log("[db] migrations up to date");
 }
