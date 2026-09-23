@@ -32,6 +32,8 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
   onChange: (adatiId: string | null) => void;
   onCommit?: () => void;
   onCreate?: (name: string) => void;
+  /** What is typed when nothing is picked, so the page can save it as a new supplier. */
+  onQueryChange?: (query: string) => void;
   invalid?: boolean;
   disabled?: boolean;
   placeholder?: string;
@@ -40,7 +42,7 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
   /** Fired when the box loses focus with nothing picked. */
   onBlurEmpty?: () => void;
 }>(function SupplierPicker(
-  { suppliers, selectedLabel, value, onChange, onCommit, onCreate, invalid, disabled, placeholder, className, autoFocus, onBlurEmpty }, ref,
+  { suppliers, selectedLabel, value, onChange, onCommit, onCreate, onQueryChange, invalid, disabled, placeholder, className, autoFocus, onBlurEmpty }, ref,
 ) {
   const { t, lang } = useI18n();
   const [query, setQuery] = useState("");
@@ -126,6 +128,7 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
   const display = selected ? (lang === "hi" ? selected.nameHi : selected.nameHi || selected.nameHinglish) : query;
 
   useEffect(() => { setActive(0); }, [debounced]);
+  useEffect(() => { onQueryChange?.(query); }, [query]);
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-i="${active}"]`)
       ?.scrollIntoView({ block: "nearest" });
@@ -180,6 +183,8 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
             }
             setOpen(false);
             onCommit?.();
+          } else if (e.key === "Tab") {
+            setOpen(false); // the typed name stays; the next box gets the focus
           } else if (e.key === "Escape") {
             if (open) { e.stopPropagation(); setOpen(false); }
           } else if (e.key === "Backspace" && selected) {

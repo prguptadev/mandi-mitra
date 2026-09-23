@@ -1,13 +1,12 @@
-import { fmtQtl } from "@/lib/utils.ts";
-import { defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
-import { useState } from "react";
-import { Download, FileSpreadsheet } from "lucide-react";
-import { api, ApiError, type Merchant, type SlipRow, type SlipTotals, type Jins } from "@/lib/api.ts";
+import { useEffect, useState } from "react";
+import { Download, FileSpreadsheet, Eye } from "lucide-react";
+import { ApiError, type Merchant, type Jins } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
-import { usePrefs, DAILY_COLUMNS, MILL_REPORT_COLUMNS, type DailyColumnKey } from "@/lib/prefs.tsx";
+import { usePrefs, MILL_REPORT_COLUMNS } from "@/lib/prefs.tsx";
 import { Button, Dialog, Field, Input, Select, Tabs, Alert, Badge } from "@/components/ui/index.tsx";
-import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
-import { dmy } from "@server/lib/parchaLabels.ts";
+import type { SlipSortOrder } from "@server/lib/slipOrder.ts";
+import { buildListTable, buildDaraTable, csvOf, type ExportTable } from "@/lib/exportTable.ts";
+import { ExportPreview } from "@/components/ExportPreview.tsx";
 
 /* Everything that leaves the daily list: the list itself as CSV, and the
    report sent to a mill ("dara") as Excel or CSV. Either for one day or a
@@ -70,88 +69,25 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
   const daraMill = mill || mills[0]?.id || "";
   const bad = !f0 || !t0 || f0 > t0 || (kind === "dara" && !daraMill);
 
-  const listCsv = async () => {
-    const qs = new URLSearchParams({ from: f0, to: t0, ...(mill ? { merchantId: mill } : {}), ...(jins ? { jinsId: jins } : {}) });
-    const data = await api.get<{ rows: SlipRow[]; totals: SlipTotals }>(`/slips?${qs}`);
-    const nameOf = (r: SlipRow) => (names === "latin" ? r.adatiNameHinglish || r.adatiNameHi : r.adatiNameHi);
-    const rows = sortSlips(data.rows, sort, nameOf);
-    const tot = data.totals;
-    // the supplier-charge columns carry the names set in Settings
-    const sc = await api.get<SupplierCharges>("/settings/supplier-charges").catch(() => defaultSupplierCharges());
-    const named: Partial<Record<DailyColumnKey, string>> = { commission: sc.labels.commission, gaushala: sc.labels.gaushala, payable: sc.labels.payable };
-
-    // one "Adati name" column where either name column was chosen; a date column when several days
-    type Col = { key: DailyColumnKey | "date" | "adati"; label: string };
-    const cols: Col[] = [];
-    for (const c of DAILY_COLUMNS) {
-      if (c.key === "adatiLatin") continue;
-      if (c.key === "adatiHi") {
-        if (P.exportColumns.adatiHi !== false || P.exportColumns.adatiLatin !== false) cols.push({ key: "adati", label: "Adati name" });
-        continue;
-      }
-      if (P.exportColumns[c.key] === false) continue;
-      cols.push({ key: c.key, label: named[c.key] ?? c.en });
-      if (c.key === "sr" && f0 !== t0) cols.push({ key: "date", label: "Date" });
-    }
-    if (f0 !== t0 && !cols.some((c) => c.key === "date")) cols.unshift({ key: "date", label: "Date" });
-
-    const val = (k: Col["key"], r: SlipRow, i: number): string | number => {
-      switch (k) {
-        case "sr": return i + 1;
-        case "date": return dmy(r.slipDate);
-        case "rstNo": return r.rstNo;
-        case "adati": return nameOf(r);
-        case "village": return r.adatiVillage ?? "";
-        case "mill": return r.merchantCode ?? "";
-        case "jins": return r.jinsCode;
-        case "gross": return fmtQtl(r.grossGrams);
-        case "katauti": return r.katautiUnits;
-        case "deduction": return fmtQtl(r.katautiGrams);
-        case "net": return fmtQtl(r.netGrams);
-        case "rate": return r.ratePending ? "" : (r.ratePaisePerQtl / 100).toFixed(2);
-        case "amount": return r.ratePending ? "" : (r.amountPaise / 100).toFixed(2);
-        case "commission": return r.ratePending ? "" : (r.commissionPaise / 100).toFixed(2);
-        case "gaushala": return r.ratePending ? "" : (r.gaushalaPaise / 100).toFixed(2);
-        case "payable": return r.ratePending ? "" : (r.payablePaise / 100).toFixed(2);
-        case "bagsCount": return r.bagsCount ?? "";
-        case "status": return r.status;
-        default: return "";
-      }
-    };
-    const totalVal = (k: Col["key"]): string | number => {
-      switch (k) {
-        case "rstNo": return "TOTAL";
-        case "gross": return fmtQtl(tot.grossGrams);
-        case "katauti": return tot.katautiUnits;
-        case "deduction": return fmtQtl(tot.katautiGrams);
-        case "net": return fmtQtl(tot.netGrams);
-        case "rate": return (tot.weightedAvgRatePaise / 100).toFixed(2);
-        case "amount": return (tot.amountPaise / 100).toFixed(2);
-        case "commission": return (tot.commissionPaise / 100).toFixed(2);
-        case "gaushala": return (tot.gaushalaPaise / 100).toFixed(2);
-        case "payable": return (tot.payablePaise / 100).toFixed(2);
-        case "bagsCount": return tot.bagsCount || "";
-        default: return "";
-      }
-    };
-    const esc = (v: unknown) => {
-      const s = String(v ?? "");
-      return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
-    };
-    const lines = [
-      cols.map((c) => c.label),
-      ...rows.map((r, i) => cols.map((c) => val(c.key, r, i))),
-      cols.map((c) => totalVal(c.key)),
-    ];
-    const millCode = mills.find((m) => m.id === mill)?.code;
-    save(new Blob(["﻿" + lines.map((l) => l.map(esc).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }),
-      `daily-list-${f0}${f0 === t0 ? "" : `-to-${t0}`}${millCode ? "-" + millCode : ""}.csv`);
-  };
-
-  const dara = () => downloadDara({
-    merchantId: daraMill, from: f0, to: t0, names, sort, format, ...(daraJins ? { jinsId: daraJins } : {}),
+  const listOpts = () => ({ from: f0, to: t0, merchantId: mill || undefined, jinsId: jins || undefined, names, sort, prefs: P, mills, jinsList });
+  const daraOpts = () => ({
+    merchantId: daraMill, from: f0, to: t0, names, sort, ...(daraJins ? { jinsId: daraJins } : {}),
     columns: MILL_REPORT_COLUMNS.filter((c) => P.millReportColumns[c.key]).map((c) => c.key),
   });
+  const listCsv = async () => {
+    const table = await buildListTable(listOpts());
+    save(new Blob([csvOf(table)], { type: "text/csv;charset=utf-8" }), `${table.fileBase}.csv`);
+  };
+  const [preview, setPreview] = useState<ExportTable | null>(null);
+  const showPreview = async () => {
+    setErr(null); setBusy(true);
+    try { setPreview(kind === "list" ? await buildListTable(listOpts()) : await buildDaraTable(daraOpts())); }
+    catch (e) { setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { setPreview(null); }, [kind, f0, t0, mill, jins, names, sort]);
+
+  const dara = () => downloadDara({ ...daraOpts(), format });
 
   const go = async () => {
     setErr(null);
@@ -172,6 +108,7 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
     <Dialog open={open} onClose={onClose} wide title={t("dl.title")} sub={t("dl.sub")}
       footer={<>
         <Button onClick={onClose}>{t("common.cancel")}</Button>
+        <Button variant="secondary" disabled={bad || busy} icon={<Eye className="h-4 w-4" />} onClick={showPreview}>{t("dl.preview")}</Button>
         <Button variant="primary" loading={busy} disabled={bad}
           icon={kind === "dara" && format === "xlsx" ? <FileSpreadsheet className="h-4 w-4" /> : <Download className="h-4 w-4" />}
           onClick={go}>{t("dl.download")}</Button>
@@ -248,6 +185,7 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
           <p className="mt-1.5 text-faint">{t("dl.daraColsWhere")}</p>
         </div>
       )}
+      {preview && <ExportPreview table={preview} className="mt-4" />}
       {f0 > t0 && <p className="mt-3 text-[13px] text-bad">{t("dl.badRange")}</p>}
     </Dialog>
   );

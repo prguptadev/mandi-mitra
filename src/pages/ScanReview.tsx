@@ -364,6 +364,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
         { label: t("daily.amount"), value: f.money(summary.totalAmountPaise), big: true },
       ],
       warnings: [
+        (() => { const n = live.filter((r) => !(r.adatiId ?? r.match?.adatiId) && r.adatiRawText.trim()).length; return n ? t("scan.warnNewSuppliers", { n }) : ""; })(),
         count("rst_exists") ? t("scan.warnRstExists", { n: count("rst_exists") }) : "",
         count("rst_dupe") ? t("scan.warnRstDupe", { n: count("rst_dupe") }) : "",
         noRate ? t("scan.warnNoRate", { n: noRate }) : "",

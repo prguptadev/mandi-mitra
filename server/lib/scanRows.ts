@@ -197,9 +197,10 @@ export function checkRow(
   if (row.adatiId && !chosen) {
     issues.push({ code: "name_unresolved", level: "error", message: "The chosen supplier no longer exists", params: { name: row.adatiRawText } });
   } else if (!row.adatiId && !resolved.match) {
+    // a name nobody matches is not a stop: saving the sheet makes the supplier
     issues.push({
-      code: row.adatiRawText ? "name_unresolved" : "name_missing", level: "error",
-      message: row.adatiRawText ? `No supplier matches "${row.adatiRawText}"` : "Supplier name could not be read",
+      code: row.adatiRawText ? "name_unresolved" : "name_missing", level: row.adatiRawText ? "warn" : "error",
+      message: row.adatiRawText ? `No supplier matches "${row.adatiRawText}" — saving the sheet adds it as a new supplier` : "Supplier name could not be read",
       params: { name: row.adatiRawText },
     });
   } else if (resolved.match && resolved.match.via === "fuzzy") {

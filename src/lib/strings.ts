@@ -137,7 +137,7 @@ export const STRINGS = {
     "cloud.space": "{used} MB used of the free {free} MB",
     "cloud.syncNow": "Copy now", "cloud.pushed": "{n} changed record(s) copied up", "cloud.restore": "Bring all data down…", "cloud.turnOff": "Turn off",
     "cloud.offConfirm": "Stop copying to the cloud? What is already there stays there.",
-    "cloud.step1": "Make a free project on", "cloud.step2": "In the project, press Connect and copy the connection string (Transaction pooler).",
+    "cloud.step1": "Make a free project on", "cloud.step2": "In the project, press Connect and copy the connection string (Session pooler, port 5432; the direct db.… address is switched to the pooler by itself).",
     "cloud.step3": "Paste it below and put your database password in place of [YOUR-PASSWORD].",
     "cloud.conn": "Connection string", "cloud.connHint": "It holds your database password: it is kept encrypted on this computer and never shown again.",
     "cloud.connect": "Connect",
@@ -690,6 +690,10 @@ export const STRINGS = {
     "load.multi": "Two or more commodities on this truck",
     "scan.village": "village",
     "ch.advance": "Advance", "ch.advanceHint": "Freight advance paid to the truck on the mill's behalf; the parcha recovers it from the mill",
+    "daily.supplierAdded": "New supplier added: {name}", "daily.typeNameAuto": "Type the name in Hindi or English — a new name is saved as a new supplier", "scan.warnNewSuppliers": "{n} name(s) match no supplier: they will be added as new suppliers when the sheet is saved",
+    "scan.fix.newSupplier": "No supplier has this name yet: saving the sheet adds it as a new supplier. Click the name to pick another instead.",
+    "wa.button": "WhatsApp", "wa.title": "Send on WhatsApp", "wa.sub": "The daily list or a mill's dara as a message, with the CSV to attach", "wa.phone": "WhatsApp number", "wa.phoneHint": "10 digits. A mill's saved number fills in by itself. Left empty, WhatsApp asks whom to send to.", "wa.open": "Open WhatsApp", "wa.copy": "Copy message", "wa.copied": "Copied", "wa.saveCsv": "Save CSV to attach", "wa.message": "Message as it will go", "wa.preview": "Preview", "wa.fileNote": "WhatsApp takes only the text from here. For the file: save the CSV, then attach it in the WhatsApp chat that opens.", "wa.rowsCut": "Only the first {n} rows fit in one message; the CSV has all of them.", "wa.noRows": "Nothing for this choice", "dl.preview": "Preview",
+    "scanner.check": "What the scanner says", "scanner.checkTitle": "The scanner and its driver, as Windows sees them", "scanner.checkHelp": "Copy this and send it if scanning fails — it names the scanner, what it can hand over, and where it stopped.",
   },
 
   hi: {
@@ -829,7 +833,7 @@ export const STRINGS = {
     "cloud.space": "मुफ़्त {free} MB में से {used} MB इस्तेमाल",
     "cloud.syncNow": "अभी कॉपी करें", "cloud.pushed": "{n} बदले रिकॉर्ड कॉपी हुए", "cloud.restore": "सारा डेटा नीचे लाएँ…", "cloud.turnOff": "बंद करें",
     "cloud.offConfirm": "क्लाउड में कॉपी बंद करें? जो वहाँ है वह वहीं रहेगा।",
-    "cloud.step1": "मुफ़्त प्रोजेक्ट बनाएँ:", "cloud.step2": "प्रोजेक्ट में Connect दबाएँ और connection string (Transaction pooler) कॉपी करें।",
+    "cloud.step1": "मुफ़्त प्रोजेक्ट बनाएँ:", "cloud.step2": "प्रोजेक्ट में Connect दबाएँ और connection string (Session pooler, port 5432) कॉपी करें; सीधा db.… पता ऐप खुद pooler में बदल लेता है।",
     "cloud.step3": "नीचे चिपकाएँ और [YOUR-PASSWORD] की जगह अपना डेटाबेस पासवर्ड डालें।",
     "cloud.conn": "कनेक्शन स्ट्रिंग (Connection string)", "cloud.connHint": "इसमें आपका डेटाबेस पासवर्ड है: यह इस कंप्यूटर पर एन्क्रिप्ट होकर रहता है और फिर कभी दिखाया नहीं जाता।",
     "cloud.connect": "जोड़ें",
@@ -1384,6 +1388,10 @@ export const STRINGS = {
     "load.multi": "इस ट्रक पर दो या ज़्यादा जिंस",
     "scan.village": "गाँव",
     "ch.advance": "एडवांस", "ch.advanceHint": "मिल की ओर से ट्रक को दिया भाड़े का एडवांस; पर्चे से मिल से वसूल होता है",
+    "daily.supplierAdded": "नया आढ़ती जुड़ा: {name}", "daily.typeNameAuto": "नाम हिन्दी या अंग्रेज़ी में लिखें — नया नाम नए आढ़ती के रूप में सहेजा जाएगा", "scan.warnNewSuppliers": "{n} नाम किसी आढ़ती से नहीं मिले: शीट सहेजने पर वे नए आढ़ती बन जाएँगे",
+    "scan.fix.newSupplier": "इस नाम का आढ़ती अभी नहीं है: शीट सहेजने पर यह नया आढ़ती बन जाएगा। किसी और को चुनना हो तो नाम पर क्लिक करें।",
+    "wa.button": "WhatsApp", "wa.title": "WhatsApp पर भेजें", "wa.sub": "दैनिक सूची या मिल का दारा संदेश के रूप में, साथ में जोड़ने के लिए CSV", "wa.phone": "WhatsApp नंबर", "wa.phoneHint": "10 अंक। मिल का सहेजा नंबर अपने आप भर जाता है। खाली छोड़ें तो WhatsApp पूछता है किसे भेजना है।", "wa.open": "WhatsApp खोलें", "wa.copy": "संदेश कॉपी करें", "wa.copied": "कॉपी हो गया", "wa.saveCsv": "जोड़ने के लिए CSV सहेजें", "wa.message": "संदेश जैसा जाएगा", "wa.preview": "पूर्वावलोकन", "wa.fileNote": "यहाँ से WhatsApp में सिर्फ़ टेक्स्ट जाता है। फ़ाइल के लिए: CSV सहेजें, फिर खुलने वाली WhatsApp चैट में जोड़ें।", "wa.rowsCut": "एक संदेश में सिर्फ़ पहली {n} पंक्तियाँ आती हैं; CSV में सभी हैं।", "wa.noRows": "इस चुनाव में कुछ नहीं", "dl.preview": "पूर्वावलोकन",
+    "scanner.check": "स्कैनर क्या कहता है", "scanner.checkTitle": "स्कैनर और उसका ड्राइवर, जैसा Windows देखता है", "scanner.checkHelp": "स्कैन न हो तो इसे कॉपी करके भेजें — इसमें स्कैनर का नाम, वह क्या दे सकता है, और कहाँ रुका, सब लिखा है।",
   },
 } as const;
 

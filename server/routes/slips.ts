@@ -11,6 +11,7 @@ import { DisplayConfigSchema, defaultDisplayConfig } from "../lib/display.ts";
 import { can, actor, param, notFound, bad, HttpError, isoDay, LIMIT, type Env } from "../lib/http.ts";
 import { approvedOnDays } from "../lib/parcha.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
+import { ensureSupplier } from "../lib/supplierFromName.ts";
 
 /** Supplier, commodity and mill must all be this business's own. */
 export async function checkSlipRefs(biz: string, r: { adatiId?: string; jinsId?: string; merchantId?: string | null }) {
@@ -35,7 +36,9 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const SlipBody = z.object({
   slipDate: isoDay(),
   rstNo: z.string().trim().min(1, "RST no is required").max(20),
-  adatiId: z.string().min(1, "Pick a supplier"),
+  adatiId: z.string().min(1, "Pick a supplier").optional(),
+  /** Instead of adatiId: a name as typed, matched to a supplier or made into a new one. */
+  adatiName: z.string().trim().min(1).max(120).optional(),
   jinsId: z.string().min(1, "Pick a commodity"),
   merchantId: z.string().nullish(),
   /** Dharam kanta, in grams. */
@@ -295,7 +298,10 @@ function assertRateAllowed(c: Parameters<typeof actor>[0], changing: boolean) {
 
 slipRoutes.post("/", can("slip.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
-  const body = SlipBody.parse(await c.req.json());
+  const parsed = SlipBody.parse(await c.req.json());
+  const made = !parsed.adatiId && parsed.adatiName ? await ensureSupplier(biz, parsed.adatiName, actor(c)) : null;
+  const body = { ...parsed, adatiId: parsed.adatiId ?? made?.id ?? "" };
+  if (!body.adatiId) throw bad("Pick a supplier", "bad_adati");
   assertRateAllowed(c, body.ratePaisePerQtl > 0);
   await assertDaysOpen(biz, body.slipDate);
 
@@ -355,6 +361,8 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
     ...ch,
     katautiUnits: d.katautiUnits,
     katautiGrams: d.katautiGrams,
+    /** A supplier made from the typed name, if one was. */
+    supplierCreated: made?.created ? { id: made.id, nameHi: made.nameHi, nameHinglish: made.nameHinglish } : null,
     /** Set when the sheet's own net differs from the formula. */
     rstRepeated,
     netWarning: claimed != null && claimed !== d.netGrams
@@ -366,7 +374,9 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
 slipRoutes.put("/:id", can("slip.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const id = param(c, "id");
-  const body = SlipBody.partial().parse(await c.req.json());
+  const parsed = SlipBody.partial().parse(await c.req.json());
+  const made = !parsed.adatiId && parsed.adatiName ? await ensureSupplier(biz, parsed.adatiName, actor(c)) : null;
+  const body = { ...parsed, ...(made ? { adatiId: made.id } : {}) };
 
   const [before] = await db.select().from(schema.purchaseSlips)
     .where(and(eq(schema.purchaseSlips.id, id), eq(schema.purchaseSlips.businessId, biz))).limit(1);
@@ -421,7 +431,8 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
     { merchantId: before.merchantId, jinsId: before.jinsId, date: before.slipDate },
     { merchantId: merged.merchantId, jinsId: merged.jinsId, date: merged.slipDate },
   ]) : [];
-  return c.json({ ok: true, netGrams: d.netGrams, amountPaise: d.amountPaise, ...ch, katautiUnits: d.katautiUnits, katautiGrams: d.katautiGrams, approvedParchas });
+  return c.json({ ok: true, netGrams: d.netGrams, amountPaise: d.amountPaise, ...ch, katautiUnits: d.katautiUnits, katautiGrams: d.katautiGrams, approvedParchas,
+    supplierCreated: made?.created ? { id: made.id, nameHi: made.nameHi, nameHinglish: made.nameHinglish } : null });
 });
 
 slipRoutes.delete("/:id", can("slip.delete"), async (c) => {

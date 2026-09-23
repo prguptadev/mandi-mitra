@@ -144,7 +144,7 @@ export function CloudCard() {
             <Field label={t("cloud.conn")} hint={t("cloud.connHint")}>
               <div className="flex gap-2">
                 <Input type="password" autoComplete="off" value={conn} className="num text-[13px]"
-                  placeholder="postgresql://postgres.xxxx:password@aws-0-ap-south-1.pooler.supabase.com:6543/postgres"
+                  placeholder="postgresql://postgres.xxxx:password@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
                   onChange={(e) => setConn(e.target.value)} />
                 <Button variant="primary" loading={connect.isPending} disabled={conn.trim().length < 20} onClick={() => { setErr(null); connect.mutate(conn.trim()); }}>{t("cloud.connect")}</Button>
               </div>

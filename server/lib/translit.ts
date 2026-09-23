@@ -162,11 +162,13 @@ function tidy(s: string): string {
     .replace(/^./, (c) => c.toUpperCase());
 }
 
-/** Hindi (Devanagari) -> Hinglish. Safe on mixed or already-Latin input. */
+/** Hindi (Devanagari) -> Hinglish, in capitals: that is how the office writes
+ *  Latin names on every paper, and how they read in the dara, Tally and
+ *  WhatsApp. Safe on mixed or already-Latin input. */
 export function toHinglish(input: string): string {
   if (!input) return "";
   const whole = WORD_OVERRIDES[input.trim()];
-  if (whole) return whole;
+  if (whole) return whole.toUpperCase();
 
   return input
     .normalize("NFC")
@@ -174,7 +176,8 @@ export function toHinglish(input: string): string {
     .map((tok) => (/^\s+$/.test(tok) ? " " : transliterateWord(tok)))
     .join("")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .toUpperCase();
 }
 
 /* ------------------------------------------------------------ fuzzy matching */

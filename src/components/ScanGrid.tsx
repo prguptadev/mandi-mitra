@@ -1,6 +1,7 @@
 import { Fragment, useState } from "react";
 import { FileText, Trash2, RotateCcw, Sparkles, Check } from "lucide-react";
 import type { ScanRow } from "@/lib/api.ts";
+import { toHinglish } from "@server/lib/translit.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useFormat, GRAMS_PER_QTL } from "@/lib/format.tsx";
 import { NumberInput } from "@/components/NumberInput.tsx";
@@ -35,7 +36,9 @@ function flagFor(r: ScanRow, f: Field, t: (k: never, v?: Record<string, string |
     if (conf < LOW) return { level: "doubt", why: t("issue.low_confidence" as never) };
   }
   if (f === "name") {
-    if (!r.chosen && !r.match) return { level: "bad", why: t("scan.fix.pickName" as never) };
+    if (!r.chosen && !r.match) return r.adatiRawText.trim()
+      ? { level: "doubt", why: t("scan.fix.newSupplier" as never) }
+      : { level: "bad", why: t("scan.fix.pickName" as never) };
     // struck out on the paper, but put back in: only a ✓ says it really belongs
     if (has("struck_included")) return { level: "bad", why: t("issue.struck_included" as never), confirmable: true, key: "struck" };
     // this page may have slid (checked for the whole page, in the note above the table)
@@ -207,7 +210,7 @@ export function ScanGrid({
                         disabled={dead}
                         invalid={!name}
                         autoFocus={editingName === r.id}
-                        placeholder={r.adatiRawText ? `${r.adatiRawText}${r.ocr.village ? ` (${r.ocr.village})` : ""}` : t("scan.pickName")}
+                        placeholder={r.adatiRawText ? `${r.adatiRawText} · ${toHinglish(r.adatiRawText)}${r.ocr.village ? ` (${r.ocr.village})` : ""}` : t("scan.pickName")}
                         onChange={(v) => { if (v) { onPatch(r.id, { adatiId: v, nameCorrected: true }, "name"); setEditingName(null); } }}
                         onBlurEmpty={() => setEditingName(null)}
                       />

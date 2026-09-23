@@ -182,7 +182,7 @@ adatiRoutes.post("/", can("adati.write"), async (c) => {
   const values = {
     id, businessId: biz,
     nameHi: body.nameHi,
-    nameHinglish: body.nameHinglish?.trim() || toHinglish(body.nameHi),
+    nameHinglish: body.nameHinglish?.trim().toUpperCase() || toHinglish(body.nameHi),
     nameHinglishLocked: body.nameHinglishLocked ?? Boolean(body.nameHinglish?.trim()),
     firmSuffix: body.firmSuffix || null,
     village: body.village || null,
@@ -226,7 +226,7 @@ adatiRoutes.put("/:id", can("adati.write"), async (c) => {
     }
   }
   if (body.nameHinglish !== undefined) {
-    patch.nameHinglish = body.nameHinglish.trim();
+    patch.nameHinglish = body.nameHinglish.trim().toUpperCase();
     patch.nameHinglishLocked = true; // a human decided this spelling
   }
   if (body.nameHinglishLocked !== undefined) patch.nameHinglishLocked = body.nameHinglishLocked;

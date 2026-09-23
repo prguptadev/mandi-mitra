@@ -149,5 +149,30 @@ try {
   console.log(" FAIL  repeated RST was refused: " + (e as Error).message.slice(0, 90)); bad++;
 }
 
+console.log("\nA typed name is a supplier");
+{
+  const check = (label: string, got: unknown, want: unknown) => {
+    const ok = JSON.stringify(got) === JSON.stringify(want);
+    if (!ok) bad++;
+    console.log(` ${ok ? "PASS" : "FAIL"}  ${label}${ok ? "" : `   got ${JSON.stringify(got)}`}`);
+  };
+  const jinsAll = await call("GET", "/jins");
+  const j = jinsAll.find((x: any) => x.code === "1509") ?? jinsAll[0];
+  const supBefore = (await call("GET", "/adati?all=1")).length;
+  const s1 = await call("POST", "/slips", { slipDate: "2026-12-01", rstNo: "T1", adatiName: "नया टाइप आढ़ती", jinsId: j.id, grossGrams: 1_000_000, ratePaisePerQtl: 300000 });
+  check("a Hindi name nobody has becomes a new supplier", s1.supplierCreated?.nameHi, "नया टाइप आढ़ती");
+  const s2 = await call("POST", "/slips", { slipDate: "2026-12-01", rstNo: "T2", adatiName: "नया टाइप आढ़ती", jinsId: j.id, grossGrams: 1_000_000, ratePaisePerQtl: 300000 });
+  check("the same name again is the same supplier, not a second one", s2.supplierCreated, null);
+  const s3 = await call("POST", "/slips", { slipDate: "2026-12-01", rstNo: "T3", adatiName: "Naya Latin Trader", jinsId: j.id, grossGrams: 1_000_000, ratePaisePerQtl: 300000 });
+  check("a name typed in English is saved in Devanagari with the English spelling kept, in capitals", /^[\u0900-\u097F ]+$/.test(s3.supplierCreated?.nameHi ?? "") && s3.supplierCreated?.nameHinglish === "NAYA LATIN TRADER", true);
+  const day = await call("GET", "/slips?date=2026-12-01");
+  const rowT1 = day.rows.find((r: any) => r.rstNo === "T1");
+  const e1 = await call("PUT", `/slips/${rowT1.id}`, { adatiName: "दूसरा टाइप आढ़ती" });
+  check("editing a row with a new typed name makes that supplier too", e1.supplierCreated?.nameHi, "दूसरा टाइप आढ़ती");
+  const e2 = await call("PUT", `/slips/${rowT1.id}`, { adatiName: "Naya Latin Trader" });
+  check("…and a known English spelling finds the existing supplier", e2.supplierCreated, null);
+  check("the new suppliers are on the supplier list", (await call("GET", "/adati?all=1")).length, supBefore + 3);
+  for (const r of day.rows.filter((x: any) => /^T\d$/.test(x.rstNo))) await call("DELETE", `/slips/${r.id}`);
+}
 console.log(bad === 0 ? "\nDaily list reproduces the sheet exactly." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

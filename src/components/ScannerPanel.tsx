@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Printer, ScanLine, Play, Plus, RefreshCw } from "lucide-react";
+import { Printer, ScanLine, Play, Plus, RefreshCw, Stethoscope, Copy, Check } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { Alert, Badge, Button, Field, Select, Spinner } from "@/components/ui/index.tsx";
@@ -20,6 +20,12 @@ export function ScannerPanel({ slipDate, merchantId, jinsId }: { slipDate: strin
   const qc = useQueryClient();
   const [, navigate] = useLocation();
   const status = useQuery({ queryKey: ["scanner"], queryFn: () => api.get<{ available: boolean }>("/scanner"), staleTime: 300_000 });
+  const [showDetails, setShowDetails] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const details = useQuery({
+    queryKey: ["scanner", "details"], enabled: false, staleTime: 0, retry: false,
+    queryFn: () => api.get<{ available: boolean; details: string }>("/scanner/details"),
+  });
   const devices = useQuery({
     queryKey: ["scanner", "devices"], enabled: Boolean(status.data?.available), staleTime: 60_000,
     queryFn: () => api.get<{ available: boolean; devices: { id: string; name: string }[] }>("/scanner/devices"),
@@ -55,8 +61,28 @@ export function ScannerPanel({ slipDate, merchantId, jinsId }: { slipDate: strin
         {/* plugged in, or joined the Wi-Fi, after the page opened */}
         <Button size="sm" variant="ghost" className="ml-auto" disabled={devices.isFetching} icon={<RefreshCw className="h-3.5 w-3.5" />}
           onClick={() => void devices.refetch()}>{t("scanner.lookAgain")}</Button>
+        <Button size="sm" variant="ghost" disabled={details.isFetching} icon={<Stethoscope className="h-3.5 w-3.5" />}
+          onClick={() => { setShowDetails(true); void details.refetch(); }}>{t("scanner.check")}</Button>
       </div>
       {err && <Alert tone="bad">{err}</Alert>}
+      {showDetails && (
+        <div className="rounded-lg border border-line bg-raised/40 p-2.5">
+          <div className="mb-1.5 flex items-center gap-2">
+            <p className="text-[12px] font-medium text-muted">{t("scanner.checkTitle")}</p>
+            {details.isFetching && <Spinner className="h-3.5 w-3.5" />}
+            <Button size="sm" variant="ghost" className="ml-auto" icon={copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              disabled={!details.data?.details}
+              onClick={async () => {
+                try { await navigator.clipboard.writeText(details.data?.details ?? ""); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* clipboard blocked */ }
+              }}>{copied ? t("wa.copied") : t("wa.copy")}</Button>
+            <Button size="sm" variant="ghost" onClick={() => setShowDetails(false)}>{t("common.close")}</Button>
+          </div>
+          {details.isError
+            ? <Alert tone="bad">{details.error instanceof ApiError ? details.error.message : t("common.somethingWrong")}</Alert>
+            : <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-snug text-muted">{details.data?.details ?? ""}</pre>}
+          <p className="mt-1.5 text-[11px] text-faint">{t("scanner.checkHelp")}</p>
+        </div>
+      )}
       {devices.isError && <Alert tone="bad">{devices.error instanceof ApiError ? devices.error.message : t("common.somethingWrong")}</Alert>}
       {devices.data && !list.length && !devices.isFetching && <Alert tone="warn">{t("scanner.none")}</Alert>}
       {list.length > 0 && (

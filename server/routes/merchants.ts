@@ -69,7 +69,7 @@ merchantRoutes.post("/", can("merchant.write"), async (c) => {
   const values = {
     id, businessId: biz, code, name: body.name,
     nameHi: body.nameHi || null,
-    nameHinglish: body.nameHinglish?.trim() || (body.nameHi ? toHinglish(body.nameHi) : null),
+    nameHinglish: body.nameHinglish?.trim().toUpperCase() || (body.nameHi ? toHinglish(body.nameHi) : null),
     addressLine1: body.addressLine1 || null, addressLine2: body.addressLine2 || null,
     city: body.city || null, state: body.state || null, pincode: body.pincode || null,
     contactPerson: body.contactPerson || null, phone: body.phone || null,
@@ -95,7 +95,7 @@ merchantRoutes.put("/:id", can("merchant.write"), async (c) => {
   const patch: Record<string, unknown> = { updatedAt: nowSec() };
   if (body.code) patch.code = body.code.toUpperCase();
   for (const k of ["name", "nameHi", "nameHinglish", "addressLine1", "addressLine2", "city", "state", "pincode", "contactPerson", "phone", "gstin"] as const) {
-    if (body[k] !== undefined) patch[k] = body[k] || null;
+    if (body[k] !== undefined) patch[k] = (k === "nameHinglish" ? body[k]?.trim().toUpperCase() : body[k]) || null;
   }
   if (body.active !== undefined) patch.active = body.active;
   if (body.openingBalanceRupees !== undefined) patch.openingBalancePaise = Math.round(body.openingBalanceRupees * 100);

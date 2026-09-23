@@ -21,6 +21,7 @@ import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
 import { normRst, checkPages, slipMarks, type PageMeta } from "../lib/scanRows.ts";
 import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
+import { ensureSupplier } from "../lib/supplierFromName.ts";
 
 /** Pages read so far. A sheet read before pages were counted (before 21-09-2026)
  *  was read in full, but its count was left at 0 when the count was added. */
@@ -878,6 +879,24 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
   const { rows, summary, katauti } = await checkAll(biz, batch);
   const toWrite = rows.filter((r) => !r.excluded);
   if (!toWrite.length) throw bad("Every row is excluded — nothing to add", "nothing_to_commit");
+  // names nobody matched: made into suppliers now, the way a typed name on the daily list is
+  const newlyMade: { rowId: string; adatiId: string; nameHi: string }[] = [];
+  const madeByName = new Map<string, string>();
+  for (const r of toWrite) {
+    if (r.adatiId ?? r.match?.adatiId) continue;
+    const raw = r.adatiRawText.trim();
+    if (!raw) continue;
+    let adatiId = madeByName.get(raw);
+    if (!adatiId) { const m = await ensureSupplier(biz, raw, actor(c)); adatiId = m.id; madeByName.set(raw, adatiId); }
+    r.adatiId = adatiId;
+    newlyMade.push({ rowId: r.id, adatiId, nameHi: raw });
+  }
+  if (newlyMade.length) {
+    const stored = JSON.parse(batch.parsedRows ?? "[]") as { id: string }[];
+    const by = new Map(newlyMade.map((x) => [x.rowId, x.adatiId]));
+    await db.update(schema.scanBatches).set({ parsedRows: JSON.stringify(stored.map((x) => (by.has(x.id) ? { ...x, adatiId: by.get(x.id), nameCorrected: false } : x))) })
+      .where(eq(schema.scanBatches.id, id));
+  }
   // the same rules as typing a slip by hand
   if (toWrite.some((r) => (r.ratePaisePerQtl ?? 0) > 0) && !c.get("auth")!.permissions.has("rate.edit")) {
     throw new HttpError(403, "This sheet carries rates, and you may not set purchase rates. Ask someone who may to add it.", "forbidden");
@@ -958,7 +977,7 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
 
   await audit({
     actor: actor(c), action: "scan.commit", entity: "scan_batch", entityId: id,
-    entityLabel: `${created.length} slips added to ${batch.slipDate}`,
+    entityLabel: `${created.length} slips added to ${batch.slipDate}${newlyMade.length ? ` · ${new Set(newlyMade.map((x) => x.adatiId)).size} new supplier(s)` : ""}`,
     after: { slips: created.length, learnedAliases: learned.length, slipDate: batch.slipDate },
   });
 

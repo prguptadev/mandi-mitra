@@ -38,6 +38,11 @@ jobs:
           $out = & powershell.exe -NoProfile -NonInteractive -Sta -ExecutionPolicy Bypass -File scanner-wia.ps1 -List 2>&1
           Write-Host "list: $out (exit $LASTEXITCODE)"
           if ($LASTEXITCODE -eq 0 -and "$out" -ne "[]") { throw "expected an empty scanner list, got: $out" }
+          $diag = & powershell.exe -NoProfile -NonInteractive -Sta -ExecutionPolicy Bypass -File scanner-wia.ps1 -Diag 2>&1
+          Write-Host "check: $diag (exit $LASTEXITCODE)"
+          if ($LASTEXITCODE -ne 0) { throw "the scanner check did not run" }
+          $j = "$diag" | ConvertFrom-Json
+          if ($null -eq $j.windows) { throw "the scanner check said nothing about this computer" }
       - run: npm run build
       - run: npm run build:desktop-server
       - name: Build the installer

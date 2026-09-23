@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { can, actor, bad, HttpError, isoDay, type Env } from "../lib/http.ts";
 import { audit } from "../lib/audit.ts";
-import { listScanners, scanPage, scannerAvailable, ScanError } from "../lib/scanner.ts";
+import { listScanners, scanPage, scannerAvailable, scannerDetails, ScanError } from "../lib/scanner.ts";
 import { createScan, appendPage } from "./scans.ts";
 
 /* Scan straight from the scanner connected to the computer the app runs on.
@@ -18,6 +18,15 @@ scannerRoutes.get("/devices", can("scan.create"), async (c) => {
     return c.json({ available: true, devices: await listScanners() });
   } catch (e) {
     throw bad(e instanceof ScanError ? e.message : "Could not look for scanners", "scanner_error");
+  }
+});
+
+scannerRoutes.get("/details", can("scan.create"), async (c) => {
+  if (!scannerAvailable()) return c.json({ available: false, details: "" });
+  try {
+    return c.json({ available: true, details: await scannerDetails() });
+  } catch (e) {
+    throw bad(e instanceof ScanError ? e.message : "Could not ask the scanner", "scanner_error");
   }
 });
 
@@ -41,7 +50,12 @@ scannerRoutes.post("/scan", can("scan.create"), async (c) => {
   } catch (e) {
     throw bad(e instanceof ScanError ? e.message : "The scan failed", "scan_failed");
   }
-  const mimeType = bytes[0] === 0x89 && bytes[1] === 0x50 ? "image/png" : "image/jpeg";
+  // the driver may have given BMP, PNG or TIFF; the reader is told which it is
+  const head = bytes.subarray(0, 4);
+  const mimeType = head[0] === 0x89 && head[1] === 0x50 ? "image/png"
+    : head[0] === 0x42 && head[1] === 0x4d ? "image/bmp"
+    : (head[0] === 0x49 && head[1] === 0x49) || (head[0] === 0x4d && head[1] === 0x4d) ? "image/tiff"
+    : "image/jpeg";
 
   if (body.scanId) {
     const pages = await appendPage(biz, body.scanId, bytes, mimeType);

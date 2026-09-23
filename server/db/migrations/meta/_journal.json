@@ -134,6 +134,13 @@
       "when": 1790144105208,
       "tag": "0018_voucher_numbers",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1790165130888,
+      "tag": "0019_hinglish_capitals",
+      "breakpoints": true
     }
   ]
 }

@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronLeft, ChevronRight, Calendar, Trash2, Truck, AlertTriangle, Check,
   RefreshCw, Download, Keyboard, Lock, Plus, X, Image as ImageIcon, CheckSquare,
-  FileSpreadsheet, Pencil, ArrowUp, ArrowDown, LockOpen,
+  FileSpreadsheet, Pencil, ArrowUp, ArrowDown, LockOpen, MessageCircle,
 } from "lucide-react";
 import { api, ApiError, type Jins, type Merchant, type SlipRow, type SlipTotals, type SlipDay, type KatautiConfig } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -20,6 +20,7 @@ import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
 import { DownloadDialog } from "@/components/DownloadDialog.tsx";
+import { WhatsAppDialog } from "@/components/WhatsAppDialog.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { useFY } from "@/lib/fy.tsx";
 import { slipCharges, defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
@@ -40,6 +41,8 @@ const shiftDay = (iso: string, days: number) => {
 interface Draft {
   rstNo: string;
   adatiId: string | null;
+  /** What is typed in the name box when no supplier is picked: saved as a new supplier. */
+  adatiName?: string;
   gross: string;
   /** Left blank unless the sheet's KATAUTI differs from the derived value. */
   katauti: string;
@@ -47,7 +50,7 @@ interface Draft {
   /** Only while editing a row: its commodity. */
   jinsId?: string;
 }
-const emptyDraft = (): Draft => ({ rstNo: "", adatiId: null, gross: "", katauti: "", rate: "" });
+const emptyDraft = (): Draft => ({ rstNo: "", adatiId: null, adatiName: "", gross: "", katauti: "", rate: "" });
 
 const halfUp = (n: number) => Math.sign(n) * Math.round(Math.abs(n));
 
@@ -94,6 +97,7 @@ export function DailyListPage() {
   const { prefs, save: savePrefs } = usePrefs();
   const P = prefs.dailyList;
   const [downloading, setDownloading] = useState<null | "list" | "dara">(null);
+  const [sharing, setSharing] = useState<null | "list" | "dara">(null);
 
   // a link like /daily?date=2026-09-20 (from the dashboard's flags) opens that day
   const search = useSearch();
@@ -217,9 +221,11 @@ export function DailyListPage() {
   });
 
   const create = useMutation({
-    mutationFn: () => api.post<{ id: string; approvedParchas?: { parchaNo: string; truckNo: string | null }[] }>("/slips", {
+    mutationFn: () => api.post<{ id: string; approvedParchas?: { parchaNo: string; truckNo: string | null }[]; supplierCreated?: { nameHi: string; nameHinglish: string } | null }>("/slips", {
       slipDate: date, rstNo: draft.rstNo.trim(),
-      adatiId: draft.adatiId, jinsId,
+      adatiId: draft.adatiId ?? undefined,
+      adatiName: draft.adatiId ? undefined : (draft.adatiName?.trim() || undefined),
+      jinsId,
       merchantId: merchantId || null,
       grossGrams: d.grossGrams,
       katautiUnits: d.overridden ? d.katautiUnits : null,
@@ -228,6 +234,7 @@ export function DailyListPage() {
     onSuccess: async (r) => {
       setErr(null);
       warnStale(r);
+      if (r.supplierCreated) { setNotice(t("daily.supplierAdded", { name: pick(r.supplierCreated.nameHinglish, r.supplierCreated.nameHi) })); await qc.invalidateQueries({ queryKey: ["adati"] }); }
       // most rows on a sheet share a rate, so keep it unless told otherwise
       setDraft(P.carryRateForward ? { ...emptyDraft(), rate: draft.rate } : emptyDraft());
       await qc.invalidateQueries({ queryKey: ["slips"] });
@@ -239,8 +246,10 @@ export function DailyListPage() {
   const update = useMutation({
     mutationFn: ({ id, draft: dr, grossShown }: { id: string; draft: Draft; grossShown?: string }) => {
       const dd = derive(dr, katautiCfg);
-      return api.put(`/slips/${id}`, {
-        rstNo: dr.rstNo.trim(), adatiId: dr.adatiId,
+      return api.put<{ supplierCreated?: { nameHi: string; nameHinglish: string } | null }>(`/slips/${id}`, {
+        rstNo: dr.rstNo.trim(),
+        adatiId: dr.adatiId ?? undefined,
+        adatiName: dr.adatiId ? undefined : (dr.adatiName?.trim() || undefined),
         ...(dr.jinsId ? { jinsId: dr.jinsId } : {}),
         // an untouched gross is not re-sent: 28.605 shown as 28.61 must not become 28.61
         ...(grossShown !== undefined && dr.gross === grossShown ? {} : { grossGrams: dd.grossGrams }),
@@ -248,7 +257,11 @@ export function DailyListPage() {
         ratePaisePerQtl: dd.ratePaise ?? 0,
       });
     },
-    onSuccess: async (r) => { setEditing(null); setErr(null); warnStale(r); await qc.invalidateQueries({ queryKey: ["slips"] }); },
+    onSuccess: async (r) => {
+      setEditing(null); setErr(null); warnStale(r);
+      if (r?.supplierCreated) { setNotice(t("daily.supplierAdded", { name: pick(r.supplierCreated.nameHinglish, r.supplierCreated.nameHi) })); await qc.invalidateQueries({ queryKey: ["adati"] }); }
+      await qc.invalidateQueries({ queryKey: ["slips"] });
+    },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
@@ -299,7 +312,7 @@ export function DailyListPage() {
   });
 
   const draftReady =
-    draft.rstNo.trim() !== "" && draft.adatiId !== null &&
+    draft.rstNo.trim() !== "" && (draft.adatiId !== null || (draft.adatiName ?? "").trim() !== "") &&
     d.grossGrams !== null && d.grossGrams > 0 && d.netGrams !== null && d.netGrams > 0;
 
   /** Enter walks the row; Enter on the last field saves and starts the next. */
@@ -481,7 +494,7 @@ export function DailyListPage() {
         if (key !== nameCol) return displayCell(key, r, i);
         return <SupplierPicker value={ed.adatiId}
           selectedLabel={{ nameHi: r.adatiNameHi, nameHinglish: r.adatiNameHinglish }}
-          onChange={(v) => upd({ adatiId: v })} />;
+          onChange={(v) => upd({ adatiId: v })} onQueryChange={(q) => upd({ adatiName: q })} />;
       case "gross": return <input className={CELL} value={ed.gross} inputMode="decimal"
         onChange={(e) => upd({ gross: e.target.value })} />;
       case "katauti": return <input className={cn(CELL, !ed.katauti && "text-faint")} inputMode="numeric"
@@ -549,8 +562,9 @@ export function DailyListPage() {
             ) : c.key === nameCol ? (
               <SupplierPicker ref={adatiRef} value={draft.adatiId}
                 onChange={(v) => setDraft((p) => ({ ...p, adatiId: v }))}
+                onQueryChange={(q) => setDraft((p) => ({ ...p, adatiName: q }))}
                 onCommit={() => grossRef.current?.focus()}
-                onCreate={can("adati.write") ? (name) => setNewSupplierName(name) : undefined} />
+                placeholder={t("daily.typeNameAuto")} />
             ) : c.key === "gross" ? (
               <input ref={grossRef} className={CELL} value={draft.gross} inputMode="decimal" placeholder="19.20"
                 onChange={(e) => setDraft((p) => ({ ...p, gross: e.target.value }))}
@@ -614,9 +628,14 @@ export function DailyListPage() {
             <Button size="sm" variant="ghost" icon={<Keyboard className="h-3.5 w-3.5" />} onClick={() => setShowHelp(true)} title={t("daily.keys")} aria-label={t("daily.keys")} />
             <DailyListSettings />
             {can("export.data") && (
-              <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={() => setDownloading("list")} title={t("dl.dara")}>
-                {t("dl.button")}
-              </Button>
+              <>
+                <Button size="sm" variant="secondary" icon={<MessageCircle className="h-3.5 w-3.5" />} onClick={() => setSharing("list")} title={t("wa.title")}>
+                  {t("wa.button")}
+                </Button>
+                <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} onClick={() => setDownloading("list")} title={t("dl.dara")}>
+                  {t("dl.button")}
+                </Button>
+              </>
             )}
           </div>
         }
@@ -1006,6 +1025,10 @@ export function DailyListPage() {
       {downloading && (
         <DownloadDialog open date={date} merchantId={merchantId} mills={mills.data ?? []} jinsId={filterJins} jinsList={jinsList.data ?? []}
           initial={downloading} onClose={() => setDownloading(null)} />
+      )}
+      {sharing && (
+        <WhatsAppDialog open date={date} merchantId={merchantId} mills={mills.data ?? []} jinsId={filterJins} jinsList={jinsList.data ?? []}
+          initial={sharing} onClose={() => setSharing(null)} />
       )}
     </>
   );

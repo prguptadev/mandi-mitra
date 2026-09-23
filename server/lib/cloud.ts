@@ -102,6 +102,36 @@ function pool(conn: string) {
   });
 }
 
+/* Supabase's direct host (db.<ref>.supabase.co) answers only over IPv6, which
+   most shop and home connections in India do not have. Its Session pooler
+   answers over IPv4 with the same password, as user postgres.<ref>. When the
+   direct host cannot be reached, the pooler of each region is tried, India
+   first, and the one that answers is kept as the saved string. */
+const POOLER_REGIONS = ["ap-south-1", "ap-southeast-1", "ap-southeast-2", "ap-northeast-1", "ap-northeast-2", "us-east-1", "us-east-2",
+  "us-west-1", "us-west-2", "eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1", "eu-central-2", "eu-north-1", "ca-central-1", "sa-east-1", "ap-east-1"];
+const DIRECT = /^(postgres(?:ql)?:\/\/)postgres(:.*)@db\.([a-z0-9]+)\.supabase\.co(?::\d+)?(\/.*)?$/i;
+export const isDirectSupabase = (conn: string) => DIRECT.test(conn.trim());
+export function poolerVariants(conn: string): string[] {
+  const m = DIRECT.exec(conn.trim());
+  if (!m) return [];
+  return POOLER_REGIONS.map((r) => `${m[1]}postgres.${m[3]}${m[2]}@aws-0-${r}.pooler.supabase.com:5432${m[4] || "/postgres"}`);
+}
+async function answers(conn: string, ms: number): Promise<boolean> {
+  const p = new pg.Pool({ connectionString: conn, max: 1, connectionTimeoutMillis: ms, ssl: { rejectUnauthorized: false } });
+  try {
+    const c = await p.connect();
+    try { await c.query("select 1"); return true; } finally { c.release(); }
+  } catch { return false; } finally { await p.end().catch(() => {}); }
+}
+/** The string as given, or its pooler form when only that one answers. */
+export async function reachableForm(conn: string): Promise<string> {
+  const variants = poolerVariants(conn);
+  if (!variants.length || await answers(conn, 6_000)) return conn;
+  for (const v of variants) if (await answers(v, 8_000)) return v;
+  return conn; // let the real attempt say what is wrong
+}
+let lastDirectCheck = 0;
+
 const DDL = `
 create sequence if not exists mm_seq;
 create table if not exists mm_rows (
@@ -229,6 +259,7 @@ export async function inspectCloud(conn: string) {
  * unless it is this same computer coming back.
  */
 export async function connectCloud(conn: string): Promise<{ started?: boolean; resumed?: boolean; needsJoin?: { rows: number; devices: string[] } }> {
+  conn = await reachableForm(conn);
   const info = await inspectCloud(conn);
   const me = readCloudConfig();
   const others = info.devices.filter((d) => d.id !== me.deviceId);
@@ -247,6 +278,7 @@ export async function connectCloud(conn: string): Promise<{ started?: boolean; r
 
 /** Joins a cloud that other computers already use: this computer's data is replaced by the cloud's. */
 export async function joinCloud(conn: string) {
+  conn = await reachableForm(conn);
   await inspectCloud(conn);
   patchConfig({ enc: encryptSecret(conn), host: describeConnection(conn), live: false });
   const r = await restoreFromCloud();
@@ -292,8 +324,14 @@ export function syncNow(): Promise<SyncResult> {
 
 async function doSync(): Promise<SyncResult> {
   const cfg = readCloudConfig();
-  const conn = cfg.enc ? decryptSecret(cfg.enc) : null;
+  let conn = cfg.enc ? decryptSecret(cfg.enc) : null;
   if (!conn || !cfg.live) throw new CloudError("Cloud sync is not set up");
+  if (isDirectSupabase(conn) && Date.now() - lastDirectCheck > 5 * 60_000) {
+    // a direct string saved on a computer without IPv6: swap it for the pooler that answers
+    lastDirectCheck = Date.now();
+    const v = await reachableForm(conn);
+    if (v !== conn) { conn = v; patchConfig({ enc: encryptSecret(v), host: describeConnection(v) }); }
+  }
   installTriggers();
   const p = pool(conn);
   try {

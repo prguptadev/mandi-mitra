@@ -146,15 +146,16 @@ console.log("Validation of the raw reading");
 check("rows read", v1.summary.total, 11);
 check("struck-through row auto-excluded", v1.summary.excluded, 1);
 check("misspelling resolved without help", byRst("627")[0].match?.via, "normkey");
-check("  ...to the right supplier", byRst("627")[0].match?.nameHinglish, "Phoolsingh Verma");
-check("unknown name blocks", byRst("637")[0].blocking, true);
+check("  ...to the right supplier", byRst("627")[0].match?.nameHinglish, "PHOOLSINGH VERMA");
+check("an unknown name no longer blocks: saving the sheet adds it as a supplier", byRst("637")[0].blocking, false);
+check("  ...and the row says so", byRst("637")[0].issues.some((i: any) => i.code === "name_unresolved" && i.level === "warn"), true);
 check("  ...with the right reason", byRst("637")[0].issues.some((i: any) => i.code === "name_unresolved"), true);
 // a repeated kanta slip no. is highlighted on both rows but never blocks
 check("repeated RST flagged on both rows", byRst("640").filter((r: any) => r.issues.some((i: any) => i.code === "rst_dupe")).length, 2);
 check("repeated RST does not block", byRst("640").filter((r: any) => r.blocking).length, 0);
 check("sheet net disagreeing blocks until the operator confirms it", byRst("638")[0].blocking, true);
 check("a model pick unlike the handwriting is not taken as the match", byRst("650")[0].match, null);
-check("  ...but offered first among the suggestions", byRst("650")[0].suggestions[0]?.nameHinglish, "Phoolsingh Verma");
+check("  ...but offered first among the suggestions", byRst("650")[0].suggestions[0]?.nameHinglish, "PHOOLSINGH VERMA");
 check("  ...and is flagged", byRst("638")[0].issues.some((i: any) => i.code === "net_mismatch"), true);
 check("missing rate warns, not blocks", byRst("644")[0].blocking, false);
 check("net cross-check counted", `${v1.summary.netAgreeing}/${v1.summary.netChecked}`, "9/10");
@@ -195,7 +196,7 @@ try {
 
 console.log("\nOperator fixes the three blocking rows");
 const suppliers = await call("GET", "/adati");
-const ramveer = suppliers.find((s: any) => s.nameHinglish.startsWith("Ramveer"));
+const ramveer = suppliers.find((s: any) => s.nameHinglish.toUpperCase().startsWith("RAMVEER"));
 const fixed = v1.rows.map((r: any) => {
   const base = {
     id: r.id, ocr: r.ocr, rstNo: r.rstNo, adatiId: r.adatiId, adatiRawText: r.adatiRawText,
