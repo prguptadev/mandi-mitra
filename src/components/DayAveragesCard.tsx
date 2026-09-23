@@ -1,10 +1,11 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { CalendarDays } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { api } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useFormat } from "@/lib/format.tsx";
-import { Card, CardHeader, Badge, Button } from "@/components/ui/index.tsx";
+import { Card, CardHeader, Badge, Button, Input } from "@/components/ui/index.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { cn } from "@/lib/utils.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
@@ -33,18 +34,49 @@ interface Day {
   waiting: number;
 }
 
+/** One day, or the latest days the period holds. */
+const shift = (iso: string, by: number) => {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + by);
+  return d.toISOString().slice(0, 10);
+};
+
 export function DayAveragesCard({ qs }: { qs: string }) {
   const { t, pick, lang } = useI18n();
   const f = useFormat();
+  /** Empty = the latest days of the period; a date = only that day. */
+  const [day, setDay] = useState("");
+  const query = day ? new URLSearchParams({ from: day, to: day, days: "1" }).toString() : qs;
   const q = useQuery({
-    queryKey: ["dashboard", "day-averages", qs],
-    queryFn: () => api.get<{ days: Day[] }>(`/dashboard/day-averages?${qs}`),
+    queryKey: ["dashboard", "day-averages", query],
+    queryFn: () => api.get<{ days: Day[] }>(`/dashboard/day-averages?${query}`),
   });
+
+  const picker = (
+    <div className="flex items-center gap-1">
+      {day && (
+        <Button size="sm" variant="ghost" icon={<ChevronLeft className="h-3.5 w-3.5" />}
+          onClick={() => setDay(shift(day, -1))} aria-label={t("daily.prevDay")} title={t("daily.prevDay")} />
+      )}
+      <Input type="date" value={day} onChange={(e) => setDay(e.target.value)}
+        className="h-8 w-36 text-[13px]" aria-label={t("dash.dayPick")} title={t("dash.dayPick")} />
+      {day && (
+        <>
+          <Button size="sm" variant="ghost" icon={<ChevronRight className="h-3.5 w-3.5" />}
+            onClick={() => setDay(shift(day, 1))} aria-label={t("daily.nextDay")} title={t("daily.nextDay")} />
+          <Button size="sm" variant="ghost" icon={<X className="h-3.5 w-3.5" />}
+            onClick={() => setDay("")} aria-label={t("dash.dayLatest")} title={t("dash.dayLatest")}>{t("dash.dayLatest")}</Button>
+        </>
+      )}
+    </div>
+  );
 
   // nothing to show yet, or the figures are not in: the card stays away
   if (q.isLoading) return <Card className="mb-5"><SkeletonTable rows={3} /></Card>;
   const days = q.data?.days ?? [];
-  if (!days.length) return null;
+  // a day picked by hand keeps the card there even when that day is empty, so
+  // the answer "nothing that day" is visible instead of the card vanishing
+  if (!days.length && !day) return null;
 
   const th = "px-2 py-1.5 text-left text-[11px] font-medium uppercase tracking-wide text-muted";
   const thNum = cn(th, "text-right");
@@ -53,14 +85,16 @@ export function DayAveragesCard({ qs }: { qs: string }) {
 
   return (
     <Card className="mb-5">
-      <CardHeader title={t("dash.dayRate")} sub={t("dash.dayRateSub")}
-        action={<Link href="/daily"><Button size="sm" variant="ghost">{t("dash.seeAll")}</Button></Link>} />
+      <CardHeader title={t("dash.dayRate")} sub={t("dash.dayRateSub")} action={picker} />
       <div className="space-y-4 p-3">
+        {!days.length && (
+          <p className="px-1 text-[13px] text-faint">{t("dash.dayEmpty", { date: dmy(day) })}</p>
+        )}
         {days.map((d) => (
           <div key={d.date}>
             <p className="mb-1.5 flex items-center gap-2 text-[13px] font-semibold text-ink">
               <CalendarDays className="h-3.5 w-3.5 text-faint" />
-              <span className="num">{dmy(d.date)}</span>
+              <Link href={`/daily?date=${d.date}`} className="num hover:underline">{dmy(d.date)}</Link>
               <span className="text-[12px] font-normal text-faint">{weekday(d.date, lang)}</span>
               {d.waiting > 0 && <Badge tone="warn">{t("dash.dayWaiting", { n: d.waiting })}</Badge>}
             </p>

@@ -6,6 +6,7 @@ import pg from "pg";
 import Database from "better-sqlite3";
 import { sqlite, DB_PATH } from "../db/client.ts";
 import { encryptSecret, decryptSecret } from "./secrets.ts";
+import { settleVoucherNumbers } from "./voucherRepair.ts";
 import { backupNow } from "./backup.ts";
 import { newId } from "./ids.ts";
 
@@ -378,6 +379,11 @@ async function doSync(): Promise<SyncResult> {
         Object.assign(cfg, patchConfig({ cursor: top, fromCopy: false }));
       }
       const pulled = await pull(client, cfg);
+      // another computer's payment may carry a number this one already used
+      if (pulled.applied) {
+        const moved = await settleVoucherNumbers();
+        if (moved.length) markAll();
+      }
       let pushed = await push(client, cfg);
       if (pushed.waiting) {
         // another computer changed some of the same records a moment ago: take their

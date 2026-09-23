@@ -301,6 +301,50 @@ check("afterwards only the sign-in itself goes up", afterRestore.pushed < 10 && 
 await settle();
 sameEverywhere("at the end, all three computers hold exactly the same records");
 
+console.log("\nOne shop, two computers, the same connection string");
+// both off the internet, both working on the same day, as in the shop
+await internet(false);
+const sameDay = "2026-10-09";
+const a1 = await A.call("POST", "/slips", { slipDate: sameDay, rstNo: "777", adatiId: sup.id, jinsId: j.id, merchantId: lb.id, grossGrams: 1_000_000, ratePaisePerQtl: 300_000 });
+const b1 = await B.call("POST", "/slips", { slipDate: sameDay, rstNo: "777", adatiId: sup.id, jinsId: j.id, merchantId: lb.id, grossGrams: 1_500_000, ratePaisePerQtl: 310_000 });
+const payA = await A.call("POST", "/payments", { adatiId: sup.id, payDate: sameDay, amountPaise: 100_000, mode: "cash" });
+const payB = await B.call("POST", "/payments", { adatiId: sup.id, payDate: sameDay, amountPaise: 200_000, mode: "cash" });
+check("each computer gave its payment a number of its own while apart", payA.voucherNo === payB.voucherNo, { A: payA.voucherNo, B: payB.voucherNo });
+// the same new supplier typed on both, the way two munshis would
+const supA = await A.call("POST", "/slips", { slipDate: sameDay, rstNo: "778", adatiName: "दोनों जगह आढ़ती", jinsId: j.id, merchantId: lb.id, grossGrams: 1_000_000, ratePaisePerQtl: 300_000 });
+const supB = await B.call("POST", "/slips", { slipDate: sameDay, rstNo: "779", adatiName: "दोनों जगह आढ़ती", jinsId: j.id, merchantId: lb.id, grossGrams: 1_000_000, ratePaisePerQtl: 300_000 });
+await internet(true);
+await settle([A, B]);
+
+check("both slips survive — neither computer's work is lost", A.q("select 1 from purchase_slips where id in (?, ?)", a1.id, b1.id).length === 2);
+check("  ...and each computer has both", B.q("select 1 from purchase_slips where id in (?, ?)", a1.id, b1.id).length === 2);
+const bothRst = await A.call("GET", `/slips?date=${sameDay}`);
+check("the repeated slip number is on the day's list twice, for the operator to see",
+  bothRst.rows.filter((r: any) => r.rstNo === "777").length === 2, bothRst.rows.map((r: any) => r.rstNo));
+const nums = A.q<{ id: string; voucher_no: number }>("select id, voucher_no from payments where id in (?, ?)", payA.id, payB.id);
+check("the two payments no longer share a voucher number", new Set(nums.map((n) => n.voucher_no)).size === 2, nums);
+check("  ...and the same is true on the other computer",
+  new Set(B.q<{ voucher_no: number }>("select voucher_no from payments where id in (?, ?)", payA.id, payB.id).map((n) => n.voucher_no)).size === 2);
+check("  ...settled the same way on both computers",
+  JSON.stringify(nums.sort((x, y) => x.id.localeCompare(y.id)))
+  === JSON.stringify(B.q<{ id: string; voucher_no: number }>("select id, voucher_no from payments where id in (?, ?)", payA.id, payB.id).sort((x: any, y: any) => x.id.localeCompare(y.id))));
+check("the renumbering is written in the audit trail",
+  A.q("select 1 from audit_log where action = ?", "payment.renumber").length > 0);
+const twoNamed = A.q<{ n: number }>("select count(*) as n from adati where name_hi = ?", "दोनों जगह आढ़ती");
+check("the same new name typed on both computers makes two suppliers", twoNamed[0].n === 2, twoNamed);
+const books = await A.call("GET", "/audit/books-check");
+check("  ...and the books check says so, so they can be joined",
+  JSON.stringify(books).includes("belong to more than one supplier"));
+// join them, as the owner would, and the halves become one ledger
+const dupes = A.q<{ id: string }>("select id from adati where name_hi = ? order by created_at, id", "दोनों जगह आढ़ती");
+await A.call("POST", `/adati/${dupes[1].id}/merge`, { intoId: dupes[0].id, confirm: "MERGE" });
+await settle([A, B]);
+check("after joining, one supplier holds both slips", A.q("select 1 from purchase_slips where adati_id = ? and id in (?, ?)", dupes[0].id, supA.id, supB.id).length === 2);
+check("  ...on the other computer too", B.q("select 1 from purchase_slips where adati_id = ? and id in (?, ?)", dupes[0].id, supA.id, supB.id).length === 2);
+check("  ...and the one that went is gone everywhere", A.q("select 1 from adati where id = ?", dupes[1].id).length === 0 && B.q("select 1 from adati where id = ?", dupes[1].id).length === 0);
+for (const id of [a1.id, b1.id, supA.id, supB.id]) await A.call("DELETE", `/slips/${id}`);
+await settle([A, B]);
+
 console.log("\nSync held on one computer (its connection kept)");
 const held = await C.call("POST", "/cloud/live", { on: false });
 check("the switch turns sync off there", held.live === false && (await C.call("GET", "/cloud/status")).state === "off");

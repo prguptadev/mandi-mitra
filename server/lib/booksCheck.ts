@@ -97,6 +97,16 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     ok(`opening ₹${rs(opening)} + purchases ₹${rs(purchases)} − paid ₹${rs(paid)} = ₹${rs(opening + purchases - paid)}`);
     ok(`= to pay ₹${rs(toPay)} − paid ahead ₹${rs(ahead)} (${bal.filter((b) => b < 0).length} supplier(s) paid ahead)`);
     if (opening + purchases - paid !== toPay - ahead) bad("supplier balances do not add up to the total");
+    /* Two computers both given the same new name make two suppliers, and a
+       trader's ledger then sits in two halves. Nothing is wrong with the
+       money; it is the master that needs joining (Suppliers › Join). */
+    const named = all<{ name_hi: string; n: number; ids: string }>(
+      "select name_hi, count(*) as n, group_concat(id) as ids from adati where business_id = ? group by lower(trim(name_hi)) having count(*) > 1", biz.id);
+    if (named.length) {
+      note(`${named.length} name(s) belong to more than one supplier — join them on the Suppliers screen: ${named.map((x) => `${x.name_hi} (${x.n})`).join(", ")}`);
+    } else {
+      ok("every supplier name belongs to one supplier");
+    }
     const orphanPays = pays.filter((p) => !sup.some((a) => a.id === p.adati_id));
     if (orphanPays.length) bad(`${orphanPays.length} payment(s) point at a supplier that is not in this business`);
     if (cancelled.length) note(`${cancelled.length} cancelled payment(s) of ₹${rs(cancelled.reduce((s, p) => s + p.amount_paise, 0))} kept on record, counted as nothing`);
