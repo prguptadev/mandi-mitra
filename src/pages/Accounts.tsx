@@ -44,7 +44,7 @@ interface Entry {
   kind: "purchase" | "payment"; id: string; date: string;
   rstNo?: string; jinsCode?: string; millCode?: string | null; netGrams?: number; ratePaisePerQtl?: number;
   grossGrams?: number; katautiUnits?: number;
-  mode?: Mode; reference?: string | null; notes?: string | null;
+  mode?: Mode; reference?: string | null; notes?: string | null; voucherNo?: number | null;
   voided?: boolean; voidReason?: string | null;
   creditPaise: number; debitPaise: number; balancePaise: number; amountPaise?: number;
   /** A purchase: goods value and what the supplier adds; creditPaise is their sum. */
@@ -56,7 +56,7 @@ interface Statement {
   totals: { goodsPaise: number; commissionPaise: number; gaushalaPaise: number; purchasesPaise: number; paymentsPaise: number; netGrams: number; grossGrams: number; katautiUnits: number; avgRatePaisePerQtl: number; slips: number; unpriced: number; closingPaise: number };
 }
 interface PaymentRow {
-  id: string; adatiId: string; payDate: string; amountPaise: number; mode: Mode; reference: string | null; notes: string | null;
+  id: string; adatiId: string; payDate: string; amountPaise: number; mode: Mode; reference: string | null; notes: string | null; voucherNo?: number | null;
   adatiNameHi: string; adatiNameHinglish: string; createdByName: string | null;
   voidedAt?: number | null; voidReason?: string | null;
 }
@@ -262,7 +262,7 @@ export function LedgerPage() {
       ["", s.from ? "Brought forward" : "Opening balance", "", "", "", "", "", "", "", (s.broughtForwardPaise / 100).toFixed(2)],
       ...s.entries.map((e) => [
         dmy(e.date),
-        e.kind === "purchase" ? `RST ${e.rstNo} · ${e.jinsCode}${e.millCode ? ` · ${e.millCode}` : ""}` : `Payment · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
+        e.kind === "purchase" ? `RST ${e.rstNo} · ${e.jinsCode}${e.millCode ? ` · ${e.millCode}` : ""}` : `${e.voucherNo ? `PV-${e.voucherNo} · ` : ""}Payment · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
         e.netGrams != null ? fmtQtl(e.netGrams) : "",
         e.ratePaisePerQtl ? (e.ratePaisePerQtl / 100).toFixed(2) : "",
         e.kind === "purchase" && e.ratePaisePerQtl ? ((e.goodsPaise ?? 0) / 100).toFixed(2) : "",
@@ -434,7 +434,7 @@ export function LedgerPage() {
                           </>
                         ) : (
                           <Td className={cn("whitespace-nowrap text-ok", e.voided && "line-through")} colSpan={10}>
-                            {t("ledger.payment")} · {t(`pay.mode.${e.mode ?? "cash"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}
+                            {e.voucherNo ? <span className="num">PV-{e.voucherNo} · </span> : null}{t("ledger.payment")} · {t(`pay.mode.${e.mode ?? "cash"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}
                             {e.notes ? <span className="text-faint"> · {e.notes}</span> : null}
                             {e.voided && <span className="ml-2 text-[11px] text-bad">{t("money.cancelledBecause", { why: e.voidReason ?? "" })}</span>}
                           </Td>
@@ -569,7 +569,7 @@ export function PaymentsPage() {
           <Table>
             <thead>
               <tr>
-                <Th {...sort.th("date")}>{t("pay.date")}</Th><Th {...sort.th("supplier")}>{t("daily.supplier")}</Th>
+                <Th {...sort.th("date")}>{t("pay.date")}</Th><Th>{t("pay.voucherNo")}</Th><Th {...sort.th("supplier")}>{t("daily.supplier")}</Th>
                 <Th {...sort.th("mode")}>{t("pay.mode")}</Th><Th {...sort.th("reference")}>{t("pay.reference")}</Th>
                 <Th numeric {...sort.th("amount")}>{t("pay.amount")}</Th><Th {...sort.th("by")}>{t("pay.by")}</Th><Th className="w-20" />
               </tr>
@@ -578,6 +578,7 @@ export function PaymentsPage() {
               {sort.sorted.map((p) => (
                 <Tr key={p.id} className={cn(p.voidedAt && "opacity-60")}>
                   <Td className={cn("whitespace-nowrap", p.voidedAt && "line-through")}>{dmy(p.payDate)} <TallyMark flag={payFlags[p.id]} /></Td>
+                  <Td className="num whitespace-nowrap text-muted">{p.voucherNo ? `PV-${p.voucherNo}` : "—"}</Td>
                   <Td><span lang={lang === "hi" ? "hi" : undefined}>{lang === "hi" ? p.adatiNameHi : p.adatiNameHinglish || p.adatiNameHi}</span></Td>
                   <Td><Badge>{t(`pay.mode.${p.mode}`)}</Badge></Td>
                   <Td className="text-muted">{p.reference ?? ""}{p.notes ? <span className="block text-[11px] text-faint">{p.notes}</span> : null}

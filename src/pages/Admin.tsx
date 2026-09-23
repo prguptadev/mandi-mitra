@@ -9,6 +9,8 @@ import {
 import { api, ApiError, type UserRow, type Role, type AuditRow, type PermissionMeta, type GroupMeta, type Jins, type Business } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSort } from "@/lib/useSort.ts";
+import { useFormat } from "@/lib/format.tsx";
+import { actionWords, fieldWords, fmtValue, plainChanges } from "@/lib/auditWords.ts";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
@@ -345,6 +347,7 @@ export function AuditPage() {
   const [entity, setEntity] = useState("");
   const [userId, setUserId] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [raw, setRaw] = useState<string | null>(null);
 
   const facets = useQuery({
     queryKey: ["audit", "facets"],
@@ -373,6 +376,8 @@ export function AuditPage() {
   return (
     <>
       <PageHeader title={t("audit.title")} sub={t("audit.sub")} />
+
+      <BooksCheckCard />
 
       <Card>
         <div className="flex flex-wrap items-center gap-2 border-b border-line p-3">
@@ -404,15 +409,14 @@ export function AuditPage() {
                 <button type="button"
                   onClick={() => setExpanded(expanded === r.id ? null : r.id)}
                   className="flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-raised/50">
-                  <Badge tone={tone(r.action) as never} className="mt-0.5 shrink-0 font-mono">{r.action}</Badge>
+                  <Badge tone={tone(r.action) as never} className="mt-0.5 shrink-0" title={r.action}>{actionWords(r.action, lang)}</Badge>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[13px] text-ink">
                       {r.entityLabel || r.entityId || r.entity}
-                      <span className="ml-1.5 text-[11px] text-faint">{r.entity}</span>
                     </p>
                     <p className="mt-0.5 text-[11px] text-muted">
                       {r.userName ?? "—"}
-                      {r.changedKeys.length > 0 && <> · {t("audit.changed")}: <span className="font-mono">{r.changedKeys.join(", ")}</span></>}
+                      {r.changedKeys.length > 0 && <> · {t("audit.changed")}: {r.changedKeys.filter((k) => k !== "updatedAt").map((k) => fieldWords(k, lang)).join(", ")}</>}
                     </p>
                   </div>
                   <span className="shrink-0 text-right text-[11px] text-faint">
@@ -422,7 +426,15 @@ export function AuditPage() {
                 </button>
 
                 {expanded === r.id && (r.before || r.after) && (
-                  <div className="grid gap-3 bg-raised/40 px-3 py-3 sm:grid-cols-2">
+                  <div className="space-y-3 bg-raised/40 px-3 py-3">
+                    <PlainDiff r={r} />
+                    <button type="button" className="text-[11px] text-muted underline-offset-2 hover:underline" onClick={() => setRaw(raw === r.id ? null : r.id)}>
+                      {raw === r.id ? t("audit.rawHide") : t("audit.raw")}
+                    </button>
+                  </div>
+                )}
+                {expanded === r.id && raw === r.id && (r.before || r.after) && (
+                  <div className="grid gap-3 bg-raised/40 px-3 pb-3 sm:grid-cols-2">
                     {r.before && (
                       <div>
                         <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-faint">{t("audit.before")}</p>
@@ -456,6 +468,84 @@ export function AuditPage() {
 
       <p className="mt-3 text-center text-[11px] text-faint">{t("audit.readOnly")}</p>
     </>
+  );
+}
+
+/** One audit entry in plain words: each changed field, before → after; for a create or delete, what the record held. */
+function PlainDiff({ r }: { r: AuditRow }) {
+  const { t, lang } = useI18n();
+  const f = useFormat();
+  const rows = plainChanges(r);
+  if (!rows.length) return <p className="text-[12px] text-muted">{t("audit.noChange")}</p>;
+  const both = Boolean(r.before && r.after && r.changedKeys.length);
+  return (
+    <table className="w-full max-w-2xl text-[12px]">
+      <thead>
+        <tr className="text-left text-[11px] uppercase tracking-wide text-faint">
+          <th className="py-1 pr-3 font-medium">{t("audit.field")}</th>
+          {both ? <><th className="py-1 pr-3 font-medium">{t("audit.before")}</th><th className="py-1 font-medium">{t("audit.after")}</th></> : <th className="py-1 font-medium">{r.after ? t("audit.after") : t("audit.before")}</th>}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((x) => (
+          <tr key={x.key} className="border-t border-line/60">
+            <td className="py-1 pr-3 text-muted">{fieldWords(x.key, lang)}</td>
+            {both ? (
+              <>
+                <td className="num py-1 pr-3 text-faint line-through">{fmtValue(x.key, x.before, f, lang)}</td>
+                <td className="num py-1 font-medium text-ink">{fmtValue(x.key, x.after, f, lang)}</td>
+              </>
+            ) : <td className="num py-1 text-ink">{fmtValue(x.key, r.after ? x.after : x.before, f, lang)}</td>}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** "Check the books": the independent re-working of every figure, run on the live books from here. */
+function BooksCheckCard() {
+  const { t, lang } = useI18n();
+  const { can } = useSession();
+  const [open, setOpen] = useState(false);
+  const q = useQuery({
+    queryKey: ["books-check"],
+    queryFn: () => api.get<{ businesses: { name: string; sections: { title: string; lines: { ok: boolean | null; text: string }[] }[]; problems: number }[]; problems: number; at: number }>("/audit/books-check"),
+    enabled: false, retry: false, staleTime: Infinity,
+  });
+  if (!can("audit.read")) return null;
+  const r = q.data;
+  return (
+    <Card className="mb-4">
+      <CardHeader title={t("books.title")} sub={t("books.sub")}
+        action={<Button variant={r ? "secondary" : "primary"} size="sm" loading={q.isFetching} icon={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => { setOpen(true); void q.refetch(); }}>{t("books.run")}</Button>} />
+      {q.isError && <div className="p-4"><Alert tone="bad">{q.error instanceof ApiError ? q.error.message : t("common.somethingWrong")}</Alert></div>}
+      {r && open && (
+        <div className="space-y-3 p-4">
+          <Alert tone={r.problems ? "bad" : "ok"}>
+            <span className="font-semibold">{r.problems ? t("books.problems", { n: r.problems }) : t("books.ok")}</span>
+            <span className="ml-2 text-[11px] opacity-80">{t("books.at", { at: fmtDateTime(r.at, lang) })}</span>
+          </Alert>
+          {r.businesses.map((b) => (
+            <div key={b.name} className="grid gap-3 lg:grid-cols-2">
+              {b.sections.map((sec) => (
+                <div key={sec.title} className="rounded-lg border border-line p-3">
+                  <p className="mb-1.5 text-[12px] font-semibold text-ink">{sec.title}</p>
+                  <ul className="space-y-1 text-[12px] leading-snug">
+                    {sec.lines.map((l, i) => (
+                      <li key={i} className={cn("flex gap-2", l.ok === false ? "text-bad" : l.ok === true ? "text-ink" : "text-muted")}>
+                        <span className="shrink-0 font-mono">{l.ok === true ? "✓" : l.ok === false ? "✗" : "·"}</span>
+                        <span className="num break-words">{l.text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 

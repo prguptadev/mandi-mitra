@@ -50,6 +50,7 @@ async function build(biz: string, from: string, to: string, kinds0: Kind[], cfg:
   const vouchers: TallyVoucher[] = [];
   const entries: Entry[] = [];
   const ledgers = new Map<string, string>(); // name → parent group
+  const openings = new Map<string, number>(); // party ledger → opening balance, Tally sign
   const charges = new Map<string, string>(); // parcha charge key → its label, for naming its Tally ledger
   const use = (name: string, parent: string) => { if (!ledgers.has(name)) ledgers.set(name, parent); return name; };
   let unpriced = 0, alreadySent = 0;
@@ -61,19 +62,23 @@ async function build(biz: string, from: string, to: string, kinds0: Kind[], cfg:
   };
 
   // party names as Tally holds them; two suppliers with one name get their village added
-  const sups = await db.select({ id: schema.adati.id, nameHi: schema.adati.nameHi, nameHinglish: schema.adati.nameHinglish, village: schema.adati.village })
+  const sups = await db.select({ id: schema.adati.id, nameHi: schema.adati.nameHi, nameHinglish: schema.adati.nameHinglish, village: schema.adati.village, opening: schema.adati.openingBalancePaise })
     .from(schema.adati).where(eq(schema.adati.businessId, biz));
   const base = (s: (typeof sups)[number]) => (cfg.partyNames === "hindi" ? s.nameHi : s.nameHinglish || s.nameHi).trim();
   const count = new Map<string, number>();
   for (const s of sups) count.set(base(s).toLowerCase(), (count.get(base(s).toLowerCase()) ?? 0) + 1);
   const supName = new Map(sups.map((s) => [s.id, count.get(base(s).toLowerCase())! > 1 ? `${base(s)} - ${s.village || s.id.slice(-4)}` : base(s)]));
-  const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code, name: schema.merchants.name })
+  const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code, name: schema.merchants.name, opening: schema.merchants.openingBalancePaise })
     .from(schema.merchants).where(eq(schema.merchants.businessId, biz));
   const mCount = new Map<string, number>();
   for (const m of mills) mCount.set((m.name || m.code).toLowerCase(), (mCount.get((m.name || m.code).toLowerCase()) ?? 0) + 1);
   const millName = new Map(mills.map((m) => [m.id, mCount.get((m.name || m.code).toLowerCase())! > 1 ? `${m.name} (${m.code})` : m.name || m.code]));
-  const sup = (id: string) => use(supName.get(id) ?? id, cfg.supplierGroup);
-  const mill = (id: string) => use(millName.get(id) ?? id, cfg.millGroup);
+  // what the party was owed (or owed us) before the app: the ledger's opening in Tally.
+  // A supplier's positive opening is what we owe (credit); a mill's is what it owes us (debit, negative in Tally).
+  const supOpening = new Map(sups.map((s) => [s.id, s.opening]));
+  const millOpening = new Map(mills.map((m) => [m.id, -m.opening]));
+  const sup = (id: string) => { const n = use(supName.get(id) ?? id, cfg.supplierGroup); if (supOpening.get(id)) openings.set(n, supOpening.get(id)!); return n; };
+  const mill = (id: string) => { const n = use(millName.get(id) ?? id, cfg.millGroup); if (millOpening.get(id)) openings.set(n, millOpening.get(id)!); return n; };
   const cashOrBank = (mode: string) => (mode === "cash" ? use(L.cash, "Cash-in-Hand") : use(L.bank, "Bank Accounts"));
   const q2 = (g: number) => { const kg = Math.round(g / 1000); return `${Math.floor(kg / 100)}.${String(kg % 100).padStart(2, "0")}`; };
 
@@ -119,7 +124,7 @@ async function build(biz: string, from: string, to: string, kinds0: Kind[], cfg:
       party.adatiId ? eq(P.adatiId, party.adatiId) : undefined)), (x) => x.id);
     for (const p of pays) {
       vouchers.push({
-        type: T.payment, date: p.payDate, reference: p.reference ?? undefined, party: sup(p.adatiId),
+        type: T.payment, date: p.payDate, number: p.voucherNo ? `PV-${p.voucherNo}` : undefined, reference: p.reference ?? undefined, party: sup(p.adatiId),
         narration: [`Paid by ${p.mode}`, p.reference, p.notes].filter(Boolean).join(" · "),
         lines: [{ ledger: sup(p.adatiId), paise: p.amountPaise }, { ledger: cashOrBank(p.mode), paise: -p.amountPaise }],
       });
@@ -185,7 +190,7 @@ async function build(biz: string, from: string, to: string, kinds0: Kind[], cfg:
       party.merchantId ? eq(R.merchantId, party.merchantId) : undefined)), (x) => x.id);
     for (const x of recs) {
       vouchers.push({
-        type: T.receipt, date: x.receiptDate, reference: x.reference ?? undefined, party: mill(x.merchantId),
+        type: T.receipt, date: x.receiptDate, number: x.voucherNo ? `RV-${x.voucherNo}` : undefined, reference: x.reference ?? undefined, party: mill(x.merchantId),
         narration: [`Received by ${x.mode}`, x.reference, x.deductionPaise ? `held back Rs ${(x.deductionPaise / 100).toFixed(2)}${x.deductionNote ? ` (${x.deductionNote})` : ""}` : "", x.notes].filter(Boolean).join(" · "),
         lines: [
           { ledger: cashOrBank(x.mode), paise: x.amountPaise },
@@ -197,7 +202,7 @@ async function build(biz: string, from: string, to: string, kinds0: Kind[], cfg:
     }
   }
   vouchers.sort((a, b) => a.date.localeCompare(b.date));
-  return { vouchers, entries, ledgers: [...ledgers].map(([name, parent]): TallyLedger => ({ name, parent })), unpriced, alreadySent, charges: [...charges].map(([key, label]) => ({ key, label })) };
+  return { vouchers, entries, ledgers: [...ledgers].map(([name, parent]): TallyLedger => ({ name, parent, openingPaise: openings.get(name) })), unpriced, alreadySent, charges: [...charges].map(([key, label]) => ({ key, label })) };
 }
 
 const fpSlip = (s: typeof schema.purchaseSlips.$inferSelect) => [s.slipDate, s.adatiId, s.amountPaise, s.commissionPaise, s.gaushalaPaise, s.payablePaise].join("|");

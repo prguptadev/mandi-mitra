@@ -492,6 +492,16 @@ mean confidence                          : 0.90
   future year, switches itself on 1 April.
 - **Server messages in Hindi**: `src/lib/serverHi.ts`, applied in `api.ts`
   when `<html lang="hi">`. A message not in the table shows in English.
+- **Accountant's pass (v0.3.5)**: payments and mill receipts carry voucher
+  numbers (`voucher_no`, per business, restarting each 1 April; PV-n / RV-n on
+  screen, in statements and as Tally VOUCHERNUMBER; `server/lib/vouchers.ts`;
+  migration 0018 numbered the existing ones in date order). Tally ledger
+  masters carry the party's opening balance (credit +, debit −, Tally's sign).
+  The dashboard's two balance tiles explain themselves with all-time figures
+  that add up. The audit screen shows changes in plain words (before → after,
+  `src/lib/auditWords.ts`) with the raw JSON behind a toggle, and has "Check
+  the books": `server/lib/booksCheck.ts`, the same independent re-working as
+  `scripts/money-check.ts`, on the live books (`GET /api/audit/books-check`).
 - **Two businesses are two sets of books**: `scripts/e2e-isolation.ts` records
   everything business A shows, does a day of work in business B (same names,
   codes, RST and parcha numbers), and requires A to be byte-for-byte the same

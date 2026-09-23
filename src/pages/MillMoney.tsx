@@ -41,7 +41,7 @@ export interface MillLedgerList {
 interface MillEntry {
   kind: "parcha" | "shortage" | "receipt"; id: string; date: string; deductionGrams?: number;
   parchaNo?: string; version?: number; truckNo?: string | null; netGrams?: number | null; loadId?: string | null;
-  mode?: Mode; reference?: string | null; notes?: string | null; deductionNote?: string | null;
+  mode?: Mode; reference?: string | null; notes?: string | null; deductionNote?: string | null; voucherNo?: number | null;
   amountPaise?: number; deductionPaise?: number; voided?: boolean; voidReason?: string | null;
   debitPaise: number; creditPaise: number; balancePaise: number;
 }
@@ -53,7 +53,7 @@ interface MillStatement {
   bills: MillBill[];
 }
 export interface ReceiptRow {
-  id: string; merchantId: string; loadId: string | null; receiptDate: string; amountPaise: number; deductionPaise: number;
+  id: string; merchantId: string; loadId: string | null; receiptDate: string; amountPaise: number; deductionPaise: number; voucherNo?: number | null;
   deductionNote: string | null; mode: Mode; reference: string | null; notes: string | null;
   voidedAt: number | null; voidReason: string | null;
   millCode: string; millName: string; millNameHi: string | null; truckNo: string | null; parchaNo: string | null; createdByName: string | null;
@@ -337,6 +337,7 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
           <thead>
             <tr>
               <Th {...s.th("date")}>{t("pay.date")}</Th>
+              <Th>{t("pay.voucherNo")}</Th>
               {!merchantId && <Th {...s.th("mill")}>{t("load.mill")}</Th>}
               <Th {...s.th("parcha")}>{t("mm.against")}</Th>
               <Th {...s.th("mode")}>{t("pay.mode")}</Th>
@@ -351,6 +352,7 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
             {s.sorted.map((r) => (
               <Tr key={r.id} className={cn(r.voidedAt && "opacity-60")}>
                 <Td className={cn("whitespace-nowrap", r.voidedAt && "line-through")}>{dmy(r.receiptDate)} <TallyMark flag={recFlags[r.id]} /></Td>
+                <Td className="num whitespace-nowrap text-muted">{r.voucherNo ? `RV-${r.voucherNo}` : "—"}</Td>
                 {!merchantId && <Td><span className="flex items-center gap-2"><Badge className="num">{r.millCode}</Badge>{pick(r.millName, r.millNameHi)}</span></Td>}
                 <Td className="text-[12px]">{r.parchaNo ? <>#{r.parchaNo}{r.truckNo ? <span className="text-muted"> · {r.truckNo}</span> : null}</> : <span className="text-faint">{t("mm.onAccount")}</span>}</Td>
                 <Td><Badge>{t(`mm.mode.${r.mode}`)}</Badge></Td>
@@ -439,7 +441,7 @@ export function MillStatementPage({ id }: { id: string }) {
         dmy(e.date),
         e.kind === "parcha" ? `Parcha #${e.parchaNo}${e.truckNo ? ` · ${e.truckNo}` : ""}`
           : e.kind === "shortage" ? `Mill cut on #${e.parchaNo} · ${fmtQtl(e.deductionGrams ?? 0)} qtl${e.deductionNote ? ` · ${e.deductionNote}` : ""}`
-          : `Receipt · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.parchaNo ? ` · for #${e.parchaNo}` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
+          : `${e.voucherNo ? `RV-${e.voucherNo} · ` : ""}Receipt · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.parchaNo ? ` · for #${e.parchaNo}` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
         e.netGrams != null ? fmtQtl(e.netGrams) : "",
         e.debitPaise ? (e.debitPaise / 100).toFixed(2) : "",
         e.kind === "receipt" && !e.voided ? ((e.amountPaise ?? 0) / 100).toFixed(2) : "",
@@ -527,7 +529,7 @@ export function MillStatementPage({ id }: { id: string }) {
                       ) : (
                         <Td className="text-ok">
                           <span className={cn(e.voided && "line-through")}>
-                            {t("mm.receipt")} · {t(`mm.mode.${e.mode ?? "bank"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}
+                            {e.voucherNo ? <span className="num">RV-{e.voucherNo} · </span> : null}{t("mm.receipt")} · {t(`mm.mode.${e.mode ?? "bank"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}
                             {e.parchaNo ? <span className="text-muted"> · {t("mm.forParcha", { no: e.parchaNo })}</span> : null}
                             {e.deductionNote ? <span className="text-faint"> · {e.deductionNote}</span> : null}
                           </span>

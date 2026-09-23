@@ -8,6 +8,7 @@ import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } 
 import { amountPaise } from "../lib/money.ts";
 import type { ParchaDoc } from "../lib/parcha.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
+import { nextVoucherNo } from "../lib/vouchers.ts";
 
 /* The mill side of the money, Tally-style, like the supplier ledger:
      what a mill owes us = its opening + every approved kaccha parcha (grand
@@ -141,7 +142,7 @@ millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
   type Entry = {
     kind: "parcha" | "shortage" | "receipt"; id: string; date: string; at: number; deductionGrams?: number;
     parchaNo?: string; version?: number; truckNo?: string | null; netGrams?: number | null; loadId?: string | null;
-    mode?: string; reference?: string | null; notes?: string | null; deductionNote?: string | null;
+    mode?: string; reference?: string | null; notes?: string | null; deductionNote?: string | null; voucherNo?: number | null;
     amountPaise?: number; deductionPaise?: number; voided?: boolean; voidReason?: string | null;
     debitPaise: number; creditPaise: number; balancePaise?: number;
   };
@@ -159,7 +160,7 @@ millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
       deductionNote: b.deductionNote, debitPaise: 0, creditPaise: b.shortagePaise,
     })),
     ...recs.map((r) => ({
-      kind: "receipt" as const, id: r.id, date: r.receiptDate, at: r.createdAt,
+      kind: "receipt" as const, id: r.id, date: r.receiptDate, at: r.createdAt, voucherNo: r.voucherNo,
       mode: r.mode, reference: r.reference, notes: r.notes, deductionNote: r.deductionNote,
       amountPaise: r.amountPaise, deductionPaise: r.deductionPaise, loadId: r.loadId,
       parchaNo: r.loadId ? truckOf.get(r.loadId)?.parchaNo : undefined,
@@ -289,10 +290,14 @@ millReceiptRoutes.post("/", can("millreceipt.write"), async (c) => {
     deductionNote: body.deductionNote || null, mode: body.mode, reference: body.reference || null,
     notes: body.notes || null, createdBy: c.get("auth")!.user.id,
   };
-  await db.insert(R).values(values);
-  await audit({ actor: actor(c), action: "mill_receipt.create", entity: "mill_receipt", entityId: id, entityLabel: label(code, values), after: values });
-  await enqueueSync(biz, "mill_receipt", id, "insert", values);
-  return c.json({ id });
+  const row = { ...values, voucherNo: 0 };
+  db.transaction((tx) => {
+    row.voucherNo = nextVoucherNo("mill_receipts", biz, body.receiptDate);
+    tx.insert(R).values(row).run();
+  });
+  await audit({ actor: actor(c), action: "mill_receipt.create", entity: "mill_receipt", entityId: id, entityLabel: `RV-${row.voucherNo} ${label(code, values)}`, after: row });
+  await enqueueSync(biz, "mill_receipt", id, "insert", row);
+  return c.json({ id, voucherNo: row.voucherNo });
 });
 
 millReceiptRoutes.put("/:id", can("millreceipt.write"), async (c) => {

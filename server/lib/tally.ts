@@ -120,12 +120,15 @@ function envelope(report: "Vouchers" | "All Masters", company: string, body: str
 export const vouchersFile = (company: string, vouchers: TallyVoucher[]) =>
   envelope("Vouchers", company, vouchers.map((v) => voucherXml(tidy(v))).join("\n"));
 
-export interface TallyLedger { name: string; parent: string }
+/** `openingPaise` in Tally's own sign: a credit balance (we owe the party) positive, a debit balance (the party owes us) negative. */
+export interface TallyLedger { name: string; parent: string; openingPaise?: number }
 export const ledgersFile = (company: string, ledgers: TallyLedger[]) => envelope("All Masters", company, ledgers.map((l) => [
   `<TALLYMESSAGE xmlns:UDF="TallyUDF">`,
   `<LEDGER NAME="${esc(l.name)}" ACTION="Create">`,
   `<NAME.LIST><NAME>${esc(l.name)}</NAME></NAME.LIST>`,
   `<PARENT>${esc(l.parent)}</PARENT>`,
+  // only when the ledger is first created: Tally keeps an existing ledger's own opening
+  l.openingPaise ? `<OPENINGBALANCE>${rupees(l.openingPaise)}</OPENINGBALANCE>` : "",
   "</LEDGER>",
   "</TALLYMESSAGE>",
-].join("\n")).join("\n"));
+].filter(Boolean).join("\n")).join("\n"));

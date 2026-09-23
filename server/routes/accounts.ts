@@ -7,6 +7,7 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } from "../lib/http.ts";
 import { weightedAvgRate } from "../lib/money.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
+import { nextVoucherNo } from "../lib/vouchers.ts";
 
 /* The supplier (adati) ledger, Tally-style. What we owe a supplier is
      opening balance + every purchase (net × rate, on the slip's date) − every payment.
@@ -147,7 +148,7 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
     grossGrams?: number; katautiUnits?: number;
     /** A purchase: goods value, and what the supplier adds to it. The credit is their sum. */
     goodsPaise?: number; commissionPaise?: number; gaushalaPaise?: number;
-    mode?: string; reference?: string | null; notes?: string | null;
+    mode?: string; reference?: string | null; notes?: string | null; voucherNo?: number | null;
     creditPaise: number; debitPaise: number; balancePaise?: number;
   };
   const entries: Entry[] = [
@@ -160,7 +161,7 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
     })),
     ...pays.map((p) => ({
       kind: "payment" as const, id: p.id, date: p.payDate, at: p.createdAt,
-      mode: p.mode, reference: p.reference, notes: p.notes,
+      mode: p.mode, reference: p.reference, notes: p.notes, voucherNo: p.voucherNo,
       // shown struck out, counted as nothing
       voided: p.voidedAt != null, voidReason: p.voidReason,
       creditPaise: 0, debitPaise: p.voidedAt != null ? 0 : p.amountPaise,
@@ -256,12 +257,17 @@ paymentRoutes.post("/", can("payment.write"), async (c) => {
   const values = {
     id, businessId: biz, adatiId: body.adatiId, payDate: body.payDate, amountPaise: body.amountPaise,
     mode: body.mode, reference: body.reference ?? null, notes: body.notes ?? null, createdBy: c.get("auth")!.user.id,
+    voucherNo: 0,
   };
-  await db.insert(schema.payments).values(values);
+  // the number and the row go in together, so two payments saved at once cannot share one
+  db.transaction((tx) => {
+    values.voucherNo = nextVoucherNo("payments", biz, body.payDate);
+    tx.insert(schema.payments).values(values).run();
+  });
   await audit({ actor: actor(c), action: "payment.create", entity: "payment", entityId: id,
-    entityLabel: `${body.payDate} ${name} ₹${(body.amountPaise / 100).toFixed(2)} ${body.mode}`, after: values });
+    entityLabel: `PV-${values.voucherNo} ${body.payDate} ${name} ₹${(body.amountPaise / 100).toFixed(2)} ${body.mode}`, after: values });
   await enqueueSync(biz, "payment", id, "insert", values);
-  return c.json({ id });
+  return c.json({ id, voucherNo: values.voucherNo });
 });
 
 paymentRoutes.put("/:id", can("payment.write"), async (c) => {

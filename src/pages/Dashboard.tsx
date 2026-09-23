@@ -35,8 +35,10 @@ interface MillSummary {
 interface MoneyData {
   cash: { receivedFromMillsPaise: number; paidToSuppliersPaise: number };
   stock: { valuePaise: number; leftGrams: number; unpricedGrams: number; unbilledGoodsPaise: number; draftTrucks: number };
-  suppliers: { openingPaise: number; purchasesPaise: number; slips: number; paidPaise: number; payments: number; toPayPaise: number; paidAheadPaise: number };
-  mills: { billedPaise: number; parchas: number; shortagePaise: number; receivedPaise: number; deductedPaise: number; receipts: number; toReceivePaise: number; paidAheadPaise: number };
+  suppliers: { openingPaise: number; purchasesPaise: number; slips: number; paidPaise: number; payments: number; toPayPaise: number; paidAheadPaise: number;
+    allTime: { openingPaise: number; purchasesPaise: number; paidPaise: number } };
+  mills: { billedPaise: number; parchas: number; shortagePaise: number; receivedPaise: number; deductedPaise: number; receipts: number; toReceivePaise: number; paidAheadPaise: number;
+    allTime: { openingPaise: number; billedPaise: number; shortagePaise: number; receivedPaise: number; deductedPaise: number } };
   billed: { goodsPaise: number; adatPaise: number; parts: { key: string; label: string; labelHi: string | null; amountPaise: number }[]; grandTotalPaise: number; otherPaise: number };
 }
 interface DashboardData {
@@ -196,8 +198,11 @@ function MoneyCard({ qs }: { qs: string }) {
     <Card className="mt-5">
       <CardHeader title={t("dash.money")} sub={t("dash.moneySub")} />
       <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
-        {tile(t("dash.millsOwe"), toReceive, t("dash.millsOweSub", { b: f.money(m.mills.billedPaise), r: f.money(m.mills.receivedPaise) }), "/mill-accounts", "text-brand")}
-        {tile(t("dash.weOwe"), toPay, t("dash.weOweSub", { p: f.money(m.suppliers.paidPaise) }), "/ledger")}
+        {/* each balance is all time, so its explanation adds up to it: opening + bills − cuts − received − held back */}
+        {tile(t("dash.millsOwe"), toReceive, t("dash.millsOweSub", { o: f.money(m.mills.allTime.openingPaise), b: f.money(m.mills.allTime.billedPaise), c: f.money(m.mills.allTime.shortagePaise), r: f.money(m.mills.allTime.receivedPaise), h: f.money(m.mills.allTime.deductedPaise) })
+          + (m.mills.paidAheadPaise ? ` · ${t("dash.millsAhead", { a: f.money(m.mills.paidAheadPaise) })}` : ""), "/mill-accounts", "text-brand")}
+        {tile(t("dash.weOwe"), toPay, t("dash.weOweSub", { o: f.money(m.suppliers.allTime.openingPaise), p: f.money(m.suppliers.allTime.purchasesPaise), d: f.money(m.suppliers.allTime.paidPaise) })
+          + (m.suppliers.paidAheadPaise ? ` · ${t("dash.supAhead", { a: f.money(m.suppliers.paidAheadPaise) })}` : ""), "/ledger")}
         {tile(t("dash.stockValue"), stockPaise + unbilledPaise,
           (unbilledPaise ? t("dash.stockValueSub2", { u: f.money(unbilledPaise) }) : t("dash.stockValueSub"))
             + (m.stock.unpricedGrams > 0 ? ` · ${t("dash.unpricedStock", { q: f.weight(m.stock.unpricedGrams) })}` : ""), "/stock")}

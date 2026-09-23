@@ -390,6 +390,11 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
   }
   const drafts = (await trucks(biz, { to: f.to })).filter((t) => t.status !== "billed");
 
+  // what the supplier ledger is made of, all time up to `to` (the "we owe" figure is all time)
+  const [boughtAll] = await db.select({ p: sql<number>`coalesce(sum(${S.payablePaise}), 0)` }).from(S)
+    .where(and(eq(S.businessId, biz), ...upTo));
+  const [openingAll] = await db.select({ p: sql<number>`coalesce(sum(${schema.adati.openingBalancePaise}), 0)` }).from(schema.adati)
+    .where(eq(schema.adati.businessId, biz));
   // cash that has actually moved, all time up to `to`: in from mills, out to suppliers
   const [paidAll] = await db.select({ p: sql<number>`coalesce(sum(${P.amountPaise}), 0)` }).from(P)
     .where(and(eq(P.businessId, biz), isNull(P.voidedAt), ...(f.to ? [lte(P.payDate, f.to)] : [])));
@@ -408,6 +413,8 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
       paidPaise: paid.p, payments: paid.n,
       toPayPaise: bal.filter((b) => b > 0).reduce((s, b) => s + b, 0),
       paidAheadPaise: bal.filter((b) => b < 0).reduce((s, b) => s - b, 0),
+      /** All time up to the period's end: opening + purchases − paid = the balance the tile shows. */
+      allTime: { openingPaise: openingAll.p, purchasesPaise: boughtAll.p, paidPaise: paidAll.p },
     },
     mills: {
       billedPaise: bills.reduce((s, b) => s + b.grandTotalPaise, 0), parchas: bills.length,
@@ -416,6 +423,8 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
       deductedPaise: recs.reduce((s, r) => s + r.deductionPaise, 0), receipts: recs.length,
       toReceivePaise: mills.totals.toReceivePaise,
       paidAheadPaise: mills.totals.paidAheadPaise,
+      /** All time up to the period's end: opening + billed − cuts − received − held back = the balance the tile shows. */
+      allTime: { openingPaise: mills.totals.openingPaise, billedPaise: mills.totals.billedPaise, shortagePaise: mills.totals.shortagePaise, receivedPaise: mills.totals.receivedPaise, deductedPaise: mills.totals.deductedPaise },
     },
     /** Grand totals of the approved parchas in the period, split into what they are made of. */
     billed: {

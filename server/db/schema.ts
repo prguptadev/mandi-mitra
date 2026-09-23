@@ -433,6 +433,8 @@ export const payments = sqliteTable(
     mode: text("mode").notNull().default("cash"),
     reference: text("reference"),
     notes: text("notes"),
+    /** Payment voucher number: 1, 2, 3… per business, restarting each financial year (PV-12 on screen). */
+    voucherNo: integer("voucher_no"),
     createdBy: text("created_by").references(() => users.id),
     createdAt: integer("created_at").notNull().$defaultFn(now),
     /** Cancelled payments stay on record, struck out, and count for nothing. */
@@ -442,6 +444,7 @@ export const payments = sqliteTable(
   },
   (t) => ({
     idx: index("payment_adati_idx").on(t.adatiId, t.payDate),
+    voucherIdx: index("payment_voucher_idx").on(t.businessId, t.voucherNo),
     dateIdx: index("payment_biz_date_idx").on(t.businessId, t.payDate),
   }),
 );
@@ -467,6 +470,8 @@ export const millReceipts = sqliteTable(
     mode: text("mode").notNull().default("bank"),
     reference: text("reference"),
     notes: text("notes"),
+    /** Receipt voucher number: 1, 2, 3… per business, restarting each financial year (RV-7 on screen). */
+    voucherNo: integer("voucher_no"),
     createdBy: text("created_by").references(() => users.id),
     createdAt: integer("created_at").notNull().$defaultFn(now),
     voidedAt: integer("voided_at"),
@@ -475,6 +480,7 @@ export const millReceipts = sqliteTable(
   },
   (t) => ({
     idx: index("mill_receipt_mill_idx").on(t.merchantId, t.receiptDate),
+    voucherIdx: index("mill_receipt_voucher_idx").on(t.businessId, t.voucherNo),
     loadIdx: index("mill_receipt_load_idx").on(t.loadId),
     dateIdx: index("mill_receipt_biz_date_idx").on(t.businessId, t.receiptDate),
   }),

@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { eq, and, desc, lt, like, or, sql } from "drizzle-orm";
-import { db, schema } from "../db/client.ts";
+import { db, schema, sqlite } from "../db/client.ts";
+import { checkBooks } from "../lib/booksCheck.ts";
 import { nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
 import { param, can, actor, notFound, type Env } from "../lib/http.ts";
@@ -52,6 +53,15 @@ businessRoutes.put("/current", can("business.write"), async (c) => {
 /* ------------------------------------------------------------------- audit */
 
 export const auditRoutes = new Hono<Env>();
+
+/** The independent re-working of every figure, on the live books of this business (read-only). */
+auditRoutes.get("/books-check", can("audit.read", "backup.manage"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  const r = checkBooks(sqlite, biz);
+  await audit({ actor: actor(c), action: "books.check", entity: "settings", entityId: "books",
+    entityLabel: r.problems ? `${r.problems} problem(s) found` : "Every figure re-works exactly" });
+  return c.json(r);
+});
 
 auditRoutes.get("/", can("audit.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
