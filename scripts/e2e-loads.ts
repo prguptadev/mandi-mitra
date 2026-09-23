@@ -269,5 +269,39 @@ check("Dara downloads as Excel", xl.ok && Buffer.from(await xl.arrayBuffer()).su
 const delBilled = await status("DELETE", `/loads/${t1.id}`);
 check("an approved truck cannot be deleted", delBilled.status === 409);
 
+console.log("\nA line of the mill's own, above the total");
+const millNow = (await call("GET", "/merchants")).find((m: any) => m.code === "LB");
+const sample = { grossQtl: 100, katte: 100, bore: 0, rate: 3000, trucks: 1, advanceRupees: 0, bags: 100 };
+const cfgPlus = {
+  ...millNow.chargeConfig,
+  extraCharges: [
+    { key: "tarpal", label: "Tarpal", labelHi: "तरपाल", kind: "flat", value: 500, sign: "add" },
+    { key: "chhat", label: "Chhat", labelHi: "छँटाई", kind: "per_bag", value: 2, sign: "subtract" },
+  ],
+};
+const plain = await call("POST", "/merchants/preview", { chargeConfig: millNow.chargeConfig, ...sample });
+const withExtra = await call("POST", "/merchants/preview", { chargeConfig: cfgPlus, ...sample });
+const lineOf = (r: any, key: string) => r.lines.find((l: any) => l.key === key);
+const idx = (r: any, key: string) => r.lines.findIndex((l: any) => l.key === key);
+check("the named line is on the parcha, with the amount typed",
+  lineOf(withExtra, "extra:tarpal")?.label === "Tarpal" && lineOf(withExtra, "extra:tarpal")?.amountPaise === 50_000,
+  lineOf(withExtra, "extra:tarpal"));
+check("  ...printed above the total", idx(withExtra, "extra:tarpal") < idx(withExtra, "total"),
+  { line: idx(withExtra, "extra:tarpal"), total: idx(withExtra, "total") });
+check("a per-bag line of their own works off the bags",
+  lineOf(withExtra, "extra:chhat")?.amountPaise === 20_000, lineOf(withExtra, "extra:chhat"));
+check("  ...and is deducted when that is what was chosen",
+  lineOf(withExtra, "extra:chhat")?.sign === "subtract", lineOf(withExtra, "extra:chhat")?.sign);
+check("the grand total moves by exactly those two lines",
+  withExtra.grandTotalPaise - plain.grandTotalPaise === 50_000 - 20_000,
+  { plain: plain.grandTotalPaise, withExtra: withExtra.grandTotalPaise });
+check("no other charge on the parcha moved",
+  withExtra.lines.filter((l: any) => l.kind === "charge" && !String(l.key).startsWith("extra:"))
+    .every((l: any) => lineOf(plain, l.key)?.amountPaise === l.amountPaise),
+  withExtra.lines.filter((l: any) => l.kind === "charge" && !String(l.key).startsWith("extra:") && lineOf(plain, l.key)?.amountPaise !== l.amountPaise));
+check("  ...only the total and the grand total grew, by the same amount",
+  withExtra.lines.find((l: any) => l.key === "total").amountPaise - plain.lines.find((l: any) => l.key === "total").amountPaise === 30_000
+  && withExtra.grandTotalPaise - plain.grandTotalPaise === 30_000, true);
+
 console.log(bad === 0 ? "\nLoads, PO, parcha and stock work end to end." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

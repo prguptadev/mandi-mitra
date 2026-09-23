@@ -148,6 +148,82 @@ function ParchaPreview({ cfg }: { cfg: ChargeConfig }) {
   );
 }
 
+/* Lines this mill wants that no one else does — "Tarpal", "Hamali", anything.
+   The name is what the kaccha parcha prints, right above the total, and the
+   same line goes into the mill's account and the Tally file. */
+function ExtraCharges({ rows, onChange }: {
+  rows: ChargeConfig["extraCharges"];
+  onChange: (rows: ChargeConfig["extraCharges"]) => void;
+}) {
+  const { t } = useI18n();
+  const set = (i: number, patch: Partial<ChargeConfig["extraCharges"][number]>) =>
+    onChange(rows.map((r, x) => (x === i ? { ...r, ...patch } : r)));
+  // the key is what the ledger and Tally use, so it follows the name once
+  const keyFor = (label: string, i: number) =>
+    (label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || `extra${i + 1}`);
+
+  return (
+    <div className="rounded-lg border border-line bg-surface p-3">
+      <p className="mb-1 text-[13px] font-semibold text-ink">{t("merchant.extraCharges")}</p>
+      <p className="mb-2.5 text-[12px] leading-snug text-muted">{t("merchant.extraHelp")}</p>
+      <div className="space-y-2">
+        {rows.map((r, i) => (
+          <div key={i} className="flex flex-wrap items-end gap-2 rounded-lg border border-line/70 bg-raised/30 p-2.5">
+            <div className="min-w-[150px] flex-1">
+              <label className="mb-1 block text-[11px] text-faint">{t("merchant.extraName")}</label>
+              <Input value={r.label} placeholder={t("merchant.extraNamePh")} className="h-8 text-[13px]"
+                onChange={(e) => set(i, { label: e.target.value, key: keyFor(e.target.value, i) })} />
+            </div>
+            <div className="min-w-[150px] flex-1">
+              <label className="mb-1 block text-[11px] text-faint">{t("merchant.extraNameHi")}</label>
+              <HindiInput value={r.labelHi ?? ""} onChange={(v) => set(i, { labelHi: v })} className="h-8 text-[13px]" />
+            </div>
+            <div className="min-w-[150px]">
+              <label className="mb-1 block text-[11px] text-faint">{t("merchant.extraKind")}</label>
+              <Select value={r.kind} className="h-8 text-[13px]"
+                onChange={(e) => set(i, { kind: e.target.value as ChargeConfig["extraCharges"][number]["kind"] })}>
+                <option value="flat">{t("merchant.extraKindFlat")}</option>
+                <option value="per_bag">{t("merchant.extraKindPerBag")}</option>
+                <option value="per_qtl">{t("merchant.extraKindPerQtl")}</option>
+                <option value="per_truck">{t("merchant.extraKindPerTruck")}</option>
+                <option value="pct">{t("merchant.extraKindPct")}</option>
+              </Select>
+            </div>
+            <NumBox label={r.kind === "pct" ? "%" : t("common.rupees")} value={r.value} onChange={(v) => set(i, { value: v })} />
+            {r.kind === "pct" && <BaseSelect value={r.base ?? "amount_plus_adat"} onChange={(v) => set(i, { base: v })} />}
+            {r.kind === "per_qtl" && (
+              <div className="min-w-[150px]">
+                <label className="mb-1 block text-[11px] text-faint">{t("merchant.chargedOn")}</label>
+                <Select value={r.weightBase ?? "net"} className="h-8 text-[13px]"
+                  onChange={(e) => set(i, { weightBase: e.target.value as "gross" | "net" })}>
+                  <option value="gross">{t("merchant.weightBase.gross")}</option>
+                  <option value="net">{t("merchant.weightBase.net")}</option>
+                </Select>
+              </div>
+            )}
+            <div className="min-w-[130px]">
+              <label className="mb-1 block text-[11px] text-faint">{t("merchant.extraSign")}</label>
+              <Select value={r.sign} className="h-8 text-[13px]"
+                onChange={(e) => set(i, { sign: e.target.value as "add" | "subtract" })}>
+                <option value="add">{t("merchant.extraSignAdd")}</option>
+                <option value="subtract">{t("merchant.extraSignSub")}</option>
+              </Select>
+            </div>
+            <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={t("common.delete")}
+              onClick={() => onChange(rows.filter((_, x) => x !== i))}>
+              <Trash2 className="h-3.5 w-3.5 text-bad/80" />
+            </Button>
+          </div>
+        ))}
+      </div>
+      <Button size="sm" variant="secondary" className="mt-2.5" icon={<Plus className="h-3.5 w-3.5" />}
+        onClick={() => onChange([...rows, { key: `extra${rows.length + 1}`, label: "", labelHi: "", kind: "flat", value: 0, sign: "add" }])}>
+        {t("merchant.extraAdd")}
+      </Button>
+    </div>
+  );
+}
+
 function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => void; editing: Merchant | null }) {
   const { t, lang } = useI18n();
   const qc = useQueryClient();
@@ -346,6 +422,8 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
               onEnabled={(v) => patch("gatePass", { ...cfg.gatePass, enabled: v })} unit={t("common.perTruck")}>
               <NumBox value={cfg.gatePass.perTruckRupees} onChange={(v) => patch("gatePass", { ...cfg.gatePass, perTruckRupees: v })} />
             </ChargeRow>
+
+            <ExtraCharges rows={cfg.extraCharges} onChange={(rows) => patch("extraCharges", rows)} />
 
             {/* dara */}
             <div className="rounded-lg border border-line bg-surface p-3">
