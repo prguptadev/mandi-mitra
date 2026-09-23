@@ -28,6 +28,16 @@ jobs:
           v=$(node -p "require('./package.json').version")
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} but package.json says $v"; exit 1; }
       - run: npm ci
+      - name: The scanner script parses and runs on Windows (no scanner here: an empty list)
+        shell: pwsh
+        run: |
+          npx tsx scripts/print-scanner-script.ts | Set-Content -Path scanner-wia.ps1 -Encoding utf8
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scanner-wia.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | ForEach-Object { Write-Host $_.Message }; throw "the scanner script does not parse" }
+          $out = & powershell.exe -NoProfile -NonInteractive -Sta -ExecutionPolicy Bypass -File scanner-wia.ps1 -List 2>&1
+          Write-Host "list: $out (exit $LASTEXITCODE)"
+          if ($LASTEXITCODE -eq 0 -and "$out" -ne "[]") { throw "expected an empty scanner list, got: $out" }
       - run: npm run build
       - run: npm run build:desktop-server
       - name: Build the installer

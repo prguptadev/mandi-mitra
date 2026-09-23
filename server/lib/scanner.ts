@@ -15,27 +15,38 @@ import { DB_PATH } from "../db/client.ts";
  * tests, MANDI_FAKE_SCANNER=<image file> stands in for a scanner.
  */
 
-const SCRIPT = String.raw`param([string]$Out = "", [string]$DeviceId = "", [int]$Dpi = 300, [int]$Intent = 1, [switch]$List)
+export const SCRIPT = String.raw`param([string]$Out = "", [string]$DeviceId = "", [int]$Dpi = 300, [int]$Intent = 1, [switch]$List)
 $ErrorActionPreference = "Stop"
+$step = "start"
 try {
+  $step = "open Windows scanning (WIA)"
   $dm = New-Object -ComObject WIA.DeviceManager
+  $infos = $dm.DeviceInfos
+  # collections are walked by number: enumerating them with foreach fails on some drivers ("Specified cast is not valid")
   if ($List) {
     $found = @()
-    foreach ($d in $dm.DeviceInfos) {
-      if ($d.Type -eq 1) { $found += [pscustomobject]@{ id = $d.DeviceID; name = $d.Properties.Item("Name").Value } }
+    for ($i = 1; $i -le $infos.Count; $i++) {
+      $d = $infos.Item($i)
+      if ($d.Type -eq 1) { $found += [pscustomobject]@{ id = [string]$d.DeviceID; name = [string]$d.Properties.Item("Name").Value } }
     }
     ConvertTo-Json -InputObject @($found) -Compress
     exit 0
   }
+  $step = "find the scanner"
   $info = $null
-  foreach ($d in $dm.DeviceInfos) {
-    if ($d.Type -eq 1 -and ($DeviceId -eq "" -or $d.DeviceID -eq $DeviceId)) { $info = $d; break }
+  for ($i = 1; $i -le $infos.Count; $i++) {
+    $d = $infos.Item($i)
+    if ($d.Type -eq 1 -and ($DeviceId -eq "" -or [string]$d.DeviceID -eq $DeviceId)) { $info = $d; break }
   }
   if (-not $info) { [Console]::Error.WriteLine("NO_SCANNER"); exit 2 }
+  $step = "connect to the scanner"
   $dev = $info.Connect()
   $item = $dev.Items.Item(1)
-  function SetProp($id, $val) { foreach ($p in $item.Properties) { if ($p.PropertyID -eq $id) { try { $p.Value = $val } catch {} } } }
-  function SetMax($id) { foreach ($p in $item.Properties) { if ($p.PropertyID -eq $id) { try { $p.Value = $p.SubTypeMax } catch {} } } }
+  # a property by its id, never by walking the list
+  function Prop($id) { try { return $item.Properties.Item([string]$id) } catch { return $null } }
+  function SetProp($id, $val) { $p = Prop $id; if ($p) { try { $p.Value = $val } catch {} } }
+  function SetMax($id) { $p = Prop $id; if ($p) { try { $p.Value = $p.SubTypeMax } catch {} } }
+  $step = "set colour, resolution and the scan area"
   SetProp 6146 $Intent   # 1 colour, 2 greyscale
   SetProp 6147 $Dpi      # horizontal resolution
   SetProp 6148 $Dpi      # vertical resolution
@@ -44,8 +55,19 @@ try {
   SetMax 6151            # the whole width of the glass
   SetMax 6152            # the whole height of the glass
   $jpeg = "{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}"
-  try { $img = $item.Transfer($jpeg) } catch { $img = $item.Transfer() }
-  if ($img.FormatID -ne $jpeg) {
+  $bmp  = "{B96B3CAA-0728-11D3-9D7B-0000F81EF32E}"
+  $step = "scan"
+  $img = $null
+  $tried = @()
+  # drivers differ in what they hand over: ask for JPEG, then BMP, then whatever it gives,
+  # then through Windows' own transfer window (the way some Canon drivers insist on)
+  try { $img = $item.Transfer($jpeg) } catch { $tried += ("jpeg: " + $_.Exception.Message) }
+  if (-not $img) { try { $img = $item.Transfer($bmp) } catch { $tried += ("bmp: " + $_.Exception.Message) } }
+  if (-not $img) { try { $img = $item.Transfer() } catch { $tried += ("default: " + $_.Exception.Message) } }
+  if (-not $img) { try { $cd = New-Object -ComObject WIA.CommonDialog; $img = $cd.ShowTransfer($item, $jpeg, $true) } catch { $tried += ("window: " + $_.Exception.Message) } }
+  if (-not $img) { throw ("the scanner gave no image (" + ($tried -join " | ") + ")") }
+  $step = "save the picture"
+  if ([string]$img.FormatID -ne $jpeg) {
     $ip = New-Object -ComObject WIA.ImageProcess
     $ip.Filters.Add($ip.FilterInfos.Item("Convert").FilterID)
     $ip.Filters.Item(1).Properties.Item("FormatID").Value = $jpeg
@@ -56,7 +78,9 @@ try {
   $img.SaveFile($Out)
   Write-Output "OK"
 } catch {
-  [Console]::Error.WriteLine(("WIA_FAIL " + $_.Exception.HResult + " " + $_.Exception.Message))
+  $code = 0
+  try { $code = $_.Exception.HResult } catch {}
+  [Console]::Error.WriteLine(("WIA_FAIL " + $code + " " + $step + ": " + $_.Exception.Message))
   exit 3
 }
 `;
@@ -106,7 +130,8 @@ function explain(err: string): string {
   const code = err.match(/WIA_FAIL (-?\d+)/)?.[1];
   if (code && WIA_ERRORS[code]) return WIA_ERRORS[code];
   if (/ComObject|80040154|class not registered/i.test(err)) return "Windows scanning (WIA) is not available on this computer. Install the Canon scanner driver (IJ Scan Utility / MF Scan Utility package) and try again.";
-  return `The scanner reported a problem: ${err.replace(/^WIA_FAIL -?\d+ /, "").slice(0, 200) || "unknown"}`;
+  // "WIA_FAIL <code> <step>: <message>" — the step says how far it got
+  return `The scanner reported a problem while trying to ${err.replace(/^WIA_FAIL -?\d+ /, "").slice(0, 240) || "scan (no details)"}`;
 }
 
 /** Scanners connected to this computer. */

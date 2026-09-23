@@ -492,6 +492,14 @@ mean confidence                          : 0.90
   future year, switches itself on 1 April.
 - **Server messages in Hindi**: `src/lib/serverHi.ts`, applied in `api.ts`
   when `<html lang="hi">`. A message not in the table shows in English.
+- **Scanner on the real Canon (v0.3.6)**: the first try on the shop PC failed
+  with "Specified cast is not valid". Cause: the WIA script walked
+  `DeviceInfos`/`Properties` with `foreach`, which PowerShell's COM interop
+  cannot do on some drivers. Now every collection is read by index and each
+  property by id (`Properties.Item("6147")`), the transfer tries JPEG, BMP,
+  default, then the WIA CommonDialog window, and the error names the step.
+  The Windows build parses the script and runs `-List` on every release
+  (`scripts/print-scanner-script.ts`). Still unconfirmed on the Canon itself.
 - **Accountant's pass (v0.3.5)**: payments and mill receipts carry voucher
   numbers (`voucher_no`, per business, restarting each 1 April; PV-n / RV-n on
   screen, in statements and as Tally VOUCHERNUMBER; `server/lib/vouchers.ts`;
