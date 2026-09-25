@@ -7,7 +7,7 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { useFormat } from "@/lib/format.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { Alert, Badge, Button, Card, CardHeader, Field, Input } from "@/components/ui/index.tsx";
-import { cn } from "@/lib/utils.ts";
+import { cn, looksLikeSameFirm } from "@/lib/utils.ts";
 
 /* The mandi portal's own rate band for the commodities this firm watches.
    The portal states a lowest and a highest rate per commodity, with the mandi
@@ -33,7 +33,7 @@ interface Rate {
 export function PortalRatesCard() {
   const { t } = useI18n();
   const f = useFormat();
-  const { can } = useSession();
+  const { can, me } = useSession();
   const qc = useQueryClient();
   const [captcha, setCaptcha] = useState("");
   const [ask, setAsk] = useState<{ image: string } | null>(null);
@@ -115,6 +115,7 @@ export function PortalRatesCard() {
     );
   }
 
+  const wrongFirm = Boolean(s?.firm) && !looksLikeSameFirm(s!.firm!, me?.business?.name ?? "");
   const list = rates.data?.rates ?? [];
   const rupees = (p: number | null) => (p === null ? "—" : f.amount(p));
   /* The portal states 0.00 for both ends when the mandi has fixed no band. */
@@ -142,12 +143,14 @@ export function PortalRatesCard() {
       <div className="space-y-3 p-4">
         {err && <Alert tone="bad">{err}</Alert>}
         {s?.note && !err && <Alert tone="warn">{s.note}</Alert>}
-        {s?.signedIn && s.firm && (
+        {s?.signedIn && s.firm && (wrongFirm ? (
+          <Alert tone="warn">{t("portal.wrongFirm", { portal: s.firm, here: me?.business?.name ?? "" })}</Alert>
+        ) : (
           <p className="text-[12px] text-muted">
             {t("portal.whose")} <span className="font-medium text-ink">{s.firm}</span>
             {s.portalLicence && <span className="num ml-1.5 text-faint">{s.portalLicence}</span>}
           </p>
-        )}
+        ))}
 
         {ask && (
           <div className="rounded-lg border border-line bg-raised/40 p-3">

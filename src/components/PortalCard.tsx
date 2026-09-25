@@ -5,6 +5,7 @@ import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { Alert, Badge, Button, Card, CardHeader, Checkbox, Field, Input } from "@/components/ui/index.tsx";
+import { looksLikeSameFirm } from "@/lib/utils.ts";
 
 /* The mandi portal login for THIS business. The two firms have separate
    logins there, so this card follows whichever business is open.
@@ -73,6 +74,7 @@ export function PortalCard() {
   const shownUser = user ?? s?.user ?? "";
   const shownWatch = watch ?? s?.watch ?? [];
   const dirty = user !== null || watch !== null || password.length > 0;
+  const wrongFirm = Boolean(s?.firm) && !looksLikeSameFirm(s!.firm!, me?.business?.name ?? "");
   const list = crops.data?.crops ?? [];
   const needle = find.trim().toLowerCase();
   const shown = needle ? list.filter((c) => c.name.toLowerCase().includes(needle) || c.code.includes(needle)) : list;
@@ -101,12 +103,14 @@ export function PortalCard() {
         {/* Whose licence this login is, in the portal's own words. A mill's
             licence carries no rate band; an arhat's does — so it is worth
             seeing which one is saved here. */}
-        {s?.firm && (
+        {s?.firm && (wrongFirm ? (
+          <Alert tone="warn">{t("portal.wrongFirm", { portal: s.firm, here: me?.business?.name ?? "" })}</Alert>
+        ) : (
           <p className="text-[12px] text-muted">
             {t("portal.whose")} <span className="font-medium text-ink">{s.firm}</span>
             {s.portalLicence && <span className="num ml-1.5 text-faint">{s.portalLicence}</span>}
           </p>
-        )}
+        ))}
 
         <div className="rounded-lg border border-line bg-raised/30 p-3">
           <div className="mb-2 flex flex-wrap items-center gap-2">

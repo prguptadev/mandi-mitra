@@ -709,6 +709,7 @@ export const STRINGS = {
     "portal.noBandAll": "e-Mandi fixes no lowest or highest rate on this licence — it gives only the mandi fee and the development cess. The band shows on a licence that issues प्रपत्र-6; a mill's licence carries none. The portal does not publish a market rate.",
     "portal.whose": "This login is",
     "portal.rawSaid": "What the portal replied, word for word —",
+    "portal.wrongFirm": "This login opens {portal} on the portal, but the firm here is {here}. Put {here}'s own portal login in, or the rates and papers will be the other firm's.",
   },
 
   hi: {
@@ -1422,6 +1423,7 @@ export const STRINGS = {
     "portal.noBandAll": "इस लाइसेंस पर e-Mandi कोई न्यूनतम या अधिकतम दर तय नहीं करता — वह सिर्फ़ मंडी शुल्क और विकास सेस देता है। सीमा उस लाइसेंस पर दिखती है जो प्रपत्र-6 जारी करता है; मिल के लाइसेंस पर नहीं होती। पोर्टल बाज़ार भाव नहीं छापता।",
     "portal.whose": "यह लॉगिन है",
     "portal.rawSaid": "पोर्टल ने अक्षरशः क्या कहा —",
+    "portal.wrongFirm": "यह लॉगिन पोर्टल पर {portal} खोलता है, जबकि यहाँ फर्म {here} है। {here} का अपना पोर्टल लॉगिन डालें, वरना दरें और कागज़ दूसरी फर्म के होंगे।",
   },
 } as const;
 

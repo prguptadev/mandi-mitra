@@ -42,3 +42,17 @@ export const weekday = (iso: string, lang: string) =>
 
 /** Today's date where the office is (not UTC: before 05:30 IST that would still be yesterday). */
 export const todayISO = () => new Date().toLocaleDateString("en-CA");
+
+/**
+ * Do two firm names look like the same firm? The portal shouts in English
+ * ("VIJAY LAXMI DALL MILL") where the office writes "Vijay Laxmi Dal Mill",
+ * so spelling and case must not matter — but "V C Enterprise" against
+ * "VIJAY LAXMI DALL MILL" shares nothing, and that is worth saying.
+ */
+export function looksLikeSameFirm(a: string, b: string) {
+  const words = (x: string) => x.toUpperCase().replace(/[^A-Z ]/g, " ").split(/\s+/)
+    .filter((w) => w.length >= 3).map((w) => w.slice(0, 4));
+  const one = words(a), two = words(b);
+  if (!one.length || !two.length) return true; // nothing to go on: say nothing
+  return one.some((w) => two.includes(w));
+}
