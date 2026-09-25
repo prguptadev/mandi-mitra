@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useFormat } from "@/lib/format.tsx";
@@ -46,8 +46,10 @@ export function DayAveragesCard() {
     queryFn: () => api.get<{ days: Day[] }>(`/dashboard/day-averages?${query}`),
   });
 
+  const waiting = q.data?.days?.[0]?.waiting ?? 0;
   const picker = (
     <div className="flex items-center gap-1">
+      <span className="mr-1 hidden text-[12px] text-faint sm:inline">{weekday(day, lang)}</span>
       <Button size="sm" variant="ghost" icon={<ChevronLeft className="h-3.5 w-3.5" />}
         onClick={() => setDay(shiftDay(day, -1))} aria-label={t("daily.prevDay")} title={t("daily.prevDay")} />
       <Input type="date" value={day} onChange={(e) => setDay(e.target.value || todayISO())}
@@ -58,6 +60,7 @@ export function DayAveragesCard() {
         <Button size="sm" variant="ghost" onClick={() => setDay(todayISO())}
           title={t("dash.dayToday")}>{t("dash.dayToday")}</Button>
       )}
+      {waiting > 0 && <Badge tone="warn">{t("dash.dayWaiting", { n: waiting })}</Badge>}
     </div>
   );
 
@@ -79,12 +82,6 @@ export function DayAveragesCard() {
         )}
         {days.map((d) => (
           <div key={d.date}>
-            <p className="mb-1.5 flex items-center gap-2 text-[13px] font-semibold text-ink">
-              <CalendarDays className="h-3.5 w-3.5 text-faint" />
-              <Link href={`/daily?date=${d.date}`} className="num hover:underline">{dmy(d.date)}</Link>
-              <span className="text-[12px] font-normal text-faint">{weekday(d.date, lang)}</span>
-              {d.waiting > 0 && <Badge tone="warn">{t("dash.dayWaiting", { n: d.waiting })}</Badge>}
-            </p>
             {d.lines.length === 0 ? (
               <p className="px-2 text-[12px] text-faint">{t("dash.dayNoRate")}</p>
             ) : (
