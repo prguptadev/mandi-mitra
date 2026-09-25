@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and, gte, lte, sql, inArray, isNull } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { can, bad, notFound, HttpError, type Env } from "../lib/http.ts";
 import { incoming, trucks, race, worstAhead, dayAverages, type Filter, type TruckSummary } from "../lib/tracking.ts";
@@ -280,6 +280,9 @@ dashboardRoutes.get("/day-averages", can("dashboard.view"), async (c) => {
   if (f.jinsId) w.push(eq(S.jinsId, f.jinsId));
   if (f.from) w.push(gte(S.slipDate, f.from));
   if (f.to) w.push(lte(S.slipDate, f.to));
+  /* "Added mills only" leaves out what the firm bought for itself — the slips
+     with no mill on them — so the day's average is the mills' average alone. */
+  if (c.req.query("mills") === "added") w.push(isNotNull(S.merchantId));
   const rows = await db.select({
     date: S.slipDate, merchantId: S.merchantId, jinsId: S.jinsId,
     slips: sql<number>`count(*)`,

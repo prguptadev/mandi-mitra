@@ -711,6 +711,7 @@ export const STRINGS = {
     "portal.rawSaid": "What e-Mandi replied, word for word —",
     "portal.wrongFirm": "This login opens {portal} on e-Mandi, but the firm open here in Mandi Mitra is {here}. Put {here}'s own e-Mandi login in, or the rates and the papers will be the other firm's.",
     "dash.dayToday": "Today",
+    "daily.ownFirmTip": "Bought by {firm} — no mill chosen yet", "daily.ownFirmPick": "{code} — keep with our own firm", "dash.millsAdded": "Added mills only", "dash.millsHint": "All mills counts what the firm itself bought as well; added mills only leaves it out.",
   },
 
   hi: {
@@ -1426,6 +1427,7 @@ export const STRINGS = {
     "portal.rawSaid": "e-Mandi ने अक्षरशः क्या कहा —",
     "portal.wrongFirm": "यह लॉगिन e-Mandi पर {portal} खोलता है, जबकि Mandi Mitra में खुली फर्म {here} है। {here} का अपना e-Mandi लॉगिन डालें, वरना दरें और कागज़ दूसरी फर्म के होंगे।",
     "dash.dayToday": "आज",
+    "daily.ownFirmTip": "{firm} ने खरीदा — अभी कोई मिल नहीं चुनी", "daily.ownFirmPick": "{code} — अपनी ही फर्म पर रखें", "dash.millsAdded": "सिर्फ़ जोड़ी गई मिलें", "dash.millsHint": "सभी मिलें में फर्म की अपनी खरीद भी गिनी जाती है; सिर्फ़ जोड़ी गई मिलें में नहीं।",
   },
 } as const;
 

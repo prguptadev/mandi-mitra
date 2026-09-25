@@ -17,6 +17,7 @@ import { SkeletonList } from "@/components/Skeletons.tsx";
 import {
   Button, Card, CardHeader, Select, Input, Badge, Alert, EmptyState, Field, Spinner,
 } from "@/components/ui/index.tsx";
+import { useOwnCode } from "@/components/OwnFirm.tsx";
 import { cn, fmtDateTime, relTime } from "@/lib/utils.ts";
 
 const todayISO = () => new Date().toLocaleDateString("en-CA");
@@ -27,6 +28,7 @@ const STATUS_TONE: Record<string, "ok" | "warn" | "bad" | "neutral" | "brand"> =
 
 export function ScanListPage() {
   const { t, pick, lang } = useI18n();
+  const ownCode = useOwnCode();
   const qc = useQueryClient();
   const { can } = useSession();
   const [, navigate] = useLocation();
@@ -135,7 +137,7 @@ export function ScanListPage() {
               </Field>
               <Field label={t("daily.mill")}>
                 <Select value={upMill} className="h-8 text-[13px]" onChange={(e) => setUpMill(e.target.value)}>
-                  <option value="">{t("daily.noMill")}</option>
+                  <option value="">{t("daily.ownFirmPick", { code: ownCode })}</option>
                   {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
                 </Select>
               </Field>

@@ -21,6 +21,7 @@ import { TryModelsButton } from "@/components/GeminiModels.tsx";
 import {
   Button, Card, CardHeader, Select, Input, Badge, Alert, Dialog, Field, Spinner, EmptyState, Tabs,
 } from "@/components/ui/index.tsx";
+import { useOwnCode } from "@/components/OwnFirm.tsx";
 import { cn } from "@/lib/utils.ts";
 
 const CELL = "h-7 w-full rounded border border-line bg-surface px-1.5 text-[12px] num text-right focus:border-brand disabled:opacity-60";
@@ -187,6 +188,7 @@ const dmyIso = (iso: string) => iso.split("-").reverse().join("-");
 
 export function ScanReviewPage({ scanId }: { scanId: string }) {
   const { t, pick, lang } = useI18n();
+  const ownCode = useOwnCode();
   const f = useFormat();
   const qc = useQueryClient();
   const { can } = useSession();
@@ -365,7 +367,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
       message: t("scan.confirmCommitSub"),
       rows: [
         { label: t("daily.date"), value: b0.slipDate ? dmyIso(b0.slipDate) : "—" },
-        { label: t("daily.mill"), value: mill ? `${mill.code} — ${pick(mill.name, mill.nameHi)}` : t("daily.noMill") },
+        { label: t("daily.mill"), value: mill ? `${mill.code} — ${pick(mill.name, mill.nameHi)}` : ownCode },
         { label: t("daily.jins"), value: jins ? pick(jins.name, jins.nameHi) : "—" },
         { label: t("scan.confirmLines"), value: t("scan.confirmLinesOf", { n: live.length, pages: b0.pages.length, left: rows.length - live.length }) },
         { label: t("daily.gross"), value: f.weight(live.reduce((x, r) => x + (r.grossGrams ?? 0), 0), { unit: true }) },
@@ -468,7 +470,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
         <Field label={t("daily.mill")} className="min-w-[180px]">
           <Select value={b.merchantId ?? ""} disabled={locked} className="h-8 text-[13px]"
             onChange={(e) => save.mutate({ rows, merchantId: e.target.value || null })}>
-            <option value="">{t("daily.noMill")}</option>
+            <option value="">{t("daily.ownFirmPick", { code: ownCode })}</option>
             {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
           </Select>
         </Field>

@@ -14,6 +14,7 @@ import { SkeletonTable, SkeletonStats } from "@/components/Skeletons.tsx";
 import { downloadDara } from "@/components/DownloadDialog.tsx";
 import { RaceChart, type RacePoint } from "@/components/RaceChart.tsx";
 import { Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, EmptyState, Alert } from "@/components/ui/index.tsx";
+import { OwnFirm } from "@/components/OwnFirm.tsx";
 import { NewLoadDialog } from "@/pages/Loads.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
 import { cn } from "@/lib/utils.ts";
@@ -144,7 +145,7 @@ export function StockPage() {
                   <Tr key={key} onClick={() => navigate(`/stock/${key}`)}>
                     <Td className="whitespace-nowrap">
                       {r.millCode ? <><Badge tone="brand" className="num">{r.millCode}</Badge> <span className="text-muted">{pick(r.millName, r.millNameHi)}</span></>
-                        : <span className="text-warn">{t("stock.noMill")}</span>}
+                        : <OwnFirm withName />}
                     </Td>
                     <Td numeric>{r.slips}</Td>
                     <Td numeric>{f.weight(r.boughtNet)}</Td>
@@ -256,7 +257,7 @@ export function MillAccountPage({ id }: { id: string }) {
         </Link>
       </div>
       <PageHeader
-        title={isNone ? t("stock.noMill") : a ? <span className="flex items-center gap-2"><Badge tone="brand" className="num">{a.mill.code}</Badge>{pick(a.mill.name, a.mill.nameHi)}</span> : "…"}
+        title={isNone ? <OwnFirm withName /> : a ? <span className="flex items-center gap-2"><Badge tone="brand" className="num">{a.mill.code}</Badge>{pick(a.mill.name, a.mill.nameHi)}</span> : "…"}
         sub={isNone ? t("stock.noMillHelp") : t("stock.millSub")}
         action={!isNone && (
           <div className="flex flex-wrap gap-2">

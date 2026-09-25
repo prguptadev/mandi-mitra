@@ -5,8 +5,9 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useFormat } from "@/lib/format.tsx";
-import { Card, CardHeader, Badge, Button, Input } from "@/components/ui/index.tsx";
+import { Card, CardHeader, Badge, Button, Input, Select } from "@/components/ui/index.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
+import { OwnFirm } from "@/components/OwnFirm.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
 import { dmy, shiftDay } from "@server/lib/parchaLabels.ts";
 
@@ -40,7 +41,9 @@ export function DayAveragesCard() {
   const f = useFormat();
   /** One day, today to begin with; the arrows and the box move it. */
   const [day, setDay] = useState(todayISO());
-  const query = new URLSearchParams({ from: day, to: day, days: "1" }).toString();
+  /** "all" counts what the firm bought itself; "added" is the mills alone. */
+  const [mills, setMills] = useState<"all" | "added">("all");
+  const query = new URLSearchParams({ from: day, to: day, days: "1", mills }).toString();
   const q = useQuery({
     queryKey: ["dashboard", "day-averages", query],
     queryFn: () => api.get<{ days: Day[] }>(`/dashboard/day-averages?${query}`),
@@ -48,8 +51,8 @@ export function DayAveragesCard() {
 
   const waiting = q.data?.days?.[0]?.waiting ?? 0;
   const picker = (
-    <div className="flex items-center gap-1">
-      <span className="mr-1 hidden text-[12px] text-faint sm:inline">{weekday(day, lang)}</span>
+    <div className="flex flex-wrap items-center gap-1 border-b border-line px-3 py-2">
+      <span className="mr-1 text-[12px] text-faint">{weekday(day, lang)}</span>
       <Button size="sm" variant="ghost" icon={<ChevronLeft className="h-3.5 w-3.5" />}
         onClick={() => setDay(shiftDay(day, -1))} aria-label={t("daily.prevDay")} title={t("daily.prevDay")} />
       <Input type="date" value={day} onChange={(e) => setDay(e.target.value || todayISO())}
@@ -61,6 +64,11 @@ export function DayAveragesCard() {
           title={t("dash.dayToday")}>{t("dash.dayToday")}</Button>
       )}
       {waiting > 0 && <Badge tone="warn">{t("dash.dayWaiting", { n: waiting })}</Badge>}
+      <Select value={mills} onChange={(e) => setMills(e.target.value as "all" | "added")}
+        className="h-8 w-36 text-[13px]" title={t("dash.millsHint")} aria-label={t("daily.mill")}>
+        <option value="all">{t("daily.allMills")}</option>
+        <option value="added">{t("dash.millsAdded")}</option>
+      </Select>
     </div>
   );
 
@@ -75,7 +83,8 @@ export function DayAveragesCard() {
 
   return (
     <Card className="mb-5">
-      <CardHeader title={t("dash.dayRate")} sub={t("dash.dayRateSub")} action={picker} />
+      <CardHeader title={t("dash.dayRate")} sub={t("dash.dayRateSub")} />
+      {picker}
       <div className="space-y-4 p-3">
         {!days.length && (
           <p className="px-1 text-[13px] text-faint">{t("dash.dayEmpty", { date: dmy(day) })}</p>
@@ -105,7 +114,7 @@ export function DayAveragesCard() {
                                 <Badge tone="neutral" className="num">{l.millCode}</Badge>
                                 <span className="text-muted">{pick(l.millName ?? "", l.millNameHi ?? "")}</span>
                               </Link>
-                            : <span className="text-faint">{t("daily.noMill")}</span>}
+                            : <OwnFirm withName />}
                         </td>
                         <td className={td}><span className="num">{l.jinsCode}</span></td>
                         <td className={tdNum}>{f.weight(l.netGrams)}</td>

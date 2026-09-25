@@ -190,6 +190,19 @@ console.log("\nA typed name is a supplier");
   check("the day has a line for the mill and commodity", (dayRow?.lines?.length ?? 0) >= 1, true);
   check("  ...its average is the daily list's own weighted average", dayRow.total.avgRatePaisePerQtl, dayList.totals.weightedAvgRatePaise);
   check("  ...and its net weight is the daily list's net", dayRow.lines.reduce((s: number, l: any) => s + l.netGrams, 0), dayList.totals.netGrams);
+  /* A slip with no mill on it was bought by the firm itself. "All mills" counts
+     it; "added mills only" leaves it out, and the average moves accordingly. */
+  const own = await call("POST", "/slips", { slipDate: "2026-12-05", rstNo: "OWN1", adatiName: "अपनी खरीद", jinsId: j.id, grossGrams: 2_000_000, ratePaisePerQtl: 300_000 });
+  const withMill = await call("POST", "/slips", { slipDate: "2026-12-05", rstNo: "OWN2", adatiName: "अपनी खरीद", jinsId: j.id, grossGrams: 1_000_000, ratePaisePerQtl: 400_000, merchantId: (await call("GET", "/merchants"))[0].id });
+  const allMills = (await call("GET", "/dashboard/day-averages?days=1&from=2026-12-05&to=2026-12-05&mills=all")).days[0];
+  const addedOnly = (await call("GET", "/dashboard/day-averages?days=1&from=2026-12-05&to=2026-12-05&mills=added")).days[0];
+  check("all mills counts what the firm bought itself", allMills.lines.length, 2);
+  check("  ...added mills only leaves it out", addedOnly.lines.length, 1);
+  check("  ...and that line is the one with a mill on it", addedOnly.lines[0].millId !== null, true);
+  check("all mills averages both: (20×3000 + 10×4000) ÷ 30", allMills.total.avgRatePaisePerQtl, 333_333);
+  check("  ...added mills only is that one mill's own rate", addedOnly.total.avgRatePaisePerQtl, 400_000);
+  for (const id of [own.id, withMill.id]) await call("DELETE", `/slips/${id}`);
+
   const noRate = await call("POST", "/slips", { slipDate: "2026-12-03", rstNo: "NR1", adatiName: "बिना दर आढ़ती", jinsId: j.id, grossGrams: 1_000_000, ratePaisePerQtl: 0 });
   const withNoRate = await call("GET", "/dashboard/day-averages?days=30&from=2026-12-03&to=2026-12-03");
   const nrDay = withNoRate.days.find((d: any) => d.date === "2026-12-03");
