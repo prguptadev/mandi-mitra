@@ -74,6 +74,8 @@ check("a wrong captcha is refused, in the portal's own words",
 await call("POST", "/emandi/signin/start", {});
 const ok = await call("POST", "/emandi/signin/finish", { captcha: CAPTCHA });
 check("the right captcha signs this computer in", ok.signedIn === true, { signedIn: ok.signedIn, at: ok.signedInAt });
+check("  ...and says whose licence that login is, in the portal's own words",
+  ok.firm === "VIJAY LAXMI DALL MILL" && ok.portalLicence === "L/2016/75/17121983", { firm: ok.firm, licence: ok.portalLicence });
 
 console.log("\nThe rate band, mandi fee and cess");
 const rates = await call("GET", "/emandi/rates");
@@ -107,6 +109,13 @@ const otherStatus = await call("GET", "/emandi");
 check("the second firm starts with nothing of its own", otherStatus.configured === false && otherStatus.signedIn === false, otherStatus);
 const otherRates = await call("GET", "/emandi/rates");
 check("  ...and gets no rates until its own login is added", /Settings|sign in/i.test(otherRates.rates[0]?.error ?? ""), otherRates.rates[0]);
+/* The two firms keep separate logins on the portal. One firm being signed in
+   must never show the other firm a rate, or say whose licence it is. */
+check("  ...and the firm that IS signed in never lends it a figure",
+  otherRates.rates.every((r: any) => r.minRatePaise === null && r.maxRatePaise === null)
+  && !JSON.stringify(otherRates).includes("VIJAY LAXMI DALL MILL"), otherRates.rates);
+check("  ...nor whose licence the other firm's login is",
+  (await call("GET", "/emandi")).firm === null, (await call("GET", "/emandi")).firm);
 await call("POST", "/auth/switch-business", { businessId: vldm.businessId });
 check("the first firm is still signed in", (await call("GET", "/emandi")).signedIn === true);
 

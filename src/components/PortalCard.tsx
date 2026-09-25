@@ -15,6 +15,7 @@ import { Alert, Badge, Button, Card, CardHeader, Checkbox, Field, Input } from "
 
 interface PortalStatus {
   configured: boolean; user: string; licence: string; watch: string[];
+  firm: string | null; portalLicence: string | null;
   signedIn: boolean; signedInAt: string | null; note: string | null; base: string;
 }
 
@@ -24,7 +25,6 @@ export function PortalCard() {
   const qc = useQueryClient();
   const [user, setUser] = useState<string | null>(null);
   const [password, setPassword] = useState("");
-  const [licence, setLicence] = useState<string | null>(null);
   const [watch, setWatch] = useState<string[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -34,7 +34,7 @@ export function PortalCard() {
     enabled: can("business.write"), staleTime: 60_000,
   });
   // the business can be switched under us; forget what was typed for the old one
-  useEffect(() => { setUser(null); setPassword(""); setLicence(null); setWatch(null); setSaved(false); }, [me?.activeBusinessId]);
+  useEffect(() => { setUser(null); setPassword(""); setWatch(null); setSaved(false); }, [me?.activeBusinessId]);
 
   /* The portal's commodity list is read once and kept on this computer, so the
      choice can be made whether or not anyone is signed in just now. */
@@ -53,7 +53,6 @@ export function PortalCard() {
     mutationFn: () => api.put<PortalStatus>("/emandi", {
       ...(user !== null ? { user: user.trim() } : {}),
       ...(password ? { password } : {}),
-      ...(licence !== null ? { licence: licence.trim() } : {}),
       ...(watch !== null ? { watch } : {}),
     }),
     onSuccess: (s) => {
@@ -72,9 +71,8 @@ export function PortalCard() {
   if (!can("business.write")) return null;
   const s = q.data;
   const shownUser = user ?? s?.user ?? "";
-  const shownLicence = licence ?? s?.licence ?? "";
   const shownWatch = watch ?? s?.watch ?? [];
-  const dirty = user !== null || licence !== null || watch !== null || password.length > 0;
+  const dirty = user !== null || watch !== null || password.length > 0;
   const list = crops.data?.crops ?? [];
   const needle = find.trim().toLowerCase();
   const shown = needle ? list.filter((c) => c.name.toLowerCase().includes(needle) || c.code.includes(needle)) : list;
@@ -98,10 +96,17 @@ export function PortalCard() {
               placeholder={s?.configured ? "••••••••" : ""}
               onChange={(e) => { setSaved(false); setPassword(e.target.value); }} />
           </Field>
-          <Field label={t("portal.licence")} hint={t("portal.licenceHint")}>
-            <Input value={shownLicence} className="num" onChange={(e) => { setSaved(false); setLicence(e.target.value); }} />
-          </Field>
         </div>
+
+        {/* Whose licence this login is, in the portal's own words. A mill's
+            licence carries no rate band; an arhat's does — so it is worth
+            seeing which one is saved here. */}
+        {s?.firm && (
+          <p className="text-[12px] text-muted">
+            {t("portal.whose")} <span className="font-medium text-ink">{s.firm}</span>
+            {s.portalLicence && <span className="num ml-1.5 text-faint">{s.portalLicence}</span>}
+          </p>
+        )}
 
         <div className="rounded-lg border border-line bg-raised/30 p-3">
           <div className="mb-2 flex flex-wrap items-center gap-2">

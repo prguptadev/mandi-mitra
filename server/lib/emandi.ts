@@ -38,6 +38,9 @@ export interface PortalAccount {
   watch: string[];
   /** The portal's cookies from the last sign-in, encrypted. Not shown anywhere. */
   session?: string | null;
+  /** Whose licence the portal says this login is — read from its own dashboard. */
+  firm?: string | null;
+  portalLicence?: string | null;
   /** The portal's commodity list, read once and kept so the choice can be made offline. */
   crops?: { code: string; name: string }[] | null;
   cropsAt?: string | null;
@@ -45,7 +48,8 @@ export interface PortalAccount {
 }
 type Store = Record<string, PortalAccount>;
 
-const blank = (): PortalAccount => ({ user: "", enc: null, licence: "", watch: ["1"], session: null, crops: null, cropsAt: null, updatedAt: null });
+const blank = (): PortalAccount => ({ user: "", enc: null, licence: "", watch: ["1"], session: null,
+  firm: null, portalLicence: null, crops: null, cropsAt: null, updatedAt: null });
 
 function readStore(): Store {
   try { return JSON.parse(fs.readFileSync(CFG_PATH(), "utf8")) as Store; } catch { return {}; }
@@ -70,6 +74,9 @@ export function saveAccount(biz: string, p: { user?: string; password?: string; 
     licence: p.licence ?? cur.licence,
     watch: p.watch ?? cur.watch,
     session: loginChanged ? null : cur.session ?? null,
+    // a changed login may be a different licence, so forget whose it was
+    firm: loginChanged ? null : cur.firm ?? null,
+    portalLicence: loginChanged ? null : cur.portalLicence ?? null,
     crops: cur.crops ?? null,
     cropsAt: cur.cropsAt ?? null,
     updatedAt: new Date().toISOString(),
@@ -243,6 +250,11 @@ export async function finishSignIn(biz: string, typed: string): Promise<{ ok: tr
   const probe = await call(biz, "/Traders/Dashboard");
   const probeText = probe.status === 200 ? await probe.text() : "";
   const signedIn = probe.status === 200 && !looksSignedOut(probeText);
+  if (signedIn) {
+    const who = whoseLogin(probeText);
+    const st = readStore();
+    if (st[biz]) { st[biz] = { ...st[biz], ...who }; writeStore(st); }
+  }
   /* One line in the log per attempt: what the portal answered, never what was
      sent. It is the only way to tell a wrong captcha from a changed page. */
   console.log(`[emandi] sign-in: post ${res.status}${location ? ` -> ${location}` : ""}`
@@ -277,6 +289,16 @@ export async function finishSignIn(biz: string, typed: string): Promise<{ ok: tr
  * rates that quietly stop refreshing.
  */
 const KEEP_ALIVE_MS = 8 * 60_000;
+/* The portal greets a trader by firm on its dashboard and carries the licence
+   in a hidden field. Which licence a login belongs to decides what it can see
+   — a mill's licence carries no rate band, an arhat's does — so it is worth
+   showing plainly instead of leaving it to be guessed. */
+function whoseLogin(dashboard: string) {
+  const firm = /Welcome,\s*([^<\n]{2,80})/.exec(dashboard)?.[1]?.trim() ?? null;
+  const licence = /<input[^>]*id="MerchantLicense"[^>]*>/.exec(dashboard)?.[0];
+  return { firm: firm || null, portalLicence: licence ? /value="([^"]*)"/.exec(licence)?.[1] ?? null : null };
+}
+
 function startKeepAlive(biz: string) {
   const s = sessionOf(biz);
   if (s.keepAlive) clearInterval(s.keepAlive);
@@ -292,6 +314,13 @@ function startKeepAlive(biz: string) {
           live.note = "The portal ended this session. Sign in again to see the rates.";
           keepSession(biz);
           stopKeepAlive(biz);
+          return;
+        }
+        // a session kept from before this was recorded fills itself in here
+        const acc = accountOf(biz);
+        if (!acc.firm) {
+          const st = readStore();
+          if (st[biz]) { st[biz] = { ...st[biz], ...whoseLogin(text) }; writeStore(st); }
         }
       } catch { /* no internet just now; the next round tries again */ }
     })();
@@ -318,6 +347,8 @@ export function statusOf(biz: string) {
     user: acc.user,
     licence: acc.licence,
     watch: acc.watch,
+    firm: acc.firm ?? null,
+    portalLicence: acc.portalLicence ?? null,
     signedIn: Boolean(s?.signedInAt),
     signedInAt: s?.signedInAt ? new Date(s.signedInAt).toISOString() : null,
     note: s?.note ?? null,

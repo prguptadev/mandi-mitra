@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils.ts";
 
 interface PortalStatus {
   configured: boolean; user: string; licence: string; watch: string[];
+  firm: string | null; portalLicence: string | null;
   signedIn: boolean; signedInAt: string | null; note: string | null; base: string;
 }
 interface Rate {
@@ -120,6 +121,7 @@ export function PortalRatesCard() {
   const noBand = (r: Rate) => !r.error && !r.minRatePaise && !r.maxRatePaise;
   const allBandless = list.length > 0 && list.every(noBand);
 
+
   return (
     <Card className="mb-5">
       <CardHeader title={t("portal.title")} sub={t("portal.sub")}
@@ -140,6 +142,12 @@ export function PortalRatesCard() {
       <div className="space-y-3 p-4">
         {err && <Alert tone="bad">{err}</Alert>}
         {s?.note && !err && <Alert tone="warn">{s.note}</Alert>}
+        {s?.signedIn && s.firm && (
+          <p className="text-[12px] text-muted">
+            {t("portal.whose")} <span className="font-medium text-ink">{s.firm}</span>
+            {s.portalLicence && <span className="num ml-1.5 text-faint">{s.portalLicence}</span>}
+          </p>
+        )}
 
         {ask && (
           <div className="rounded-lg border border-line bg-raised/40 p-3">

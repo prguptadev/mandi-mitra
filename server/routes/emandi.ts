@@ -73,18 +73,25 @@ emandiRoutes.post("/crops/refresh", can("dashboard.view"), async (c) => {
   try { return c.json({ crops: await cropList(biz, true), at: new Date().toISOString() }); } catch (e) { throw fail(e); }
 });
 
-/** The rate band for the commodities this business watches, or the ones asked for. */
+type Row = Awaited<ReturnType<typeof rateBand>> & { error: string | null };
+
+/**
+ * The rate band for the commodities this business watches, or the ones asked
+ * for. Each firm has its own login on the portal and sees only its own: a
+ * login is never borrowed from the other firm, on screen or behind it.
+ */
 emandiRoutes.get("/rates", can("dashboard.view"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const asked = (c.req.query("codes") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const codes = asked.length ? asked.slice(0, 12) : accountOf(biz).watch;
-  const out = [];
+  const rows: Row[] = [];
   for (const code of codes) {
-    try { out.push({ ...(await rateBand(biz, code)), error: null }); } catch (e) {
-      out.push({ cropCode: code, cropName: null, minRatePaise: null, maxRatePaise: null, mandiFeePct: null, developmentCessPct: null,
+    try { rows.push({ ...(await rateBand(biz, code)), error: null }); } catch (e) {
+      rows.push({ cropCode: code, cropName: null, minRatePaise: null, maxRatePaise: null, mandiFeePct: null,
+        developmentCessPct: null, onMandiSthal: null, directLicence: null,
         at: new Date().toISOString(), error: e instanceof PortalError ? e.message : "The portal did not answer" });
       if (e instanceof PortalError && e.code === "signed_out") break;
     }
   }
-  return c.json({ rates: out, status: statusOf(biz) });
+  return c.json({ rates: rows, status: statusOf(biz) });
 });
