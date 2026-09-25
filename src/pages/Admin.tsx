@@ -26,6 +26,7 @@ import { BackupCard } from "@/components/BackupCard.tsx";
 import { AppearanceCard } from "@/components/AppearanceCard.tsx";
 import { CloudCard } from "@/components/CloudCard.tsx";
 import { NetworkCard } from "@/components/NetworkCard.tsx";
+import { PortalCard } from "@/components/PortalCard.tsx";
 import { UpdateCard } from "@/components/UpdateCard.tsx";
 
 /* ------------------------------------------------------------------- users */
@@ -762,6 +763,7 @@ export function SettingsPage() {
           <BackupCard />
           <div className="space-y-4">
             <CloudCard />
+            <PortalCard />
             <NetworkCard />
             <UpdateCard />
           </div>

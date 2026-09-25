@@ -25,6 +25,7 @@ import { syncSoon } from "./lib/cloud.ts";
 import { appRoutes } from "./routes/appUpdate.ts";
 import { dashboardRoutes } from "./routes/dashboard.ts";
 import { tallyRoutes } from "./routes/tally.ts";
+import { emandiRoutes } from "./routes/emandi.ts";
 import { dayRoutes } from "./routes/days.ts";
 import { millFollowupRoutes } from "./routes/millFollowup.ts";
 
@@ -82,6 +83,7 @@ export function createApp() {
   app.route("/api/backup", backupRoutes);
   app.route("/api/scanner", scannerRoutes);
   app.route("/api/cloud", cloudRoutes);
+  app.route("/api/emandi", emandiRoutes);
   app.route("/api/app", appRoutes);
   app.route("/api/dashboard", dashboardRoutes);
   app.route("/api/tally", tallyRoutes);

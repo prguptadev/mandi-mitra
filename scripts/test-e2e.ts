@@ -9,11 +9,14 @@ const PORT = "8799";
 const DATA = path.resolve("data-test");
 // Gemini is a local stand-in: no real key, no real read
 const FAKE_GEMINI = 8797;
+// a stand-in for the UP e-Mandi portal: the real mandi site is never called
+const FAKE_EMANDI = 8795;
 // a stand-in scanner: every "scan" returns this small JPEG
 const FAKE_PAGE = path.join(DATA, "fake-scanner-page.jpg");
 const env = {
   ...process.env, MANDI_DATA_DIR: DATA, MANDI_API: `http://127.0.0.1:${PORT}/api`, PORT,
   MANDI_GEMINI_BASE: `http://127.0.0.1:${FAKE_GEMINI}`,
+  MANDI_EMANDI_BASE: `http://127.0.0.1:${FAKE_EMANDI}`,
   MANDI_FAKE_SCANNER: FAKE_PAGE, MANDI_NO_AUTO_BACKUP: "1",
   // a real Postgres in-process, standing in for Supabase
   MANDI_FAKE_PG: "postgresql://postgres:test-only@127.0.0.1:8796/postgres",
@@ -28,6 +31,7 @@ const env = {
 // its own process: execFileSync below blocks this one while each test runs
 const fake = spawn("npx", ["tsx", "scripts/fake-gemini.ts", String(FAKE_GEMINI)], { stdio: "ignore" });
 const fakePg = spawn("npx", ["tsx", "scripts/fake-postgres.ts", "8796"], { stdio: "ignore" });
+const fakeEmandi = spawn("npx", ["tsx", "scripts/fake-emandi.ts", String(FAKE_EMANDI)], { stdio: "ignore" });
 
 const OTHERS = [env.MANDI_DATA_DIR_B, env.MANDI_DATA_DIR_C];
 for (const d of [DATA, ...OTHERS]) { fs.rmSync(d, { recursive: true, force: true }); fs.mkdirSync(d, { recursive: true }); }
@@ -84,6 +88,7 @@ try {
   run("scripts/e2e-ca.ts");
   run("scripts/e2e-multi.ts");
   run("scripts/e2e-cloud.ts");
+  run("scripts/e2e-emandi.ts");
   run("scripts/e2e-startup.ts");
   // last: every stored figure the tests produced, re-worked independently
   // on every computer: the synced copies must add up exactly like the first
@@ -98,6 +103,7 @@ try {
   for (const o of others) o.kill();
   fake.kill();
   fakePg.kill();
+  fakeEmandi.kill();
   for (const d of [DATA, ...OTHERS]) fs.rmSync(d, { recursive: true, force: true });
 }
 console.log(failed === 0 ? "\nAll end-to-end checks passed (test database, discarded)." : `\n${failed} end-to-end script(s) FAILED`);
