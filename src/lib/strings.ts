@@ -710,6 +710,7 @@ export const STRINGS = {
     "portal.whose": "On e-Mandi this login is",
     "portal.rawSaid": "What e-Mandi replied, word for word —",
     "portal.wrongFirm": "This login opens {portal} on e-Mandi, but the firm open here in Mandi Mitra is {here}. Put {here}'s own e-Mandi login in, or the rates and the papers will be the other firm's.",
+    "dash.dayToday": "Today",
   },
 
   hi: {
@@ -1424,6 +1425,7 @@ export const STRINGS = {
     "portal.whose": "e-Mandi पर यह लॉगिन है",
     "portal.rawSaid": "e-Mandi ने अक्षरशः क्या कहा —",
     "portal.wrongFirm": "यह लॉगिन e-Mandi पर {portal} खोलता है, जबकि Mandi Mitra में खुली फर्म {here} है। {here} का अपना e-Mandi लॉगिन डालें, वरना दरें और कागज़ दूसरी फर्म के होंगे।",
+    "dash.dayToday": "आज",
   },
 } as const;
 

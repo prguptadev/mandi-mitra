@@ -1,22 +1,23 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { CalendarDays, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useFormat } from "@/lib/format.tsx";
 import { Card, CardHeader, Badge, Button, Input } from "@/components/ui/index.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
-import { cn } from "@/lib/utils.ts";
-import { dmy } from "@server/lib/parchaLabels.ts";
+import { cn, todayISO } from "@/lib/utils.ts";
+import { dmy, shiftDay } from "@server/lib/parchaLabels.ts";
 
 /** "Sunday" / "रविवार", from the browser itself. */
 const weekday = (iso: string, lang: string) =>
   new Date(`${iso}T00:00:00`).toLocaleDateString(lang === "hi" ? "hi-IN" : "en-IN", { weekday: "long" });
 
-/* The day's rate at the top of the dashboard: one table per day, a line for
-   each mill and commodity — a mill that took two commodities that day has two
-   lines. The rate is Σ(net × rate) / Σ net over the slips that carry a rate,
+/* The day's rate at the top of the dashboard: one day at a time, starting on
+   today, with a line for each mill and commodity — a mill that took two
+   commodities that day has two lines. The arrows step to yesterday and
+   tomorrow. The rate is Σ(net × rate) / Σ net over the slips that carry a rate,
    the same figure the parcha and the mill report print, so the three agree.
    A line whose slips have no rate yet has no rate to show: it is left out and
    counted at the foot instead. */
@@ -34,19 +35,12 @@ interface Day {
   waiting: number;
 }
 
-/** One day, or the latest days the period holds. */
-const shift = (iso: string, by: number) => {
-  const d = new Date(`${iso}T00:00:00`);
-  d.setDate(d.getDate() + by);
-  return d.toISOString().slice(0, 10);
-};
-
-export function DayAveragesCard({ qs }: { qs: string }) {
+export function DayAveragesCard() {
   const { t, pick, lang } = useI18n();
   const f = useFormat();
-  /** Empty = the latest days of the period; a date = only that day. */
-  const [day, setDay] = useState("");
-  const query = day ? new URLSearchParams({ from: day, to: day, days: "1" }).toString() : qs;
+  /** One day, today to begin with; the arrows and the box move it. */
+  const [day, setDay] = useState(todayISO());
+  const query = new URLSearchParams({ from: day, to: day, days: "1" }).toString();
   const q = useQuery({
     queryKey: ["dashboard", "day-averages", query],
     queryFn: () => api.get<{ days: Day[] }>(`/dashboard/day-averages?${query}`),
@@ -54,19 +48,15 @@ export function DayAveragesCard({ qs }: { qs: string }) {
 
   const picker = (
     <div className="flex items-center gap-1">
-      {day && (
-        <Button size="sm" variant="ghost" icon={<ChevronLeft className="h-3.5 w-3.5" />}
-          onClick={() => setDay(shift(day, -1))} aria-label={t("daily.prevDay")} title={t("daily.prevDay")} />
-      )}
-      <Input type="date" value={day} onChange={(e) => setDay(e.target.value)}
+      <Button size="sm" variant="ghost" icon={<ChevronLeft className="h-3.5 w-3.5" />}
+        onClick={() => setDay(shiftDay(day, -1))} aria-label={t("daily.prevDay")} title={t("daily.prevDay")} />
+      <Input type="date" value={day} onChange={(e) => setDay(e.target.value || todayISO())}
         className="h-8 w-36 text-[13px]" aria-label={t("dash.dayPick")} title={t("dash.dayPick")} />
-      {day && (
-        <>
-          <Button size="sm" variant="ghost" icon={<ChevronRight className="h-3.5 w-3.5" />}
-            onClick={() => setDay(shift(day, 1))} aria-label={t("daily.nextDay")} title={t("daily.nextDay")} />
-          <Button size="sm" variant="ghost" icon={<X className="h-3.5 w-3.5" />}
-            onClick={() => setDay("")} aria-label={t("dash.dayLatest")} title={t("dash.dayLatest")}>{t("dash.dayLatest")}</Button>
-        </>
+      <Button size="sm" variant="ghost" icon={<ChevronRight className="h-3.5 w-3.5" />}
+        onClick={() => setDay(shiftDay(day, 1))} aria-label={t("daily.nextDay")} title={t("daily.nextDay")} />
+      {day !== todayISO() && (
+        <Button size="sm" variant="ghost" onClick={() => setDay(todayISO())}
+          title={t("dash.dayToday")}>{t("dash.dayToday")}</Button>
       )}
     </div>
   );
@@ -74,9 +64,6 @@ export function DayAveragesCard({ qs }: { qs: string }) {
   // nothing to show yet, or the figures are not in: the card stays away
   if (q.isLoading) return <Card className="mb-5"><SkeletonTable rows={3} /></Card>;
   const days = q.data?.days ?? [];
-  // a day picked by hand keeps the card there even when that day is empty, so
-  // the answer "nothing that day" is visible instead of the card vanishing
-  if (!days.length && !day) return null;
 
   const th = "px-2 py-1.5 text-left text-[11px] font-medium uppercase tracking-wide text-muted";
   const thNum = cn(th, "text-right");
@@ -107,8 +94,6 @@ export function DayAveragesCard({ qs }: { qs: string }) {
                     <tr>
                       <th className={th}>{t("load.mill")}</th>
                       <th className={th}>{t("daily.jins")}</th>
-                      <th className={thNum}>{t("dash.slips")}</th>
-                      <th className={thNum}>{t("dash.dayBags")}</th>
                       <th className={thNum}>{t("daily.net")}</th>
                       <th className={thNum}>{t("dash.dayAvg")}</th>
                       <th className={thNum}>{t("daily.amount")}</th>
@@ -126,8 +111,6 @@ export function DayAveragesCard({ qs }: { qs: string }) {
                             : <span className="text-faint">{t("daily.noMill")}</span>}
                         </td>
                         <td className={td}><span className="num">{l.jinsCode}</span></td>
-                        <td className={tdNum}>{l.slips}</td>
-                        <td className={cn(tdNum, !l.bags && "text-faint")}>{l.bags || "—"}</td>
                         <td className={tdNum}>{f.weight(l.netGrams)}</td>
                         <td className={cn(tdNum, "font-semibold text-brand")}>{f.rate(l.avgRatePaisePerQtl)}</td>
                         <td className={tdNum}>{f.amount(l.amountPaise)}</td>
@@ -136,8 +119,6 @@ export function DayAveragesCard({ qs }: { qs: string }) {
                     {d.total && d.lines.length > 1 && (
                       <tr className="border-t-2 border-line bg-raised/40 font-semibold">
                         <td className={td} colSpan={2}>{t("dash.dayAll")}</td>
-                        <td className={tdNum}>{d.total.slips}</td>
-                        <td className={cn(tdNum, !d.total.bags && "text-faint")}>{d.total.bags || "—"}</td>
                         <td className={tdNum}>{f.weight(d.total.netGrams)}</td>
                         <td className={cn(tdNum, "text-brand")}>{f.rate(d.total.avgRatePaisePerQtl)}</td>
                         <td className={tdNum}>{f.amount(d.total.amountPaise)}</td>

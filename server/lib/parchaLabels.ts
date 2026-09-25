@@ -66,3 +66,16 @@ export function partyHeading(p: { name: string; city: string | null; state: stri
   const city = p.city ? ` - ${p.city}` : "";
   return `${p.name}${city}${st && p.city ? " " + st : ""}`.toUpperCase();
 }
+
+/**
+ * A day before or after, as a YYYY-MM-DD date.
+ *
+ * The date is read and written in the office's own time, never through UTC.
+ * `new Date("2026-09-25T00:00:00").toISOString()` is 2026-09-24 in India —
+ * which once made "yesterday" jump two days and "tomorrow" do nothing at all.
+ */
+export const shiftDay = (iso: string, days: number) => {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return d.toLocaleDateString("en-CA");
+};

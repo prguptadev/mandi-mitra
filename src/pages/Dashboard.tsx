@@ -341,7 +341,7 @@ export function DashboardPage() {
         } />
 
       <AttentionStrip />
-      <DayAveragesCard qs={qs.toString()} />
+      <DayAveragesCard />
       <PortalRatesCard />
       {dash.isError ? <Card><LoadError error={dash.error} onRetry={() => void dash.refetch()} /></Card> : !k ? <SkeletonStats /> : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

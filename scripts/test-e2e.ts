@@ -90,6 +90,12 @@ try {
   run("scripts/e2e-cloud.ts");
   run("scripts/e2e-emandi.ts");
   run("scripts/e2e-startup.ts");
+  run("scripts/e2e-dates.ts");
+  // the same day maths from a laptop set to another country
+  try {
+    execFileSync("npx", ["tsx", "scripts/e2e-dates.ts"], { env: { ...env, TZ: "Asia/Kolkata" }, stdio: "inherit" });
+    execFileSync("npx", ["tsx", "scripts/e2e-dates.ts"], { env: { ...env, TZ: "Europe/London" }, stdio: "inherit" });
+  } catch { failed++; }
   // last: every stored figure the tests produced, re-worked independently
   // on every computer: the synced copies must add up exactly like the first
   for (const d of [DATA, ...OTHERS]) {

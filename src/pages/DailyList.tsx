@@ -18,6 +18,7 @@ import { DailyListSettings } from "@/components/DailyListSettings.tsx";
 import { usePrefs, DAILY_COLUMNS, type DailyColumnKey } from "@/lib/prefs.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { SupplierPicker } from "@/components/SupplierPicker.tsx";
+import { shiftDay } from "@server/lib/parchaLabels.ts";
 import { HindiInput } from "@/components/HindiInput.tsx";
 import { DownloadDialog } from "@/components/DownloadDialog.tsx";
 import { WhatsAppDialog } from "@/components/WhatsAppDialog.tsx";
@@ -31,12 +32,6 @@ import {
 import { cn } from "@/lib/utils.ts";
 
 const todayISO = () => new Date().toLocaleDateString("en-CA");
-const shiftDay = (iso: string, days: number) => {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + days);
-  return d.toLocaleDateString("en-CA");
-};
-
 /** The row being typed. Kept as strings so half-typed numbers stay on screen. */
 interface Draft {
   rstNo: string;
