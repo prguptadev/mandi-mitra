@@ -42,12 +42,22 @@
           border-radius: 8px; padding: 12px 14px; font-size: 13px; color: var(--ink); }
   .faint { color: var(--faint); font-size: 12px; }
   .bad { color: #b3261e; font-size: 13px; }
+  .why { background: var(--warnbg); border: 1px solid var(--line); border-left: 3px solid var(--warn);
+         border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 8px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>e-Mandi captcha viewer</h1>
   <p class="sub">Paste what the portal answered and this page shows it. It only displays what you paste — it does not call e-Mandi, and it does not read the captcha for you.</p>
+  <div class="note" style="margin-bottom:16px">
+    <strong>About the picture.</strong> An address on e-Mandi will not load here:
+    its cookies are SameSite=Lax, so a browser sends them when you go to the
+    portal but not when another page asks for one of its images — signed in or
+    not. Open it on the portal with the button, or paste the picture as a
+    <code>data:image</code> URL. The token fields always read correctly from
+    what you paste.
+  </div>
 
   <div class="card">
     <label for="in">Paste here — the whole &lt;div class="dntCaptcha"&gt;…&lt;/div&gt; block, a refresh reply, an image address, or a data:image URL</label>
@@ -71,9 +81,14 @@ data:image/png;base64,iVBORw0KGgo...'></textarea>
   <div class="card" id="out" hidden>
     <div class="shot">
       <img id="img" alt="the captcha the portal sent" />
-      <div>
+      <div style="flex:1 1 260px">
+        <div class="why" id="why" hidden></div>
         <div class="faint">What it says is for a person to read and type.</div>
         <div class="faint" id="src"></div>
+        <div class="row" id="openRow" hidden>
+          <button id="open">Open this address in a new tab</button>
+          <span class="faint">Opens on e-Mandi itself, where your sign-in counts.</span>
+        </div>
       </div>
     </div>
     <table id="fields"></table>
@@ -99,6 +114,9 @@ data:image/png;base64,iVBORw0KGgo...'></textarea>
   const BASE = "https://emandi.up.gov.in";
   const $ = (id) => document.getElementById(id);
   const fail = (m) => { $("err").textContent = m; $("err").hidden = false; $("out").hidden = true; };
+  /* The fields are worth seeing whether or not the picture loads, so a picture
+     that will not load says so in its own place and leaves the table alone. */
+  const noPicture = (m) => { $("img").hidden = true; $("why").hidden = false; $("why").textContent = m; };
 
   /* The whole <div class="dntCaptcha"> block, as the page or the refresh reply
      sends it: the picture, the hidden fields that have to go back with what a
@@ -154,11 +172,19 @@ data:image/png;base64,iVBORw0KGgo...'></textarea>
     const got = urlOf($("in").value);
     if (!got) return fail("No image found in that. Paste the refresh reply, or the /DNTCaptchaImage/Show… path, or a data:image URL.");
     const img = $("img");
-    img.onerror = () => fail(
+    img.onerror = () => noPicture(
       got.url.startsWith("data:")
         ? "Those base64 bytes are not an image the browser can read — usually the paste was cut short. Copy the whole value, from data:image right to the end."
-        : "That address did not give back an image. Two usual reasons: this browser is not signed in to e-Mandi, so the portal answered with its login page instead of the picture; or that captcha has already been used or has expired — each one is good for a single sign-in, for a few minutes.");
-    img.onload = () => { $("err").hidden = true; };
+        : "The picture cannot be fetched from here, and it is not your sign-in that is at fault. "
+          + "e-Mandi's cookies are SameSite=Lax: a browser sends them when you go to the portal, but not when another page asks for one of its images. "
+          + "So this page gets the login page back instead of the picture, even in a browser that is signed in. "
+          + "Use the button below to open the address on e-Mandi itself, or paste the picture as a data:image URL — those always show here. "
+          + "(A captcha is also good for one sign-in only, for a few minutes.) "
+          + "Every field below is read from what you pasted and is right either way.");
+    img.onload = () => { $("img").hidden = false; $("why").hidden = true; };
+    $("img").hidden = false; $("why").hidden = true;
+    $("openRow").hidden = got.url.startsWith("data:");
+    $("open").onclick = () => window.open(got.url, "_blank", "noopener");
     img.src = got.url;
     $("src").textContent = got.url.startsWith("data:") ? "from the pasted data URL" : got.url;
     const rows = Object.entries(got.fields);
