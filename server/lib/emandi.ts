@@ -317,7 +317,7 @@ async function pingDashboard(biz: string) {
     const text = res.status === 200 ? await res.text() : "";
     if (res.status !== 200 || looksSignedOut(text)) {
       live.signedInAt = null;
-      live.note = "The portal ended this session. Sign in again to see the rates.";
+      live.note = "e-Mandi ended this session. Sign in again to see the rates.";
       keepSession(biz);
       stopKeepAlive(biz);
       return;
@@ -382,9 +382,9 @@ async function signedInCall(biz: string, url: string, init?: RequestInit) {
   const ended = () => {
     s.signedInAt = null;
     keepSession(biz);
-    s.note = "The portal ended this session. Sign in again to see the rates.";
+    s.note = "e-Mandi ended this session. Sign in again to see the rates.";
     stopKeepAlive(biz);
-    return new PortalError("The portal ended this session — sign in again", "signed_out");
+    return new PortalError("e-Mandi ended this session — sign in again", "signed_out");
   };
   if (res.status >= 300 && res.status < 400) throw ended();
   const text = await res.text();
@@ -432,7 +432,7 @@ export async function rateBand(biz: string, cropCode: string): Promise<RateBand>
   if (process.env.MANDI_EMANDI_DEBUG) console.log(`[emandi] crop_fees ${cropCode}: ${text.slice(0, 400)}`);
   let row: Record<string, unknown> | null = null;
   try { const j = JSON.parse(text); row = Array.isArray(j) ? j[0] ?? null : j; } catch { /* not json */ }
-  if (!row) throw new PortalError("The portal did not give the rate for that commodity", "shape");
+  if (!row) throw new PortalError("e-Mandi did not give the rate for that commodity", "shape");
   const crops = await cropList(biz).catch(() => []);
   return {
     cropCode,
@@ -474,7 +474,7 @@ export async function cropList(biz: string, force = false): Promise<{ code: stri
     const name = unescapeHtml(m[2]).trim();
     if (code && name && !/चुने/.test(name)) out.push({ code, name });
   }
-  if (!out.length) throw new PortalError("The portal's commodity list could not be read", "shape");
+  if (!out.length) throw new PortalError("e-Mandi's commodity list could not be read", "shape");
   s.crops = out;
   const st = readStore();
   if (st[biz]) { st[biz] = { ...st[biz], crops: out, cropsAt: new Date().toISOString() }; writeStore(st); }

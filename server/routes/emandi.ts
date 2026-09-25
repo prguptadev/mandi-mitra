@@ -13,7 +13,7 @@ import {
    may see the dashboard. */
 export const emandiRoutes = new Hono<Env>();
 
-const fail = (e: unknown) => bad(e instanceof PortalError ? e.message : "The mandi portal did not answer",
+const fail = (e: unknown) => bad(e instanceof PortalError ? e.message : "e-Mandi did not answer",
   e instanceof PortalError ? e.code : "portal");
 
 emandiRoutes.get("/", can("dashboard.view"), (c) => c.json(statusOf(c.get("auth")!.businessId!)));
@@ -88,7 +88,7 @@ emandiRoutes.get("/rates", can("dashboard.view"), async (c) => {
     try { rows.push({ ...(await rateBand(biz, code)), error: null }); } catch (e) {
       rows.push({ cropCode: code, cropName: null, minRatePaise: null, maxRatePaise: null, mandiFeePct: null,
         developmentCessPct: null, onMandiSthal: null, directLicence: null,
-        at: new Date().toISOString(), error: e instanceof PortalError ? e.message : "The portal did not answer" });
+        at: new Date().toISOString(), error: e instanceof PortalError ? e.message : "e-Mandi did not answer" });
       if (e instanceof PortalError && e.code === "signed_out") break;
     }
   }
