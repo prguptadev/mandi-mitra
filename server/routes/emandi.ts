@@ -4,7 +4,7 @@ import { audit } from "../lib/audit.ts";
 import { can, actor, bad, type Env } from "../lib/http.ts";
 import {
   accountOf, saveAccount, forgetAccount, statusOf, beginSignIn, finishSignIn, signOut,
-  rateBand, cropList, PortalError,
+  rateBand, cropList, keptCrops, PortalError,
 } from "../lib/emandi.ts";
 
 /* The mandi portal, as seen from Mandi Mitra. Each business has its own login
@@ -64,8 +64,13 @@ emandiRoutes.post("/signout", can("dashboard.view"), (c) => {
   return c.json(statusOf(c.get("auth")!.businessId!));
 });
 
-emandiRoutes.get("/crops", can("dashboard.view"), async (c) => {
-  try { return c.json(await cropList(c.get("auth")!.businessId!)); } catch (e) { throw fail(e); }
+/** The commodity list as last read — no portal call, so it works signed out. */
+emandiRoutes.get("/crops", can("dashboard.view"), (c) => c.json(keptCrops(c.get("auth")!.businessId!)));
+
+/** Read the list from the portal again (needs a session). */
+emandiRoutes.post("/crops/refresh", can("dashboard.view"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  try { return c.json({ crops: await cropList(biz, true), at: new Date().toISOString() }); } catch (e) { throw fail(e); }
 });
 
 /** The rate band for the commodities this business watches, or the ones asked for. */

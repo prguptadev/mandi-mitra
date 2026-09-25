@@ -25,6 +25,7 @@ interface Rate {
   cropCode: string; cropName: string | null;
   minRatePaise: number | null; maxRatePaise: number | null;
   mandiFeePct: number | null; developmentCessPct: number | null;
+  onMandiSthal: boolean | null; directLicence: boolean | null;
   at: string; error: string | null;
 }
 
@@ -36,6 +37,10 @@ export function PortalRatesCard() {
   const [captcha, setCaptcha] = useState("");
   const [ask, setAsk] = useState<{ image: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  /* The login can be added here as well as in Settings — the operator is on
+     this screen when they notice the rates are missing. */
+  const [user, setUser] = useState("");
+  const [password, setPassword] = useState("");
 
   const status = useQuery({
     queryKey: ["emandi"], queryFn: () => api.get<PortalStatus>("/emandi"),
@@ -44,6 +49,16 @@ export function PortalRatesCard() {
   const rates = useQuery({
     queryKey: ["emandi", "rates"], queryFn: () => api.get<{ rates: Rate[]; status: PortalStatus }>("/emandi/rates"),
     enabled: Boolean(status.data?.signedIn), staleTime: 5 * 60_000,
+  });
+
+  const addLogin = useMutation({
+    mutationFn: () => api.put<PortalStatus>("/emandi", { user: user.trim(), password }),
+    onSuccess: (st) => {
+      setErr(null); setPassword("");
+      qc.setQueryData(["emandi"], st);
+      start.mutate(); // straight on to the captcha: that is what they came for
+    },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
   const start = useMutation({
@@ -63,20 +78,47 @@ export function PortalRatesCard() {
 
   if (!can("dashboard.view")) return null;
   const s = status.data;
-  // nothing set up yet: one quiet line, not a demand
+  // nothing set up yet: the login can be added right here
   if (s && !s.configured) {
+    if (!can("business.write")) {
+      return (
+        <Card className="mb-5">
+          <CardHeader title={t("portal.title")} sub={t("portal.notSetUp")} />
+        </Card>
+      );
+    }
     return (
       <Card className="mb-5">
         <CardHeader title={t("portal.title")} sub={t("portal.notSetUp")}
-          action={can("business.write")
-            ? <Link href="/settings?tab=data"><Button size="sm" variant="secondary">{t("portal.setUp")}</Button></Link>
-            : undefined} />
+          action={<Link href="/settings?tab=data"><Button size="sm" variant="ghost">{t("portal.moreSettings")}</Button></Link>} />
+        <div className="space-y-3 p-4">
+          {err && <Alert tone="bad">{err}</Alert>}
+          <div className="flex flex-wrap items-end gap-3">
+            <Field label={t("portal.user")} className="min-w-[13rem] flex-1">
+              <Input value={user} autoComplete="off" placeholder="name@example.com"
+                onChange={(e) => setUser(e.target.value)} />
+            </Field>
+            <Field label={t("portal.password")} className="min-w-[11rem] flex-1">
+              <Input type="password" autoComplete="new-password" value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && user.trim() && password) addLogin.mutate(); }} />
+            </Field>
+            <Button variant="primary" className="mb-0.5" disabled={!user.trim() || !password}
+              loading={addLogin.isPending || start.isPending} onClick={() => addLogin.mutate()}>
+              {t("portal.saveAndSignIn")}
+            </Button>
+          </div>
+          <p className="text-[11px] leading-snug text-faint">{t("portal.cardNote")}</p>
+        </div>
       </Card>
     );
   }
 
   const list = rates.data?.rates ?? [];
   const rupees = (p: number | null) => (p === null ? "—" : f.amount(p));
+  /* The portal states 0.00 for both ends when the mandi has fixed no band. */
+  const noBand = (r: Rate) => !r.error && !r.minRatePaise && !r.maxRatePaise;
+  const allBandless = list.length > 0 && list.every(noBand);
 
   return (
     <Card className="mb-5">
@@ -140,8 +182,20 @@ export function PortalRatesCard() {
                       <td className="px-2 py-1.5 text-[12px] text-warn" colSpan={4}>{r.error}</td>
                     ) : (
                       <>
-                        <td className={cn("num px-2 py-1.5 text-right")}>{rupees(r.minRatePaise)}</td>
-                        <td className={cn("num px-2 py-1.5 text-right font-semibold text-brand")}>{rupees(r.maxRatePaise)}</td>
+                        {noBand(r) ? (
+                          /* The portal answers 0.00 when the mandi has set no
+                             band for this commodity — zero is not a price, so
+                             it is not shown as one. */
+                          <>
+                            <td className="num px-2 py-1.5 text-right text-faint">—</td>
+                            <td className="num px-2 py-1.5 text-right text-faint">—</td>
+                          </>
+                        ) : (
+                          <>
+                            <td className={cn("num px-2 py-1.5 text-right")}>{rupees(r.minRatePaise)}</td>
+                            <td className={cn("num px-2 py-1.5 text-right font-semibold text-brand")}>{rupees(r.maxRatePaise)}</td>
+                          </>
+                        )}
                         <td className="num px-2 py-1.5 text-right text-muted">{r.mandiFeePct === null ? "—" : `${r.mandiFeePct}%`}</td>
                         <td className="num px-2 py-1.5 text-right text-muted">{r.developmentCessPct === null ? "—" : `${r.developmentCessPct}%`}</td>
                       </>
@@ -156,6 +210,7 @@ export function PortalRatesCard() {
           </div>
         )}
 
+        {s?.signedIn && allBandless && <p className="text-[12px] leading-snug text-muted">{t("portal.noBandAll")}</p>}
         <p className="text-[11px] leading-snug text-faint">{t("portal.note")}</p>
       </div>
     </Card>

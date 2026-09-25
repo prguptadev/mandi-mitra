@@ -87,8 +87,19 @@ const gehu = rates.rates.find((r: any) => r.cropCode === "6");
 check("a second watched commodity comes through too", gehu.minRatePaise === 220000 && gehu.cropName === "गेहूँ", gehu);
 const asked = await call("GET", "/emandi/rates?codes=1");
 check("one commodity can be asked for on its own", asked.rates.length === 1 && asked.rates[0].cropCode === "1");
+const zero = await call("GET", "/emandi/rates?codes=2");
+check("a commodity the mandi has set no band for comes back as no band, not as a price",
+  zero.rates[0].minRatePaise === 0 && zero.rates[0].maxRatePaise === 0 && zero.rates[0].error === null, zero.rates[0]);
+
+console.log("\nThe portal's commodity list");
 const crops = await call("GET", "/emandi/crops");
-check("the portal's own commodity list is read from its 6R form", crops.length === 2 && crops.some((c: any) => c.name === "धान"), crops);
+check("the list is read from the portal's own 6R form", crops.crops.length === 3, crops.crops.length);
+check("  ...with the Hindi names turned back into letters, not HTML escapes",
+  crops.crops.some((c: any) => c.name === "धान") && !crops.crops.some((c: any) => /&#/.test(c.name)),
+  crops.crops.map((c: any) => c.name).join(" "));
+check("  ...and is kept, so it is there without asking the portal again", Boolean(crops.at), crops.at);
+const again = await call("POST", "/emandi/crops/refresh", {});
+check("the list can be read from the portal again on request", again.crops.length === 3, again.crops.length);
 
 console.log("\nThe other firm has its own login there");
 await call("POST", "/auth/switch-business", { businessId: other.businessId });

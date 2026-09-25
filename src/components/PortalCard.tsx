@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Landmark, Trash2 } from "lucide-react";
+import { Landmark, Trash2, RefreshCw, Search } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
-import { Alert, Badge, Button, Card, CardHeader, Field, Input, Select } from "@/components/ui/index.tsx";
+import { Alert, Badge, Button, Card, CardHeader, Checkbox, Field, Input } from "@/components/ui/index.tsx";
 
 /* The mandi portal login for THIS business. The two firms have separate
    logins there, so this card follows whichever business is open.
@@ -36,10 +36,18 @@ export function PortalCard() {
   // the business can be switched under us; forget what was typed for the old one
   useEffect(() => { setUser(null); setPassword(""); setLicence(null); setWatch(null); setSaved(false); }, [me?.activeBusinessId]);
 
+  /* The portal's commodity list is read once and kept on this computer, so the
+     choice can be made whether or not anyone is signed in just now. */
   const crops = useQuery({
-    queryKey: ["emandi", "crops"], queryFn: () => api.get<{ code: string; name: string }[]>("/emandi/crops"),
-    enabled: Boolean(q.data?.signedIn), staleTime: 60 * 60_000, retry: false,
+    queryKey: ["emandi", "crops"], queryFn: () => api.get<{ crops: { code: string; name: string }[]; at: string | null }>("/emandi/crops"),
+    enabled: can("business.write"), staleTime: 60 * 60_000,
   });
+  const reread = useMutation({
+    mutationFn: () => api.post<{ crops: { code: string; name: string }[]; at: string }>("/emandi/crops/refresh", {}),
+    onSuccess: (r) => { setErr(null); qc.setQueryData(["emandi", "crops"], r); },
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+  const [find, setFind] = useState("");
 
   const save = useMutation({
     mutationFn: () => api.put<PortalStatus>("/emandi", {
@@ -67,6 +75,9 @@ export function PortalCard() {
   const shownLicence = licence ?? s?.licence ?? "";
   const shownWatch = watch ?? s?.watch ?? [];
   const dirty = user !== null || licence !== null || watch !== null || password.length > 0;
+  const list = crops.data?.crops ?? [];
+  const needle = find.trim().toLowerCase();
+  const shown = needle ? list.filter((c) => c.name.toLowerCase().includes(needle) || c.code.includes(needle)) : list;
 
   return (
     <Card>
@@ -90,17 +101,41 @@ export function PortalCard() {
           <Field label={t("portal.licence")} hint={t("portal.licenceHint")}>
             <Input value={shownLicence} className="num" onChange={(e) => { setSaved(false); setLicence(e.target.value); }} />
           </Field>
-          <Field label={t("portal.watch")} hint={t("portal.watchHint")}>
-            {crops.data?.length ? (
-              <Select value={shownWatch[0] ?? ""} onChange={(e) => { setSaved(false); setWatch(e.target.value ? [e.target.value] : []); }}>
-                <option value="">{t("portal.watchNone")}</option>
-                {crops.data.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
-              </Select>
-            ) : (
-              <Input value={shownWatch.join(", ")} className="num" placeholder="1, 6"
-                onChange={(e) => { setSaved(false); setWatch(e.target.value.split(",").map((x) => x.trim()).filter(Boolean)); }} />
-            )}
-          </Field>
+        </div>
+
+        <div className="rounded-lg border border-line bg-raised/30 p-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <p className="text-[13px] font-medium text-ink">{t("portal.watch")}</p>
+            <Badge tone={shownWatch.length ? "brand" : "neutral"}>{t("portal.watchCount", { n: shownWatch.length })}</Badge>
+            <Button size="sm" variant="ghost" className="ml-auto" icon={<RefreshCw className="h-3.5 w-3.5" />}
+              loading={reread.isPending} onClick={() => reread.mutate()}>{t("portal.cropsAgain")}</Button>
+          </div>
+          <p className="mb-2 text-[12px] leading-snug text-muted">{t("portal.watchHint")}</p>
+
+          {list.length ? (
+            <>
+              <div className="relative mb-2">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
+                <Input value={find} className="pl-7" placeholder={t("common.search")} onChange={(e) => setFind(e.target.value)} />
+              </div>
+              <div className="max-h-56 space-y-0.5 overflow-y-auto rounded-md border border-line/70 p-1.5">
+                {shown.map((c) => (
+                  <label key={c.code} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 hover:bg-raised">
+                    <Checkbox checked={shownWatch.includes(c.code)}
+                      onChange={(on: boolean) => {
+                        setSaved(false);
+                        setWatch(on ? [...shownWatch, c.code] : shownWatch.filter((x) => x !== c.code));
+                      }} />
+                    <span lang="hi" className="flex-1 text-[14px] text-ink">{c.name}</span>
+                    <span className="num text-[11px] text-faint">#{c.code}</span>
+                  </label>
+                ))}
+                {!shown.length && <p className="px-1.5 py-1 text-[12px] text-faint">{t("portal.cropsNoMatch")}</p>}
+              </div>
+            </>
+          ) : (
+            <p className="text-[12px] text-faint">{t("portal.cropsNotYet")}</p>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">

@@ -26,7 +26,12 @@ const SESSION = "emandi-session-abc";
 const BANDS: Record<string, { name: string; min: number; max: number }> = {
   "1": { name: "धान", min: 3400, max: 4500 },
   "6": { name: "गेहूँ", min: 2200, max: 2800 },
+  // the real portal answers 0.00 when the mandi has set no band for a commodity
+  "2": { name: "चावल", min: 0, max: 0 },
 };
+
+/** The real portal writes every Hindi word as HTML escapes; so does this one. */
+const esc = (text: string) => [...text].map((ch) => (ch.codePointAt(0)! > 126 ? `&#x${ch.codePointAt(0)!.toString(16)};` : ch)).join("");
 
 const calls: { method: string; url: string; body: string }[] = [];
 
@@ -47,8 +52,8 @@ const loginPage = (error?: string) => `<!DOCTYPE html><html><body>
 </form></body></html>`;
 
 const sixRPage = () => `<!DOCTYPE html><html><body><form action="/Traders/add_six_r" method="post">
-<select id="crop_code" name="crop_code"><option value="">---उत्पाद चुने---</option>
-${Object.entries(BANDS).map(([code, b]) => `<option value="${code}">${b.name}</option>`).join("")}
+<select id="crop_code" name="crop_code"><option value="">---${esc("उत्पाद चुने")}---</option>
+${Object.entries(BANDS).map(([code, b]) => `<option value="${code}">${esc(b.name)}</option>`).join("")}
 </select>
 <input name="DNTCaptchaInputText" />
 </form></body></html>`;

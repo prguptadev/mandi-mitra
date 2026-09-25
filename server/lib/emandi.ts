@@ -36,11 +36,16 @@ export interface PortalAccount {
   licence: string;
   /** Portal crop codes the dashboard shows, e.g. ["1", "6"]. */
   watch: string[];
+  /** The portal's cookies from the last sign-in, encrypted. Not shown anywhere. */
+  session?: string | null;
+  /** The portal's commodity list, read once and kept so the choice can be made offline. */
+  crops?: { code: string; name: string }[] | null;
+  cropsAt?: string | null;
   updatedAt: string | null;
 }
 type Store = Record<string, PortalAccount>;
 
-const blank = (): PortalAccount => ({ user: "", enc: null, licence: "", watch: ["1"], updatedAt: null });
+const blank = (): PortalAccount => ({ user: "", enc: null, licence: "", watch: ["1"], session: null, crops: null, cropsAt: null, updatedAt: null });
 
 function readStore(): Store {
   try { return JSON.parse(fs.readFileSync(CFG_PATH(), "utf8")) as Store; } catch { return {}; }
@@ -58,11 +63,15 @@ export function accountOf(biz: string): PortalAccount {
 export function saveAccount(biz: string, p: { user?: string; password?: string; licence?: string; watch?: string[] }) {
   const s = readStore();
   const cur = { ...blank(), ...(s[biz] ?? {}) };
+  const loginChanged = Boolean(p.password) || (p.user !== undefined && p.user !== cur.user);
   s[biz] = {
     user: p.user ?? cur.user,
     enc: p.password ? encryptSecret(p.password) : cur.enc,
     licence: p.licence ?? cur.licence,
     watch: p.watch ?? cur.watch,
+    session: loginChanged ? null : cur.session ?? null,
+    crops: cur.crops ?? null,
+    cropsAt: cur.cropsAt ?? null,
     updatedAt: new Date().toISOString(),
   };
   writeStore(s);
@@ -82,6 +91,8 @@ export function forgetAccount(biz: string) {
 /** A small cookie jar: the portal only needs its session and antiforgery cookies. */
 class Jar {
   private jar = new Map<string, string>();
+  all() { return Object.fromEntries(this.jar); }
+  restore(saved: Record<string, string>) { for (const [k, v] of Object.entries(saved ?? {})) this.jar.set(k, v); }
   take(res: Response) {
     // one header per cookie in Node's fetch; getSetCookie keeps them apart
     const list = typeof (res.headers as { getSetCookie?: () => string[] }).getSetCookie === "function"
@@ -99,6 +110,8 @@ class Jar {
 
 interface Session {
   jar: Jar;
+  /** Keeps a sliding portal session from lapsing while the app is open. */
+  keepAlive: ReturnType<typeof setInterval> | null;
   /** Set once a sign-in has gone through. */
   signedInAt: number | null;
   /** The last thing the portal said, for the screen. */
@@ -110,9 +123,32 @@ interface Session {
 const sessions = new Map<string, Session>();
 const sessionOf = (biz: string): Session => {
   let s = sessions.get(biz);
-  if (!s) { s = { jar: new Jar(), signedInAt: null, note: null, pending: null, crops: null }; sessions.set(biz, s); }
+  if (!s) {
+    s = { jar: new Jar(), keepAlive: null, signedInAt: null, note: null, pending: null, crops: null };
+    /* An app restart — an update, a crash, a laptop lid — must not cost the
+       operator another captcha. The portal's cookies are kept encrypted on
+       this computer and put back; the first call proves whether they still
+       work, and clears them if not. */
+    const kept = readStore()[biz]?.session;
+    if (kept) {
+      try {
+        const { cookies, at } = JSON.parse(decryptSecret(kept) ?? "{}") as { cookies: Record<string, string>; at: number };
+        if (cookies && Date.now() - at < 12 * 60 * 60_000) { s.jar.restore(cookies); s.signedInAt = at; }
+      } catch { /* unreadable: sign in again */ }
+    }
+    sessions.set(biz, s);
+  }
   return s;
 };
+
+function keepSession(biz: string) {
+  const st = readStore();
+  const cur = st[biz];
+  if (!cur) return;
+  const s = sessions.get(biz);
+  st[biz] = { ...cur, session: s?.signedInAt ? encryptSecret(JSON.stringify({ cookies: s.jar.all(), at: s.signedInAt })) : null };
+  writeStore(st);
+}
 
 export class PortalError extends Error {
   constructor(message: string, public code = "portal") { super(message); }
@@ -193,25 +229,90 @@ export async function finishSignIn(biz: string, typed: string): Promise<{ ok: tr
   });
   s.pending = null;
 
-  // a good sign-in redirects to the trader dashboard; a bad one redraws the form
+  /* A sign-in can come back as a redirect, or as a page, or as a page that
+     redirects itself — so rather than guess from the shape, follow whatever
+     it sends and then ask the portal for the trader dashboard. If that opens,
+     we are in. Reading the answer this way also stops a login page (which
+     always carries the word "captcha") being reported as a wrong captcha. */
   const location = res.headers.get("location") ?? "";
-  if (res.status >= 300 && res.status < 400 && /Dashboard|Traders/i.test(location)) {
+  if (res.status >= 300 && res.status < 400 && location) {
+    await call(biz, location.startsWith("http") ? new URL(location).pathname + new URL(location).search : location);
+  }
+  const replyHtml = res.status === 200 ? await res.text() : "";
+
+  const probe = await call(biz, "/Traders/Dashboard");
+  const probeText = probe.status === 200 ? await probe.text() : "";
+  const signedIn = probe.status === 200 && !looksSignedOut(probeText);
+  /* One line in the log per attempt: what the portal answered, never what was
+     sent. It is the only way to tell a wrong captcha from a changed page. */
+  console.log(`[emandi] sign-in: post ${res.status}${location ? ` -> ${location}` : ""}`
+    + ` | dashboard ${probe.status} ${probeText.length}b`
+    + ` | login markers ${/DNTCaptchaToken/.test(probeText) ? "yes" : "no"}/${/Account\/index/i.test(probeText.slice(0, 2000)) ? "yes" : "no"}`
+    + ` | signed in: ${signedIn}`);
+  if (signedIn) {
     s.signedInAt = Date.now();
     s.note = null;
+    keepSession(biz);
+    startKeepAlive(biz);
     return { ok: true };
   }
-  const html = res.status === 200 ? await res.text() : "";
-  const shown = between(html, /class="[^"]*(?:text-danger|validation-summary-errors)[^"]*"[^>]*>\s*(?:<[^>]+>\s*)*([^<]{4,160})/i).trim();
+
+  // not in: say what the portal itself said, and only call it a captcha when it is
+  const shown = [
+    /class="[^"]*(?:text-danger|validation-summary-errors|alert-danger)[^"]*"[^>]*>\s*(?:<[^>]+>\s*)*([^<]{4,200})/i,
+    /<span[^>]+id="[^"]*(?:lblMsg|Message|Error)[^"]*"[^>]*>\s*([^<]{4,200})/i,
+    /swal\(\s*["'`]([^"'`]{4,200})["'`]/i,
+  ].map((re) => between(replyHtml, re).trim()).find(Boolean) ?? "";
   s.note = shown || null;
-  if (/captcha/i.test(html)) throw new PortalError(shown || "The captcha did not match — try again", "captcha");
-  throw new PortalError(shown || "The portal did not accept that user name or password", "denied");
+  if (/captcha|कैप्चा/i.test(shown)) throw new PortalError(shown, "captcha");
+  if (shown) throw new PortalError(shown, "denied");
+  throw new PortalError("The portal did not sign this computer in, and did not say why. Try the captcha again; if it keeps failing, sign in once on the portal in a browser to check the user name and password.", "denied");
 }
 
-export function signOut(biz: string) { sessions.delete(biz); }
+/**
+ * The portal ends a session that sits idle. A small read every few minutes
+ * keeps it alive for as long as the app is open — the same effect as leaving
+ * the portal open in a browser tab. It stops itself the moment the portal
+ * says no, and the operator is told to sign in again rather than left with
+ * rates that quietly stop refreshing.
+ */
+const KEEP_ALIVE_MS = 8 * 60_000;
+function startKeepAlive(biz: string) {
+  const s = sessionOf(biz);
+  if (s.keepAlive) clearInterval(s.keepAlive);
+  s.keepAlive = setInterval(() => {
+    void (async () => {
+      const live = sessions.get(biz);
+      if (!live?.signedInAt) return stopKeepAlive(biz);
+      try {
+        const res = await call(biz, "/Traders/Dashboard");
+        const text = res.status === 200 ? await res.text() : "";
+        if (res.status !== 200 || looksSignedOut(text)) {
+          live.signedInAt = null;
+          live.note = "The portal ended this session. Sign in again to see the rates.";
+          keepSession(biz);
+          stopKeepAlive(biz);
+        }
+      } catch { /* no internet just now; the next round tries again */ }
+    })();
+  }, KEEP_ALIVE_MS);
+  s.keepAlive.unref?.();
+}
+function stopKeepAlive(biz: string) {
+  const s = sessions.get(biz);
+  if (s?.keepAlive) { clearInterval(s.keepAlive); s.keepAlive = null; }
+}
+
+export function signOut(biz: string) {
+  stopKeepAlive(biz);
+  sessions.delete(biz);
+  const st = readStore();
+  if (st[biz]) { st[biz] = { ...st[biz], session: null }; writeStore(st); }
+}
 
 export function statusOf(biz: string) {
   const acc = accountOf(biz);
-  const s = sessions.get(biz);
+  const s = sessionOf(biz); // brings a kept session back after a restart
   return {
     configured: Boolean(acc.user && acc.enc),
     user: acc.user,
@@ -226,17 +327,43 @@ export function statusOf(biz: string) {
 
 /* ------------------------------------------------------------ reading */
 
-/** True when the answer is the portal's login page rather than what we asked for. */
-const looksSignedOut = (text: string) => /name="DNTCaptchaToken"/.test(text) || /\/Account\/index/.test(text.slice(0, 2000));
+/**
+ * True when the answer is the portal's login page rather than what we asked
+ * for. It has to be the login FORM, not merely a captcha: the 6R and gate-pass
+ * pages carry a captcha of their own, and reading one as "signed out" throws
+ * away a perfectly good session.
+ */
+const looksSignedOut = (text: string) =>
+  /name="Password"/i.test(text) && /action="\/Account"/i.test(text);
 
 async function signedInCall(biz: string, url: string, init?: RequestInit) {
   const s = sessionOf(biz);
   if (!s.signedInAt) throw new PortalError("Sign in to the mandi portal first", "signed_out");
   const res = await call(biz, url, init);
-  if (res.status >= 300 && res.status < 400) { s.signedInAt = null; throw new PortalError("The portal signed this computer out — sign in again", "signed_out"); }
+  const ended = () => {
+    s.signedInAt = null;
+    keepSession(biz);
+    s.note = "The portal ended this session. Sign in again to see the rates.";
+    stopKeepAlive(biz);
+    return new PortalError("The portal ended this session — sign in again", "signed_out");
+  };
+  if (res.status >= 300 && res.status < 400) throw ended();
   const text = await res.text();
-  if (looksSignedOut(text)) { s.signedInAt = null; throw new PortalError("The portal signed this computer out — sign in again", "signed_out"); }
+  if (looksSignedOut(text)) throw ended();
   return text;
+}
+
+/* The portal writes Hindi as HTML escapes (&#x927;…), so an option's text is
+   not the commodity's name until it is turned back into letters. */
+const NAMED: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+export function unescapeHtml(text: string) {
+  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, body: string) => {
+    if (body[0] === "#") {
+      const code = body[1] === "x" || body[1] === "X" ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10);
+      return Number.isFinite(code) && code > 0 ? String.fromCodePoint(code) : whole;
+    }
+    return NAMED[body.toLowerCase()] ?? whole;
+  });
 }
 
 export interface RateBand {
@@ -248,6 +375,9 @@ export interface RateBand {
   /** Percentages, e.g. 1.00 and 0.50. */
   mandiFeePct: number | null;
   developmentCessPct: number | null;
+  /** The portal's own flags: whether this licence sits on a mandi sthal, and whether it is a direct licence. */
+  onMandiSthal: boolean | null;
+  directLicence: boolean | null;
   at: string;
 }
 
@@ -260,6 +390,7 @@ export async function rateBand(biz: string, cropCode: string): Promise<RateBand>
     body: new URLSearchParams({ crop_code: cropCode }),
     headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
   });
+  if (process.env.MANDI_EMANDI_DEBUG) console.log(`[emandi] crop_fees ${cropCode}: ${text.slice(0, 400)}`);
   let row: Record<string, unknown> | null = null;
   try { const j = JSON.parse(text); row = Array.isArray(j) ? j[0] ?? null : j; } catch { /* not json */ }
   if (!row) throw new PortalError("The portal did not give the rate for that commodity", "shape");
@@ -271,23 +402,42 @@ export async function rateBand(biz: string, cropCode: string): Promise<RateBand>
     maxRatePaise: toPaise(row.max_rate),
     mandiFeePct: row.mandi_fees == null ? null : Number(row.mandi_fees),
     developmentCessPct: row.development_cess == null ? null : Number(row.development_cess),
+    onMandiSthal: row.isupmandisthal == null ? null : Boolean(Number(row.isupmandisthal)),
+    directLicence: row.isDirectlicense == null ? null : Boolean(Number(row.isDirectlicense)),
     at: new Date().toISOString(),
   };
 }
 
-/** The portal's own commodity list, read once per session from the 6R form. */
-export async function cropList(biz: string): Promise<{ code: string; name: string }[]> {
+/** The commodity list as last read, without touching the portal. */
+export function keptCrops(biz: string) {
+  const acc = accountOf(biz);
+  const crops = (acc.crops ?? []).map((c) => ({ code: c.code, name: unescapeHtml(c.name).trim() }));
+  return { crops, at: acc.cropsAt ?? null };
+}
+
+/**
+ * The portal's own commodity list. Read once from the 6R form and kept on this
+ * computer, so the choice of what to watch can be made whether or not anyone
+ * is signed in; `force` reads it again.
+ */
+export async function cropList(biz: string, force = false): Promise<{ code: string; name: string }[]> {
   const s = sessionOf(biz);
-  if (s.crops) return s.crops;
+  if (!force) {
+    if (s.crops) return s.crops;
+    const kept = keptCrops(biz);
+    if (kept.crops.length) { s.crops = kept.crops; return kept.crops; }
+  }
   const html = await signedInCall(biz, "/Traders/add_six_r");
   const select = /<select[^>]+id="crop_code"[\s\S]*?<\/select>/i.exec(html)?.[0] ?? "";
   const out: { code: string; name: string }[] = [];
   for (const m of select.matchAll(/<option[^>]+value="([^"]*)"[^>]*>([^<]*)<\/option>/g)) {
     const code = m[1].trim();
-    const name = m[2].replace(/&nbsp;/g, " ").trim();
+    const name = unescapeHtml(m[2]).trim();
     if (code && name && !/चुने/.test(name)) out.push({ code, name });
   }
   if (!out.length) throw new PortalError("The portal's commodity list could not be read", "shape");
   s.crops = out;
+  const st = readStore();
+  if (st[biz]) { st[biz] = { ...st[biz], crops: out, cropsAt: new Date().toISOString() }; writeStore(st); }
   return out;
 }
