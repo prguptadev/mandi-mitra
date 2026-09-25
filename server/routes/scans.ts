@@ -476,6 +476,8 @@ async function performRead(opts: {
         maxOutputTokens: cfg.maxOutputTokens, temperature: cfg.temperature,
       }, record, { onRetry });
       if (result.ok || !result.quota) break;
+      // the project's spend cap refuses every model: stop here and say so once
+      if (result.quota.kind === "spend_cap") break;
       spentNames.push(m);
     }
     if (result.ok && spentNames.length) {
@@ -486,7 +488,8 @@ async function performRead(opts: {
 
     /* Still busy after the retries: the other model runs on separate
        capacity, so give it one go before giving up on the page. */
-    if (!result.ok && result.transient && !wanted && cfg.fallbackModel && cfg.fallbackModel !== result.model
+    if (!result.ok && result.quota?.kind !== "spend_cap"
+      && result.transient && !wanted && cfg.fallbackModel && cfg.fallbackModel !== result.model
       && !(await spentToday(apiKey, cfg.fallbackModel))) {
       const other = await readSheetReliably({
         apiKey, model: cfg.fallbackModel, images: image, knownSuppliers,

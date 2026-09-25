@@ -214,13 +214,15 @@ function stripFence(text: string): string {
  */
 export interface QuotaInfo {
   /** per_day: waiting a minute will not help; per_minute: it will. */
-  kind: "per_day" | "per_minute" | "unknown";
+  kind: "per_day" | "per_minute" | "spend_cap" | "unknown";
   limit: number | null;
   freeTier: boolean;
   model: string | null;
   retryAfterSec: number | null;
   /** Google allows 0 reads: this model has no free use on this key at all. */
   notFree?: boolean;
+  /** The Google project's monthly spend cap in AI Studio is used up: no model helps. */
+  spendCap?: boolean;
 }
 
 /** Pulls the quota details out of a 429 so the message can be accurate. */
@@ -245,12 +247,17 @@ export function parseQuota(json: any): QuotaInfo | null {
     }
     if (t.includes("RetryInfo")) retry = parseFloat(String(d.retryDelay ?? "").replace("s", "")) || null;
   }
+  /* Not a quota at all: the Google project has a monthly spend cap in AI
+     Studio and it is used up. No model and no waiting helps — the cap has to
+     be raised — so it is told apart from a daily allowance. */
+  const spendCap = /spend(ing)? cap/i.test(String(e.message ?? ""));
   return {
     // an allowance of 0 never refills by waiting: the model is simply not free on this key
-    kind: zero || /PerDay/i.test(quotaId) ? "per_day" : /PerMinute/i.test(quotaId) ? "per_minute" : "unknown",
+    kind: spendCap ? "spend_cap" : zero || /PerDay/i.test(quotaId) ? "per_day" : /PerMinute/i.test(quotaId) ? "per_minute" : "unknown",
     limit: zero ? 0 : limit, model, retryAfterSec: retry,
     freeTier: /FreeTier/i.test(quotaId),
     notFree: zero,
+    spendCap,
   };
 }
 
@@ -291,6 +298,9 @@ export function explainGeminiError(status: number, message: string, apiKey?: str
     return "Google refused the request. The key may not have access to this model, or billing is not enabled on that Google project.";
   }
   if (status === 429) {
+    if (/spend(ing)? cap/i.test(message)) {
+      return "The Google project's monthly spending limit is used up, so Google is refusing every read — no other model will work either. Raise the limit at ai.studio/spend for the project this key belongs to, then read the sheet again.";
+    }
     return "Google's Gemini limit was reached. Check the quota at ai.dev/rate-limit.";
   }
   if (status === 404) {
@@ -426,7 +436,9 @@ export async function readSheet(opts: {
         error: explainGeminiError(res.status, json?.error?.message ?? `HTTP ${res.status}`, opts.apiKey, json),
         quota,
         // busy (5xx) and per-minute limits pass; a daily limit or a bad key does not
-        transient: res.status >= 500 || (res.status === 429 && quota?.kind !== "per_day"),
+        /* A daily allowance and a spent-up project cap both refuse again a
+           second later: asking four times only wastes reads. */
+        transient: res.status >= 500 || (res.status === 429 && quota?.kind !== "per_day" && quota?.kind !== "spend_cap"),
       };
     }
 

@@ -53,6 +53,20 @@ check("minute + day listed: read as the daily limit of 20", q?.kind === "per_day
 q = parseQuota(both("0", "0"));
 check("an allowance of 0: not free on this key, and not worth waiting for", q?.kind === "per_day" && q.limit === 0 && q.notFree === true, q);
 check("…and the message says so", /no free reads/.test(explainGeminiError(429, "quota", "AIzaX", both("0", "0"))), explainGeminiError(429, "quota", "AIzaX", both("0", "0")));
+/* The project's monthly spend cap in AI Studio: Google sends a 429 with no
+   quota violations at all, and no model or wait helps. It must be told apart
+   from a daily allowance, and said in words the owner can act on. */
+const capped = { error: { code: 429, status: "RESOURCE_EXHAUSTED",
+  message: "Your project has exceeded its monthly spending cap. Please go to AI Studio at https://ai.studio/spend to manage your project spend cap." } };
+const qc = parseQuota(capped);
+check("a spend cap is not read as a daily quota", qc?.kind === "spend_cap" && qc.spendCap === true, qc);
+const capMsg = explainGeminiError(429, "Your project has exceeded its monthly spending cap.", "AIzaX", capped);
+check("…and the message names the spend limit and where to raise it",
+  /monthly spending limit/.test(capMsg) && /ai\.studio\/spend/.test(capMsg) && /no other model/.test(capMsg), capMsg);
+calls = stub([[429, capped]]);
+r = await readSheetReliably({ ...opts, model: "gemini-2.5-flash" }, async () => {}, noSleep);
+check("a capped project is asked once, not four times", !r.ok && r.attempts === 1 && r.transient === false, { attempts: r.attempts });
+
 calls = stub([[429, both("0", "0")]]);
 r = await readSheetReliably({ ...opts, model: "gemini-2.5-pro" }, async () => {}, noSleep);
 check("a model with no free use is asked once, not four times", !r.ok && r.attempts === 1 && r.transient === false, { attempts: r.attempts });
