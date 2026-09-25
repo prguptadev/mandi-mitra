@@ -114,6 +114,8 @@ class Jar {
 
 interface Session {
   jar: Jar;
+  /** The last page opened, so the next call can say where it came from. */
+  lastUrl: string | null;
   /** Keeps a sliding portal session from lapsing while the app is open. */
   keepAlive: ReturnType<typeof setInterval> | null;
   /** Set once a sign-in has gone through. */
@@ -128,7 +130,7 @@ const sessions = new Map<string, Session>();
 const sessionOf = (biz: string): Session => {
   let s = sessions.get(biz);
   if (!s) {
-    s = { jar: new Jar(), keepAlive: null, signedInAt: null, note: null, pending: null, crops: null };
+    s = { jar: new Jar(), lastUrl: null, keepAlive: null, signedInAt: null, note: null, pending: null, crops: null };
     /* An app restart — an update, a crash, a laptop lid — must not cost the
        operator another captcha. The portal's cookies are kept encrypted on
        this computer and put back; the first call proves whether they still
@@ -162,7 +164,38 @@ export class PortalError extends Error {
   constructor(message: string, public code = "portal") { super(message); }
 }
 
-const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140 Safari/537.36";
+const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+const CH_UA = '"Google Chrome";v="140", "Not_A Brand";v="8", "Chromium";v="140"';
+
+/*
+ * e-Mandi is an ASP.NET site that keeps a good deal of state in its own
+ * session, and we have already been bitten once by asking for a page in a way
+ * a browser never would: the rate band came back 0.00 for a week of work
+ * because the session was half set up. So every call is made the way the site
+ * itself makes it — a page is fetched the way a browser fetches a page, and
+ * one of its own XHR calls is sent the way its jQuery sends one, with the same
+ * Accept, Origin, Referer and Sec-Fetch headers.
+ *
+ * This is for compatibility, not for hiding: the captcha is still read and
+ * typed by a person at sign-in, we ask only for what is ours, and nothing is
+ * ever posted to e-Mandi.
+ */
+const pageHeaders = (referer: string | null) => ({
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+  "Upgrade-Insecure-Requests": "1",
+  "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": referer ? "same-origin" : "none", "Sec-Fetch-User": "?1",
+  ...(referer ? { Referer: BASE + referer } : {}),
+});
+const xhrHeaders = (referer: string) => ({
+  Accept: "*/*",
+  "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+  "X-Requested-With": "XMLHttpRequest",
+  "Cache-Control": "no-cache", Pragma: "no-cache",
+  Origin: BASE, Referer: BASE + referer,
+  "Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin",
+});
 
 async function call(biz: string, url: string, init: RequestInit = {}) {
   const s = sessionOf(biz);
@@ -171,11 +204,16 @@ async function call(biz: string, url: string, init: RequestInit = {}) {
     redirect: "manual",
     headers: {
       "User-Agent": UA,
+      "sec-ch-ua": CH_UA, "sec-ch-ua-mobile": "?0", "sec-ch-ua-platform": '"Windows"',
+      // a page unless the caller says otherwise; the Referer follows where we were
+      ...pageHeaders(s.lastUrl),
       ...(s.jar.size ? { cookie: s.jar.header() } : {}),
       ...(init.headers ?? {}),
     },
   }).catch((e) => { throw new PortalError(`The mandi portal did not answer (${String(e).slice(0, 80)})`, "offline"); });
   s.jar.take(res);
+  // where a browser would say it had come from, next time
+  if (!(init.headers as Record<string, string> | undefined)?.["X-Requested-With"]) s.lastUrl = url;
   return res;
 }
 
@@ -233,7 +271,10 @@ export async function finishSignIn(biz: string, typed: string): Promise<{ ok: tr
   });
   const res = await call(biz, "/Account", {
     method: "POST", body,
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      ...xhrHeaders("/Account/index"), // the login form posts itself over ajax
+    },
   });
   s.pending = null;
 
@@ -449,7 +490,10 @@ export async function rateBand(biz: string, cropCode: string): Promise<RateBand>
   const text = await signedInCall(biz, "/Traders/get_crop_fees", {
     method: "POST",
     body: new URLSearchParams({ crop_code: cropCode }),
-    headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Requested-With": "XMLHttpRequest" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      ...xhrHeaders("/Traders/add_six_r"), // where the page that asks this lives
+    },
   });
   if (process.env.MANDI_EMANDI_DEBUG) console.log(`[emandi] crop_fees ${cropCode}: ${text.slice(0, 400)}`);
   let row: Record<string, unknown> | null = null;
