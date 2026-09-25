@@ -35,6 +35,11 @@ const esc = (text: string) => [...text].map((ch) => (ch.codePointAt(0)! > 126 ? 
 
 const calls: { method: string; url: string; body: string }[] = [];
 
+/* The real portal sends a merchant to /Traders/index after login, and does not
+   give a rate band until that page has been opened — going straight to the
+   dashboard leaves the session half set up. This stand-in does the same. */
+let landed = false;
+
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///+/v7+jQ3Y5AAAADklEQVQI12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII=",
   "base64",
@@ -81,18 +86,25 @@ http.createServer((req, res) => {
       if (p.get("Email") !== USER || p.get("Password") !== PASSWORD) {
         return send(200, "text/html", loginPage("यूज़र नाम या पासवर्ड गलत है"));
       }
+      landed = false;
       return send(302, "text/html", "", { location: "/Traders/Dashboard", "set-cookie": `emandi=${SESSION}; Path=/; HttpOnly` });
     }
 
     // everything below needs the session, exactly as the portal does it
     if (!signedIn(req.headers.cookie)) return send(200, "text/html", loginPage());
 
+    if (url.pathname === "/Traders/index") {
+      landed = true;
+      res.writeHead(302, { location: "/Traders/Dashboard" });
+      return res.end();
+    }
+
     if (url.pathname === "/Traders/get_crop_fees" && req.method === "POST") {
       const code = new URLSearchParams(body).get("crop_code") ?? "";
       const b = BANDS[code];
       if (!b) return send(200, "application/json", "[]");
       return send(200, "application/json", JSON.stringify([{
-        min_rate: b.min.toFixed(2), max_rate: b.max.toFixed(2),
+        min_rate: (landed ? b.min : 0).toFixed(2), max_rate: (landed ? b.max : 0).toFixed(2),
         mandi_fees: "1.00", development_cess: "0.50", isupmandisthal: 0, isDirectlicense: 0,
       }]));
     }

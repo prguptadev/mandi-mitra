@@ -248,6 +248,17 @@ export async function finishSignIn(biz: string, typed: string): Promise<{ ok: tr
   }
   const replyHtml = res.status === 200 ? await res.text() : "";
 
+  /* The login page's own script sends a merchant to /Traders/index, so that is
+     where a browser lands — and the session is not fully set up until it has.
+     Going straight to the dashboard skipped it. */
+  let landing = await call(biz, "/Traders/index");
+  for (let hop = 0; hop < 4 && landing.status >= 300 && landing.status < 400; hop++) {
+    const loc = landing.headers.get("location");
+    if (!loc) break;
+    const to = loc.startsWith("http") ? new URL(loc).pathname + new URL(loc).search : loc;
+    if (/^\/Account(\/|$|\?)/i.test(to)) break;
+    landing = await call(biz, to);
+  }
   const probe = await call(biz, "/Traders/Dashboard");
   const probeText = probe.status === 200 ? await probe.text() : "";
   const signedIn = probe.status === 200 && !looksSignedOut(probeText);
@@ -259,6 +270,7 @@ export async function finishSignIn(biz: string, typed: string): Promise<{ ok: tr
   /* One line in the log per attempt: what the portal answered, never what was
      sent. It is the only way to tell a wrong captcha from a changed page. */
   console.log(`[emandi] sign-in: post ${res.status}${location ? ` -> ${location}` : ""}`
+    + ` | landing ${landing.status}`
     + ` | dashboard ${probe.status} ${probeText.length}b`
     + ` | login markers ${/DNTCaptchaToken/.test(probeText) ? "yes" : "no"}/${/Account\/index/i.test(probeText.slice(0, 2000)) ? "yes" : "no"}`
     + ` | signed in: ${signedIn}`);
@@ -375,10 +387,10 @@ export function statusOf(biz: string) {
 const looksSignedOut = (text: string) =>
   /name="Password"/i.test(text) && /action="\/Account"/i.test(text);
 
-async function signedInCall(biz: string, url: string, init?: RequestInit) {
+export async function signedInCall(biz: string, url: string, init?: RequestInit) {
   const s = sessionOf(biz);
   if (!s.signedInAt) throw new PortalError("Sign in to the mandi portal first", "signed_out");
-  const res = await call(biz, url, init);
+  let res = await call(biz, url, init);
   const ended = () => {
     s.signedInAt = null;
     keepSession(biz);
@@ -386,6 +398,16 @@ async function signedInCall(biz: string, url: string, init?: RequestInit) {
     stopKeepAlive(biz);
     return new PortalError("e-Mandi ended this session — sign in again", "signed_out");
   };
+  /* A redirect is an ordinary thing on this site — /Traders/index answers 302
+     and sends a trader on to the dashboard. Only being sent back to the login
+     page means the session has ended. */
+  for (let hop = 0; hop < 4 && res.status >= 300 && res.status < 400; hop++) {
+    const loc = res.headers.get("location");
+    if (!loc) break;
+    const to = loc.startsWith("http") ? new URL(loc).pathname + new URL(loc).search : loc;
+    if (/^\/Account(\/|$|\?)/i.test(to)) throw ended();
+    res = await call(biz, to); // a browser follows a 302 with a GET
+  }
   if (res.status >= 300 && res.status < 400) throw ended();
   const text = await res.text();
   if (looksSignedOut(text)) throw ended();

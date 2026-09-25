@@ -81,6 +81,8 @@ check("  ...and says whose licence that login is, in the portal's own words",
 console.log("\nThe rate band, mandi fee and cess");
 const rates = await call("GET", "/emandi/rates");
 const dhan = rates.rates.find((r: any) => r.cropCode === "1");
+/* The portal only gives a band once the page it sends a trader to after login
+   has been opened; signing in has to land there, as a browser does. */
 check("धान comes through with the band the portal allows",
   dhan.minRatePaise === 340000 && dhan.maxRatePaise === 450000, dhan);
 check("  ...named in Hindi, as the portal names it", dhan.cropName === "धान", dhan.cropName);
