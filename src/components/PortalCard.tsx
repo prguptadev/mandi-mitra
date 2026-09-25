@@ -14,7 +14,7 @@ import { Alert, Badge, Button, Card, CardHeader, Checkbox, Field, Input } from "
    to another machine. It is never sent back to this screen. */
 
 interface PortalStatus {
-  configured: boolean; user: string; licence: string; watch: string[];
+  configured: boolean; user: string; watch: string[];
   firm: string | null; portalLicence: string | null;
   signedIn: boolean; signedInAt: string | null; note: string | null; base: string;
 }

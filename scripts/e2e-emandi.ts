@@ -52,8 +52,9 @@ if (me.activeBusinessId !== vldm.businessId) await call("POST", "/auth/switch-bu
 console.log("The mandi portal login, per business");
 const fresh = await call("GET", "/emandi");
 check("nothing is set up to begin with", fresh.configured === false && fresh.signedIn === false, fresh);
-const saved = await call("PUT", "/emandi", { user: USER, password: PASSWORD, licence: "L/2016/75/17121983", watch: ["1", "6"] });
+const saved = await call("PUT", "/emandi", { user: USER, password: PASSWORD, watch: ["1", "6"] });
 check("the login is saved for this business", saved.configured === true && saved.user === USER, saved);
+check("the licence is not asked for — the portal states it", (saved as any).licence === undefined, Object.keys(saved).join(","));
 check("the password is never handed back", !JSON.stringify(saved).includes(PASSWORD), Object.keys(saved));
 check("it is kept out of the database, in this computer's own folder",
   (await call("GET", "/emandi")).configured === true);

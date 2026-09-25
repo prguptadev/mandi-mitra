@@ -32,8 +32,6 @@ export interface PortalAccount {
   user: string;
   /** Encrypted with this computer's key; never returned to a screen. */
   enc: string | null;
-  /** The trader licence, kept for the forms later. */
-  licence: string;
   /** Portal crop codes the dashboard shows, e.g. ["1", "6"]. */
   watch: string[];
   /** The portal's cookies from the last sign-in, encrypted. Not shown anywhere. */
@@ -48,7 +46,7 @@ export interface PortalAccount {
 }
 type Store = Record<string, PortalAccount>;
 
-const blank = (): PortalAccount => ({ user: "", enc: null, licence: "", watch: ["1"], session: null,
+const blank = (): PortalAccount => ({ user: "", enc: null, watch: ["1"], session: null,
   firm: null, portalLicence: null, crops: null, cropsAt: null, updatedAt: null });
 
 function readStore(): Store {
@@ -64,14 +62,13 @@ export function accountOf(biz: string): PortalAccount {
 }
 
 /** Saves the login for one business. An empty password leaves the saved one alone. */
-export function saveAccount(biz: string, p: { user?: string; password?: string; licence?: string; watch?: string[] }) {
+export function saveAccount(biz: string, p: { user?: string; password?: string; watch?: string[] }) {
   const s = readStore();
   const cur = { ...blank(), ...(s[biz] ?? {}) };
   const loginChanged = Boolean(p.password) || (p.user !== undefined && p.user !== cur.user);
   s[biz] = {
     user: p.user ?? cur.user,
     enc: p.password ? encryptSecret(p.password) : cur.enc,
-    licence: p.licence ?? cur.licence,
     watch: p.watch ?? cur.watch,
     session: loginChanged ? null : cur.session ?? null,
     // a changed login may be a different licence, so forget whose it was
@@ -345,7 +342,6 @@ export function statusOf(biz: string) {
   return {
     configured: Boolean(acc.user && acc.enc),
     user: acc.user,
-    licence: acc.licence,
     watch: acc.watch,
     firm: acc.firm ?? null,
     portalLicence: acc.portalLicence ?? null,

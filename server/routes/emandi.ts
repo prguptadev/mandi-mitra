@@ -23,7 +23,6 @@ emandiRoutes.put("/", can("business.write"), async (c) => {
   const body = z.object({
     user: z.string().trim().max(120).optional(),
     password: z.string().max(200).optional(),
-    licence: z.string().trim().max(60).optional(),
     watch: z.array(z.string().trim().max(10)).max(12).optional(),
   }).parse(await c.req.json());
   saveAccount(biz, body);
