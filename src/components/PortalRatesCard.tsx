@@ -218,7 +218,20 @@ export function PortalRatesCard() {
           </div>
         )}
 
-        {s?.signedIn && allBandless && <p className="text-[12px] leading-snug text-muted">{t("portal.noBandAll")}</p>}
+        {s?.signedIn && allBandless && (
+          <>
+            <p className="text-[12px] leading-snug text-muted">{t("portal.noBandAll")}</p>
+            {/* When there is no band to show, show what the portal actually
+                said, word for word, so nobody has to wonder whether the app
+                swallowed a figure. */}
+            <p className="num text-[11px] leading-snug text-faint">
+              {t("portal.rawSaid")}{" "}
+              {list.filter((r) => !r.error).slice(0, 3).map((r) =>
+                `${r.cropName ?? r.cropCode}: min_rate ${(r.minRatePaise ?? 0) / 100}.00, max_rate ${(r.maxRatePaise ?? 0) / 100}.00, `
+                + `mandi_fees ${r.mandiFeePct}, development_cess ${r.developmentCessPct}`).join("  ·  ")}
+            </p>
+          </>
+        )}
         <p className="text-[11px] leading-snug text-faint">{t("portal.note")}</p>
       </div>
     </Card>

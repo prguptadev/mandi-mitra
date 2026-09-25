@@ -708,6 +708,7 @@ export const STRINGS = {
     "portal.watchCount": "{n} chosen", "portal.cropsAgain": "Read the list again", "portal.cropsNoMatch": "No commodity of that name", "portal.cropsNotYet": "The portal's commodity list is read once you sign in from the dashboard; after that it stays here.",
     "portal.noBandAll": "e-Mandi fixes no lowest or highest rate on this licence — it gives only the mandi fee and the development cess. The band shows on a licence that issues प्रपत्र-6; a mill's licence carries none. The portal does not publish a market rate.",
     "portal.whose": "This login is",
+    "portal.rawSaid": "What the portal replied, word for word —",
   },
 
   hi: {
@@ -1420,6 +1421,7 @@ export const STRINGS = {
     "portal.watchCount": "{n} चुनी", "portal.cropsAgain": "सूची फिर पढ़ें", "portal.cropsNoMatch": "उस नाम की कोई जिंस नहीं", "portal.cropsNotYet": "पोर्टल की जिंस सूची डैशबोर्ड से साइन इन करने पर एक बार पढ़ी जाती है; उसके बाद यहीं रहती है।",
     "portal.noBandAll": "इस लाइसेंस पर e-Mandi कोई न्यूनतम या अधिकतम दर तय नहीं करता — वह सिर्फ़ मंडी शुल्क और विकास सेस देता है। सीमा उस लाइसेंस पर दिखती है जो प्रपत्र-6 जारी करता है; मिल के लाइसेंस पर नहीं होती। पोर्टल बाज़ार भाव नहीं छापता।",
     "portal.whose": "यह लॉगिन है",
+    "portal.rawSaid": "पोर्टल ने अक्षरशः क्या कहा —",
   },
 } as const;
 
