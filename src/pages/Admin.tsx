@@ -714,7 +714,7 @@ export function SettingsPage() {
       ]} />
 
       {tab === "business" && (
-        <div className="max-w-3xl">
+        <div className="max-w-3xl space-y-4">
         <Card>
             <CardHeader title={t("biz.profile")} sub={t("biz.current")} />
             {biz.isLoading ? <div className="p-4"><SkeletonForm fields={7} /></div> : (
@@ -749,6 +749,7 @@ export function SettingsPage() {
               </div>
             )}
           </Card>
+          <PortalCard />
         </div>
       )}
       {tab === "money" && (
@@ -763,7 +764,6 @@ export function SettingsPage() {
           <BackupCard />
           <div className="space-y-4">
             <CloudCard />
-            <PortalCard />
             <NetworkCard />
             <UpdateCard />
           </div>

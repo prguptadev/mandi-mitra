@@ -141,6 +141,10 @@ const sessionOf = (biz: string): Session => {
       } catch { /* unreadable: sign in again */ }
     }
     sessions.set(biz, s);
+    /* An app restart leaves the portal's session in place but nothing watching
+       it. Put the watch back, and look once now so a session that lapsed while
+       the app was shut says so instead of looking signed in. */
+    if (s.signedInAt) { startKeepAlive(biz); void pingDashboard(biz); }
   }
   return s;
 };
@@ -291,37 +295,45 @@ const KEEP_ALIVE_MS = 8 * 60_000;
    — a mill's licence carries no rate band, an arhat's does — so it is worth
    showing plainly instead of leaving it to be guessed. */
 function whoseLogin(dashboard: string) {
-  const firm = /Welcome,\s*([^<\n]{2,80})/.exec(dashboard)?.[1]?.trim() ?? null;
+  /* The portal writes it as `Welcome,</h2> <h3 class="prev_data"> VIJAY LAXMI
+     DALL MILL </h3>`, so the name is past the next tags, not right after the
+     word. Skip whatever tags and spaces follow, then take up to the next tag. */
+  const at = dashboard.indexOf("Welcome,");
+  const after = at < 0 ? "" : dashboard.slice(at + 8).replace(/^(\s|<[^>]*>)+/, "");
+  const firm = unescapeHtml(after.split("<")[0]).replace(/\s+/g, " ").trim().slice(0, 80);
   const licence = /<input[^>]*id="MerchantLicense"[^>]*>/.exec(dashboard)?.[0];
   return { firm: firm || null, portalLicence: licence ? /value="([^"]*)"/.exec(licence)?.[1] ?? null : null };
+}
+
+/**
+ * Open the trader dashboard: it keeps the portal's session from lapsing, tells
+ * us the moment it has lapsed, and states whose licence this login is.
+ */
+async function pingDashboard(biz: string) {
+  const live = sessions.get(biz);
+  if (!live?.signedInAt) return stopKeepAlive(biz);
+  try {
+    const res = await call(biz, "/Traders/Dashboard");
+    const text = res.status === 200 ? await res.text() : "";
+    if (res.status !== 200 || looksSignedOut(text)) {
+      live.signedInAt = null;
+      live.note = "The portal ended this session. Sign in again to see the rates.";
+      keepSession(biz);
+      stopKeepAlive(biz);
+      return;
+    }
+    // a session kept from before the licence was recorded fills itself in here
+    if (!accountOf(biz).firm) {
+      const st = readStore();
+      if (st[biz]) { st[biz] = { ...st[biz], ...whoseLogin(text) }; writeStore(st); }
+    }
+  } catch { /* no internet just now; the next round tries again */ }
 }
 
 function startKeepAlive(biz: string) {
   const s = sessionOf(biz);
   if (s.keepAlive) clearInterval(s.keepAlive);
-  s.keepAlive = setInterval(() => {
-    void (async () => {
-      const live = sessions.get(biz);
-      if (!live?.signedInAt) return stopKeepAlive(biz);
-      try {
-        const res = await call(biz, "/Traders/Dashboard");
-        const text = res.status === 200 ? await res.text() : "";
-        if (res.status !== 200 || looksSignedOut(text)) {
-          live.signedInAt = null;
-          live.note = "The portal ended this session. Sign in again to see the rates.";
-          keepSession(biz);
-          stopKeepAlive(biz);
-          return;
-        }
-        // a session kept from before this was recorded fills itself in here
-        const acc = accountOf(biz);
-        if (!acc.firm) {
-          const st = readStore();
-          if (st[biz]) { st[biz] = { ...st[biz], ...whoseLogin(text) }; writeStore(st); }
-        }
-      } catch { /* no internet just now; the next round tries again */ }
-    })();
-  }, KEEP_ALIVE_MS);
+  s.keepAlive = setInterval(() => { void pingDashboard(biz); }, KEEP_ALIVE_MS);
   s.keepAlive.unref?.();
 }
 function stopKeepAlive(biz: string) {

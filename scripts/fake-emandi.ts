@@ -100,7 +100,7 @@ http.createServer((req, res) => {
     if (url.pathname === "/Traders/Dashboard") return send(200, "text/html",
       `<html><body><input type="hidden" value="VIRESH CHANDRA GUPTA" id="username" />
        <input type="hidden" value="L/2016/75/17121983" id="MerchantLicense" />
-       <h3>Welcome, VIJAY LAXMI DALL MILL</h3></body></html>`);
+       <h2>Welcome,</h2>\r\n <h3 class="prev_data">\r\n\r\nVIJAY LAXMI DALL MILL    </h3></body></html>`);
     return send(404, "text/html", "not here");
   });
 }).listen(PORT, "127.0.0.1", () => console.log(`fake e-Mandi on http://127.0.0.1:${PORT}`));
