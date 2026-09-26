@@ -187,20 +187,14 @@ export function PortalRatesCard() {
           <div className="overflow-x-auto rounded-lg border border-line">
             <table className="min-w-full text-[13px]">
               <thead className="bg-raised/60 text-[11px] uppercase tracking-wide text-muted">
-                {/* Two things side by side: what e-Mandi allows as a rate, and
-                    what it holds as this firm's stock. */}
                 <tr>
-                  <th className="px-2 py-1 text-left font-medium" rowSpan={2}>{t("daily.jins")}</th>
-                  <th className="border-l border-line/70 px-2 py-1 text-center font-medium" colSpan={2}>{t("portal.bandHead")}</th>
-                  {showStock && <th className="border-l border-line/70 px-2 py-1 text-center font-medium" colSpan={3}>{t("portal.stockCol")}</th>}
-                </tr>
-                <tr>
-                  <th className="border-l border-line/70 px-2 py-1 text-right font-medium">{t("portal.minRate")}</th>
-                  <th className="px-2 py-1 text-right font-medium">{t("portal.maxRate")}</th>
+                  <th className="px-2 py-1.5 text-left font-medium">{t("daily.jins")}</th>
+                  <th className="border-l border-line/70 px-2 py-1.5 text-right font-medium">{t("portal.minRate")}</th>
+                  <th className="px-2 py-1.5 text-right font-medium">{t("portal.maxRate")}</th>
                   {showStock && <>
-                    <th className="border-l border-line/70 px-2 py-1 text-right font-medium">{t("portal.stockIn")}</th>
-                    <th className="px-2 py-1 text-right font-medium">{t("portal.stockOut")}</th>
-                    <th className="px-2 py-1 text-right font-medium">{t("portal.stockLeft")}</th>
+                    <th className="border-l border-line/70 px-2 py-1.5 text-right font-medium">{t("portal.stockIn")}</th>
+                    <th className="px-2 py-1.5 text-right font-medium">{t("portal.stockOut")}</th>
+                    <th className="px-2 py-1.5 text-right font-medium">{t("portal.stockLeft")}</th>
                   </>}
                 </tr>
               </thead>
