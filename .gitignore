@@ -24,3 +24,5 @@ data-perftest/
 # everything the app keeps on a computer (database, scans, backups, settings files)
 data/
 data-lap*/
+# a copy of the real books kept beside the repo for trying things on
+data-local/
