@@ -143,6 +143,16 @@ check("  ...nor whose licence the other firm's login is",
 await call("POST", "/auth/switch-business", { businessId: vldm.businessId });
 check("the first firm is still signed in", (await call("GET", "/emandi")).signedIn === true);
 
+console.log("\nA password belongs to its own user name");
+await call("PUT", "/emandi", { user: "somebody-else@example.test" });
+const swapped = await call("GET", "/emandi");
+check("changing the user name drops the password that was saved with the old one",
+  swapped.configured === false && swapped.user === "somebody-else@example.test", swapped);
+check("  ...and forgets whose licence it opened", swapped.firm === null && swapped.signedIn === false, swapped);
+await call("PUT", "/emandi", { user: USER, password: PASSWORD });
+await call("POST", "/emandi/signin/start", {});
+await call("POST", "/emandi/signin/finish", { captcha: CAPTCHA });
+
 console.log("\nSigning out, and forgetting the login");
 await call("POST", "/emandi/signout", {});
 check("signing out ends the session but keeps the login", (await call("GET", "/emandi")).signedIn === false && (await call("GET", "/emandi")).configured === true);

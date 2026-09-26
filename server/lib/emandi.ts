@@ -65,10 +65,14 @@ export function accountOf(biz: string): PortalAccount {
 export function saveAccount(biz: string, p: { user?: string; password?: string; watch?: string[] }) {
   const s = readStore();
   const cur = { ...blank(), ...(s[biz] ?? {}) };
-  const loginChanged = Boolean(p.password) || (p.user !== undefined && p.user !== cur.user);
+  const userChanged = p.user !== undefined && p.user !== cur.user;
+  const loginChanged = Boolean(p.password) || userChanged;
   s[biz] = {
     user: p.user ?? cur.user,
-    enc: p.password ? encryptSecret(p.password) : cur.enc,
+    /* A password belongs to the user name it was typed with. Put a different
+       user name in and the old password is not that user's — keeping it would
+       leave a login that looks saved and cannot sign in. */
+    enc: p.password ? encryptSecret(p.password) : userChanged ? null : cur.enc,
     watch: p.watch ?? cur.watch,
     session: loginChanged ? null : cur.session ?? null,
     // a changed login may be a different licence, so forget whose it was
