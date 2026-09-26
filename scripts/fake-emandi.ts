@@ -93,6 +93,19 @@ http.createServer((req, res) => {
     // everything below needs the session, exactly as the portal does it
     if (!signedIn(req.headers.cookie)) return send(200, "text/html", loginPage());
 
+    /* The stock page is a chooser; the figures live one click in, and the
+       table is rendered by the server, as the real one is. */
+    if (url.pathname === "/Stock/AvailableStock") {
+      return send(200, "text/html", `<html><body><a href="/Stock/TraderCurrentStock">${esc("1 दिसंबर के बाद का स्टॉक")}</a></body></html>`);
+    }
+    if (url.pathname === "/Stock/TraderCurrentStock") {
+      const row = (crop: string, i: number, o: number) =>
+        `<tr><td>${esc(crop)}</td><td>${i.toFixed(2)}</td><td>${o.toFixed(2)}</td><td>${(i - o).toFixed(2)}</td><td></td></tr>`;
+      return send(200, "text/html", `<html><body><table><thead><tr>
+        <th>${esc("फसल का नाम")}</th><th>${esc("आवक (स्टॉक)")}</th><th>${esc("जावक (स्टॉक)")}</th><th>${esc("उपलब्ध (स्टॉक)")}</th><th></th>
+        </tr></thead><tbody>${row("धान", 1250.5, 300.25)}${row("गेहूँ", 480, 480)}</tbody></table></body></html>`);
+    }
+
     if (url.pathname === "/Traders/index") {
       landed = true;
       res.writeHead(302, { location: "/Traders/Dashboard" });

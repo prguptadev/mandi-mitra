@@ -4,7 +4,7 @@ import { audit } from "../lib/audit.ts";
 import { can, actor, bad, type Env } from "../lib/http.ts";
 import {
   accountOf, saveAccount, forgetAccount, statusOf, beginSignIn, finishSignIn, signOut,
-  rateBand, cropList, keptCrops, PortalError,
+  rateBand, cropList, keptCrops, availableStock, PortalError,
 } from "../lib/emandi.ts";
 
 /* The mandi portal, as seen from Mandi Mitra. Each business has its own login
@@ -61,6 +61,12 @@ emandiRoutes.post("/signin/finish", can("dashboard.view"), async (c) => {
 emandiRoutes.post("/signout", can("dashboard.view"), (c) => {
   signOut(c.get("auth")!.businessId!);
   return c.json(statusOf(c.get("auth")!.businessId!));
+});
+
+/** What e-Mandi holds as this firm's own stock. Its licence, and no other's. */
+emandiRoutes.get("/stock", can("dashboard.view"), async (c) => {
+  const biz = c.get("auth")!.businessId!;
+  try { return c.json({ ...(await availableStock(biz)), status: statusOf(biz) }); } catch (e) { throw fail(e); }
 });
 
 /** The commodity list as last read — no portal call, so it works signed out. */

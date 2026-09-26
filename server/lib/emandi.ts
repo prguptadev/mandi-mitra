@@ -428,7 +428,7 @@ export function statusOf(biz: string) {
 const looksSignedOut = (text: string) =>
   /name="Password"/i.test(text) && /action="\/Account"/i.test(text);
 
-export async function signedInCall(biz: string, url: string, init?: RequestInit) {
+async function signedInCall(biz: string, url: string, init?: RequestInit) {
   const s = sessionOf(biz);
   if (!s.signedInAt) throw new PortalError("Sign in to the mandi portal first", "signed_out");
   let res = await call(biz, url, init);
@@ -511,6 +511,44 @@ export async function rateBand(biz: string, cropCode: string): Promise<RateBand>
     directLicence: row.isDirectlicense == null ? null : Boolean(Number(row.isDirectlicense)),
     at: new Date().toISOString(),
   };
+}
+
+
+export interface StockLine {
+  crop: string;
+  /** Quintals, as e-Mandi states them. */
+  inQtl: number | null;
+  outQtl: number | null;
+  availableQtl: number | null;
+}
+
+const qtl = (cell: string) => {
+  const n = Number(cell.replace(/,/g, "").trim());
+  return cell.trim() === "" || !Number.isFinite(n) ? null : n;
+};
+
+/**
+ * What e-Mandi holds as this licence's stock, commodity by commodity — its
+ * own "आवक / जावक / उपलब्ध". The page is a chooser; the figures after
+ * 1 December live on /Stock/TraderCurrentStock and are rendered by the server,
+ * so the table is read straight out of the reply.
+ *
+ * It belongs to the licence that is signed in, and to no other.
+ */
+export async function availableStock(biz: string): Promise<{ lines: StockLine[]; at: string }> {
+  const html = await signedInCall(biz, "/Stock/TraderCurrentStock");
+  const start = html.indexOf("<table");
+  if (start < 0) throw new PortalError("e-Mandi's stock page could not be read", "shape");
+  const table = html.slice(start, html.indexOf("</table>", start));
+  const body = table.slice(table.indexOf("<tbody>"));
+  const lines: StockLine[] = [];
+  for (const row of body.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)]
+      .map((m) => unescapeHtml(m[1].replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim());
+    if (cells.length < 4 || !cells[0]) continue;
+    lines.push({ crop: cells[0], inQtl: qtl(cells[1]), outQtl: qtl(cells[2]), availableQtl: qtl(cells[3]) });
+  }
+  return { lines, at: new Date().toISOString() };
 }
 
 /** The commodity list as last read, without touching the portal. */

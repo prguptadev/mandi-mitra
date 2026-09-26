@@ -96,6 +96,15 @@ const zero = await call("GET", "/emandi/rates?codes=2");
 check("a commodity the mandi has set no band for comes back as no band, not as a price",
   zero.rates[0].minRatePaise === 0 && zero.rates[0].maxRatePaise === 0 && zero.rates[0].error === null, zero.rates[0]);
 
+console.log("\nWhat e-Mandi holds as this firm's stock");
+const st = await call("GET", "/emandi/stock");
+check("the stock table is read, commodity by commodity", st.lines.length === 2, st.lines.length);
+check("  ...in, out and what is left come through as figures",
+  st.lines[0].crop === "धान" && st.lines[0].inQtl === 1250.5
+  && st.lines[0].outQtl === 300.25 && st.lines[0].availableQtl === 950.25, st.lines[0]);
+check("  ...a commodity all sold out reads zero, not blank",
+  st.lines[1].availableQtl === 0 && st.lines[1].availableQtl !== null, st.lines[1]);
+
 console.log("\nThe portal's commodity list");
 const crops = await call("GET", "/emandi/crops");
 check("the list is read from the portal's own 6R form", crops.crops.length === 3, crops.crops.length);
@@ -117,6 +126,8 @@ check("  ...and gets no rates until its own login is added", /Settings|sign in/i
 check("  ...and the firm that IS signed in never lends it a figure",
   otherRates.rates.every((r: any) => r.minRatePaise === null && r.maxRatePaise === null)
   && !JSON.stringify(otherRates).includes("VIJAY LAXMI DALL MILL"), otherRates.rates);
+check("  ...and is told nothing of the other firm's stock",
+  /Settings|sign in/i.test((await raw("GET", "/emandi/stock")).json?.error ?? ""), (await raw("GET", "/emandi/stock")).json);
 check("  ...nor whose licence the other firm's login is",
   (await call("GET", "/emandi")).firm === null, (await call("GET", "/emandi")).firm);
 await call("POST", "/auth/switch-business", { businessId: vldm.businessId });

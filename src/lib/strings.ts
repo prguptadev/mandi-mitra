@@ -712,6 +712,7 @@ export const STRINGS = {
     "portal.wrongFirm": "This login opens {portal} on e-Mandi, but the firm open here in Mandi Mitra is {here}. Put {here}'s own e-Mandi login in, or the rates and the papers will be the other firm's.",
     "dash.dayToday": "Today",
     "daily.ownFirmTip": "Bought by {firm} — no mill chosen yet", "daily.ownFirmPick": "{code} — keep with our own firm", "dash.millsAdded": "Added mills only", "dash.millsHint": "All mills counts what the firm itself bought as well; added mills only leaves it out.",
+    "portal.stockCol": "Stock on e-Mandi", "portal.stockNote": "Stock is what e-Mandi holds for this firm's own licence, in quintals — it covers {n} commodity(s) there, and only this firm's.", "portal.stockNone": "e-Mandi holds no stock on this firm's licence just now.",
   },
 
   hi: {
@@ -1428,6 +1429,7 @@ export const STRINGS = {
     "portal.wrongFirm": "यह लॉगिन e-Mandi पर {portal} खोलता है, जबकि Mandi Mitra में खुली फर्म {here} है। {here} का अपना e-Mandi लॉगिन डालें, वरना दरें और कागज़ दूसरी फर्म के होंगे।",
     "dash.dayToday": "आज",
     "daily.ownFirmTip": "{firm} ने खरीदा — अभी कोई मिल नहीं चुनी", "daily.ownFirmPick": "{code} — अपनी ही फर्म पर रखें", "dash.millsAdded": "सिर्फ़ जोड़ी गई मिलें", "dash.millsHint": "सभी मिलें में फर्म की अपनी खरीद भी गिनी जाती है; सिर्फ़ जोड़ी गई मिलें में नहीं।",
+    "portal.stockCol": "e-Mandi पर स्टॉक", "portal.stockNote": "स्टॉक वही है जो e-Mandi इस फर्म के अपने लाइसेंस पर रखता है, क्विंटल में — वहाँ {n} जिंस पर, और सिर्फ़ इसी फर्म का।", "portal.stockNone": "अभी इस फर्म के लाइसेंस पर e-Mandi के पास कोई स्टॉक नहीं है।",
   },
 } as const;
 

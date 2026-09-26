@@ -22,6 +22,7 @@ interface PortalStatus {
   firm: string | null; portalLicence: string | null;
   signedIn: boolean; signedInAt: string | null; note: string | null; base: string;
 }
+interface StockLine { crop: string; inQtl: number | null; outQtl: number | null; availableQtl: number | null }
 interface Rate {
   cropCode: string; cropName: string | null;
   minRatePaise: number | null; maxRatePaise: number | null;
@@ -50,6 +51,14 @@ export function PortalRatesCard() {
   const rates = useQuery({
     queryKey: ["emandi", "rates"], queryFn: () => api.get<{ rates: Rate[]; status: PortalStatus }>("/emandi/rates"),
     enabled: Boolean(status.data?.signedIn), staleTime: 5 * 60_000,
+  });
+
+  /* e-Mandi's own stock for this licence, beside the band. It belongs to the
+     firm that is signed in, so it is not shown at all when the login opens a
+     different firm — the other firm's stock is not this firm's business. */
+  const stock = useQuery({
+    queryKey: ["emandi", "stock"], queryFn: () => api.get<{ lines: StockLine[]; at: string }>("/emandi/stock"),
+    enabled: Boolean(status.data?.signedIn), staleTime: 5 * 60_000, retry: false,
   });
 
   const addLogin = useMutation({
@@ -117,6 +126,10 @@ export function PortalRatesCard() {
 
   const wrongFirm = Boolean(s?.firm) && !looksLikeSameFirm(s!.firm!, me?.business?.name ?? "");
   const list = rates.data?.rates ?? [];
+  /* e-Mandi names the commodity, our rows carry its code, so they are matched
+     by name — the same list gives both. */
+  const stockOf = new Map((wrongFirm ? [] : stock.data?.lines ?? []).map((l) => [l.crop.trim(), l]));
+  const showStock = !wrongFirm && Boolean(s?.signedIn) && !stock.isError;
   const rupees = (p: number | null) => (p === null ? "—" : f.amount(p));
   /* The portal states 0.00 for both ends when the mandi has fixed no band. */
   const noBand = (r: Rate) => !r.error && !r.minRatePaise && !r.maxRatePaise;
@@ -178,6 +191,7 @@ export function PortalRatesCard() {
                   <th className="px-2 py-1.5 text-left font-medium">{t("daily.jins")}</th>
                   <th className="px-2 py-1.5 text-right font-medium">{t("portal.minRate")}</th>
                   <th className="px-2 py-1.5 text-right font-medium">{t("portal.maxRate")}</th>
+                  {showStock && <th className="px-2 py-1.5 text-right font-medium">{t("portal.stockCol")}</th>}
                   <th className="px-2 py-1.5 text-right font-medium">{t("portal.mandiFee")}</th>
                   <th className="px-2 py-1.5 text-right font-medium">{t("portal.cess")}</th>
                 </tr>
@@ -190,7 +204,7 @@ export function PortalRatesCard() {
                       <span className="num ml-1.5 text-[11px] text-faint">#{r.cropCode}</span>
                     </td>
                     {r.error ? (
-                      <td className="px-2 py-1.5 text-[12px] text-warn" colSpan={4}>{r.error}</td>
+                      <td className="px-2 py-1.5 text-[12px] text-warn" colSpan={showStock ? 5 : 4}>{r.error}</td>
                     ) : (
                       <>
                         {noBand(r) ? (
@@ -207,6 +221,12 @@ export function PortalRatesCard() {
                             <td className={cn("num px-2 py-1.5 text-right font-semibold text-brand")}>{rupees(r.maxRatePaise)}</td>
                           </>
                         )}
+                        {showStock && (() => {
+                          const st = r.cropName ? stockOf.get(r.cropName.trim()) : undefined;
+                          return <td className={cn("num px-2 py-1.5 text-right", st?.availableQtl ? "text-ink" : "text-faint")}>
+                            {st?.availableQtl == null ? "—" : st.availableQtl.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                          </td>;
+                        })()}
                         <td className="num px-2 py-1.5 text-right text-muted">{r.mandiFeePct === null ? "—" : `${r.mandiFeePct}%`}</td>
                         <td className="num px-2 py-1.5 text-right text-muted">{r.developmentCessPct === null ? "—" : `${r.developmentCessPct}%`}</td>
                       </>
@@ -214,7 +234,7 @@ export function PortalRatesCard() {
                   </tr>
                 ))}
                 {!list.length && (
-                  <tr><td className="px-2 py-2 text-[13px] text-faint" colSpan={5}>{rates.isFetching ? t("common.loading") : t("portal.noneWatched")}</td></tr>
+                  <tr><td className="px-2 py-2 text-[13px] text-faint" colSpan={showStock ? 6 : 5}>{rates.isFetching ? t("common.loading") : t("portal.noneWatched")}</td></tr>
                 )}
               </tbody>
             </table>
@@ -235,6 +255,9 @@ export function PortalRatesCard() {
             </p>
           </>
         )}
+        {showStock && (stock.data?.lines.length
+          ? <p className="text-[12px] leading-snug text-muted">{t("portal.stockNote", { n: stock.data.lines.length })}</p>
+          : <p className="text-[12px] leading-snug text-muted">{t("portal.stockNone")}</p>)}
         <p className="text-[11px] leading-snug text-faint">{t("portal.note")}</p>
       </div>
     </Card>
