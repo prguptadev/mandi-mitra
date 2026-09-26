@@ -98,12 +98,22 @@ check("a commodity the mandi has set no band for comes back as no band, not as a
 
 console.log("\nWhat e-Mandi holds as this firm's stock");
 const st = await call("GET", "/emandi/stock");
-check("the stock table is read, commodity by commodity", st.lines.length === 2, st.lines.length);
+check("the stock register is read, commodity by commodity", st.lines.length === 2, st.lines.length);
 check("  ...in, out and what is left come through as figures",
-  st.lines[0].crop === "धान" && st.lines[0].inQtl === 1250.5
-  && st.lines[0].outQtl === 300.25 && st.lines[0].availableQtl === 950.25, st.lines[0]);
+  st.lines[0].cropCode === "1" && st.lines[0].inQtl === 3965 && st.lines[0].outQtl === 3891.8
+  && st.lines[0].availableQtl === 73.2, st.lines[0]);
+check("  ...the name loses the mark the portal writes into it", st.lines[0].crop === "धान (TEST)", st.lines[0].crop);
 check("  ...a commodity all sold out reads zero, not blank",
   st.lines[1].availableQtl === 0 && st.lines[1].availableQtl !== null, st.lines[1]);
+/* The register only answers a fully bound DataTables payload — a half one gets
+   draw 0 and an empty list, which is how a month of stock once read as none. */
+const windows = (await (await fetch(`${FAKE}/__calls`)).json() as { method: string; url: string }[]).filter((c) => c.method === "DATES");
+check("  ...over a month counted back from today, in the portal's own dd/mm/yyyy", windows.length >= 1, windows.at(-1));
+if (windows.length) {
+  const [f, t2] = windows.at(-1)!.url.split("..");
+  const d = (x: string) => { const [dd, mm, yy] = x.split("/").map(Number); return new Date(yy, mm - 1, dd).getTime(); };
+  check("  ...which is thirty days wide", Math.round((d(t2) - d(f)) / 86400000) === 30, `${f} → ${t2}`);
+}
 
 console.log("\nThe portal's commodity list");
 const crops = await call("GET", "/emandi/crops");

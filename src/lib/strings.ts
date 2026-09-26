@@ -713,6 +713,8 @@ export const STRINGS = {
     "dash.dayToday": "Today",
     "daily.ownFirmTip": "Bought by {firm} — no mill chosen yet", "daily.ownFirmPick": "{code} — keep with our own firm", "dash.millsAdded": "Added mills only", "dash.millsHint": "All mills counts what the firm itself bought as well; added mills only leaves it out.",
     "portal.stockCol": "Stock on e-Mandi", "portal.stockNote": "Stock is what e-Mandi holds for this firm's own licence, in quintals — it covers {n} commodity(s) there, and only this firm's.", "portal.stockNone": "e-Mandi holds no stock on this firm's licence just now.",
+    "portal.bandHead": "Rate e-Mandi allows", "portal.stockIn": "In", "portal.stockOut": "Out", "portal.stockLeft": "Left", "portal.subStock": "The rate e-Mandi allows for a commodity today, and the stock it holds on this firm's licence",
+    "portal.stockWindow": "Stock is e-Mandi's own register for this firm's licence, in quintals, for {from} to {to} — the last month, counted back from today each time.",
   },
 
   hi: {
@@ -1430,6 +1432,8 @@ export const STRINGS = {
     "dash.dayToday": "आज",
     "daily.ownFirmTip": "{firm} ने खरीदा — अभी कोई मिल नहीं चुनी", "daily.ownFirmPick": "{code} — अपनी ही फर्म पर रखें", "dash.millsAdded": "सिर्फ़ जोड़ी गई मिलें", "dash.millsHint": "सभी मिलें में फर्म की अपनी खरीद भी गिनी जाती है; सिर्फ़ जोड़ी गई मिलें में नहीं।",
     "portal.stockCol": "e-Mandi पर स्टॉक", "portal.stockNote": "स्टॉक वही है जो e-Mandi इस फर्म के अपने लाइसेंस पर रखता है, क्विंटल में — वहाँ {n} जिंस पर, और सिर्फ़ इसी फर्म का।", "portal.stockNone": "अभी इस फर्म के लाइसेंस पर e-Mandi के पास कोई स्टॉक नहीं है।",
+    "portal.bandHead": "e-Mandi की अनुमत दर", "portal.stockIn": "आवक", "portal.stockOut": "जावक", "portal.stockLeft": "उपलब्ध", "portal.subStock": "e-Mandi आज जिस दर की अनुमति देता है, और इस फर्म के लाइसेंस पर उसके पास जो स्टॉक है",
+    "portal.stockWindow": "स्टॉक e-Mandi का अपना रजिस्टर है, इस फर्म के लाइसेंस पर, क्विंटल में, {from} से {to} तक — पिछला एक महीना, हर बार आज से पीछे गिनकर।",
   },
 } as const;
 

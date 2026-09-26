@@ -515,6 +515,7 @@ export async function rateBand(biz: string, cropCode: string): Promise<RateBand>
 
 
 export interface StockLine {
+  cropCode: string;
   crop: string;
   /** Quintals, as e-Mandi states them. */
   inQtl: number | null;
@@ -522,33 +523,78 @@ export interface StockLine {
   availableQtl: number | null;
 }
 
-const qtl = (cell: string) => {
-  const n = Number(cell.replace(/,/g, "").trim());
-  return cell.trim() === "" || !Number.isFinite(n) ? null : n;
+const qtl = (cell: unknown) => {
+  const n = Number(String(cell ?? "").replace(/,/g, "").trim());
+  return String(cell ?? "").trim() === "" || !Number.isFinite(n) ? null : n;
 };
+/** dd/mm/yyyy, which is what the portal's date boxes hold. */
+const ddmmyyyy = (d: Date) =>
+  `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+
+/* The stock register is a DataTable fed from /Stock/GetDayBookList, and it is
+   fussy: unless the whole DataTables payload is there — every column, the
+   order, the search — the model does not bind, `draw` comes back 0 and the
+   answer is empty however much stock there is. The columns are the ones the
+   portal's own script asks for, in its order. */
+const DAYBOOK_COLUMNS = ["crop_name_hi", "ins_primary", "ins_secondary", "outs_primary",
+  "outs_secondary", "availableStock_primary", "availableStock_secondary", "availableStock", ""];
 
 /**
- * What e-Mandi holds as this licence's stock, commodity by commodity — its
- * own "आवक / जावक / उपलब्ध". The page is a chooser; the figures after
- * 1 December live on /Stock/TraderCurrentStock and are rendered by the server,
- * so the table is read straight out of the reply.
+ * What e-Mandi holds as this licence's stock, commodity by commodity.
  *
- * It belongs to the licence that is signed in, and to no other.
+ * The window is the last month, counted back from today each time it is asked
+ * — so tomorrow it is tomorrow's month, without anyone setting a date.
  */
-export async function availableStock(biz: string): Promise<{ lines: StockLine[]; at: string }> {
-  const html = await signedInCall(biz, "/Stock/TraderCurrentStock");
-  const start = html.indexOf("<table");
-  if (start < 0) throw new PortalError("e-Mandi's stock page could not be read", "shape");
-  const table = html.slice(start, html.indexOf("</table>", start));
-  const body = table.slice(table.indexOf("<tbody>"));
-  const lines: StockLine[] = [];
-  for (const row of body.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
-    const cells = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)]
-      .map((m) => unescapeHtml(m[1].replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim());
-    if (cells.length < 4 || !cells[0]) continue;
-    lines.push({ crop: cells[0], inQtl: qtl(cells[1]), outQtl: qtl(cells[2]), availableQtl: qtl(cells[3]) });
+export async function availableStock(biz: string, days = 30): Promise<{ lines: StockLine[]; from: string; to: string; at: string }> {
+  let licence = accountOf(biz).portalLicence;
+  if (!licence) {
+    const page = await signedInCall(biz, "/Stock/DayBook");
+    licence = /<input[^>]*id="license_number"[^>]*>/.exec(page)?.[0]?.match(/value="([^"]*)"/)?.[1] ?? "";
   }
-  return { lines, at: new Date().toISOString() };
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - days);
+
+  const body = new URLSearchParams();
+  DAYBOOK_COLUMNS.forEach((name, i) => {
+    body.set(`columns[${i}][data]`, name);
+    body.set(`columns[${i}][name]`, "");
+    body.set(`columns[${i}][searchable]`, "true");
+    body.set(`columns[${i}][orderable]`, "true");
+    body.set(`columns[${i}][search][value]`, "");
+    body.set(`columns[${i}][search][regex]`, "false");
+  });
+  body.set("order[0][column]", "0");
+  body.set("order[0][dir]", "desc");
+  body.set("draw", "1");
+  body.set("start", "0");
+  body.set("length", "-1");
+  body.set("search[value]", "");
+  body.set("search[regex]", "false");
+  body.set("Fdate", ddmmyyyy(from));
+  body.set("Tdate", ddmmyyyy(to));
+  body.set("LicenseNumber", licence);
+
+  const text = await signedInCall(biz, "/Stock/GetDayBookList", {
+    method: "POST", body,
+    headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", ...xhrHeaders("/Stock/DayBook") },
+  });
+  if (process.env.MANDI_EMANDI_DEBUG) console.log(`[emandi] stock ${ddmmyyyy(from)}–${ddmmyyyy(to)}: ${text.slice(0, 300)}`);
+  let rows: Record<string, unknown>[] = [];
+  try {
+    const j = JSON.parse(text) as { draw?: number; data?: Record<string, unknown>[] };
+    rows = Array.isArray(j.data) ? j.data : [];
+  } catch { throw new PortalError("e-Mandi's stock register could not be read", "shape"); }
+
+  const lines = rows.map((r) => ({
+    // the portal writes a byte-order mark into the name: "धान (﻿PADDY)"
+    crop: String(r.crop_name_hi ?? "").replace(/\ufeff/g, "").replace(/\s+/g, " ").trim(),
+    cropCode: String(r.crop_code ?? "").trim(),
+    inQtl: qtl(r.ins_primary),
+    outQtl: qtl(r.outs_primary),
+    availableQtl: qtl(r.availableStock ?? r.availableStock_primary),
+  }));
+  return { lines, from: ddmmyyyy(from), to: ddmmyyyy(to), at: new Date().toISOString() };
 }
 
 /** The commodity list as last read, without touching the portal. */

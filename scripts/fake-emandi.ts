@@ -93,17 +93,30 @@ http.createServer((req, res) => {
     // everything below needs the session, exactly as the portal does it
     if (!signedIn(req.headers.cookie)) return send(200, "text/html", loginPage());
 
-    /* The stock page is a chooser; the figures live one click in, and the
-       table is rendered by the server, as the real one is. */
-    if (url.pathname === "/Stock/AvailableStock") {
-      return send(200, "text/html", `<html><body><a href="/Stock/TraderCurrentStock">${esc("1 दिसंबर के बाद का स्टॉक")}</a></body></html>`);
+    /* The stock register is a DataTable: it answers only when the whole
+       DataTables payload is there, the way the real one does. */
+    if (url.pathname === "/Stock/DayBook") {
+      return send(200, "text/html", `<html><body><input type="hidden" id="license_number" value="L/2016/75/17121983" />
+        <input type="text" class="form-control datepicker" id="from_date"><input type="text" class="form-control datepicker" id="to_date"></body></html>`);
     }
-    if (url.pathname === "/Stock/TraderCurrentStock") {
-      const row = (crop: string, i: number, o: number) =>
-        `<tr><td>${esc(crop)}</td><td>${i.toFixed(2)}</td><td>${o.toFixed(2)}</td><td>${(i - o).toFixed(2)}</td><td></td></tr>`;
-      return send(200, "text/html", `<html><body><table><thead><tr>
-        <th>${esc("फसल का नाम")}</th><th>${esc("आवक (स्टॉक)")}</th><th>${esc("जावक (स्टॉक)")}</th><th>${esc("उपलब्ध (स्टॉक)")}</th><th></th>
-        </tr></thead><tbody>${row("धान", 1250.5, 300.25)}${row("गेहूँ", 480, 480)}</tbody></table></body></html>`);
+    if (url.pathname === "/Stock/GetDayBookList" && req.method === "POST") {
+      const p = new URLSearchParams(body);
+      const bound = p.get("columns[0][data]") === "crop_name_hi" && p.get("draw") === "1";
+      if (!bound) return send(200, "application/json", '{"draw":0,"recordsTotal":0,"recordsFiltered":0,"data":[]}');
+      const dmy = /^\d{2}\/\d{2}\/\d{4}$/;
+      if (!dmy.test(p.get("Fdate") ?? "") || !dmy.test(p.get("Tdate") ?? "")) {
+        return send(200, "application/json", '{"draw":1,"recordsTotal":0,"recordsFiltered":0,"data":[]}');
+      }
+      calls.push({ method: "DATES", url: `${p.get("Fdate")}..${p.get("Tdate")}`, body: "" });
+      const line = (name: string, code: string, ins: string, outs: string, left: string) => ({
+        crop_name_hi: `${name} (\ufeffTEST)`, crop_code: code,
+        ins_primary: ins, ins_secondary: "0.000", outs_primary: outs, outs_secondary: "0.000",
+        availableStock_primary: left, availableStock_secondary: "0.000", availableStock: left,
+      });
+      return send(200, "application/json", JSON.stringify({
+        draw: 1, recordsTotal: 2, recordsFiltered: 2,
+        data: [line("धान", "1", "3965.000", "3891.800", "73.200"), line("गेहूँ", "6", "480.000", "480.000", "0.000")],
+      }));
     }
 
     if (url.pathname === "/Traders/index") {
