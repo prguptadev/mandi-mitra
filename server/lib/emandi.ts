@@ -118,6 +118,8 @@ class Jar {
 
 interface Session {
   jar: Jar;
+  /** The user name this session was signed in as, so it can be told apart. */
+  user: string | null;
   /** The last page opened, so the next call can say where it came from. */
   lastUrl: string | null;
   /** Keeps a sliding portal session from lapsing while the app is open. */
@@ -134,7 +136,7 @@ const sessions = new Map<string, Session>();
 const sessionOf = (biz: string): Session => {
   let s = sessions.get(biz);
   if (!s) {
-    s = { jar: new Jar(), lastUrl: null, keepAlive: null, signedInAt: null, note: null, pending: null, crops: null };
+    s = { jar: new Jar(), user: null, lastUrl: null, keepAlive: null, signedInAt: null, note: null, pending: null, crops: null };
     /* An app restart — an update, a crash, a laptop lid — must not cost the
        operator another captcha. The portal's cookies are kept encrypted on
        this computer and put back; the first call proves whether they still
@@ -143,7 +145,7 @@ const sessionOf = (biz: string): Session => {
     if (kept) {
       try {
         const { cookies, at } = JSON.parse(decryptSecret(kept) ?? "{}") as { cookies: Record<string, string>; at: number };
-        if (cookies && Date.now() - at < 12 * 60 * 60_000) { s.jar.restore(cookies); s.signedInAt = at; }
+        if (cookies && Date.now() - at < 12 * 60 * 60_000) { s.jar.restore(cookies); s.signedInAt = at; s.user = accountOf(biz).user; }
       } catch { /* unreadable: sign in again */ }
     }
     sessions.set(biz, s);
@@ -151,6 +153,17 @@ const sessionOf = (biz: string): Session => {
        it. Put the watch back, and look once now so a session that lapsed while
        the app was shut says so instead of looking signed in. */
     if (s.signedInAt) { startKeepAlive(biz); void pingDashboard(biz); }
+  }
+  /* The store can change underneath us — an update, a restore, a folder copied
+     from another computer, a hand edit. A session belongs to the user name it
+     was signed in as; if that is no longer the saved one, it is not this
+     account's session and must not be reported as one. */
+  if (s.signedInAt && s.user !== accountOf(biz).user) {
+    s.signedInAt = null;
+    s.user = null;
+    s.jar = new Jar();
+    s.crops = null;
+    stopKeepAlive(biz);
   }
   return s;
 };
@@ -308,6 +321,7 @@ export async function finishSignIn(biz: string, typed: string): Promise<{ ok: tr
   const probeText = probe.status === 200 ? await probe.text() : "";
   const signedIn = probe.status === 200 && !looksSignedOut(probeText);
   if (signedIn) {
+    s.user = acc.user;
     const who = whoseLogin(probeText);
     const st = readStore();
     if (st[biz]) { st[biz] = { ...st[biz], ...who }; writeStore(st); }

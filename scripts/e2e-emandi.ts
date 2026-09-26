@@ -12,6 +12,9 @@ import "./_guard.ts";
  *   · once signed in, the band, mandi fee and cess come through as figures
  * Run through: npm run test:e2e
  */
+import fs from "node:fs";
+import path from "node:path";
+
 const BASE = process.env.MANDI_API!;
 const FAKE = process.env.MANDI_EMANDI_BASE!;
 const CAPTCHA = "4242";
@@ -142,6 +145,31 @@ check("  ...nor whose licence the other firm's login is",
   (await call("GET", "/emandi")).firm === null, (await call("GET", "/emandi")).firm);
 await call("POST", "/auth/switch-business", { businessId: vldm.businessId });
 check("the first firm is still signed in", (await call("GET", "/emandi")).signedIn === true);
+
+/* An update must not lose a login, and must not choke on one written by an
+   older version — before firm, portalLicence or the kept commodity list
+   existed, and while a typed licence number was still being saved. */
+console.log("\nA login saved by an older Mandi Mitra still opens");
+const store = path.join(process.env.MANDI_DATA_DIR!, "emandi.json");
+const kept = fs.existsSync(store) ? fs.readFileSync(store, "utf8") : null;
+fs.writeFileSync(store, JSON.stringify({
+  [vldm.businessId]: {
+    user: "older-version@example.test", enc: null, licence: "L/2016/75/OLD",
+    watch: ["1", "6"], updatedAt: "2026-01-01T00:00:00.000Z",
+  },
+}, null, 2));
+const older = await call("GET", "/emandi");
+check("the user name and the commodities it watched are still there",
+  older.user === "older-version@example.test" && older.watch.join(",") === "1,6", older);
+check("  ...it says no password is saved, instead of pretending one is", older.configured === false, older);
+check("  ...and the fields it never had come back empty, not broken",
+  older.firm === null && older.portalLicence === null && older.signedIn === false, older);
+check("  ...its kept commodity list is empty, and asking for it does not fail",
+  (await call("GET", "/emandi/crops")).crops.length === 0, await call("GET", "/emandi/crops"));
+if (kept !== null) fs.writeFileSync(store, kept); else fs.rmSync(store, { force: true });
+await call("PUT", "/emandi", { user: USER, password: PASSWORD, watch: ["1", "6"] });
+await call("POST", "/emandi/signin/start", {});
+await call("POST", "/emandi/signin/finish", { captcha: CAPTCHA });
 
 console.log("\nA password belongs to its own user name");
 await call("PUT", "/emandi", { user: "somebody-else@example.test" });
