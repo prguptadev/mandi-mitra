@@ -165,7 +165,32 @@
     }
   }
 
-  $("show").onclick = () => paint(read($("in").value));
+  /* Opened from inside Mandi Mitra, the page can ask the app for the picture:
+     the server holds this firm's e-Mandi session, so it can fetch an image a
+     browser cannot. Opened straight off the disk there is no app to ask, and
+     the address is simply listed. */
+  async function fetchPicture(text) {
+    try {
+      const res = await fetch("/api/emandi/captcha", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) return null;
+      const j = await res.json();
+      return typeof j.image === "string" ? j.image : null;
+    } catch { return null; }
+  }
+
+  $("show").onclick = async () => {
+    const text = $("in").value;
+    const got = read(text);
+    paint(got);
+    if (!got.picture && got.address) {
+      const image = await fetchPicture(text);
+      if (image) paint({ ...got, picture: image });
+    }
+  };
   $("clear").onclick = () => { $("in").value = ""; $("board").classList.remove("on"); $("shot").classList.remove("on"); };
   $("in").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("show").click(); });
 </script>

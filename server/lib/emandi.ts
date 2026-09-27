@@ -532,6 +532,27 @@ export async function rateBand(biz: string, cropCode: string): Promise<RateBand>
 }
 
 
+/**
+ * The captcha picture behind an address, as bytes.
+ *
+ * Only e-Mandi's own captcha image is fetched, and only that: the address is
+ * taken from what was pasted and must be /DNTCaptchaImage/Show on the portal,
+ * so this cannot be turned into a way of fetching anything else.
+ *
+ * What it says is still for a person to read.
+ */
+export async function captchaImage(biz: string, pasted: string): Promise<{ image: string; url: string }> {
+  const found = /\/DNTCaptchaImage\/Show\?[^"'\s<>]+/.exec(pasted.replace(/&amp;/g, "&"))?.[0];
+  if (!found) throw new PortalError("No captcha address in that", "shape");
+  const res = await call(biz, found);
+  const type = res.headers.get("content-type") ?? "";
+  if (res.status !== 200 || !type.startsWith("image/")) {
+    throw new PortalError("e-Mandi did not give back a picture — sign in to e-Mandi first", "signed_out");
+  }
+  const bytes = Buffer.from(await res.arrayBuffer());
+  return { image: `data:${type};base64,${bytes.toString("base64")}`, url: BASE + found };
+}
+
 export interface StockLine {
   cropCode: string;
   crop: string;

@@ -99,6 +99,15 @@ const zero = await call("GET", "/emandi/rates?codes=2");
 check("a commodity the mandi has set no band for comes back as no band, not as a price",
   zero.rates[0].minRatePaise === 0 && zero.rates[0].maxRatePaise === 0 && zero.rates[0].error === null, zero.rates[0]);
 
+console.log("\nThe picture behind a captcha address");
+const shot = await call("POST", "/emandi/captcha", { text: '<img id="dntCaptchaImg" src="/DNTCaptchaImage/Show?data=abc123" />' });
+check("the app fetches it with its own session and hands back the bytes",
+  shot.image.startsWith("data:image/") && shot.image.includes(";base64,") && shot.image.length > 80, shot.image?.slice(0, 40));
+check("  ...and says which address it came from", shot.url.endsWith("/DNTCaptchaImage/Show?data=abc123"), shot.url);
+const notCaptcha = await raw("POST", "/emandi/captcha", { text: "/Traders/Dashboard" });
+check("  ...and will not fetch anything that is not the captcha image",
+  notCaptcha.status === 400 && /captcha address/i.test(notCaptcha.json?.error ?? ""), notCaptcha.json);
+
 console.log("\nWhat e-Mandi holds as this firm's stock");
 const st = await call("GET", "/emandi/stock");
 check("the stock register is read, commodity by commodity", st.lines.length === 2, st.lines.length);

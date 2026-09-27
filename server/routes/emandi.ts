@@ -4,7 +4,7 @@ import { audit } from "../lib/audit.ts";
 import { can, actor, bad, type Env } from "../lib/http.ts";
 import {
   accountOf, saveAccount, forgetAccount, statusOf, beginSignIn, finishSignIn, signOut,
-  rateBand, cropList, keptCrops, availableStock, PortalError,
+  rateBand, cropList, keptCrops, availableStock, captchaImage, PortalError,
 } from "../lib/emandi.ts";
 
 /* The mandi portal, as seen from Mandi Mitra. Each business has its own login
@@ -61,6 +61,19 @@ emandiRoutes.post("/signin/finish", can("dashboard.view"), async (c) => {
 emandiRoutes.post("/signout", can("dashboard.view"), (c) => {
   signOut(c.get("auth")!.businessId!);
   return c.json(statusOf(c.get("auth")!.businessId!));
+});
+
+/**
+ * The picture behind a captcha address, fetched with this firm's own session
+ * and handed back as bytes.
+ *
+ * A browser cannot fetch it: e-Mandi's cookies are SameSite=Lax, so they are
+ * not sent for an image another page asks for. The server holds the session,
+ * so it can — the same way the sign-in card gets its picture.
+ */
+emandiRoutes.post("/captcha", can("dashboard.view"), async (c) => {
+  const { text } = z.object({ text: z.string().min(1).max(20_000) }).parse(await c.req.json());
+  try { return c.json(await captchaImage(c.get("auth")!.businessId!, text)); } catch (e) { throw fail(e); }
 });
 
 /** What e-Mandi holds as this firm's own stock. Its licence, and no other's. */
