@@ -7,195 +7,167 @@
 <style>
   :root {
     --bg: #f7f7f5; --card: #fff; --ink: #1c1c1a; --muted: #5d5d57; --faint: #8a8a82;
-    --line: #e2e2dc; --brand: #1f7a4d; --warn: #8a5a00; --warnbg: #fdf6e3;
+    --line: #e2e2dc; --brand: #1f7a4d;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #17171a; --card: #202024; --ink: #ececea; --muted: #a9a9a2; --faint: #7c7c76;
-      --line: #32323a; --brand: #4cc38a; --warn: #e0b341; --warnbg: #2a2416;
+      --line: #32323a; --brand: #4cc38a;
     }
   }
   :root[data-theme="dark"] {
     --bg: #17171a; --card: #202024; --ink: #ececea; --muted: #a9a9a2; --faint: #7c7c76;
-    --line: #32323a; --brand: #4cc38a; --warn: #e0b341; --warnbg: #2a2416;
+    --line: #32323a; --brand: #4cc38a;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
-  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  p.sub { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
-  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-  textarea { width: 100%; min-height: 160px; padding: 10px; border: 1px solid var(--line); border-radius: 8px;
-             background: var(--bg); color: var(--ink); font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
-  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
-  button { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px;
-           padding: 8px 14px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 24px 16px 56px; }
+  h1 { font-size: 19px; margin: 0 0 16px; font-weight: 600; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  textarea { width: 100%; min-height: 150px; padding: 10px; border: 1px solid var(--line); border-radius: 8px;
+             background: var(--bg); color: var(--ink); resize: vertical;
+             font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  button { border: 1px solid var(--line); background: var(--card); color: var(--ink);
+           border-radius: 8px; padding: 8px 14px; font-size: 14px; font-weight: 600; cursor: pointer; }
   button.go { background: var(--brand); border-color: var(--brand); color: #fff; }
-  .shot { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
-  .shot img { height: 64px; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 4px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; width: 190px; }
+  #shot { display: none; text-align: center; padding: 18px 14px; }
+  #shot.on { display: block; }
+  #img { max-width: 100%; height: auto; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+  #board { display: none; }
+  #board.on { display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+  thead th { border-top: 0; color: var(--faint); font-size: 11px; text-transform: uppercase;
+             letter-spacing: .04em; font-weight: 600; }
+  tbody th { width: 34%; color: var(--muted); font-weight: 600;
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
   td { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
-  .note { background: var(--warnbg); border: 1px solid var(--line); border-left: 3px solid var(--warn);
-          border-radius: 8px; padding: 12px 14px; font-size: 13px; color: var(--ink); }
-  .faint { color: var(--faint); font-size: 12px; }
-  .bad { color: #b3261e; font-size: 13px; }
-  .why { background: var(--warnbg); border: 1px solid var(--line); border-left: 3px solid var(--warn);
-         border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 8px; }
+  td.empty { color: var(--faint); font-style: italic; font-family: inherit; }
+  a { color: var(--brand); }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>e-Mandi captcha viewer</h1>
-  <p class="sub">Paste what the portal answered and this page shows it. It only displays what you paste — it does not call e-Mandi, and it does not read the captcha for you.</p>
-  <div class="note" style="margin-bottom:16px">
-    <strong>About the picture.</strong> An address on e-Mandi will not load here:
-    its cookies are SameSite=Lax, so a browser sends them when you go to the
-    portal but not when another page asks for one of its images — signed in or
-    not. Open it on the portal with the button, or paste the picture as a
-    <code>data:image</code> URL. The token fields always read correctly from
-    what you paste.
-  </div>
 
   <div class="card">
-    <label for="in">Paste here — the whole &lt;div class="dntCaptcha"&gt;…&lt;/div&gt; block, a refresh reply, an image address, or a data:image URL</label>
-    <textarea id="in" spellcheck="false" placeholder='Any of these — the first is the useful one:
-
-<div class="dntCaptcha" id="dntCaptcha…"><img id="dntCaptchaImg" src="/DNTCaptchaImage/Show?data=…" /><a data-ajax-url="/DNTCaptchaImage/Refresh?data=…"></a><input id="DNTCaptchaText" value="…" /><input id="DNTCaptchaToken" value="…" />…</div>
-
-{"DNTCaptchaImgUrl":"/DNTCaptchaImage/Show?data=Abc123","DNTCaptchaId":"...","DNTCaptchaTextValue":"...","DNTCaptchaTokenValue":"..."}
-
-/DNTCaptchaImage/Show?data=Abc123
-
-data:image/png;base64,iVBORw0KGgo...'></textarea>
+    <textarea id="in" spellcheck="false" autofocus
+      placeholder="Paste the reply: the dntCaptcha div, a refresh reply, a JSON body, an image address, or a data:image URL"></textarea>
     <div class="row">
-      <button class="go" id="show">Show it</button>
+      <button class="go" id="show">Show</button>
       <button id="clear">Clear</button>
-      <span class="faint">Nothing leaves this page except loading the image itself.</span>
     </div>
-    <p id="err" class="bad" hidden></p>
   </div>
 
-  <div class="card" id="out" hidden>
-    <div class="shot">
-      <img id="img" alt="the captcha the portal sent" />
-      <div style="flex:1 1 260px">
-        <div class="why" id="why" hidden></div>
-        <div class="faint">What it says is for a person to read and type.</div>
-        <div class="faint" id="src"></div>
-        <div class="row" id="openRow" hidden>
-          <button id="open">Open this address in a new tab</button>
-          <span class="faint">Opens on e-Mandi itself, where your sign-in counts.</span>
-        </div>
-      </div>
-    </div>
-    <table id="fields"></table>
-  </div>
+  <div class="card" id="shot"><img id="img" alt="captcha" /></div>
 
-  <div class="note">
-    <strong>What this is for.</strong> Looking at a reply while working on the
-    portal side of Mandi Mitra — the image, and the token fields that have to go
-    back with it. Mandi Mitra itself shows the same image on screen and a person
-    types what it says; nothing in the app or on this page tries to read it.
-    <br /><br />
-    <strong>If the picture does not appear.</strong> The address in that block is
-    a path on e-Mandi, so this browser fetches it straight from the portal. It
-    only comes back as a picture if <em>this same browser</em> is signed in there
-    — otherwise the portal answers with its login page. And each captcha is good
-    for one sign-in and a few minutes: once it has been used or has gone stale,
-    that address stops giving a picture. Press refresh on the portal and paste
-    the new block.
+  <div class="card" id="board">
+    <table>
+      <thead><tr><th>Field</th><th>Value</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
   </div>
 </div>
 
 <script>
   const BASE = "https://emandi.up.gov.in";
   const $ = (id) => document.getElementById(id);
-  const fail = (m) => { $("err").textContent = m; $("err").hidden = false; $("out").hidden = true; };
-  /* The fields are worth seeing whether or not the picture loads, so a picture
-     that will not load says so in its own place and leaves the table alone. */
-  const noPicture = (m) => { $("img").hidden = true; $("why").hidden = false; $("why").textContent = m; };
+  const un = (v) => String(v).replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 
-  /* The whole <div class="dntCaptcha"> block, as the page or the refresh reply
-     sends it: the picture, the hidden fields that have to go back with what a
-     person types, the address of the refresh button, and the antiforgery token
-     its little script tacks on. */
-  function fromHtml(t) {
-    const un = (v) => v.replace(/&amp;/g, "&");
-    const img = t.match(/src\s*=\s*"([^"]*DNTCaptchaImage\/Show[^"]*)"/i)
-      || t.match(/\/DNTCaptchaImage\/Show\?[^"'\s<>]+/);
-    const path = img ? un(img[1] ?? img[0]) : null;
-    if (!path) return null;
+  /* Everything the paste carries, whatever shape it came in. */
+  function read(text) {
+    const t = text.trim();
     const fields = {};
+    let picture = null;   // bytes we can draw
+    let address = null;   // a path on e-Mandi, which only opens there
+
+    if (!t) return { fields, picture, address };
+
+    if (t.startsWith("data:image")) return { fields: { "image": "(the pasted data URL)" }, picture: t, address: null };
+    if (/^https?:\/\//i.test(t) || t.startsWith("/")) {
+      const url = t.startsWith("/") ? BASE + t : t;
+      return { fields: { "image URL": url }, picture: null, address: url };
+    }
+
+    let obj = null;
+    try { obj = JSON.parse(t); } catch { obj = null; }
+    if (obj && typeof obj === "object") {
+      const walk = (v, prefix) => {
+        if (v === null || typeof v !== "object") {
+          const s = v === null ? "" : String(v);
+          fields[prefix] = s;
+          if (s.startsWith("data:image")) picture = picture ?? s;
+          else if (/DNTCaptchaImage|\.png|\.jpe?g/i.test(s)) address = address ?? (s.startsWith("/") ? BASE + s : s);
+          return;
+        }
+        for (const [k, vv] of Object.entries(v)) walk(vv, prefix ? `${prefix}.${k}` : k);
+      };
+      walk(obj, "");
+      // a reply can carry html in one of its values
+      for (const v of Object.values(fields)) if (/<input|dntCaptcha/i.test(v)) Object.assign(fields, fromHtml(v).fields);
+      const h = Object.values(fields).find((v) => /<input|dntCaptcha/i.test(v));
+      if (h) { const inner = fromHtml(h); picture = picture ?? inner.picture; address = address ?? inner.address; }
+      return { fields, picture, address };
+    }
+
+    return fromHtml(t);
+  }
+
+  /* The dntCaptcha block, as the page or the refresh sends it. */
+  function fromHtml(t) {
+    const fields = {};
+    let picture = null, address = null;
+
     for (const m of t.matchAll(/<input\b[^>]*>/gi)) {
-      const tag = m[0];
-      const name = tag.match(/\bname\s*=\s*"([^"]*)"/i);
+      const name = m[0].match(/\bname\s*=\s*"([^"]*)"/i) || m[0].match(/\bid\s*=\s*"([^"]*)"/i);
       if (!name) continue;
-      const value = tag.match(/\bvalue\s*=\s*"([^"]*)"/i);
-      fields[name[1]] = value && value[1] ? un(value[1]) : "(empty — this is the box a person types in)";
+      const value = m[0].match(/\bvalue\s*=\s*"([^"]*)"/i);
+      fields[name[1]] = value ? un(value[1]) : "";
+    }
+    const img = t.match(/<img\b[^>]*\bsrc\s*=\s*"([^"]+)"/i);
+    const src = img ? un(img[1]) : (t.match(/\/DNTCaptchaImage\/Show\?[^"'\s<>]+/) || [])[0];
+    if (src) {
+      if (src.startsWith("data:image")) { picture = src; fields["image"] = "(inline in the paste)"; }
+      else { address = src.startsWith("/") ? BASE + un(src) : un(src); fields["image URL"] = address; }
     }
     const refresh = t.match(/data-ajax-url\s*=\s*"([^"]+)"/i);
-    if (refresh) fields["refresh URL"] = un(refresh[1]);
+    if (refresh) fields["refresh URL"] = (un(refresh[1]).startsWith("/") ? BASE : "") + un(refresh[1]);
     const verify = t.match(/__RequestVerificationToken=([A-Za-z0-9_\-]+)/);
-    if (verify) fields.__RequestVerificationToken = verify[1];
-    fields["image URL"] = path;
-    return { url: path.startsWith("http") ? path : BASE + path, fields };
+    if (verify) fields["__RequestVerificationToken"] = verify[1];
+    const div = t.match(/<div\b[^>]*\bid\s*=\s*['"](dntCaptcha[A-Za-z0-9]*)['"]/i);
+    if (div) fields["captcha div id"] = div[1];
+    return { fields, picture, address };
   }
 
-  function urlOf(text) {
-    const t = text.trim();
-    if (!t) return null;
-    if (t.startsWith("data:image")) return { url: t, fields: {} };
-    // a bare path or address
-    if (/^https?:\/\//i.test(t) || t.startsWith("/")) return { url: t.startsWith("/") ? BASE + t : t, fields: {} };
-    // a reply: pull out whichever field carries the image
-    let obj;
-    try { obj = JSON.parse(t); } catch { obj = null; }
-    if (!obj || typeof obj !== "object") return fromHtml(t);
-    const fields = {};
-    let url = null;
-    for (const [k, v] of Object.entries(obj)) {
-      if (typeof v !== "string" && typeof v !== "number") continue;
-      const s = String(v);
-      if (!url && (/img|image|url|src/i.test(k) || s.includes("DNTCaptchaImage"))) {
-        url = s.startsWith("data:") ? s : s.startsWith("/") ? BASE + s : s;
-      }
-      fields[k] = s;
-    }
-    return url ? { url: url.replace(/&amp;/g, "&"), fields } : null;
-  }
+  const esc = (v) => String(v).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
-  $("show").onclick = () => {
-    $("err").hidden = true;
-    const got = urlOf($("in").value);
-    if (!got) return fail("No image found in that. Paste the refresh reply, or the /DNTCaptchaImage/Show… path, or a data:image URL.");
-    const img = $("img");
-    img.onerror = () => noPicture(
-      got.url.startsWith("data:")
-        ? "Those base64 bytes are not an image the browser can read — usually the paste was cut short. Copy the whole value, from data:image right to the end."
-        : "The picture cannot be fetched from here, and it is not your sign-in that is at fault. "
-          + "e-Mandi's cookies are SameSite=Lax: a browser sends them when you go to the portal, but not when another page asks for one of its images. "
-          + "So this page gets the login page back instead of the picture, even in a browser that is signed in. "
-          + "Use the button below to open the address on e-Mandi itself, or paste the picture as a data:image URL — those always show here. "
-          + "(A captcha is also good for one sign-in only, for a few minutes.) "
-          + "Every field below is read from what you pasted and is right either way.");
-    img.onload = () => { $("img").hidden = false; $("why").hidden = true; };
-    $("img").hidden = false; $("why").hidden = true;
-    $("openRow").hidden = got.url.startsWith("data:");
-    $("open").onclick = () => window.open(got.url, "_blank", "noopener");
-    img.src = got.url;
-    $("src").textContent = got.url.startsWith("data:") ? "from the pasted data URL" : got.url;
+  function paint(got) {
     const rows = Object.entries(got.fields);
-    $("fields").innerHTML = rows.length
-      ? "<tr><th>Field</th><th>Value</th></tr>" + rows.map(([k, v]) =>
-          `<tr><th>${k.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</th><td>${
-            v.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</td></tr>`).join("")
-      : "";
-    $("out").hidden = false;
-  };
-  $("clear").onclick = () => { $("in").value = ""; $("out").hidden = true; $("err").hidden = true; };
+    $("rows").innerHTML = rows.map(([k, v]) => {
+      const isUrl = /^https?:\/\//i.test(v);
+      const cell = v === ""
+        ? '<td class="empty">empty</td>'
+        : isUrl ? `<td><a href="${esc(v)}" target="_blank" rel="noopener">${esc(v)}</a></td>`
+        : `<td>${esc(v)}</td>`;
+      return `<tr><th>${esc(k)}</th>${cell}</tr>`;
+    }).join("");
+    $("board").classList.toggle("on", rows.length > 0);
+
+    $("shot").classList.remove("on");
+    if (got.picture) {
+      $("img").onload = () => $("shot").classList.add("on");
+      $("img").onerror = () => $("shot").classList.remove("on");
+      $("img").src = got.picture;
+    } else {
+      $("img").removeAttribute("src");
+    }
+  }
+
+  $("show").onclick = () => paint(read($("in").value));
+  $("clear").onclick = () => { $("in").value = ""; $("board").classList.remove("on"); $("shot").classList.remove("on"); };
+  $("in").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("show").click(); });
 </script>
 </body>
 </html>
