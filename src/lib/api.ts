@@ -80,7 +80,10 @@ export interface Merchant {
   id: string; code: string; name: string; nameHi: string | null; nameHinglish: string | null;
   addressLine1: string | null; addressLine2: string | null; city: string | null;
   state: string | null; pincode: string | null; contactPerson: string | null;
-  phone: string | null; gstin: string | null; active: boolean;
+  phone: string | null; gstin: string | null;
+  /** The mill's own mandi licence — the buyer's licence on a 6R and a 9R. */
+  mandiLicense: string | null;
+  active: boolean;
   chargeConfig: ChargeConfig;
   /** What the mill owed us before the app started; positive = it owes us. */
   openingBalancePaise: number;

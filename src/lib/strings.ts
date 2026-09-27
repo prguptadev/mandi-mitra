@@ -715,6 +715,7 @@ export const STRINGS = {
     "portal.stockNote": "Stock is what e-Mandi holds for this firm's own licence, in quintals — it covers {n} commodity(s) there, and only this firm's.", "portal.stockNone": "e-Mandi holds no stock on this firm's licence just now.",
     "portal.stockIn": "Stock in", "portal.stockOut": "Stock out", "portal.stockLeft": "Stock left", "portal.subStock": "The rate e-Mandi allows for a commodity today, and the stock it holds on this firm's licence",
     "portal.stockWindow": "Stock is e-Mandi's own register for this firm's licence, in quintals, for {from} to {to} — the last month, counted back from today each time.",
+    "merchant.mandiLicense": "Mandi licence", "merchant.mandiLicenseHint": "The mill's own licence on e-Mandi. It is the buyer's licence on a 6R and a 9R.",
   },
 
   hi: {
@@ -1434,6 +1435,7 @@ export const STRINGS = {
     "portal.stockNote": "स्टॉक वही है जो e-Mandi इस फर्म के अपने लाइसेंस पर रखता है, क्विंटल में — वहाँ {n} जिंस पर, और सिर्फ़ इसी फर्म का।", "portal.stockNone": "अभी इस फर्म के लाइसेंस पर e-Mandi के पास कोई स्टॉक नहीं है।",
     "portal.stockIn": "स्टॉक आवक", "portal.stockOut": "स्टॉक जावक", "portal.stockLeft": "स्टॉक उपलब्ध", "portal.subStock": "e-Mandi आज जिस दर की अनुमति देता है, और इस फर्म के लाइसेंस पर उसके पास जो स्टॉक है",
     "portal.stockWindow": "स्टॉक e-Mandi का अपना रजिस्टर है, इस फर्म के लाइसेंस पर, क्विंटल में, {from} से {to} तक — पिछला एक महीना, हर बार आज से पीछे गिनकर।",
+    "merchant.mandiLicense": "मंडी लाइसेंस", "merchant.mandiLicenseHint": "e-Mandi पर मिल का अपना लाइसेंस। 6R और 9R पर यही क्रेता का लाइसेंस होता है।",
   },
 } as const;
 

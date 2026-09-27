@@ -25,6 +25,8 @@ const Body = z.object({
   contactPerson: z.string().trim().optional(),
   phone: z.string().trim().optional(),
   gstin: z.string().trim().optional(),
+  /** The mill's own mandi licence, the buyer's licence on a 6R and a 9R. */
+  mandiLicense: z.string().trim().max(60).optional(),
   chargeConfig: ChargeConfigSchema.optional(),
   /** What the mill owed us before the app started; positive = the mill owes us. */
   openingBalanceRupees: z.number().finite().min(-1e10).max(1e10).optional(),
@@ -74,6 +76,7 @@ merchantRoutes.post("/", can("merchant.write"), async (c) => {
     city: body.city || null, state: body.state || null, pincode: body.pincode || null,
     contactPerson: body.contactPerson || null, phone: body.phone || null,
     gstin: body.gstin || null,
+    mandiLicense: body.mandiLicense?.toUpperCase() || null,
     chargeConfig: JSON.stringify(cfg),
     openingBalancePaise: Math.round((body.openingBalanceRupees ?? 0) * 100),
     active: body.active ?? true,
@@ -94,8 +97,11 @@ merchantRoutes.put("/:id", can("merchant.write"), async (c) => {
 
   const patch: Record<string, unknown> = { updatedAt: nowSec() };
   if (body.code) patch.code = body.code.toUpperCase();
-  for (const k of ["name", "nameHi", "nameHinglish", "addressLine1", "addressLine2", "city", "state", "pincode", "contactPerson", "phone", "gstin"] as const) {
-    if (body[k] !== undefined) patch[k] = (k === "nameHinglish" ? body[k]?.trim().toUpperCase() : body[k]) || null;
+  for (const k of ["name", "nameHi", "nameHinglish", "addressLine1", "addressLine2", "city", "state", "pincode", "contactPerson", "phone", "gstin", "mandiLicense"] as const) {
+    if (body[k] !== undefined) {
+      const v = k === "nameHinglish" || k === "mandiLicense" ? body[k]?.trim().toUpperCase() : body[k];
+      patch[k] = v || null;
+    }
   }
   if (body.active !== undefined) patch.active = body.active;
   if (body.openingBalanceRupees !== undefined) patch.openingBalancePaise = Math.round(body.openingBalanceRupees * 100);

@@ -1,0 +1,1 @@
+ALTER TABLE `merchants` ADD `mandi_license` text;

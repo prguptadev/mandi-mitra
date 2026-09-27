@@ -242,7 +242,7 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
     addressLine1: editing?.addressLine1 ?? "", addressLine2: editing?.addressLine2 ?? "",
     city: editing?.city ?? "", state: editing?.state ?? "", pincode: editing?.pincode ?? "",
     contactPerson: editing?.contactPerson ?? "", phone: editing?.phone ?? "",
-    gstin: editing?.gstin ?? "", active: editing?.active ?? true,
+    gstin: editing?.gstin ?? "", mandiLicense: editing?.mandiLicense ?? "", active: editing?.active ?? true,
     openingBalance: editing ? (editing.openingBalancePaise ?? 0) / 100 : null as number | null,
   }));
   const [cfg, setCfg] = useState<ChargeConfig | null>(editing?.chargeConfig ?? null);
@@ -319,6 +319,10 @@ function MillDialog({ open, onClose, editing }: { open: boolean; onClose: () => 
             </Field>
             <Field label={t("biz.gstin")}>
               <Input value={f.gstin} onChange={(e) => setF((p) => ({ ...p, gstin: e.target.value.toUpperCase() }))} mono className="uppercase" />
+            </Field>
+            <Field label={t("merchant.mandiLicense")} hint={t("merchant.mandiLicenseHint")}>
+              <Input value={f.mandiLicense} mono placeholder="L/2016/75/17121983"
+                onChange={(e) => setF((p) => ({ ...p, mandiLicense: e.target.value.toUpperCase() }))} className="uppercase" />
             </Field>
             <Field label={t("merchant.contactPerson")}>
               <Input value={f.contactPerson} onChange={(e) => setF((p) => ({ ...p, contactPerson: e.target.value }))} />
@@ -571,6 +575,7 @@ export function MillsPage() {
                 <Th className="w-20" {...sort.th("code")}>{t("merchant.code")}</Th>
                 <Th {...sort.th("name")}>{t("merchant.name")}</Th>
                 <Th {...sort.th("city")}>{t("biz.city")}</Th>
+                <Th>{t("merchant.mandiLicense")}</Th>
                 <Th numeric {...sort.th("adat")}>{t("merchant.adat")}</Th>
                 <Th numeric {...sort.th("mandiTax")}>{t("merchant.mandiTax")}</Th>
                 <Th numeric {...sort.th("commission")}>{t("merchant.commission")}</Th>
@@ -588,6 +593,7 @@ export function MillsPage() {
                     {m.contactPerson && <p className="text-[11px] text-faint">{m.contactPerson}</p>}
                   </Td>
                   <Td className="text-muted">{m.city}</Td>
+                  <Td>{m.mandiLicense ? <span className="num text-[12px] text-muted">{m.mandiLicense}</span> : <span className="text-faint">—</span>}</Td>
                   <Td numeric>{m.chargeConfig.adat.enabled ? `${m.chargeConfig.adat.pct}%` : <span className="text-faint">—</span>}</Td>
                   <Td numeric>{m.chargeConfig.mandiTax.enabled ? `${m.chargeConfig.mandiTax.pct}%` : <span className="text-faint">—</span>}</Td>
                   <Td numeric>{m.chargeConfig.commission.enabled ? `${m.chargeConfig.commission.pct}%` : <span className="text-faint">—</span>}</Td>

@@ -170,6 +170,19 @@ check("dashboard's to-receive agrees", dash.kpis.toReceivePaise === mlist.totals
 const dLb = dash.mills.find((m: any) => m.merchantId === lb.id);
 check("L.B's card shows what it owes", dLb.owedPaise === mlist.rows.find((r: any) => r.id === lb.id).balancePaise, dLb.owedPaise);
 
+/* The mill's own mandi licence: the buyer's licence on a 6R and a 9R, so it
+   belongs on the mill and not typed again per voucher. */
+await call("PUT", `/merchants/${lb.id}`, { mandiLicense: " l/2016/75/17121983 " });
+const withLic = (await call("GET", "/merchants")).find((m: any) => m.id === lb.id);
+check("a mill keeps its mandi licence, trimmed and in capitals",
+  withLic.mandiLicense === "L/2016/75/17121983", withLic.mandiLicense);
+const madeWithLic = await call("POST", "/merchants", { code: "LICM", name: "Licence Mill", mandiLicense: "L/2016/75/99887766" });
+check("  ...and a new mill can be added with one", (await call("GET", `/merchants/${madeWithLic.id}`)).mandiLicense === "L/2016/75/99887766");
+await call("PUT", `/merchants/${lb.id}`, { mandiLicense: "" });
+check("  ...and clearing it leaves nothing behind",
+  (await call("GET", `/merchants/${lb.id}`)).mandiLicense === null, (await call("GET", `/merchants/${lb.id}`)).mandiLicense);
+await call("PUT", `/merchants/${lb.id}`, { mandiLicense: "L/2016/75/17121983" });
+
 const del = await call("DELETE", `/merchants/${lb.id}`);
 check("a mill with receipts is made inactive, never deleted", del.deactivated === true);
 await call("PUT", `/merchants/${lb.id}`, { active: true });

@@ -213,6 +213,10 @@ export const merchants = sqliteTable(
     contactPerson: text("contact_person"),
     phone: text("phone"),
     gstin: text("gstin"),
+    /** The mill's own mandi licence, as e-Mandi prints it: L/2016/75/17121983.
+        It is the buyer's licence on a 6R and on a 9R, so the forms can be
+        filled from the mill master instead of being looked up each time. */
+    mandiLicense: text("mandi_license"),
     /** JSON blob validated by ChargeConfig zod schema in server/lib/charges.ts */
     chargeConfig: text("charge_config").notNull(),
     /** What this mill owed us before the app started. Positive = the mill owes us (लेना). */
