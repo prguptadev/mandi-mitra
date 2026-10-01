@@ -86,9 +86,11 @@ export function ChallanPage() {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["challan"] }), qc.invalidateQueries({ queryKey: ["mill-ledger"] }),
         qc.invalidateQueries({ queryKey: ["parchas"] }), qc.invalidateQueries({ queryKey: ["dashboard"] }),
+        qc.invalidateQueries({ queryKey: ["mill-followup"] }),
       ]);
     },
-    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+    // refused (a closed day, a cut too big): say why, and put the boxes back to what is saved
+    onError: (e) => { setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")); setUndo((n) => n + 1); },
   });
   const rows = list.data?.rows ?? [];
   const s = useSort(rows, {
@@ -209,7 +211,7 @@ export function ChallanPage() {
                       ) : r.deductionGrams ? f.weight(r.deductionGrams) : "—"}
                     </Td>
                     <Td>
-                      {editable ? <NoteCell value={r.deductionNote ?? ""} onCommit={(v) => save.mutate({ loadId: r.loadId, deductionGrams: r.deductionGrams, note: v || null })} />
+                      {editable ? <NoteCell key={`${r.loadId}-${undo}`} value={r.deductionNote ?? ""} onCommit={(v) => save.mutate({ loadId: r.loadId, deductionGrams: r.deductionGrams, note: v || null })} />
                         : <span className="text-[12px] text-muted">{r.deductionNote ?? ""}</span>}
                     </Td>
                     <Td numeric className={cn("font-semibold", r.deductionGrams > 0 && "text-warn")}>{f.weight(r.finalNetGrams)}</Td>
