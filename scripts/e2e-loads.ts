@@ -244,12 +244,26 @@ const bought = q(331.05) + q(19.80) + q(9.90);
 const loaded = q(310.74) + q(25) + q(24.73);
 check("L.B bought = the sum of its slips", lbStock.boughtNet === bought, lbStock.boughtNet);
 check("L.B loaded = the sum of the truck rows", lbStock.loadedNet === loaded, lbStock.loadedNet);
-check("left = bought − loaded (can be negative)", lbStock.stockNet === bought - loaded, lbStock.stockNet);
+check("left = at start + bought − loaded (can be negative)", lbStock.stockNet === lbStock.openingNet + bought - loaded, lbStock);
 const days = await call("GET", `/stock/${lb.id}?jinsId=${j1509.id}&from=${DAY1}&to=${DAY2}`);
 const d1 = days.days.find((d: any) => d.date === DAY1);
 check(`${DAY1}: 331.05 − 310.74 − 25.00 = −4.69`, d1.stockNet === -q(4.69), d1.stockNet);
 check(`${DAY1}: both trucks are named`, d1.trucks.length === 2, d1.trucks.map((x: any) => x.truckNo));
-check("days add up to the mill total", days.totals.stockNet === lbStock.stockNet, days.totals.stockNet);
+check("the day table ends at the list's stock in hand", days.totals.closingNet === lbStock.stockNet && days.days[0].runningNet === lbStock.stockNet, days.totals);
+// as at DAY1 the DAY2 truck has not loaded yet: its 25.00 qtl from DAY1 is not off the stock on any screen
+const asAt = (await call("GET", `/stock?jinsId=${j1509.id}&to=${DAY1}`)).find((s: any) => s.merchantId === lb.id);
+const asAtCard = (await call("GET", `/dashboard/mill/${lb.id}?jinsId=${j1509.id}&to=${DAY1}`)).summary;
+const asAtDays = await call("GET", `/stock/${lb.id}?jinsId=${j1509.id}&to=${DAY1}`);
+check(`as at ${DAY1}: the list, the mill's card and the day table say the same stock in hand`,
+  asAt.stockNet === asAtCard.leftGrams && asAtDays.totals.closingNet === asAt.stockNet, { list: asAt.stockNet, card: asAtCard.leftGrams, days: asAtDays.totals.closingNet });
+check(`as at ${DAY1}: ${DAY1}'s own line counts only the truck loaded by then (20.31 left)`,
+  asAtDays.days.find((d: any) => d.date === DAY1).stockNet === q(20.31), asAtDays.days.find((d: any) => d.date === DAY1));
+// every mill together: the stock list's total is the dashboard's "stock left", as at a day and for a period
+for (const qs of [`to=${DAY1}`, `from=${DAY2}&to=${DAY2}`]) {
+  const listed = (await call("GET", `/stock?${qs}`)).filter((s: any) => s.merchantId).reduce((t: number, s: any) => t + s.stockNet, 0);
+  const dashLeft = (await call("GET", `/dashboard?${qs}`)).kpis.leftGrams;
+  check(`${qs}: the stock list adds up to the dashboard's stock left`, listed === dashLeft, { list: listed, dashboard: dashLeft });
+}
 const orders = await call("GET", "/orders");
 const mypo = orders.find((o: any) => o.id === po.id);
 check("the PO counts the mill's 310.74 qtl", mypo.sentGrams === q(310.74), mypo.sentGrams);

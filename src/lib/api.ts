@@ -315,8 +315,13 @@ export interface StockDay {
 export interface StockRow {
   millNameHi?: string | null;
   merchantId: string | null; millCode: string | null; millName: string | null;
+  /** In hand when the period starts (0 with no from date). */
+  openingNet: number;
   slips: number; boughtNet: number; boughtAmount: number; avgRatePaisePerQtl: number;
-  loadedNet: number; trucks: number; stockNet: number;
+  /** On trucks loaded in the period (by the truck's own date). */
+  loadedNet: number; trucks: number;
+  /** In hand at the period's end: opening + bought − loaded. */
+  stockNet: number;
 }
 
 export interface StockMillDay {

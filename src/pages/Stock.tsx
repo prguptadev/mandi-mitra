@@ -55,7 +55,7 @@ function Filters({ s }: { s: ReturnType<typeof useStockFilters> }) {
       <Field label={t("load.to")} className="w-40">
         <Input type="date" value={s.to} onChange={(e) => s.setTo(e.target.value)} className="h-8 text-[13px]" />
       </Field>
-      <p className="pb-1.5 text-[12px] text-faint">{s.from || s.to ? t("stock.rangeNote") : t("stock.allTime")}</p>
+      <p className="pb-1.5 text-[12px] text-faint">{s.from || s.to ? t("stock.rangeNoteEnd") : t("stock.allTime")}</p>
     </div>
   );
 }
@@ -80,10 +80,13 @@ export function StockPage() {
   // slips with no mill are in no mill's stock: shown as their own row, left out of the total
   const milled = rows.filter((r) => r.merchantId);
   const total = {
+    opening: milled.reduce((x, r) => x + r.openingNet, 0),
     bought: milled.reduce((x, r) => x + r.boughtNet, 0),
     loaded: milled.reduce((x, r) => x + r.loadedNet, 0),
     left: milled.reduce((x, r) => x + r.stockNet, 0),
   };
+  // with a from date the stock already in hand that morning is a column of its own, so each row re-adds
+  const withOpening = Boolean(s.from);
 
   return (
     <div>
@@ -105,7 +108,7 @@ export function StockPage() {
                 <div className="grid grid-cols-3 gap-2 text-[12px]">
                   <div><p className="text-faint">{t("dash.received")}</p><p className="num text-[15px] font-semibold">{f.weight(r.boughtNet)}</p><p className="text-faint">{r.slips} {t("ledger.slips")}</p></div>
                   <div><p className="text-faint">{t("dash.loaded")}</p><p className="num text-[15px] font-semibold">{f.weight(r.loadedNet)}</p><p className="text-faint">{r.trucks} {t("stock.trucks")}</p></div>
-                  <div><p className="text-faint">{t("dash.left")}</p><p className={cn("num text-[15px] font-semibold", r.stockNet < 0 && "text-bad")}>{f.weight(r.stockNet)}</p><p className="text-faint">{f.unit}</p></div>
+                  <div><p className="text-faint">{t("dash.left")}</p><p className={cn("num text-[15px] font-semibold", r.stockNet < 0 && "text-bad")}>{f.weight(r.stockNet)}</p><p className="text-faint">{withOpening ? `${t("stock.atStart")} ${f.weight(r.openingNet)}` : f.unit}</p></div>
                 </div>
                 <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-raised" title={t("stock.loadedShare", { p: Math.round(pct) })}>
                   <div className={cn("h-full rounded-full", r.stockNet < 0 ? "bg-bad" : "bg-brand")} style={{ width: `${pct}%` }} />
@@ -132,7 +135,9 @@ export function StockPage() {
           <Table>
             <thead>
               <tr>
-                <Th {...sort.th("mill")}>{t("load.mill")}</Th><Th numeric {...sort.th("slips")}>{t("load.slips")}</Th>
+                <Th {...sort.th("mill")}>{t("load.mill")}</Th>
+                {withOpening && <Th numeric>{t("stock.atStart")}</Th>}
+                <Th numeric {...sort.th("slips")}>{t("load.slips")}</Th>
                 <Th numeric {...sort.th("bought")}>{t("stock.bought")}</Th><Th numeric {...sort.th("avg")}>{t("stock.avgRate")}</Th>
                 <Th numeric {...sort.th("loaded")}>{t("stock.onTrucks")}</Th><Th numeric {...sort.th("trucks")}>{t("stock.trucks")}</Th>
                 <Th numeric {...sort.th("left")}>{t("stock.left")}</Th><Th className="w-8" />
@@ -147,6 +152,7 @@ export function StockPage() {
                       {r.millCode ? <><Badge tone="brand" className="num">{r.millCode}</Badge> <span className="text-muted">{pick(r.millName, r.millNameHi)}</span></>
                         : <OwnFirm withName />}
                     </Td>
+                    {withOpening && <Td numeric className="text-muted">{f.weight(r.openingNet)}</Td>}
                     <Td numeric>{r.slips}</Td>
                     <Td numeric>{f.weight(r.boughtNet)}</Td>
                     <Td numeric>{r.avgRatePaisePerQtl ? f.rate(r.avgRatePaisePerQtl) : "—"}</Td>
@@ -160,7 +166,9 @@ export function StockPage() {
             </tbody>
             <tfoot>
               <tr className="bg-raised/50 text-[13px] font-semibold">
-                <td className="px-3 py-2" colSpan={2}>{t("load.total")}</td>
+                <td className="px-3 py-2">{t("load.total")}</td>
+                {withOpening && <td className="num px-3 py-2 text-right">{f.weight(total.opening)}</td>}
+                <td />
                 <td className="num px-3 py-2 text-right">{f.weight(total.bought)}</td>
                 <td />
                 <td className="num px-3 py-2 text-right">{f.weight(total.loaded)}</td>
@@ -218,7 +226,7 @@ export function MillAccountPage({ id }: { id: string }) {
   const [receiving, setReceiving] = useState(false);
   const days = useQuery({
     queryKey: ["stock", id, s.qs.toString()],
-    queryFn: () => api.get<{ days: StockMillDay[]; totals: { slips: number; boughtNet: number; loadedNet: number; stockNet: number } }>(`/stock/${id}?${s.qs}`),
+    queryFn: () => api.get<{ days: StockMillDay[]; totals: { slips: number; boughtNet: number; loadedNet: number; stockNet: number; openingNet: number; closingNet: number } }>(`/stock/${id}?${s.qs}`),
   });
 
   const dara = async (date: string) => {
@@ -364,9 +372,10 @@ export function MillAccountPage({ id }: { id: string }) {
 
       <Card className="mt-5">
         <CardHeader title={t("stock.byDay")}
-          sub={days.data ? t("stock.proof", {
-            bought: f.weight(days.data.totals.boughtNet), loaded: f.weight(days.data.totals.loadedNet), left: f.weight(days.data.totals.stockNet),
-          }) : undefined} />
+          sub={days.data ? <>
+            {t("stock.proofDays", { bought: f.weight(days.data.totals.boughtNet), loaded: f.weight(days.data.totals.loadedNet), left: f.weight(days.data.totals.stockNet) })}
+            <span className="block">{t("stock.inHandEnd", { q: f.weight(days.data.totals.closingNet) })}</span>
+          </> : undefined} />
         {days.isPending ? <SkeletonTable rows={5} /> : days.isError ? <LoadError error={days.error} onRetry={() => void days.refetch()} /> : !days.data?.days.length ? (
           <EmptyState title={t("stock.noDays")} />
         ) : (
@@ -377,7 +386,7 @@ export function MillAccountPage({ id }: { id: string }) {
                 <Th numeric {...daySort.th("bought")}>{t("stock.bought")}</Th>
                 <Th numeric {...daySort.th("avg")} title={!s.jinsId ? t("stock.pickJinsForDara") : undefined}>{t("stock.dayAvg")}</Th><Th>{t("stock.trucksThatDay")}</Th>
                 <Th numeric {...daySort.th("loaded")}>{t("stock.onTrucks")}</Th>
-                <Th numeric {...daySort.th("left")}>{t("stock.leftThatDay")}</Th><Th numeric {...daySort.th("running")}>{t("stock.running")}</Th><Th />
+                <Th numeric {...daySort.th("left")} title={t("stock.leftOfDayHint")}>{t("stock.leftOfDay")}</Th><Th numeric {...daySort.th("running")} title={t("stock.runningHint")}>{t("stock.running")}</Th><Th />
               </tr>
             </thead>
             <tbody>
@@ -426,7 +435,9 @@ export function MillAccountPage({ id }: { id: string }) {
                 <td colSpan={2} />
                 <td className="num px-3 py-2 text-right">{f.weight(days.data.totals.loadedNet)}</td>
                 <td className={cn("num px-3 py-2 text-right", days.data.totals.stockNet < 0 && "text-bad")}>{f.weight(days.data.totals.stockNet)}</td>
-                <td colSpan={2} />
+                {/* the running column ends at what is in hand on the last day, the card's figure */}
+                <td className={cn("num px-3 py-2 text-right text-muted", days.data.totals.closingNet < 0 && "text-bad")} title={t("stock.runningHint")}>{f.weight(days.data.totals.closingNet)}</td>
+                <td />
               </tr>
             </tfoot>
           </Table>
