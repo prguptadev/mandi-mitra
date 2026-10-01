@@ -338,7 +338,6 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
               </Button>
             </>
           )}
-          <span className="hidden min-w-0 truncate text-[11px] text-faint 2xl:inline">{t("scan.keysHelp")}</span>
           <span className="flex-1" />
           {toCheck.length + openChecks.length > 0 && (
             <div className="inline-flex overflow-hidden rounded-md border border-line">

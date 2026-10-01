@@ -479,6 +479,15 @@ console.log("\nA two-page sheet, read page by page");
   check("  ...the question about the cut answer is gone", again.pageChecks.some((p: any) => p.code === "page_cut"), false);
   check("  ...the total at its foot proves its lines", again.pageChecks.some((p: any) => p.page === 2 && ["page_count", "page_total"].includes(p.code)), false);
   check("  ...and a screen holding the sheet from before must load it again", again.rev !== before.rev, true);
+  // read again once more, and this time the answer is cut short with fewer lines: the page keeps what it had
+  await call("POST", `/scans/${id3}/run`, { page: 2, model: "gemini-test-pages" });
+  let shorter: any = null;
+  for (let i = 0; i < 120; i++) {
+    shorter = await call("GET", `/scans/${id3}`);
+    if (shorter.status !== "reading" && !shorter.running) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  check("a page read again and cut shorter keeps its lines", [shorter.rows.filter((r: any) => r.page === 2).length, shorter.rev === again.rev], [3, true]);
   const z = again.rows.find((r: any) => r.ocr.srNo === 6);
   check("a rate written so it reads 35Z1 is red, showing what was written", [z.ratePaisePerQtl, z.ocr.unreadable?.rate, z.blocking], [null, "35Z1", true]);
   const putOff = await call("PUT", `/scans/${id3}/rows`, { rows: again.rows.map((r: any) => r.id === z.id ? { ...r, confirmed: ["rate"] } : r), rev: again.rev });
@@ -492,8 +501,14 @@ console.log("\nA two-page sheet, read page by page");
   // the "are you sure" box was built from an older version: what it showed is not what would be written
   const staleAdd = await fetch(`${BASE}/scans/${id3}/commit`, { method: "POST", headers: { "Content-Type": "application/json", cookie }, body: JSON.stringify({ rev: "0000000000000000" }) });
   check("adding from an older copy of the sheet is refused", [staleAdd.status, ((await staleAdd.json()) as { code?: string }).code], [409, "stale_rows"]);
-  const res3 = await call("POST", `/scans/${id3}/commit`, { rev: ready.rev });
+  // the same sheet added from two screens at the same moment: its slips are written once
+  const addOnce = () => fetch(`${BASE}/scans/${id3}/commit`, { method: "POST", headers: { "Content-Type": "application/json", cookie }, body: JSON.stringify({ rev: ready.rev }) });
+  const both = await Promise.all([addOnce(), addOnce()]);
+  const answers = await Promise.all(both.map(async (r) => ({ status: r.status, json: await r.json() as { created?: number; code?: string } })));
+  check("two Adds at once: one adds, the other is refused", answers.map((a) => a.status).sort(), [200, 409]);
+  const res3 = answers.find((a) => a.status === 200)!.json as { created: number; approvedParchas?: unknown[] };
   check("six slips added", res3.created, 6);
+  check("  ...and written only once", (sqlite.prepare("select count(*) as n from purchase_slips where scan_batch_id = ?").get(id3) as { n: number }).n, 6);
   check("the answer says which approved parchas no longer match (none)", res3.approvedParchas, []);
   const slips3 = sqlite.prepare("select id, gross_grams as g, rst_no as rst from purchase_slips where scan_batch_id = ?").all(id3) as { id: string; g: number; rst: string }[];
   check("every slip is in whole kilograms", slips3.every((x) => x.g % 1000 === 0), true);
@@ -501,6 +516,8 @@ console.log("\nA two-page sheet, read page by page");
   check("each slip has its own entry in the audit trail", audited.n, 6);
   const late = await fetch(`${BASE}/scans/${id3}/rows`, { method: "PUT", headers: { "Content-Type": "application/json", cookie }, body: JSON.stringify({ rows: ready.rows }) });
   check("a save that arrives after the sheet is added is refused", late.status, 409);
+  const added = await call("GET", `/scans/${id3}`);
+  check("the added sheet is not flagged against its own slips", added.rows.filter((r: any) => r.issues.some((i: any) => i.code === "rst_exists")).length, 0);
 
   sqlite.prepare("delete from purchase_slips where scan_batch_id = ?").run(id3);
   sqlite.prepare("delete from scan_batches where id = ?").run(id3);
@@ -617,6 +634,32 @@ console.log("\nA rate unlike the day's other rates");
   const seen = await call("PUT", `/scans/${id5}/rows`, { rows: s5.rows.map((r: any) => r.id === odd.id ? { ...r, confirmed: ["rate"] } : r), rev: s5.rev });
   check("  ...✓ 'right as read' clears it", seen.rows.find((r: any) => r.id === odd.id).issues.some((i: any) => i.code === "rate_day"), false);
   await call("DELETE", `/scans/${id5}`);
+}
+
+/* A line read as crossed out, put back in by the munshi, with a name not in
+   the master: "All right as read" on that line ticks "it really belongs" too,
+   so the line can be added. */
+console.log("\nA crossed-out line put back in");
+{
+  const { lineState } = await import("../src/components/ScanGrid.tsx");
+  const { STRINGS } = await import("../src/lib/strings.ts");
+  const tr = ((k: string) => (STRINGS.en as Record<string, string>)[k] ?? k) as never;
+  const fd6 = new FormData();
+  fd6.append("files", new File([PNG], "struck.png", { type: "image/png" }));
+  fd6.append("slipDate", "2026-09-27");
+  fd6.append("jinsId", j1509.id);
+  const { id: id6 } = await (await fetch(`${BASE}/scans`, { method: "POST", body: fd6, headers: { cookie } })).json() as { id: string };
+  const back = { id: "r0", page: 1, ocr: { rstNo: "961", adatiName: "कल्लू पहलवान", grossQtl: 20, katauti: 20, netQtl: 19.8, rate: 3400, confidence: 0.95, struckThrough: true, srNo: 1 },
+    rstNo: "961", adatiId: null, adatiRawText: "कल्लू पहलवान", grossGrams: 2_000_000, katautiOverride: null, ratePaisePerQtl: 340_000, excluded: false, nameCorrected: false, modelPick: null, confirmed: [] };
+  sqlite.prepare("update scan_batches set parsed_rows = ?, page_meta = ?, status = 'review', model = 'simulated', pages_done = 1 where id = ?")
+    .run(JSON.stringify([back]), JSON.stringify([{ page: 1, date: "27-09-2026", millName: null, jins: null, total: 19.8 }]), id6);
+  const s6 = await call("GET", `/scans/${id6}`);
+  const st = lineState(s6.rows[0], tr);
+  const keys = [...new Set(st.flags.filter((x) => x.flag.confirmable).map((x) => x.flag.key ?? x.field))];
+  check("the line asks first whether it really belongs", keys.includes("struck"), true);
+  const ticked = await call("PUT", `/scans/${id6}/rows`, { rows: s6.rows.map((r: any) => ({ ...r, confirmed: keys })), rev: s6.rev });
+  check("  ...'All right as read' lets it be added", ticked.rows[0].blocking, false);
+  await call("DELETE", `/scans/${id6}`);
 }
 
 console.log(bad === 0 ? "\nOCR review pipeline works end to end." : `\n${bad} FAILED`);

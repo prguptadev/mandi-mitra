@@ -729,6 +729,12 @@ async function performRead(opts: {
       await keepAsWas("no line was read on it.");
       return;
     }
+    // cut short again, with fewer lines than the page has: the lines read before (and the changes on them) stay
+    if (only && result.truncated && result.page && result.page.rows.length < before.filter((r) => (r.page ?? 1) === only).length) {
+      await db.update(schema.scanBatches).set({ tokensIn, tokensOut }).where(eq(schema.scanBatches.id, id));
+      await keepAsWas("its new answer was cut short too, with fewer lines.");
+      return;
+    }
 
     if (result.quota) {
       // keep what was read; "Read again" resumes from this page instead of page 1
@@ -817,9 +823,11 @@ async function performRead(opts: {
     return;
   }
 
+  /* Which model read which page is for the audit trail, not the munshi: a
+     cut answer is already a question on its page. */
   await db.update(schema.scanBatches).set({
     status: "review",
-    warningText: notes.length ? notes.join(". ") + "." : null,
+    warningText: null,
     errorText: null,
   }).where(eq(schema.scanBatches.id, id));
   await refreshScanMeta(biz, id);

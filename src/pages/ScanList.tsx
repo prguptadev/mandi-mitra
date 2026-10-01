@@ -111,13 +111,7 @@ export function ScanListPage() {
       : e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
-  const run = useMutation({
-    mutationFn: (id: string) => api.post(`/scans/${id}/run`, {}),
-    onSuccess: async (_r, id) => { await qc.invalidateQueries({ queryKey: ["scans"] }); navigate(`/scan/${id}`); },
-    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
-  });
-
-  const busy = upload.isPending || run.isPending;
+  const busy = upload.isPending;
   const filtersOn = status !== "all" || from || to || merchantId;
 
   return (
@@ -177,7 +171,7 @@ export function ScanListPage() {
             >
               {busy ? <Spinner className="h-6 w-6" /> : <Upload className="h-6 w-6 text-faint" />}
               <p className="text-[13px] font-medium text-ink">
-                {upload.isPending ? t("scan.uploadingNow") : run.isPending ? t("scan.reading") : t("scan.dropHere")}
+                {upload.isPending ? t("scan.uploadingNow") : t("scan.dropHere")}
               </p>
               <p className="text-[11px] text-faint">{t("scan.uploadSubJpg")}</p>
               <input ref={fileRef} type="file" multiple hidden
@@ -264,10 +258,9 @@ export function ScanListPage() {
                   <span className="block">{relTime(s.createdAt, lang)}</span>
                 </span>
                 {s.status === "uploaded" && can("scan.create") && (
+                  /* the sheet opens first: its picture, and a warning when the same paper is already held, are seen before a read is spent */
                   <Button size="sm" variant="secondary" icon={<Play className="h-3.5 w-3.5" />}
-                    loading={run.isPending && run.variables === s.id}
-                    // several pages: the order step first, where the pages are seen side by side
-                    onClick={(e) => { e.stopPropagation(); if (s.pages > 1) navigate(`/scan/${s.id}`); else run.mutate(s.id); }}>
+                    onClick={(e) => { e.stopPropagation(); navigate(`/scan/${s.id}`); }}>
                     {t("scan.read")}
                   </Button>
                 )}

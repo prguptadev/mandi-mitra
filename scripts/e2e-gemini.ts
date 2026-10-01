@@ -1,4 +1,5 @@
 import "./_guard.ts";
+import { sqlite } from "../server/db/client.ts";
 /* End-to-end: which Gemini model reads a page, against a local stand-in for
  * Google (scripts/fake-gemini.ts) — no real key, no real read.
  *   main   gemini-2.5-flash       its free reads for today are used up
@@ -78,7 +79,10 @@ let b = await readAndWait();
 let cs = await calls();
 check("the page is read", b.status === "review" && b.rows.length === 3, { status: b.status, rows: b.rows?.length, err: b.errorText });
 check("…on the second backup", b.model === "gemini-3.5-flash-lite", b.model);
-check("the scan says why", /used up/.test(b.warningText ?? "") && /gemini-2\.5-flash, gemini-2\.5-pro/.test(b.warningText ?? ""), b.warningText);
+// which model read the page is for the owner's audit trail, not a banner on the munshi's sheet
+check("the sheet carries no model talk", b.warningText === null, b.warningText);
+const readNote = (sqlite.prepare("select after from audit_log where entity_id = ? and action = 'scan.read' order by at desc, rowid desc limit 1").get(scanId) as { after: string } | undefined)?.after ?? "";
+check("…the audit trail says why", /used up/.test(readNote) && /gemini-2\.5-flash, gemini-2\.5-pro/.test(readNote), readNote);
 check("a daily refusal is not retried: 1 request to 2.5 Flash", count(cs, "gemini-2.5-flash") === 1, count(cs, "gemini-2.5-flash"));
 check("…and 1 to 2.5 Pro", count(cs, "gemini-2.5-pro") === 1, count(cs, "gemini-2.5-pro"));
 const lite = cs.filter((c) => c.model === "gemini-3.5-flash-lite");
