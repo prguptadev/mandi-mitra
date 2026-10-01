@@ -217,6 +217,34 @@ check("dashboard's to-receive agrees", dash.kpis.toReceivePaise === mlist.totals
 const dLb = dash.mills.find((m: any) => m.merchantId === lb.id);
 check("L.B's card shows what it owes", dLb.owedPaise === mlist.rows.find((r: any) => r.id === lb.id).balancePaise, dLb.owedPaise);
 
+/* As of a month end, a truck loaded before it and billed after it is goods
+   not yet billed: approving it with a later parcha date must not move that
+   day's net position, nor what the mill owed on it. */
+{
+  const netOf = (x: any) => (x.mills.toReceivePaise - x.mills.paidAheadPaise) + x.stock.valuePaise + x.stock.unbilledGoodsPaise
+    + (x.cash.receivedFromMillsPaise - x.cash.paidToSuppliersPaise) - (x.suppliers.toPayPaise - x.suppliers.paidAheadPaise);
+  const LOADED = "2026-08-28", END = "2026-08-31", BILLED = "2026-09-02";
+  const j = jinsAll.find((x: any) => x.code === "1509") ?? jinsAll[0];
+  const sup = (await call("GET", "/adati"))[0];
+  await call("POST", "/slips", { slipDate: LOADED, rstNo: "8828", adatiId: sup.id, jinsId: j.id, merchantId: lb.id, grossGrams: 3_000_000, ratePaisePerQtl: rs(3450) });
+  const tr = await call("POST", "/loads", { loadDate: LOADED, merchantId: lb.id, jinsId: j.id, stockDate: LOADED, truckNo: "UP25AS8828" });
+  await call("PUT", `/loads/${tr.id}`, { millGrossGrams: 2_030_000, katteCount: 40, advancePaise: 0, daraPaise: 0, invoiceNo: "8828", invoiceDate: BILLED });
+  const draft = await call("GET", `/dashboard/money?to=${END}`);
+  const draftOnBill = await call("GET", `/dashboard/money?to=${BILLED}`);
+  const ap = await raw("POST", `/loads/${tr.id}/approve`, {});
+  const apJson = await ap.json();
+  check("a truck loaded 28-08 is approved with a parcha dated 02-09", ap.status === 200, ap.status === 200 ? undefined : apJson);
+  const asOf = await call("GET", `/dashboard/money?to=${END}`);
+  check("as of 31-08 it is still goods not yet billed, so the net position does not move",
+    netOf(asOf) === netOf(draft) && asOf.stock.unbilledGoodsPaise === draft.stock.unbilledGoodsPaise && asOf.stock.draftTrucks === draft.stock.draftTrucks,
+    { before: { net: netOf(draft), unbilled: draft.stock.unbilledGoodsPaise }, after: { net: netOf(asOf), unbilled: asOf.stock.unbilledGoodsPaise } });
+  check("  ...and the mill does not owe it yet on 31-08", asOf.mills.toReceivePaise === draft.mills.toReceivePaise);
+  const onBill = await call("GET", `/dashboard/money?to=${BILLED}`);
+  check("  ...on 02-09 the mill owes its parcha, and it is no longer among the trucks not billed",
+    onBill.mills.toReceivePaise - draftOnBill.mills.toReceivePaise === apJson.grandTotalPaise && onBill.stock.draftTrucks === draftOnBill.stock.draftTrucks - 1,
+    { before: [draftOnBill.mills.toReceivePaise, draftOnBill.stock.draftTrucks], after: [onBill.mills.toReceivePaise, onBill.stock.draftTrucks], grand: apJson.grandTotalPaise });
+}
+
 /* The mill's own mandi licence: the buyer's licence on a 6R and a 9R, so it
    belongs on the mill and not typed again per voucher. */
 await call("PUT", `/merchants/${lb.id}`, { mandiLicense: " l/2016/75/17121983 " });

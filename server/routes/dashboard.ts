@@ -480,7 +480,11 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
     if (l.ratePaisePerQtl) stockValue -= amountPaise(l.weightGrams, l.ratePaisePerQtl);
     else unpricedLeft -= l.weightGrams;
   }
-  const drafts = (await trucks(biz, { to: f.to })).filter((t) => t.status !== "billed");
+  /* Not billed as of `to`: a draft, or a truck whose parcha is dated after
+     `to` — loaded, off stock, and not yet in what the mill owes, so it counts
+     here at its frozen parcha goods. */
+  const billedBy = f.to ? new Set((await billed(biz, { upTo: f.to })).map((b) => b.loadId)) : null;
+  const drafts = (await trucks(biz, { to: f.to })).filter((t) => t.status !== "billed" || (billedBy != null && !billedBy.has(t.loadId)));
 
   // what the supplier ledger is made of, all time up to `to` (the "we owe" figure is all time)
   const [boughtAll] = await db.select({ p: sql<number>`coalesce(sum(${S.payablePaise}), 0)` }).from(S)

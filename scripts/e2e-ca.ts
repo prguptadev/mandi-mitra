@@ -75,6 +75,15 @@ if (lbOpening) {
 check("a ledger with no opening has no opening line", !/<PARENT>Purchase Accounts<\/PARENT>\n<OPENINGBALANCE>/.test(ex.ledgersXml));
 
 console.log("\nThe books check");
+/* A truck row taken from a day with no slips under that mill (the firm's own
+   stock sold to it, or a truck entered before its slips): it is goods gone out
+   that were never counted in, so both screens take it off stock — once. */
+const jAll = await call("GET", "/jins");
+const noSlipDay = await call("POST", "/loads", { loadDate: "2026-10-05", merchantId: lb.id, jinsId: (jAll.find((j: any) => j.code === "1509") ?? jAll[0]).id, stockDate: "2026-08-20" });
+{
+  const st = await call("GET", `/loads/${noSlipDay.id}`);
+  await call("PUT", `/loads/${noSlipDay.id}/lines/${st.lines[0].id}`, { netGrams: 2_000_000, ratePaisePerQtl: rs(3500) });
+}
 const bc = await call("GET", "/audit/books-check");
 check("it re-works this business only", bc.businesses.length === 1);
 check("every figure re-works exactly", bc.problems === 0, bc.businesses[0]?.sections.flatMap((s: any) => s.lines.filter((l: any) => l.ok === false).map((l: any) => l.text)));
@@ -88,8 +97,8 @@ check("voucher numbers are one each, none repeated", bc.businesses[0]?.sections.
   const rsOf = (p: number) => (p / 100 + 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const lines7 = bc.businesses[0]?.sections.find((s: any) => s.title.startsWith("7."))?.lines ?? [];
   const netLine = lines7.find((l: any) => l.text.startsWith("net ("))?.text ?? "";
-  check("the books check's net position is the dashboard's", netLine.includes(`₹${rsOf(dashNet)} `), { netLine, dashNet });
-  check("  ...its stock is valued the way the dashboard values it", lines7.some((l: any) => l.text.startsWith(`stock in hand ₹${rsOf(m.stock.valuePaise)} `)), { lines7, stock: m.stock.valuePaise });
+  check("the books check's net position is the dashboard's (with a truck row from a day with no slips)", netLine.includes(`₹${rsOf(dashNet)} `), { netLine, dashNet });
+  check("  ...its stock is valued the way the dashboard values it", lines7.some((l: any) => l.text.startsWith(`stock in hand ₹${rsOf(m.stock.valuePaise)} (${(m.stock.leftGrams / 100_000).toFixed(2)} qtl`)), { lines7, stock: m.stock });
   // more loaded than bought is never shown with a tick: it is a line to look at
   const stock5 = bc.businesses[0]?.sections.find((s: any) => s.title.startsWith("5."))?.lines ?? [];
   check("negative stock is never a tick", stock5.filter((l: any) => /more loaded than bought|took more from/.test(l.text)).every((l: any) => l.ok === null && l.warn === true), stock5);
@@ -100,6 +109,7 @@ check("an operator cannot run the books check", (await op.req("GET", "/audit/boo
 // leave the ledger as the money tests expect it: the extra payments and receipts are cancelled
 for (const id of [p2.id, pNext.id, p3.id]) await call("POST", `/payments/${id}/void`, { reason: "ca test cleanup" });
 for (const id of [r1.id, r2.id]) await call("POST", `/mill-receipts/${id}/void`, { reason: "ca test cleanup" });
+await call("DELETE", `/loads/${noSlipDay.id}`);
 
 console.log(bad ? `\n${bad} FAILED` : "\nall passed");
 process.exit(bad ? 1 : 0);
