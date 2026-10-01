@@ -22,10 +22,14 @@
  * with its own stock, so a test can tell one firm's figures from the other's.
  *
  * And the ways it can go wrong, switched on by a test:
- *   /__expire?user=      the portal ends that user's sessions (all, without user)
+ *   /__expire?user=      the portal ends that user's sessions (all, without user);
+ *                        a request still carrying one is told to clear the cookie
  *   /__unland?user=      the portal forgets the landing, keeps the cookie (§9)
  *   /__fail?path=&status=&times=   the next N calls to a path answer that status
+ *                        (with &to=, a redirect there instead)
  *   /__slow?path=&ms=&times=       the next N calls to a path wait that long
+ *   /__fieldErrors       the next wrong captcha is refused the ASP.NET way, under
+ *                        the captcha field's name, in words that never say "captcha"
  *   /__reset             all of the above off
  *   /__calls             every request, with its headers, so tests can count them
  */
@@ -80,7 +84,8 @@ const calls: { method: string; url: string; body: string; headers: Record<string
 const sessions = new Map<string, { user: string; landed: boolean; alive: boolean }>();
 let nextSession = 1;
 let nextCaptcha = 1;
-const faults: { path: string; status?: number; ms?: number; times: number }[] = [];
+const faults: { path: string; status?: number; to?: string; ms?: number; times: number }[] = [];
+let fieldErrors = false;
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///+/v7+jQ3Y5AAAADklEQVQI12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII=",
@@ -126,7 +131,8 @@ http.createServer((req, res) => {
 
     // the test's own switches; not recorded as portal calls
     if (url.pathname === "/__calls") return send(200, "application/json", JSON.stringify(calls));
-    if (url.pathname === "/__reset") { faults.length = 0; return send(200, "application/json", "{}"); }
+    if (url.pathname === "/__reset") { faults.length = 0; fieldErrors = false; return send(200, "application/json", "{}"); }
+    if (url.pathname === "/__fieldErrors") { fieldErrors = true; return send(200, "application/json", "{}"); }
     if (url.pathname === "/__expire" || url.pathname === "/__unland") {
       for (const s of sessions.values()) {
         if (q("user") && s.user !== q("user")) continue;
@@ -135,7 +141,7 @@ http.createServer((req, res) => {
       return send(200, "application/json", "{}");
     }
     if (url.pathname === "/__fail" || url.pathname === "/__slow") {
-      faults.push({ path: q("path"), status: Number(q("status")) || undefined, ms: Number(q("ms")) || undefined, times: Number(q("times")) || 1 });
+      faults.push({ path: q("path"), status: Number(q("status")) || undefined, to: q("to") || undefined, ms: Number(q("ms")) || undefined, times: Number(q("times")) || 1 });
       return send(200, "application/json", "{}");
     }
 
@@ -147,6 +153,7 @@ http.createServer((req, res) => {
     if (fault) {
       fault.times--;
       if (fault.ms) await new Promise((r) => setTimeout(r, fault.ms));
+      if (fault.to) { res.writeHead(fault.status ?? 302, { location: fault.to }); return res.end(); }
       if (fault.status) return send(fault.status, "text/html", `<html><body>${fault.status} Bad Gateway</body></html>`);
     }
 
@@ -156,6 +163,10 @@ http.createServer((req, res) => {
     if (url.pathname === "/Account" && req.method === "POST") {
       const p = new URLSearchParams(body);
       if (p.get("DNTCaptchaInputText") !== CAPTCHA) {
+        if (fieldErrors) {
+          fieldErrors = false;
+          return send(200, "application/json", JSON.stringify({ succeeded: false, errors: { DNTCaptchaInputText: ["Please enter the code shown in the picture."] } }));
+        }
         return send(200, "application/json", JSON.stringify({ succeeded: false, message: "कृपया सही कैप्चा कोड दर्ज करें" }));
       }
       const login = LOGINS[p.get("Email") ?? ""];
@@ -171,12 +182,15 @@ http.createServer((req, res) => {
     // everything below needs the session, exactly as the portal does it
     const s = sessionFrom(req.headers.cookie);
     if (!s) {
+      // a cookie for a session that has ended is cleared, the way ASP.NET clears it
+      const clear: Record<string, string> = /(?:^|;\s*)emandi=/.test(req.headers.cookie ?? "")
+        ? { "set-cookie": "emandi=; Path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT" } : {};
       // a page is sent to the login page; an ajax call gets the login page as HTML
       if (url.pathname === "/Traders/index" || url.pathname === "/Traders/Dashboard") {
-        res.writeHead(302, { location: "/Account/index" });
+        res.writeHead(302, { location: "/Account/index", ...clear });
         return res.end();
       }
-      return send(200, "text/html", loginPage());
+      return send(200, "text/html", loginPage(), clear);
     }
     const login = LOGINS[s.user];
 

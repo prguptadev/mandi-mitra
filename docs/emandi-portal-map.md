@@ -310,3 +310,85 @@ The stand-in portal (`scripts/fake-emandi.ts`) now withholds the band until
 `minRatePaise: 0` — the owner's exact symptom — if this is ever undone.
 
 **There was no websocket anywhere in this.** Plain HTTPS: a POST, a 302, a GET.
+
+---
+
+## 10. Keeping a session: kept, checked, ended
+
+The owner's complaint was "the session died". Most of the deaths were ours,
+not e-Mandi's: one 502 on the keep-alive threw a good session away, ticking a
+commodity in Settings dropped it, a session put back after a restart was never
+landed on `/Traders/index` (§9) so its band read 0.00, and the dashboard went
+on saying "Signed in" after e-Mandi really had ended it. The rules now, all in
+`server/lib/emandi.ts`:
+
+**A look is landing on `/Traders/index`.** Every check of a session opens
+`/Traders/index` and follows its 302s, exactly as after the login. That both
+proves the session is alive and finishes setting it up, so a band read after a
+look is never the half-set-up 0.00 of §9. The keep-alive (every 8 minutes)
+does the same — not `/Traders/Dashboard`.
+
+**When a look happens**
+
+- when the app starts, for every session kept on disk (`checkKeptSessions`);
+- before any rate or stock is read, if the session was put back after a
+  restart, has never landed, or has not been seen working for 10 minutes (a
+  shut laptop lid stops the keep-alive);
+- when Refresh is pressed (`POST /emandi/check`), and when Sign in is pressed
+  on a session that may still be alive — then no captcha is asked for at all;
+- once more, at most every half hour, when every watched commodity answers
+  0.00 — before "e-Mandi has fixed no band" is believed.
+
+**What ends a session — and what does not**
+
+- Ended: a redirect to `/Account…`, or a 200 that is the login form itself
+  (`name="Password"` posting to `/Account`). The screen hears it in the same
+  reply (`status.signedIn: false`, `noteCode: "ended"`) and the card turns to
+  "Sign in" on its own; the status is also asked again every minute.
+- Not ended: a 5xx, a 404, a timeout, no connection. The session is left as it
+  is and the next round tries again. Every portal call stops after 15 seconds,
+  and the rates list stops at the first such failure and says so once.
+- A changed user name or password ends our session (it may be another
+  licence); ticking commodities does not.
+- A cookie the portal clears (empty, `Max-Age=0`, or dated in the past) is
+  dropped from the jar, as a browser drops it.
+
+**Kept on disk.** The cookie jar is kept encrypted in `emandi.json` and
+re-saved after every good look, so a restart picks up the cookies the portal
+last issued. A kept session older than 12 hours since it was last seen working
+is not tried. One put back is reported as signed in but unchecked
+(`checkedAt: null`) until a look has proved it.
+
+**Signing in.** The portal's login script reads its reply as JSON
+(`{succeeded, role}`), so a refusal is JSON too. Its words are kept as they
+came (`said`) and the refusal is named by them: a captcha (or anything filed
+under a captcha field, like `errors.DNTCaptchaInputText`) is `captcha`; a user
+name, e-mail or password is `credentials`; anything else is `denied`. A captcha
+is good for one try; the card fetches a fresh one at once after any failure.
+Each captcha has a ticket, and typing an older one says it was `replaced`.
+
+**The login file.** `emandi.json` is written to a side file, flushed, and
+renamed into place; the copy before is kept as `emandi.json.prev`. A file that
+cannot be read as JSON is never taken for "no logins": it is moved aside as
+`emandi.json.bad-<when>` and the `.prev` copy is used, and the screen says so.
+
+**Whose login.** A business with its mandi licence on record is matched by
+licence, exactly, on the server: a login that opens another licence reads no
+rate and no stock (`other_licence`). Without a licence the screen compares
+names (initials, Hindi, spellings, joined words), and when the names cannot
+tell, asks once — "yes" saves the licence on the business.
+
+**Stock.** `/Stock/GetDayBookList` answers per commodity in quintals to three
+decimals; they are read straight into whole grams (no floating point). In and
+out are primary plus secondary, as "left" already is; two rows for one
+commodity are added; every commodity held is returned, watched or not, with
+the licence it was read for.
+
+**Messages** go out as codes (`signed_out`, `ended`, `offline`, `slow`,
+`portal_error`, `captcha`, `credentials`, …) and the screen says them in the
+chosen language (`portal.err.<code>`).
+
+The stand-in portal (`scripts/fake-emandi.ts`) can end a session, forget a
+landing, answer 502, answer slowly, refuse a captcha either way, and holds two
+licences with stock in an unwatched commodity — `scripts/e2e-emandi.ts` checks
+each of these.

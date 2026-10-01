@@ -104,6 +104,13 @@ check("a wrong captcha is called a captcha — not a password, not 'did not say 
 check("  ...with the portal's own words, read from its JSON reply", /कैप्चा/.test(wrongCaptcha.json.said ?? ""), wrongCaptcha.json);
 const sameAgain = await raw("POST", "/emandi/signin/finish", { captcha: CAPTCHA, ticket: askRaw.json.ticket });
 check("a captcha is good for one try: the same one again asks for a new one", sameAgain.json?.code === "no_captcha", sameAgain.json);
+/* ASP.NET can refuse under the field's own name, in words that never say
+   "captcha" — {errors: {DNTCaptchaInputText: […]}}. It is still the captcha. */
+await portal("/__fieldErrors");
+const fieldAsk = await call("POST", "/emandi/signin/start", {});
+const fieldWrong = await raw("POST", "/emandi/signin/finish", { captcha: "0000", ticket: fieldAsk.ticket });
+check("a refusal filed under the captcha field is called a captcha, whatever its words",
+  fieldWrong.json?.code === "captcha" && /code shown/.test(fieldWrong.json?.said ?? ""), fieldWrong.json);
 const first = await call("POST", "/emandi/signin/start", {});
 const second = await call("POST", "/emandi/signin/start", {});
 check("each captcha has its own ticket", first.ticket !== second.ticket, [first.ticket, second.ticket]);
@@ -160,6 +167,11 @@ await portal("/__fail?path=/Traders/get_crop_fees&status=503&times=1");
 const r503 = await call("GET", "/emandi/rates");
 check("a 503 on a rate stops the list, says so once, and keeps the session",
   r503.problem?.code === "portal_error" && r503.rates.every((r: any) => r.minRatePaise === null) && r503.status.signedIn === true, r503);
+check("  ...and a row with no figure still says which commodity it is", r503.rates.every((r: any) => Boolean(r.cropName)), r503.rates);
+await portal("/__fail?path=/Traders/get_crop_fees&status=302&to=/Home/Error&times=1");
+const r302 = await call("GET", "/emandi/rates?codes=1");
+check("a redirect somewhere other than the login page is e-Mandi's trouble, not a sign-out",
+  r302.problem?.code === "portal_error" && r302.status.signedIn === true, r302);
 
 await portal("/__slow?path=/Traders/get_crop_fees&ms=17000&times=1");
 const before = (await portalCalls()).filter((c) => c.url === "/Traders/get_crop_fees").length;
@@ -276,6 +288,11 @@ check("  ...and the status in the same reply says signed out, so the card shows 
 check("  ...and so does the status on its own", (await call("GET", "/emandi")).signedIn === false);
 const endedStock = await raw("GET", "/emandi/stock");
 check("  ...and the stock is not read either", endedStock.status === 400 && endedStock.json?.code === "ended", endedStock.json);
+// the portal cleared its cookie for the ended session: like a browser, it is not sent back
+await call("POST", "/emandi/signin/start", {});
+const loginPageAsk = (await portalCalls()).filter((c) => c.url === "/Account/index").at(-1);
+check("  ...and the cookie e-Mandi cleared is not sent back on the next sign-in",
+  !/(?:^|;\s*)emandi=/.test(loginPageAsk?.headers.cookie ?? ""), loginPageAsk?.headers.cookie);
 await call("POST", "/auth/switch-business", { businessId: other.businessId });
 check("the other firm's session is untouched by it", (await call("GET", "/emandi")).signedIn === true);
 
@@ -291,6 +308,18 @@ await restarted.check(other.businessId);
 check("  ...one look at the portal checks it", Boolean(restarted.statusOf(other.businessId).checkedAt));
 const keptRates = await restarted.ratesFor(other.businessId, ["1"]);
 check("  ...and it gives the band, because the look landed on /Traders/index", keptRates.rows[0].minRatePaise === 340000, keptRates.rows[0]);
+/* A laptop lid shut for a while stops the keep-alive. A session not seen
+   working for longer than the keep-alive round is landed again before the
+   first rate is asked for — not only after a 0.00 has come back. */
+const realNow = Date.now;
+Date.now = () => realNow() + 11 * 60_000;
+try {
+  const mark = (await portalCalls()).length;
+  await restarted.ratesFor(other.businessId, ["1"]);
+  const next = (await portalCalls()).slice(mark).map((c) => c.url);
+  check("a session left idle is landed on /Traders/index before the rate is asked for",
+    next[0] === "/Traders/index" && next.indexOf("/Traders/index") < next.indexOf("/Traders/get_crop_fees"), next);
+} finally { Date.now = realNow; }
 check("a session already ended is not brought back by a restart", restarted.statusOf(vldm.businessId).signedIn === false);
 
 console.log("\nA login file cut short is not taken for 'no logins'");

@@ -63,7 +63,7 @@ export const SAY: Record<string, string> = {
   denied: "e-Mandi did not sign this computer in",
   not_captcha: "No captcha address in that",
   no_picture: "e-Mandi did not give back a picture — sign in to e-Mandi first",
-  store_busy: "The e-Mandi login file on this computer could not be read just now — try again",
+  store_busy: "The e-Mandi login file on this computer could not be opened just now — try again",
 };
 
 export class PortalError extends Error {
@@ -118,9 +118,17 @@ function writeAtomic(file: string, s: Store) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
   const fd = fs.openSync(tmp, "w");
-  try { fs.writeSync(fd, JSON.stringify(s, null, 2)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  try { fs.writeFileSync(fd, JSON.stringify(s, null, 2)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   if (fs.existsSync(file)) { try { fs.copyFileSync(file, `${file}.prev`); } catch { /* the copy is a spare; the write still goes ahead */ } }
-  fs.renameSync(tmp, file);
+  /* On Windows a virus scan can hold the file for a moment; try a few times
+     before saying so. The old file is untouched until the rename goes through. */
+  for (let i = 0; ; i++) {
+    try { fs.renameSync(tmp, file); return; } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (i >= 4 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw new PortalError("store_busy");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
 }
 
 /**
@@ -208,9 +216,17 @@ class Jar {
       ? (res.headers as unknown as { getSetCookie: () => string[] }).getSetCookie()
       : [res.headers.get("set-cookie")].filter(Boolean) as string[];
     for (const raw of list) {
-      const [pair] = raw.split(";");
+      const [pair, ...attrs] = raw.split(";");
       const i = pair.indexOf("=");
-      if (i > 0) this.jar.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim());
+      if (i <= 0) continue;
+      const name = pair.slice(0, i).trim(), value = pair.slice(i + 1).trim();
+      /* A cookie the site clears (empty, Max-Age=0, or dated in the past) is
+         dropped, as a browser drops it — not sent back empty. */
+      const attr = (k: string) => attrs.map((a) => a.trim()).find((a) => a.toLowerCase().startsWith(`${k}=`))?.slice(k.length + 1);
+      const maxAge = attr("max-age"), expires = attr("expires");
+      const gone = !value || (maxAge !== undefined && Number(maxAge) <= 0)
+        || (maxAge === undefined && expires !== undefined && Date.parse(expires) < Date.now());
+      if (gone) this.jar.delete(name); else this.jar.set(name, value);
     }
   }
   header() { return [...this.jar].map(([k, v]) => `${k}=${v}`).join("; "); }
@@ -316,9 +332,13 @@ function keepSession(biz: string) {
   writeStore(st);
 }
 
-/** The portal has ended the session: say so at once, everywhere. */
-function endSession(biz: string) {
-  const s = sessionOf(biz);
+/**
+ * The portal has ended the session: say so at once, everywhere. `s` is the
+ * session the answer was for — if the login was changed and signed in afresh
+ * while it was on its way, that newer session is not the one that ended.
+ */
+function endSession(biz: string, s: Session) {
+  if (sessions.get(biz) !== s) return new PortalError("ended");
   s.signedInAt = null;
   s.okAt = null;
   s.landedAt = null;
@@ -473,7 +493,7 @@ async function land(biz: string): Promise<"alive" | "ended"> {
   const { reply, at, toLogin } = await openPage(biz, "/Traders/index");
   // the login was changed or removed while we looked: that session is gone already
   if (sessions.get(biz) !== s) return "ended";
-  if (toLogin || looksSignedOut(reply.text)) { endSession(biz); return "ended"; }
+  if (toLogin || looksSignedOut(reply.text)) { endSession(biz, s); return "ended"; }
   if (reply.status !== 200) {
     console.log(`[emandi] look: /Traders/index answered ${reply.status} — the session is left as it is`);
     throw new PortalError("portal_error", `HTTP ${reply.status}`);
@@ -569,14 +589,16 @@ async function signedInCall(biz: string, url: string, opts: { kind?: Kind; refer
   for (let hop = 0; hop < 4 && res.status >= 300 && res.status < 400; hop++) {
     if (!res.location) break;
     const to = pathOf(res.location);
-    if (isLoginPath(to)) throw endSession(biz);
+    if (isLoginPath(to)) throw endSession(biz, s);
     res = await call(biz, to); // a browser follows a 302 with a GET
   }
-  if (res.status >= 300 && res.status < 400) throw endSession(biz);
-  if (looksSignedOut(res.text)) throw endSession(biz);
-  // a 5xx or a missing page is the portal's trouble, not a sign-out and not data
+  if (looksSignedOut(res.text)) throw endSession(biz, s);
+  /* A 5xx, a missing page, or a redirect that goes nowhere or round in
+     circles is the portal's trouble — not a sign-out, and not data. */
   if (res.status !== 200) throw new PortalError("portal_error", `HTTP ${res.status}`);
   s.okAt = Date.now();
+  // it answered, so an earlier "did not answer" is no longer true
+  if (s.noteCode && s.noteCode !== "ended") s.noteCode = null;
   return res.text;
 }
 
@@ -632,19 +654,26 @@ export async function beginSignIn(biz: string): Promise<CaptchaAsk | { already: 
    and keep what the portal said in its own words — any text under a key that
    carries a message, however deep ({errors: {DNTCaptchaInputText: ["…"]}}). */
 const SAID_KEYS = /^(message|messages|msg|error|errors|errormessage|description|title|text)$/i;
-function words(v: unknown, under = false, out: string[] = []): string[] {
-  if (typeof v === "string") { if (under && v.trim()) out.push(v.trim()); return out; }
-  if (Array.isArray(v)) { for (const x of v) words(x, under, out); return out; }
-  if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) words(x, under || SAID_KEYS.test(k), out);
+/** The portal's words in a JSON reply, and whether any of them sits under a captcha field. */
+function words(v: unknown, under = false, out = { said: [] as string[], captcha: false }, captchaKey = false) {
+  if (typeof v === "string") {
+    if (under && v.trim()) { out.said.push(v.trim()); if (captchaKey) out.captcha = true; }
+  } else if (Array.isArray(v)) {
+    for (const x of v) words(x, under, out, captchaKey);
+  } else if (v && typeof v === "object") {
+    for (const [k, x] of Object.entries(v)) words(x, under || SAID_KEYS.test(k), out, captchaKey || /captcha/i.test(k));
+  }
   return out;
 }
-function loginReply(text: string): { succeeded: boolean | null; said: string } {
+function loginReply(text: string): { succeeded: boolean | null; said: string; captcha: boolean } {
   const clean = (s: string) => unescapeHtml(s).replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
   try {
     const j = JSON.parse(text) as Record<string, unknown>;
     if (j && typeof j === "object") {
       const ok = j.succeeded ?? j.Succeeded ?? j.success ?? j.status;
-      return { succeeded: typeof ok === "boolean" ? ok : null, said: clean(words(j).join("; ")) };
+      // {errors: {DNTCaptchaInputText: ["…"]}} is about the captcha whatever its words say
+      const w = words(j);
+      return { succeeded: typeof ok === "boolean" ? ok : null, said: clean(w.said.join("; ")), captcha: w.captcha };
     }
   } catch { /* a page, not JSON */ }
   const shown = [
@@ -652,12 +681,12 @@ function loginReply(text: string): { succeeded: boolean | null; said: string } {
     /<span[^>]+id="[^"]*(?:lblMsg|Message|Error)[^"]*"[^>]*>\s*([^<]{4,200})/i,
     /swal\(\s*["'`]([^"'`]{4,200})["'`]/i,
   ].map((re) => between(text, re).trim()).find(Boolean) ?? "";
-  return { succeeded: null, said: clean(shown) };
+  return { succeeded: null, said: clean(shown), captcha: false };
 }
 /** A refusal, named for what it is: only a captcha is called a captcha. */
-function refusal(said: string): PortalError {
-  if (/captcha|कैप्चा|security code/i.test(said)) return new PortalError("captcha", said);
-  if (/password|पासवर्ड|user ?name|username|यूज़र|यूजर|उपयोगकर्ता|invalid login|login attempt/i.test(said)) return new PortalError("credentials", said);
+function refusal(said: string, aboutCaptcha = false): PortalError {
+  if (aboutCaptcha || /captcha|कैप्चा|security code/i.test(said)) return new PortalError("captcha", said || null);
+  if (/password|पासवर्ड|user ?name|user not|e-?mail|not registered|यूज़र|यूजर|उपयोगकर्ता|invalid login|login attempt/i.test(said)) return new PortalError("credentials", said);
   return new PortalError("denied", said || null);
 }
 
@@ -691,7 +720,7 @@ export async function finishSignIn(biz: string, typed: string, ticket?: string):
   if (res.status >= 500) throw new PortalError("portal_error", `HTTP ${res.status}`);
   const answer = loginReply(res.status === 200 ? res.text : "");
   if (answer.succeeded === false) {
-    const why = refusal(answer.said);
+    const why = refusal(answer.said, answer.captcha);
     s.refused = { code: why.code, said: why.said };
     console.log(`[emandi] sign-in: post ${res.status} | refused (${why.code}): ${answer.said.slice(0, 120)}`);
     throw why;
@@ -729,7 +758,7 @@ export async function finishSignIn(biz: string, typed: string, ticket?: string):
     return { ok: true };
   }
   // not in: say what the portal itself said, and only call it a captcha when it is
-  const why = answer.said ? refusal(answer.said) : new PortalError("denied");
+  const why = answer.said || answer.captcha ? refusal(answer.said, answer.captcha) : new PortalError("denied");
   s.refused = { code: why.code, said: why.said };
   throw why;
 }
@@ -857,8 +886,11 @@ const STOPS = new Set(["signed_out", "ended", "offline", "slow", "portal_error",
  */
 export async function ratesFor(biz: string, codes: string[]): Promise<{ rows: RateRow[]; problem: PortalError | null }> {
   const rows: RateRow[] = [];
+  // a row with no figure still says which commodity it is, from the list kept on this computer
+  let names = new Map<string, string>();
+  try { names = new Map((sessionOf(biz).crops ?? keptCrops(biz).crops).map((c) => [c.code, c.name])); } catch { /* no names, then */ }
   const blankRow = (code: string, e: PortalError): RateRow => ({
-    cropCode: code, cropName: null, minRatePaise: null, maxRatePaise: null, mandiFeePct: null, developmentCessPct: null,
+    cropCode: code, cropName: names.get(code) ?? null, minRatePaise: null, maxRatePaise: null, mandiFeePct: null, developmentCessPct: null,
     onMandiSthal: null, directLicence: null, at: new Date().toISOString(), said: e.said, error: e.message, code: e.code,
   });
   const readAll = async () => {
