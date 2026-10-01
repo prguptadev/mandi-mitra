@@ -19,7 +19,11 @@ import { newId } from "./ids.ts";
    empty, flagged, so the operator sees it on the screen. */
 const toNum = (v: unknown) => {
   if (typeof v !== "string") return v;
-  const t = v.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/[,\s]/g, "");
+  const t = v.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d)))
+    // "₹3450/-", "Rs. 3450", "49.85 qtl": the figure, without the money or weight marks written round it
+    .replace(/^\s*(₹|rs\.?|रु\.?)\s*/i, "")
+    .replace(/\s*(\/-|\/=|=\/|-\/|qtl\.?|q\.?|क्विं?\.?|क्वि०?)\s*$/i, "")
+    .replace(/[,\s]/g, "");
   if (t === "") return null;
   const n = Number(t);
   return Number.isFinite(n) ? n : v;
@@ -54,7 +58,11 @@ export const OcrRowSchema = z.object({
   }, z.number().min(0).max(1).nullable()).optional(),
   /** true when the row is struck through on the paper. */
   struckThrough: z.preprocess((v) => (v === "true" ? true : v === "false" ? false : v), z.boolean().nullable()).optional(),
+  /** How far down the picture this ruled line sits: 0 (top edge) to 1000 (bottom edge). Only to point at it on screen. */
+  lineY: z.preprocess((v) => { const n = toNum(v); return typeof n === "number" && n >= 0 && n <= 1000 ? n : null; }, z.number().nullable()).optional(),
   notes: looseStr(),
+  /** Ours, never the model's: cells that came back but are not a number, as written ("34S0", "19-20"). */
+  unreadable: z.record(z.string()).optional(),
 });
 
 type OcrRowIn = z.infer<typeof OcrRowSchema>;
@@ -66,8 +74,23 @@ export const OcrPageSchema = z.object({
   rows: z.array(z.unknown()).default([]).transform((rows) => rows.map((r): OcrRowIn => {
     const p = OcrRowSchema.safeParse(r);
     if (p.success) return p.data;
+    /* One odd cell must not cost the rest of the line: each field is read on
+       its own, a field that fails comes through empty, and what was written
+       in it is kept so the screen can show it next to the empty box. */
     const o = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
-    return { adatiName: typeof o.adatiName === "string" ? o.adatiName : null, confidence: 0, notes: "This row could not be read cleanly" };
+    const out: Record<string, unknown> = {};
+    const unreadable: Record<string, string> = {};
+    for (const [k, field] of Object.entries(OcrRowSchema.shape)) {
+      if (k === "unreadable" || !(k in o)) continue;
+      const f = (field as z.ZodTypeAny).safeParse(o[k]);
+      if (f.success) out[k] = f.data;
+      else unreadable[k] = String(o[k]).slice(0, 40);
+    }
+    return {
+      ...(out as OcrRowIn), unreadable,
+      confidence: Math.min(typeof out.confidence === "number" ? out.confidence : 0, 0.5),
+      notes: (out.notes as string | null | undefined) ?? "This row could not be read cleanly",
+    };
   })),
 });
 
@@ -99,6 +122,7 @@ const RESPONSE_SCHEMA = {
           rate: { type: "NUMBER", nullable: true },
           confidence: { type: "NUMBER", nullable: true },
           struckThrough: { type: "BOOLEAN", nullable: true },
+          lineY: { type: "INTEGER", nullable: true, description: "How far down the image this ruled line is: 0 at the top edge, 1000 at the bottom edge" },
           notes: { type: "STRING", nullable: true },
         },
         /* netQtl and struckThrough must be REQUIRED. They are the two fields
@@ -108,7 +132,9 @@ const RESPONSE_SCHEMA = {
         required: ["page", "srNo", "rstNo", "adatiName", "grossQtl", "katauti", "netQtl", "rate", "confidence", "struckThrough"],
         /* Without an explicit order the API fills fields alphabetically, so the
            model would state its confidence before reading a single digit. */
-        propertyOrdering: ["page", "srNo", "rstNo", "adatiName", "village", "supplierMatch", "grossQtl", "katauti", "netQtl", "rate", "struckThrough", "notes", "confidence"],
+        /* lineY comes after the figures: where the line sits is a pointer for
+           the screen, and must not come between the model and the reading. */
+        propertyOrdering: ["page", "srNo", "rstNo", "adatiName", "village", "supplierMatch", "grossQtl", "katauti", "netQtl", "rate", "struckThrough", "lineY", "notes", "confidence"],
       },
     },
   },
@@ -151,6 +177,8 @@ Rules:
 - A ditto mark (〃, ", ,, or "do") actually written in a cell means "same as the row above": return the value from the row above. This is the ONLY case where a value comes from another line.
 - One cell crossed out and rewritten is NOT a struck-through row: return the rewritten value and set struckThrough false. Only a line through the whole row means struckThrough true.
 - Decimal points in this handwriting are often faint. A gross weight is nearly always between 1 and 60 quintal with two decimals, so 1920 almost certainly means 19.20.
+- Numbers only in the number columns: a weight or rate is a plain number like 19.20 or 3450, never with "/-", "Rs" or a unit. A cell you cannot read as a number is null.
+- lineY is where the ruled line sits on the image, from 0 at the top edge to 1000 at the bottom edge. An estimate is fine; it only points the operator to the line.
 
 Return only the structured object.`;
 
@@ -195,6 +223,22 @@ export function salvageRows(text: string): unknown[] {
     i = j + 1;
   }
   return out;
+}
+
+/**
+ * The header of a reply that was cut off: date, mill and commodity come
+ * before the rows, so they are whole even when the rows are not. Without
+ * them a cut page would also lose its date check.
+ */
+export function salvageHeader(text: string): { date: string | null; millName: string | null; jins: string | null } {
+  const rowsAt = text.indexOf('"rows"');
+  const head = rowsAt === -1 ? "" : text.slice(0, rowsAt);
+  const str = (k: string) => {
+    const m = head.match(new RegExp(`"${k}"\\s*:\\s*("(?:[^"\\\\]|\\\\.)*")`));
+    if (!m) return null;
+    try { return JSON.parse(m[1]) as string; } catch { return null; }
+  };
+  return { date: str("date"), millName: str("millName"), jins: str("jins") };
 }
 
 /** Models sometimes wrap JSON in a markdown fence despite responseMimeType. */
@@ -474,7 +518,7 @@ export async function readSheet(opts: {
         };
       }
       truncated = true;
-      parsedJson = { rows };
+      parsedJson = { ...salvageHeader(text), rows };
     }
 
     const parsed = OcrPageSchema.safeParse(parsedJson);

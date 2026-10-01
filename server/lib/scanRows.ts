@@ -25,6 +25,10 @@ export const ReviewRowSchema = z.object({
     struckThrough: z.boolean().nullable(),
     /** The printed SR NO the reader put this row on — the anchor for row alignment. */
     srNo: z.number().nullable().optional(),
+    /** Where the reader put this line on its page, 0 (top) to 1000 (bottom), when it said. */
+    lineY: z.number().nullable().optional(),
+    /** Number cells the reader returned that are not a number, as written ("34S0", "19-20"). */
+    unreadable: z.record(z.string()).nullable().optional(),
   }),
   /** What will actually be written, after any human edit. */
   rstNo: z.string(),
@@ -75,8 +79,20 @@ export function qtlToGrams(q: number) { return Math.round(q * GRAMS_PER_QTL); }
 export const normRst = (v: string | null | undefined) =>
   String(v ?? "").replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "");
 
+/**
+ * A written figure in hundredths, rounded half up on its digits as written:
+ * 19.205 → 1921, never 1920 from 19.205 × 100 = 1920.4999… in binary.
+ */
+export function hundredths(v: number): number {
+  const n = Math.round(Number(`${v}e2`));
+  return Number.isFinite(n) ? n : Math.round(v * 100);
+}
+/** A reading finer than the 0.01 the paper and the grid work in (19.205). */
+export const finerThanHundredths = (v: number) => Math.abs(Number(`${v}e2`) - hundredths(v)) > 1e-6;
+
 export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
   const gross = r.grossQtl ?? null;
+  const unreadable = r.unreadable && Object.keys(r.unreadable).length ? r.unreadable : null;
   return {
     id: `r${i}`,
     page: r.page ?? 1,
@@ -91,14 +107,18 @@ export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
       confidence: r.confidence ?? null,
       struckThrough: r.struckThrough ?? null,
       srNo: r.srNo ?? null,
+      lineY: r.lineY ?? null,
+      ...(unreadable ? { unreadable } : {}),
     },
     rstNo: normRst(r.rstNo),
     adatiId: null,
     adatiRawText: (r.adatiName ?? "").trim(),
     adatiRawVillage: (r.village ?? "").trim() || null,
-    grossGrams: gross === null ? null : qtlToGrams(gross),
+    /* Whole kilograms, as the grid shows them and as a slip typed by hand
+       is kept: a third decimal from the reader is never priced unseen. */
+    grossGrams: gross === null ? null : hundredths(gross) * (GRAMS_PER_QTL / 100),
     katautiOverride: null,
-    ratePaisePerQtl: r.rate == null ? null : Math.round(r.rate * 100),
+    ratePaisePerQtl: r.rate == null ? null : hundredths(r.rate),
     excluded: r.struckThrough === true,
     nameCorrected: false,
     modelPick: r.supplierMatch?.trim() || null,
@@ -140,6 +160,8 @@ export function checkRow(
     rateCeilPaise: number;
     /** False when the reader found no net weight anywhere on this row's page (a sheet without a net column). */
     pageHasNet?: boolean;
+    /** False when no line on this row's page has a rate: the page is asked about once, as a whole. */
+    pageHasRate?: boolean;
   },
 ): CheckedRow {
   const issues: Issue[] = [];
@@ -191,7 +213,9 @@ export function checkRow(
     issues.push({ code: "struck_included", level: "error", message: "This line is struck out on the sheet — confirm it really belongs" });
   }
 
-  if (!row.rstNo) issues.push({ code: "rst_missing", level: "warn", message: "RST number could not be read" });
+  /* A slip typed by hand cannot be saved without its RST, so neither can a
+     scanned one, unless the operator says the paper really has none. */
+  if (!row.rstNo) issues.push({ code: "rst_missing", level: confirmedField(row, "rst") ? "warn" : "error", message: "RST number could not be read — type it, or ✓ if the paper has none" });
   // shown red on the screen, and counted in the "are you sure" box before saving; never blocks
   else if (opts.existingRst.has(row.rstNo)) issues.push({ code: "rst_exists", level: "warn", message: `RST ${row.rstNo} is already entered for this date`, params: { rst: row.rstNo } });
   else if (opts.dupeInBatch.has(row.rstNo)) issues.push({ code: "rst_dupe", level: "warn", message: `RST ${row.rstNo} appears twice on this sheet`, params: { rst: row.rstNo } });
@@ -212,7 +236,14 @@ export function checkRow(
     issues.push({ code: "name_close", level: "warn", message: `"${row.adatiRawText}" was matched to ${resolved.match.nameHi} by a close spelling — check it`, params: { name: row.adatiRawText, to: resolved.match.nameHi } });
   }
 
-  if (row.grossGrams === null) issues.push({ code: "gross_missing", level: "error", message: "Gross weight could not be read" });
+  const grossRead = row.ocr.unreadable?.grossQtl;
+  if (row.grossGrams === null) {
+    issues.push({
+      code: "gross_missing", level: "error",
+      message: grossRead ? `Gross read as "${grossRead}", which is not a number — type it` : "Gross weight could not be read",
+      ...(grossRead ? { params: { read: grossRead } } : {}),
+    });
+  }
   else if (derivedNetGrams !== null && derivedNetGrams <= 0) issues.push({ code: "net_nonpositive", level: "error", message: "Net weight works out to zero or less" });
   else if (row.grossGrams > 100 * GRAMS_PER_QTL) {
     // likely a lost decimal point (1920 for 19.20): must be confirmed or fixed
@@ -222,6 +253,16 @@ export function checkRow(
     });
   }
   else if (row.grossGrams < GRAMS_PER_QTL) issues.push({ code: "gross_small", level: "warn", message: "Gross weight is under one quintal — check the decimal point" });
+
+  // the reader gave a third decimal: it is rounded to the kilo, and the paper decides
+  if (row.ocr.grossQtl != null && row.grossGrams !== null && finerThanHundredths(row.ocr.grossQtl)
+    && row.grossGrams === hundredths(row.ocr.grossQtl) * (GRAMS_PER_QTL / 100) && !confirmedField(row, "gross")) {
+    issues.push({
+      code: "gross_rounded", level: "warn",
+      message: `The reader saw ${row.ocr.grossQtl}; it is taken as ${(row.grossGrams / GRAMS_PER_QTL).toFixed(2)} — check the paper`,
+      params: { read: String(row.ocr.grossQtl), taken: (row.grossGrams / GRAMS_PER_QTL).toFixed(2) },
+    });
+  }
 
   if (row.grossGrams !== null && row.ocr.netQtl == null && derivedNetGrams !== null && derivedNetGrams > 0) {
     // nothing on the sheet to check this weight against
@@ -247,8 +288,18 @@ export function checkRow(
     });
   }
 
-  if (row.ratePaisePerQtl === null || row.ratePaisePerQtl === 0) issues.push({ code: "rate_missing", level: "warn", message: "Rate could not be read — it can be filled in later" });
-  else if (row.ratePaisePerQtl < 0) issues.push({ code: "rate_negative", level: "error", message: "Rate cannot be negative" });
+  const rateRead = row.ocr.unreadable?.rate;
+  if (row.ratePaisePerQtl === null || row.ratePaisePerQtl === 0) {
+    issues.push({
+      code: "rate_missing",
+      /* Never a silent ₹0. On a page that carries rates this line's rate is
+         typed, or ✓'d as "not on the paper yet, price it later"; a page with
+         no rate at all is asked about once, for the whole page. */
+      level: confirmedField(row, "rate") || opts.pageHasRate === false ? "warn" : "error",
+      message: rateRead ? `Rate read as "${rateRead}", which is not a number — type it` : "Rate could not be read — type it, or ✓ to fill it in later",
+      ...(rateRead ? { params: { read: rateRead } } : {}),
+    });
+  } else if (row.ratePaisePerQtl < 0) issues.push({ code: "rate_negative", level: "error", message: "Rate cannot be negative" });
   else if (row.ratePaisePerQtl > 0 && (row.ratePaisePerQtl < opts.rateFloorPaise || row.ratePaisePerQtl > opts.rateCeilPaise)) {
     issues.push({
       code: "rate_range", level: confirmedField(row, "rate") ? "warn" : "error", message: "Rate is outside the usual range — confirm it or fix it",
@@ -278,53 +329,157 @@ export function findDupes(rows: ReviewRow[]): Set<string> {
   return new Set([...seen.entries()].filter(([, n]) => n > 1).map(([k]) => k));
 }
 
-/** "21-09-2026", "21/9/26", "२१-०९-२०२६" → "2026-09-21"; null when it does not read as a date. */
-export function writtenDate(v: string | null | undefined): string | null {
+
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+  "जनवरी": 1, "फरवरी": 2, "फ़रवरी": 2, "मार्च": 3, "अप्रैल": 4, "अप्रेल": 4, "मई": 5, "जून": 6, "जुलाई": 7, "अगस्त": 8,
+  "सितंबर": 9, "सितम्बर": 9, "अक्टूबर": 10, "अक्तूबर": 10, "नवंबर": 11, "नवम्बर": 11, "दिसंबर": 12, "दिसम्बर": 12,
+};
+
+/**
+ * The date written in a sheet's header, as YYYY-MM-DD; null when it does not
+ * read as a real date. "21-09-2026", "21/9/26", "२१-०९-२०२६", "2026-09-21",
+ * "21 Sept 2026", and "9/28/2026" (month first, when the day cannot be a
+ * month). A year more than one ahead of today is a misread ("20/9/96" is
+ * not 2096), so it is not a date either: the operator is asked instead.
+ */
+export function writtenDate(v: string | null | undefined, today = new Date()): string | null {
   const t = String(v ?? "").replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).trim();
-  const m = t.match(/(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{2,4})/);
-  if (!m) return null;
-  const d = Number(m[1]), mo = Number(m[2]);
-  let y = Number(m[3]);
+  if (!t) return null;
+  let y: number, mo: number, d: number;
+  let m = t.match(/(?<!\d)(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})(?!\d)/);
+  if (m) {
+    y = Number(m[1]); mo = Number(m[2]); d = Number(m[3]);
+  } else if ((m = t.match(/(?<!\d)(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{4}|\d{2})(?!\d)/))) {
+    d = Number(m[1]); mo = Number(m[2]); y = Number(m[3]);
+    if (mo > 12 && d <= 12) [d, mo] = [mo, d];
+  } else if ((m = t.match(/(?<!\d)(\d{1,2})\s*[-/. ]?\s*([A-Za-z]+|[ऀ-ॿ]+)\.?\s*[-/., ]?\s*(\d{4}|\d{2})(?!\d)/))) {
+    const name = m[2].toLowerCase();
+    mo = MONTHS[/^[a-z]/.test(name) ? name.slice(0, 3) : name] ?? 0;
+    if (!mo) return null;
+    d = Number(m[1]); y = Number(m[3]);
+  } else return null;
   if (y < 100) y += 2000;
-  if (mo < 1 || mo > 12 || d < 1 || d > 31 || y < 2000 || y > 2100) return null;
+  const at = new Date(Date.UTC(y, mo - 1, d));
+  if (at.getUTCFullYear() !== y || at.getUTCMonth() !== mo - 1 || at.getUTCDate() !== d) return null;
+  if (y < 2000 || at.getTime() > today.getTime() + 366 * 86400_000) return null;
   return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 }
 
 export interface PageMeta {
   page: number; date: string | null; millName: string | null; jins: string | null; total: number | null;
-  /** What the operator checked against the paper for this page: "rows", "date", "total". */
+  /** Google's reply for this page was cut short: lines after the last one kept may be missing. */
+  truncated?: boolean;
+  /** What the operator checked against the paper for this page: "rows", "date", "total", "count", … */
   confirmed?: string[];
+  /** What each tick was given for. A tick holds only while that is unchanged:
+   *  a date checked for 28-09 is asked again when the scan moves to 29-09. */
+  confirmedFor?: Record<string, string>;
 }
-export type PageCheck = { page: number; code: "page_total" | "page_date" | "page_rows"; params: Record<string, string | number>; confirmed: boolean };
+export type PageCheckCode =
+  | "page_total" | "page_date" | "page_rows" | "page_cut" | "page_count" | "page_struck"
+  | "page_mill" | "page_jins" | "page_norate";
+export type PageCheck = {
+  page: number; code: PageCheckCode; params: Record<string, string | number>; confirmed: boolean;
+  /** The value a tick is tied to (see PageMeta.confirmedFor). */
+  stamp: string;
+};
+/** A mill or commodity the sheet's header names: a known one, other than what the scan is filed under. */
+export interface HeaderDiffers { page: number; written: string; id: string | null; label: string; filedId: string | null; filed: string }
 
 /**
- * Checks a whole page against itself: the date written in its header against
- * the scan's date, and any total written at the bottom against its rows —
- * a row missed by the reader shows up here even when every row looks fine.
+ * Checks each page against itself and the paper: the date in its header
+ * against the scan's date, any total at the bottom against its rows, lines
+ * the reader may have lost (a reply cut short, no total to prove the count),
+ * lines it read as crossed out, and the mill and commodity the header names.
+ * Each is ticked once by the operator; a tick lasts while what it was given
+ * for is unchanged.
  */
-export function checkPages(meta: PageMeta[], rows: CheckedRow[], slipDate: string | null, marks: SlipMark[] = []) {
+export function checkPages(
+  meta: PageMeta[], rows: CheckedRow[], slipDate: string | null, marks: SlipMark[] = [],
+  ctx: { mill?: HeaderDiffers | null; jins?: HeaderDiffers | null; today?: Date } = {},
+) {
   const out: PageCheck[] = [];
-  const done = (page: number, what: string) => (meta.find((m) => m.page === page)?.confirmed ?? []).includes(what);
+  const add = (page: number, code: PageCheckCode, params: Record<string, string | number>, stamp: string) => {
+    const m = meta.find((x) => x.page === page);
+    const what = code.slice("page_".length);
+    const ticked = (m?.confirmed ?? []).includes(what);
+    const given = m?.confirmedFor?.[what];
+    // a tick from before ticks were tied to a value stands as it was given
+    out.push({ page, code, params, stamp, confirmed: ticked && (given === undefined || given === stamp) });
+  };
+  const onPage = (page: number) => rows.filter((r) => (r.page ?? 1) === page);
+  const q = (g: number) => (g / GRAMS_PER_QTL).toFixed(2);
+
   for (const page of [...new Set(marks.map((m) => m.page))].sort((a, b) => a - b)) {
     const first = marks.filter((m) => m.page === page).sort((a, b) => Number(a.rowId.slice(1)) - Number(b.rowId.slice(1)))[0];
-    out.push({ page, code: "page_rows", params: { sr: first.params.sr ?? first.params.to ?? "?", why: first.code }, confirmed: done(page, "rows") });
+    add(page, "page_rows", { sr: first.params.sr ?? first.params.to ?? "?", why: first.code }, "");
   }
-  for (const m of meta) {
-    const mine = rows.filter((r) => (r.page ?? 1) === m.page && !r.excluded);
-    if (m.total != null && m.total > 0 && mine.length) {
-      const written = qtlToGrams(m.total);
-      const net = mine.reduce((s, r) => s + (r.derivedNetGrams ?? 0), 0);
-      const gross = mine.reduce((s, r) => s + (r.grossGrams ?? 0), 0);
-      // the sheet may total net or gross; 5 kg of rounding either way is fine
-      if (Math.abs(written - net) > 5000 && Math.abs(written - gross) > 5000) {
-        out.push({ page: m.page, code: "page_total", params: {
-          written: m.total.toFixed(2), net: (net / GRAMS_PER_QTL).toFixed(2), gross: (gross / GRAMS_PER_QTL).toFixed(2),
-          diff: ((written - net) / GRAMS_PER_QTL).toFixed(2),
-        }, confirmed: done(m.page, "total") });
-      }
+
+  const pages = [...meta].sort((a, b) => a.page - b.page);
+  /* A total proves the lines above it. It may be the page's own, or — on the
+     last page of a long sheet — the sheet's, so it is also held against the
+     running sum of every page up to it. A page proved either way needs no
+     count of its lines. */
+  const proved = new Set<number>();
+  const totalAsked = new Set<number>();
+  let runNet = 0, runGross = 0;
+  const near = (a: number, b: number) => Math.abs(a - b) <= 5000; // 5 kg of rounding either way
+  for (const m of pages) {
+    const mine = onPage(m.page).filter((r) => !r.excluded);
+    const net = mine.reduce((s, r) => s + (r.derivedNetGrams ?? 0), 0);
+    const gross = mine.reduce((s, r) => s + (r.grossGrams ?? 0), 0);
+    runNet += net; runGross += gross;
+    if (m.total == null || m.total <= 0 || !mine.length) continue;
+    const written = qtlToGrams(m.total);
+    if (near(written, net) || near(written, gross)) { proved.add(m.page); continue; }
+    if (near(written, runNet) || near(written, runGross)) { for (const p of pages) if (p.page <= m.page) proved.add(p.page); continue; }
+    totalAsked.add(m.page);
+    add(m.page, "page_total", {
+      written: m.total.toFixed(2), net: q(net), gross: q(gross), diff: q(written - net),
+      ...(m.page !== pages[0].page ? { allNet: q(runNet), allGross: q(runGross) } : {}),
+    }, `${m.total}|${net}|${gross}`);
+  }
+
+  if (slipDate) {
+    const dated = pages.filter((m) => (m.date ?? "").trim());
+    for (const m of dated) {
+      const d = writtenDate(m.date, ctx.today);
+      if (d && d !== slipDate) add(m.page, "page_date", { written: d, scan: slipDate, why: "differs" }, `${d}|${slipDate}`);
+      // written, but not as a date this could be: "20/9/96"
+      else if (!d) add(m.page, "page_date", { raw: m.date!.trim().slice(0, 40), scan: slipDate, why: "unread" }, `${m.date}|${slipDate}`);
     }
-    const d = writtenDate(m.date);
-    if (d && slipDate && d !== slipDate) out.push({ page: m.page, code: "page_date", params: { written: d, scan: slipDate }, confirmed: done(m.page, "date") });
+    // no header says the date: the scan's own date is all there is, so it is asked once
+    if (pages.length && !dated.length) add(pages[0].page, "page_date", { scan: slipDate, why: "none" }, `|${slipDate}`);
+  }
+
+  for (const m of pages) {
+    const mine = onPage(m.page);
+    const srs = mine.map((r) => r.ocr.srNo).filter((n): n is number => n != null);
+    const span: Record<string, number> = srs.length ? { first: Math.min(...srs), last: Math.max(...srs) } : {};
+    // Google stopped writing part-way down the page: what came after the last whole line is not here
+    if (m.truncated) add(m.page, "page_cut", { n: mine.length, ...span }, "");
+    else if (mine.length && !proved.has(m.page) && !totalAsked.has(m.page)) {
+      // nothing at the bottom proves the count: the operator counts the lines once
+      add(m.page, "page_count", { n: mine.length, ...span }, String(mine.length));
+    }
+
+    /* A line the reader calls crossed out is left out on its word alone; one
+       that still carries figures is shown, and the operator says it is so. */
+    const struck = mine.filter((r) => r.excluded && r.ocr.struckThrough === true && (r.ocr.grossQtl != null || r.ocr.netQtl != null));
+    if (struck.length) {
+      add(m.page, "page_struck", {
+        n: struck.length,
+        lines: struck.map((r) => `${r.ocr.srNo ?? "?"}${r.rstNo ? ` (RST ${r.rstNo})` : ""}`).join(", "),
+      }, struck.map((r) => r.id).join(","));
+    }
+
+    const live = mine.filter((r) => !r.excluded);
+    if (live.length && !live.some((r) => (r.ratePaisePerQtl ?? 0) > 0)) add(m.page, "page_norate", { n: live.length }, "");
+  }
+
+  for (const [code, h] of [["page_mill", ctx.mill], ["page_jins", ctx.jins]] as const) {
+    if (h) add(h.page, code, { written: h.written, id: h.id ?? "", label: h.label, filed: h.filed }, `${h.id ?? "own"}|${h.filedId ?? "own"}`);
   }
   return out;
 }
@@ -334,33 +489,39 @@ export function checkPages(meta: PageMeta[], rows: CheckedRow[], slipDate: strin
  * the same line. If the numbers the reader gave jump, repeat or run backwards
  * on a page, rows may have slid: one line's name with the next line's
  * weights. Rows the reader gave no number are counted as the lines between.
+ * A page whose first line is not line 1 (nor the line after the last one of
+ * the page before) has lost lines at the top.
  */
 export function srBreaks(rows: ReviewRow[]) {
-  const out: { page: number; code: "sr_gap" | "sr_repeat" | "sr_back"; rowId: string; params: Record<string, string | number> }[] = [];
-  const pages = [...new Set(rows.map((r) => r.page ?? 1))];
+  const out: { page: number; code: "sr_gap" | "sr_repeat" | "sr_back" | "sr_top"; rowId: string; params: Record<string, string | number> }[] = [];
+  const pages = [...new Set(rows.map((r) => r.page ?? 1))].sort((a, b) => a - b);
+  let lastOfPrev = null as number | null;
   for (const page of pages) {
     const mine = rows.filter((r) => (r.page ?? 1) === page).sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
     // pages read without row numbers (older reads) are simply not checked
-    if (!mine.some((r) => r.ocr.srNo != null)) continue;
+    if (!mine.some((r) => r.ocr.srNo != null)) { lastOfPrev = null; continue; }
     let prev: number | null = null;
     let between = 0;
     for (const r of mine) {
       const n = r.ocr.srNo;
       if (n == null) { between++; continue; }
-      if (prev != null) {
-        if (n === prev) out.push({ page, code: "sr_repeat", rowId: r.id, params: { sr: n } });
-        else if (n < prev) out.push({ page, code: "sr_back", rowId: r.id, params: { sr: n, prev } });
-        // a jump the unnumbered rows in between account for is no gap
-        else if (n > prev + 1 + between) out.push({ page, code: "sr_gap", rowId: r.id, params: { from: prev, to: n, missing: n - prev - 1 - between } });
-      }
+      if (prev == null) {
+        const fresh = 1 + between;
+        const carried: number | null = lastOfPrev != null ? lastOfPrev + 1 + between : null;
+        if (n > fresh && n !== carried) out.push({ page, code: "sr_top", rowId: r.id, params: { sr: n, missing: n - fresh } });
+      } else if (n === prev) out.push({ page, code: "sr_repeat", rowId: r.id, params: { sr: n } });
+      else if (n < prev) out.push({ page, code: "sr_back", rowId: r.id, params: { sr: n, prev } });
+      // a jump the unnumbered rows in between account for is no gap
+      else if (n > prev + 1 + between) out.push({ page, code: "sr_gap", rowId: r.id, params: { from: prev, to: n, missing: n - prev - 1 - between } });
       prev = n;
       between = 0;
     }
+    lastOfPrev = prev == null ? null : prev + between;
   }
   return out;
 }
 
-export type SlipMark = { page: number; rowId: string; code: "sr_gap" | "sr_repeat" | "sr_back" | "name_only" | "figures_only"; params: Record<string, string | number> };
+export type SlipMark = { page: number; rowId: string; code: "sr_gap" | "sr_repeat" | "sr_back" | "sr_top" | "name_only" | "figures_only"; params: Record<string, string | number> };
 
 /**
  * Where a page's rows may have slid against each other. Besides breaks in
@@ -375,7 +536,8 @@ export function slipMarks(rows: ReviewRow[]): SlipMark[] {
   for (const r of rows) {
     if (r.ocr.struckThrough === true) continue;
     const name = Boolean((r.ocr.adatiName ?? "").trim());
-    const figures = r.ocr.grossQtl != null || r.ocr.netQtl != null;
+    // a weight that came back but is not a number ("19-20") is still a weight on this line
+    const figures = r.ocr.grossQtl != null || r.ocr.netQtl != null || Boolean(r.ocr.unreadable?.grossQtl || r.ocr.unreadable?.netQtl);
     const sr = r.ocr.srNo ?? "?";
     if (name && !figures) marks.push({ page: r.page ?? 1, rowId: r.id, code: "name_only", params: { sr, name: r.ocr.adatiName ?? "" } });
     else if (!name && r.ocr.grossQtl != null) marks.push({ page: r.page ?? 1, rowId: r.id, code: "figures_only", params: { sr } });

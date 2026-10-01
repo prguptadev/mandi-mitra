@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import { slipCharges, supplierChargesOf, termsOnly } from "../lib/supplierCharges.ts";
 import { z } from "zod";
-import { eq, and, desc, asc, inArray, sql, gte, lte, like } from "drizzle-orm";
+import { eq, and, desc, asc, inArray, notInArray, sql, gte, lte, like, ne, or } from "drizzle-orm";
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
+import crypto from "node:crypto";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
@@ -18,7 +20,8 @@ import {
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
 import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
-import { normRst, checkPages, slipMarks, type PageMeta } from "../lib/scanRows.ts";
+import { normRst, checkPages, slipMarks, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
+import { approvedOnDays } from "../lib/parcha.ts";
 import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 import { ensureSupplier } from "../lib/supplierFromName.ts";
@@ -101,6 +104,39 @@ function resolveType(file: File): string | null {
   return null;
 }
 
+/**
+ * How many pages a PDF has. Older writers leave every page as plain text
+ * ("/Type /Page"); PDF 1.5 and later may pack them into compressed object
+ * streams, which are opened here and counted too. null when a PDF has packed
+ * objects that cannot be opened — its page count is then unknown.
+ */
+export function pdfPageCount(bytes: Buffer): number | null {
+  const text = bytes.toString("latin1");
+  const PAGE = /\/Type\s*\/Page(?![a-zA-Z])/g;
+  let n = text.match(PAGE)?.length ?? 0;
+  const packed = /\/Type\s*\/ObjStm\b/g;
+  for (let m = packed.exec(text); m; m = packed.exec(text)) {
+    // the dictionary around this /Type, then its stream
+    const dictStart = text.lastIndexOf("<<", m.index);
+    const s = text.indexOf("stream", m.index);
+    if (dictStart === -1 || s === -1) return null;
+    const dict = text.slice(dictStart, s);
+    if (!/\/Filter\s*\/FlateDecode/.test(dict) || /\/DecodeParms/.test(dict)) return null;
+    let start = s + "stream".length;
+    if (text[start] === "\r") start++;
+    if (text[start] === "\n") start++;
+    const end = text.indexOf("endstream", start);
+    if (end === -1) return null;
+    try {
+      const inner = zlib.inflateSync(bytes.subarray(start, end), { finishFlush: zlib.constants.Z_SYNC_FLUSH }).toString("latin1");
+      n += inner.match(PAGE)?.length ?? 0;
+    } catch {
+      return null;
+    }
+  }
+  return n;
+}
+
 async function setting(businessId: string, key: string) {
   const [row] = await db.select().from(schema.settings)
     .where(and(eq(schema.settings.businessId, businessId), eq(schema.settings.key, key))).limit(1);
@@ -167,6 +203,51 @@ async function usualRateRange(businessId: string, jinsId: string | null, day: st
   return { floor: Math.round(median * 0.7), ceil: Math.round(median * 1.4), from: "recent" as const };
 }
 
+/** Letters and digits only, upper case: "L.B", "lb" and "L B" are one mill code. */
+const codeKey = (s: string | null | undefined) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9ऀ-ॿ]/g, "");
+
+/**
+ * The mill and the commodity the sheet's header names, when each is a known
+ * one and not what the scan is filed under. A sheet headed "L.B" left under
+ * the own firm puts its slips in no mill's stock, and its rates are judged
+ * against the wrong commodity — so it is asked, with the header's choice one
+ * tap away. A name that matches nothing known is not guessed at.
+ */
+async function headerDiffers(businessId: string, batch: typeof schema.scanBatches.$inferSelect, meta: PageMeta[]) {
+  const first = (pick: (m: PageMeta) => string | null) => meta.filter((m) => codeKey(pick(m))).sort((a, b) => a.page - b.page)[0];
+  const millAt = first((m) => m.millName);
+  const jinsAt = first((m) => m.jins);
+  const out: { mill?: HeaderDiffers; jins?: HeaderDiffers } = {};
+  if (millAt) {
+    const [biz] = await db.select({ shortCode: schema.businesses.shortCode }).from(schema.businesses).where(eq(schema.businesses.id, businessId)).limit(1);
+    const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code, name: schema.merchants.name, nameHi: schema.merchants.nameHi, active: schema.merchants.active })
+      .from(schema.merchants).where(eq(schema.merchants.businessId, businessId));
+    const want = codeKey(millAt.millName);
+    const hit = mills.find((m) => m.active && [m.code, m.name, m.nameHi].some((x) => x && codeKey(x) === want));
+    const own = !hit && codeKey(biz?.shortCode) === want;
+    if ((hit || own) && (hit?.id ?? null) !== batch.merchantId) {
+      const filed = mills.find((m) => m.id === batch.merchantId);
+      out.mill = {
+        page: millAt.page, written: millAt.millName!.trim(), id: hit?.id ?? null, label: hit?.code ?? biz?.shortCode ?? "",
+        filedId: batch.merchantId, filed: filed?.code ?? biz?.shortCode ?? "",
+      };
+    }
+  }
+  if (jinsAt) {
+    const all = await db.select({ id: schema.jins.id, code: schema.jins.code, name: schema.jins.name, active: schema.jins.active })
+      .from(schema.jins).where(eq(schema.jins.businessId, businessId));
+    const want = codeKey(jinsAt.jins);
+    const hit = all.find((j) => j.active && (codeKey(j.code) === want || codeKey(j.name) === want));
+    if (hit && hit.id !== batch.jinsId) {
+      out.jins = {
+        page: jinsAt.page, written: jinsAt.jins!.trim(), id: hit.id, label: hit.code,
+        filedId: batch.jinsId, filed: all.find((j) => j.id === batch.jinsId)?.code ?? "—",
+      };
+    }
+  }
+  return out;
+}
+
 async function checkAll(businessId: string, batch: typeof schema.scanBatches.$inferSelect) {
   const rows: ReviewRow[] = batch.parsedRows ? JSON.parse(batch.parsedRows) : [];
   const katauti = await katautiFor(businessId, batch.merchantId);
@@ -209,18 +290,20 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   const meta = JSON.parse(batch.pageMeta ?? "[]") as PageMeta[];
   const rowsChecked = (page: number) => (meta.find((m) => m.page === page)?.confirmed ?? []).includes("rows");
   const netPages = new Set(rows.filter((r) => r.ocr.netQtl != null).map((r) => r.page ?? 1));
+  const ratePages = new Set(rows.filter((r) => !r.excluded && (r.ratePaisePerQtl ?? 0) > 0).map((r) => r.page ?? 1));
   const checked: CheckedRow[] = ordered.map((r) => {
     const c = checkRow(r, {
       katauti, resolve: resolver.resolve, byId: resolver.byId, existingRst, dupeInBatch,
       rateFloorPaise: range.floor, rateCeilPaise: range.ceil, pageHasNet: netPages.has(r.page ?? 1),
+      pageHasRate: ratePages.has(r.page ?? 1),
     });
     flagOtherDays(c);
     if (!c.excluded) {
       /* Rows may have slid on this page (a name with no weight, or numbers that
          break): every row on it waits until the page is checked line by line
-         against the paper. The row where it shows is marked. */
+         against the paper. The row where it shows is marked until then. */
       const here = marks.find((m) => m.rowId === r.id);
-      if (here) c.issues.push({ code: here.code, level: "warn", message: "The rows may slip out of line here", params: here.params });
+      if (here && !rowsChecked(r.page ?? 1)) c.issues.push({ code: here.code, level: "warn", message: "The rows may slip out of line here", params: here.params });
       if (marks.some((m) => m.page === (r.page ?? 1)) && !rowsChecked(r.page ?? 1)) {
         c.issues.push({ code: "page_slid", level: "error", message: `Check page ${r.page ?? 1} line by line: names may sit on the wrong weights`, params: { page: r.page ?? 1 } });
       }
@@ -228,7 +311,7 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
     }
     return c;
   });
-  const pageChecks = checkPages(meta, checked, batch.slipDate, marks);
+  const pageChecks = checkPages(meta, checked, batch.slipDate, marks, await headerDiffers(businessId, batch, meta));
 
   const active = checked.filter((r) => !r.excluded);
   return {
@@ -274,12 +357,19 @@ export async function createScan(o: {
   // a mill or commodity from another business (a second tab on the other firm) is refused
   await checkSlipRefs(o.biz, { merchantId: o.merchantId, jinsId: o.jinsId ?? undefined });
   for (const f of o.pages) {
-    if (!f.mimeType) throw bad(`"${f.name}" is a ${f.declared || "unknown"} file. Use JPG, PNG, WEBP, HEIC or a one-page PDF.`, "bad_type");
+    if (!f.mimeType) throw bad(`"${f.name}" is a ${f.declared || "unknown"} file. Use JPG, PNG, WEBP or a one-page PDF.`, "bad_type");
     if (f.size === 0) throw bad(`"${f.name}" is empty. Scan it again.`, "empty_file");
     if (f.size > MAX_BYTES) throw bad(`"${f.name}" is over 12 MB. Scan at 200–300 dpi instead.`, "too_big");
+    /* Gemini reads an iPhone's HEIC photo, but this computer cannot show it,
+       and a sheet nobody can see beside its rows cannot be checked. */
+    if (f.mimeType === "image/heic" || f.mimeType === "image/heif") {
+      throw bad(`"${f.name}" is an iPhone photo (HEIC), which this computer cannot show for checking. Send it as JPG: on the iPhone, Settings › Camera › Formats › Most Compatible, or share it through WhatsApp.`, "heic");
+    }
     // one read is one page: a multi-page PDF would lose every page after the first
-    if (f.mimeType === "application/pdf" && (f.bytes.toString("latin1").match(/\/Type\s*\/Page\b/g)?.length ?? 0) > 1) {
-      throw bad(`"${f.name}" has more than one page. Save each page as its own image (or PDF) and add them together.`, "multi_page_pdf");
+    if (f.mimeType === "application/pdf") {
+      const n = pdfPageCount(f.bytes);
+      if (n === null) throw bad(`"${f.name}" is a PDF whose pages could not be counted. Save each page as a JPG and add them together.`, "pdf_unreadable");
+      if (n > 1) throw bad(`"${f.name}" has ${n} pages. Save each page as its own image (or PDF) and add them together.`, "multi_page_pdf");
     }
   }
   const id = newId();
@@ -571,6 +661,8 @@ async function performRead(opts: {
       pageMeta.push({
         page: p + 1, date: result.page.date ?? null, millName: result.page.millName ?? null,
         jins: result.page.jins ?? null, total: result.page.totalWeightWritten ?? null,
+        // lines after the last whole one may be missing: the page waits for a look (or a second read)
+        ...(result.truncated ? { truncated: true } : {}),
       });
     }
 
@@ -712,7 +804,12 @@ scanRoutes.post("/:id/try-model", can("scan.create"), async (c) => {
 
   const read = r.page.rows.filter((x) => !x.struckThrough);
   const withNet = read.filter((x) => x.grossQtl != null && x.netQtl != null);
-  const netAgreeing = withNet.filter((x) => Math.abs((x.grossQtl! - Math.floor(x.grossQtl! + 0.5) * 0.01) - x.netQtl!) <= 0.015).length;
+  // net on this mill's own katauti terms, as the review grid works it out
+  const terms = await katautiFor(biz, batch.merchantId);
+  const netAgreeing = withNet.filter((x) => {
+    const g = qtlToGrams(x.grossQtl!);
+    return Math.abs(g - deriveKatauti(g, terms, null).deductionGrams - qtlToGrams(x.netQtl!)) <= 1500;
+  }).length;
   const conf = read.map((x) => x.confidence).filter((x): x is number => x != null);
 
   // the scan's own rows for this page, as the operator left them
@@ -767,12 +864,24 @@ scanRoutes.get("/counts", can("scan.review", "scan.create"), async (c) => {
   return c.json(Object.fromEntries(rows.map((r) => [r.status, r.n])));
 });
 
+/**
+ * The version of a sheet's rows and header that a screen last saw. Two
+ * people (or two tabs) on one sheet: a save built on an older version is
+ * refused instead of quietly putting back what the other one corrected.
+ */
+function revOf(b: { parsedRows: string | null; slipDate: string | null; merchantId: string | null; jinsId: string | null }) {
+  return crypto.createHash("sha1").update(`${b.parsedRows ?? ""}|${b.slipDate ?? ""}|${b.merchantId ?? ""}|${b.jinsId ?? ""}`).digest("hex").slice(0, 16);
+}
+
 scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const batch = await loadBatch(biz, param(c, "id"));
   const checked = batch.parsedRows && batch.status !== "reading"
     ? await checkAll(biz, batch) : { rows: [], summary: null, katauti: null, pageChecks: [], rateRange: null };
   const files: { name: string; mimeType: string; bytes: number }[] = JSON.parse(batch.filePaths);
+  // what the reader saw at the head and foot of each page, to show beside the date, mill and commodity
+  const header = (JSON.parse(batch.pageMeta ?? "[]") as PageMeta[])
+    .map((m) => ({ page: m.page, date: m.date, millName: m.millName, jins: m.jins, total: m.total, truncated: Boolean(m.truncated) }));
   return c.json({
     id: batch.id, status: batch.status, sourceKind: batch.sourceKind,
     slipDate: batch.slipDate, merchantId: batch.merchantId, jinsId: batch.jinsId,
@@ -782,6 +891,7 @@ scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
     tokensIn: batch.tokensIn, tokensOut: batch.tokensOut,
     createdAt: batch.createdAt, reviewedAt: batch.reviewedAt,
     pages: files.map((f, i) => ({ index: i, name: f.name, mimeType: f.mimeType, bytes: f.bytes })),
+    header, rev: revOf(batch),
     ...checked,
   });
 });
@@ -832,15 +942,21 @@ scanRoutes.get("/:id/page/:index", can("scan.review", "scan.create"), async (c) 
 scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const id = param(c, "id");
-  const batch = await loadBatch(biz, id);
-  if (batch.status === "committed") throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
-
-  const { rows, slipDate, merchantId, jinsId } = z.object({
+  // the body first: the sheet's state is read after it, not before a slow upload
+  const { rows, slipDate, merchantId, jinsId, rev } = z.object({
     rows: z.array(ReviewRowSchema),
     slipDate: isoDay().nullish(),
     merchantId: z.string().nullish(),
     jinsId: z.string().nullish(),
+    /** The version this screen last saw; left out by older screens and scripts. */
+    rev: z.string().max(64).optional(),
   }).parse(await c.req.json());
+  const batch = await loadBatch(biz, id);
+  if (batch.status === "committed") throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
+  // while the reader runs it owns the rows (they are not saved from here), so only the header can change
+  if (rev && batch.status !== "reading" && rev !== revOf(batch)) {
+    throw new HttpError(409, "Someone else changed this sheet while you were on it. It has been loaded again: check your last change.", "stale_rows");
+  }
 
   await checkSlipRefs(biz, { jinsId: jinsId ?? undefined, merchantId: merchantId ?? undefined });
   // what the model read is kept exactly as read: only the operator's columns come from the screen
@@ -868,10 +984,27 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
     ...(slipDate !== undefined ? { slipDate: slipDate ?? null } : {}),
     ...(merchantId !== undefined ? { merchantId: merchantId ?? null } : {}),
     ...(jinsId !== undefined ? { jinsId: jinsId ?? null } : {}),
-  }).where(eq(schema.scanBatches.id, id));
+  // a sheet added to the daily list a moment ago keeps the rows its slips came from
+  }).where(and(eq(schema.scanBatches.id, id), ne(schema.scanBatches.status, "committed")));
 
   const fresh = await loadBatch(biz, id);
   await refreshScanMeta(biz, id);
+  /* The date, mill and commodity decide where every slip of the sheet lands:
+     who moved them, and from what, is kept. */
+  const head = (b: typeof batch) => ({ slipDate: b.slipDate, merchantId: b.merchantId, jinsId: b.jinsId });
+  if (fresh.status !== "committed" && JSON.stringify(head(batch)) !== JSON.stringify(head(fresh))) {
+    const codes = new Map<string | null, string>([[null, "own firm"]]);
+    for (const m of await db.select({ id: schema.merchants.id, code: schema.merchants.code }).from(schema.merchants).where(eq(schema.merchants.businessId, biz))) codes.set(m.id, m.code);
+    for (const j of await db.select({ id: schema.jins.id, code: schema.jins.code }).from(schema.jins).where(eq(schema.jins.businessId, biz))) codes.set(j.id, j.code);
+    const said: string[] = [];
+    if (batch.slipDate !== fresh.slipDate) said.push(`date ${batch.slipDate ?? "—"} → ${fresh.slipDate ?? "—"}`);
+    if (batch.merchantId !== fresh.merchantId) said.push(`mill ${codes.get(batch.merchantId) ?? "?"} → ${codes.get(fresh.merchantId) ?? "?"}`);
+    if (batch.jinsId !== fresh.jinsId) said.push(`commodity ${batch.jinsId ? codes.get(batch.jinsId) ?? "?" : "—"} → ${fresh.jinsId ? codes.get(fresh.jinsId) ?? "?" : "—"}`);
+    await audit({
+      actor: actor(c), action: "scan.header", entity: "scan_batch", entityId: id,
+      entityLabel: said.join(", "), before: head(batch), after: head(fresh),
+    });
+  }
   const newOnes = [...made.values()].filter((m) => m.created);
   if (newOnes.length) {
     await audit({
@@ -880,24 +1013,40 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
       after: { names: newOnes.map((m) => m.nameHinglish) },
     });
   }
-  return c.json({ ...(await checkAll(biz, fresh)), suppliersCreated: newOnes.map((m) => ({ id: m.id, nameHi: m.nameHi, nameHinglish: m.nameHinglish })) });
+  return c.json({ ...(await checkAll(biz, fresh)), rev: revOf(fresh), suppliersCreated: newOnes.map((m) => ({ id: m.id, nameHi: m.nameHi, nameHinglish: m.nameHinglish })) });
 });
 
-/** The operator checked a page against the paper: its rows line by line, its date, or its total. */
+/**
+ * The operator checked a page against the paper: its rows line by line, its
+ * date, its total, its line count, its crossed-out lines, or the mill and
+ * commodity its header names. The tick is tied to what it was given for —
+ * the dates, the sums — and lapses when that changes.
+ */
 scanRoutes.put("/:id/page-confirm", can("scan.review"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const id = param(c, "id");
+  const { page, what, on } = z.object({
+    page: z.number().int().min(1),
+    what: z.enum(["rows", "date", "total", "cut", "count", "struck", "mill", "jins", "norate"]),
+    on: z.boolean(),
+  }).parse(await c.req.json());
   const batch = await loadBatch(biz, id);
   if (batch.status === "committed") throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
-  const { page, what, on } = z.object({ page: z.number().int().min(1), what: z.enum(["rows", "date", "total"]), on: z.boolean() }).parse(await c.req.json());
+  const shown = on ? (await checkAll(biz, batch)).pageChecks.find((p) => p.page === page && p.code === `page_${what}`) : undefined;
   const meta = JSON.parse(batch.pageMeta ?? "[]") as PageMeta[];
   let m = meta.find((x) => x.page === page);
   if (!m) { m = { page, date: null, millName: null, jins: null, total: null }; meta.push(m); }
   const set = new Set(m.confirmed ?? []);
-  if (on) set.add(what); else set.delete(what);
+  const given = { ...(m.confirmedFor ?? {}) };
+  if (on) { set.add(what); given[what] = shown?.stamp ?? ""; } else { set.delete(what); delete given[what]; }
   m.confirmed = [...set];
+  m.confirmedFor = given;
   await db.update(schema.scanBatches).set({ pageMeta: JSON.stringify(meta) }).where(eq(schema.scanBatches.id, id));
-  await audit({ actor: actor(c), action: "scan.page_confirm", entity: "scan_batch", entityId: id, entityLabel: `Page ${page}: ${what} ${on ? "checked" : "unchecked"}` });
+  await audit({
+    actor: actor(c), action: "scan.page_confirm", entity: "scan_batch", entityId: id,
+    entityLabel: `Page ${page}: ${what} ${on ? "checked" : "unchecked"}`,
+    ...(shown ? { after: { what, params: shown.params } } : {}),
+  });
   return c.json(await checkAll(biz, await loadBatch(biz, id)));
 });
 
@@ -964,6 +1113,7 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
   // what each supplier adds to their receipt: today's terms, kept on every slip
   const sTerms = termsOnly(await supplierChargesOf(biz));
   const aliasOps: { raw: string; adatiId: string; corrected: boolean }[] = [];
+  const whoFor = new Map<string, string>();
   for (const r of toWrite) {
     const adatiId = (r.adatiId ?? r.match?.adatiId)!;
     const d = deriveSlip(r.grossGrams!, katauti!, r.ratePaisePerQtl ?? 0, r.katautiOverride);
@@ -988,6 +1138,7 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
     });
     const raw = r.adatiRawText.trim();
     if (raw) aliasOps.push({ raw, adatiId, corrected: r.nameCorrected });
+    whoFor.set(slipRows[slipRows.length - 1].id as string, r.chosen?.nameHinglish ?? r.match?.nameHinglish ?? raw);
   }
   const existingAliases = aliasOps.length ? await db.select().from(schema.adatiAliases)
     .where(and(eq(schema.adatiAliases.businessId, biz), inArray(schema.adatiAliases.rawText, [...new Set(aliasOps.map((a) => a.raw))]))) : [];
@@ -1026,10 +1177,21 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
     entityLabel: `${created.length} slips added to ${batch.slipDate}${newlyMade.length ? ` · ${new Set(newlyMade.map((x) => x.adatiId)).size} new supplier(s)` : ""}`,
     after: { slips: created.length, learnedAliases: learned.length, slipDate: batch.slipDate },
   });
+  /* Each slip is in the trail on its own, with every value it was saved
+     with, as a slip typed by hand is: the CA looks a slip up by its RST. */
+  for (const v of slipRows) {
+    await audit({
+      actor: actor(c), action: "slip.create", entity: "purchase_slip", entityId: v.id as string,
+      entityLabel: `${v.slipDate} RST ${v.rstNo || "—"} — ${whoFor.get(v.id as string) ?? ""} (from a scanned sheet)`,
+      after: v,
+    });
+  }
 
   return c.json({
     ok: true, created: created.length, learnedAliases: learned.length,
     slipDate: batch.slipDate, merchantId: batch.merchantId,
+    // an approved parcha priced on this day's average no longer matches it
+    approvedParchas: await approvedOnDays(biz, [{ merchantId: batch.merchantId, jinsId: batch.jinsId, date: batch.slipDate }]),
   });
 });
 
@@ -1135,7 +1297,7 @@ scanRoutes.post("/:id/create-suppliers", canAll("adati.write", "scan.review"), a
   });
 
   const fresh = await loadBatch(biz, id);
-  return c.json({ created, linked: assign.size, ...(await checkAll(biz, fresh)) });
+  return c.json({ created, linked: assign.size, ...(await checkAll(biz, fresh)), rev: revOf(fresh) });
 });
 
 scanRoutes.delete("/:id", can("scan.create"), async (c) => {
@@ -1159,13 +1321,30 @@ scanRoutes.get("/", can("scan.review", "scan.create"), async (c) => {
   const from = c.req.query("from");
   const to = c.req.query("to");
   const merchantId = c.req.query("merchantId");
-  const limit = Math.min(Number(c.req.query("limit") ?? 40), 100);
+  const limit = Math.max(1, Math.min(Number(c.req.query("limit") ?? 40) || 40, 1000));
 
-  const where = [eq(schema.scanBatches.businessId, biz)];
-  if (status && status !== "all") where.push(eq(schema.scanBatches.status, status));
-  if (merchantId) where.push(eq(schema.scanBatches.merchantId, merchantId));
-  if (from && ISO_DATE.test(from)) where.push(gte(schema.scanBatches.slipDate, from));
-  if (to && ISO_DATE.test(to)) where.push(lte(schema.scanBatches.slipDate, to));
+  /* A sheet still waiting for someone (not read, being read, waiting for
+     review, failed) is always listed, whatever its date — or no date — and
+     however many sheets were added after it: otherwise it drops off the page
+     and its purchases never reach the books. The added ones are filtered by
+     date and come in pages. */
+  const OPEN = ["uploaded", "reading", "review", "failed", "pending"];
+  const S = schema.scanBatches;
+  const mine = [eq(S.businessId, biz), ...(merchantId ? [eq(S.merchantId, merchantId)] : [])];
+  const dated = [
+    ...(from && ISO_DATE.test(from) ? [gte(S.slipDate, from)] : []),
+    ...(to && ISO_DATE.test(to) ? [lte(S.slipDate, to)] : []),
+  ];
+  const where = [...mine];
+  if (status && status !== "all") {
+    where.push(eq(S.status, status));
+    if (!OPEN.includes(status)) where.push(...dated);
+  } else if (dated.length) {
+    where.push(or(inArray(S.status, OPEN), and(notInArray(S.status, OPEN), ...dated))!);
+  }
+
+  // the limit is on top of the waiting ones: however many there are, they all show
+  const [{ waiting }] = await db.select({ waiting: sql<number>`count(*)` }).from(S).where(and(...mine, inArray(S.status, OPEN)));
 
   const rows = await db.select({
     id: schema.scanBatches.id,
@@ -1184,8 +1363,9 @@ scanRoutes.get("/", can("scan.review", "scan.create"), async (c) => {
     .from(schema.scanBatches)
     .leftJoin(schema.merchants, eq(schema.merchants.id, schema.scanBatches.merchantId))
     .where(and(...where))
-    .orderBy(desc(schema.scanBatches.createdAt))
-    .limit(limit);
+    // waiting sheets first, so the limit only ever cuts sheets already added
+    .orderBy(sql`case when ${S.status} in ('uploaded','reading','review','failed','pending') then 0 else 1 end`, desc(schema.scanBatches.createdAt))
+    .limit(limit + waiting);
 
   return c.json(rows.map((r) => ({
     ...r,
