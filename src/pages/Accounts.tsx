@@ -13,6 +13,7 @@ import { NumberInput } from "@/components/NumberInput.tsx";
 import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { ReasonDialog } from "@/components/ReasonDialog.tsx";
+import { PaySheetDialog } from "@/components/PaySheetDialog.tsx";
 import { useSort } from "@/lib/useSort.ts";
 import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Textarea, Checkbox,
@@ -214,6 +215,7 @@ export function LedgerPage() {
   const { from, setFrom, to, setTo, fy } = useFYRange();
   const [paying, setPaying] = useState<null | { editing?: PaymentRow | null }>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   // a past financial year: every balance as it stood on its 31 March
   const list = useQuery({
@@ -296,7 +298,13 @@ export function LedgerPage() {
 
       {list.data && (
         <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.totalToPay")}</p><p className="num break-all text-lg font-semibold">{f.money(list.data.totals.toPayPaise)}</p></Card>
+          <Card className="flex items-start justify-between gap-2 p-3">
+            <div className="min-w-0"><p className="text-[12px] text-muted">{t("ledger.totalToPay")}</p><p className="num break-all text-lg font-semibold">{f.money(list.data.totals.toPayPaise)}</p></div>
+            {/* the pay sheet: who is to be paid what, as Excel or CSV */}
+            {can("export.data") && (
+              <Button size="sm" icon={<Download className="h-3.5 w-3.5" />} title={t("sheet.title")} onClick={() => setSheetOpen(true)}>{t("dl.button")}</Button>
+            )}
+          </Card>
           <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.totalPaidAhead")}</p><p className="num break-all text-lg font-semibold text-warn">{f.money(list.data.totals.paidAheadPaise)}</p></Card>
           {/* the sum written out line by line: large figures stay readable on any screen */}
           <Card className="p-3 sm:col-span-2 xl:col-span-1">
@@ -489,6 +497,8 @@ export function LedgerPage() {
           confirmLabel={t("money.confirmCancel")} busy={del.isPending} error={err}
           onClose={() => setVoiding(null)} onConfirm={(reason) => del.mutate({ id: voiding.id, reason })} />
       )}
+      {/* a past financial year: the sheet as it stood on its 31 March */}
+      {sheetOpen && <PaySheetDialog onClose={() => setSheetOpen(false)} date={fy.current ? todayISO() : fy.to} />}
       {paying && (
         <PaymentDialog onClose={() => setPaying(null)} editing={paying.editing ?? null}
           adatiId={selected ?? undefined}

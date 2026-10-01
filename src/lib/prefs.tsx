@@ -27,8 +27,11 @@ export type DailyColumnKey = (typeof DAILY_COLUMNS)[number]["key"];
 /** These carry the arithmetic; hiding them would make the sheet unreadable. */
 export const LOCKED_COLUMNS: DailyColumnKey[] = ["rstNo", "gross", "net", "rate", "amount"];
 
-export { MILL_REPORT_COLUMNS, DEFAULT_MILL_REPORT_COLUMNS, type MillReportColumnKey } from "@server/lib/prefs.ts";
-import { DEFAULT_MILL_REPORT_COLUMNS } from "@server/lib/prefs.ts";
+export {
+  MILL_REPORT_COLUMNS, DEFAULT_MILL_REPORT_COLUMNS, type MillReportColumnKey,
+  SUPPLIER_SHEET_COLUMNS, DEFAULT_SUPPLIER_SHEET_COLUMNS, type SupplierSheetColumnKey,
+} from "@server/lib/prefs.ts";
+import { DEFAULT_MILL_REPORT_COLUMNS, DEFAULT_SUPPLIER_SHEET_COLUMNS } from "@server/lib/prefs.ts";
 import type { SlipSortOrder } from "@server/lib/slipOrder.ts";
 
 export interface DailyListPrefs {
@@ -43,6 +46,9 @@ export interface DailyListPrefs {
   exportNameLang: "hi" | "latin";
   /** Columns of the report sent to a mill ("dara"). */
   millReportColumns: Record<string, boolean>;
+  /** Columns of the supplier pay sheet (ledger download), and the script its names are in. */
+  supplierSheetColumns: Record<string, boolean>;
+  supplierSheetNames: "hi" | "hinglish" | "both";
   /** Column widths (px) dragged by hand on the daily list. */
   widths: Record<string, number>;
 }
@@ -63,6 +69,8 @@ export const DEFAULT_PREFS: Prefs = {
     showRunningTotal: true,
     exportNameLang: "hi",
     millReportColumns: { ...DEFAULT_MILL_REPORT_COLUMNS },
+    supplierSheetColumns: { ...DEFAULT_SUPPLIER_SHEET_COLUMNS },
+    supplierSheetNames: "hi",
     widths: {},
   },
 };
@@ -123,6 +131,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
       columns: { ...DEFAULT_PREFS.dailyList.columns, ...saved.dailyList?.columns, ...(here?.columns ?? {}) },
       exportColumns: { ...DEFAULT_PREFS.dailyList.exportColumns, ...saved.dailyList?.exportColumns, ...(here?.exportColumns ?? {}) },
       millReportColumns: { ...DEFAULT_PREFS.dailyList.millReportColumns, ...saved.dailyList?.millReportColumns, ...(here?.millReportColumns ?? {}) },
+      supplierSheetColumns: { ...DEFAULT_PREFS.dailyList.supplierSheetColumns, ...saved.dailyList?.supplierSheetColumns, ...(here?.supplierSheetColumns ?? {}) },
     },
   }), [saved, here]);
 
