@@ -4,10 +4,15 @@ import { eq, and, gte, lte, lt, desc, sql, isNull } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
-import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } from "../lib/http.ts";
+import { can, canAll, actor, param, notFound, bad, isoDay, attachment, LIMIT, HttpError, type Env } from "../lib/http.ts";
 import { weightedAvgRate } from "../lib/money.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 import { nextVoucherNo } from "../lib/vouchers.ts";
+import { parsePrefs, SUPPLIER_SHEET_COLUMNS, type SupplierSheetColumnKey } from "../lib/prefs.ts";
+import { readDevicePrefs } from "../lib/devicePrefs.ts";
+import { supplierChargesOf } from "../lib/supplierCharges.ts";
+import { supplierSheetXlsx, supplierSheetCsv, sheetTotals, type SupplierSheetRow, type SupplierSheetData, type SheetNames } from "../lib/supplierSheet.ts";
+import { dmy } from "../lib/parchaLabels.ts";
 
 /* The supplier (adati) ledger, Tally-style. What we owe a supplier is
      opening balance + every purchase (net × rate, on the slip's date) − every payment.
@@ -21,8 +26,8 @@ export const paymentRoutes = new Hono<Env>();
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 export const PAY_MODES = ["cash", "bank", "upi", "cheque"] as const;
 
-/** Purchases and payments per supplier, optionally up to (and including) a day. */
-async function sums(businessId: string, opts: { before?: string; upTo?: string; adatiId?: string } = {}) {
+/** Purchases and payments per supplier, optionally before a day, from a day, or up to (and including) one. */
+async function sums(businessId: string, opts: { before?: string; from?: string; upTo?: string; adatiId?: string } = {}) {
   const S = schema.purchaseSlips;
   const P = schema.payments;
   const sw = [eq(S.businessId, businessId)];
@@ -30,6 +35,7 @@ async function sums(businessId: string, opts: { before?: string; upTo?: string; 
   const pw = [eq(P.businessId, businessId), isNull(P.voidedAt)];
   if (opts.adatiId) { sw.push(eq(S.adatiId, opts.adatiId)); pw.push(eq(P.adatiId, opts.adatiId)); }
   if (opts.before) { sw.push(lt(S.slipDate, opts.before)); pw.push(lt(P.payDate, opts.before)); }
+  if (opts.from) { sw.push(gte(S.slipDate, opts.from)); pw.push(gte(P.payDate, opts.from)); }
   if (opts.upTo) { sw.push(lte(S.slipDate, opts.upTo)); pw.push(lte(P.payDate, opts.upTo)); }
   const bought = await db.select({
     adatiId: S.adatiId,
@@ -53,14 +59,11 @@ async function sums(businessId: string, opts: { before?: string; upTo?: string; 
   return { bought: new Map(bought.map((b) => [b.adatiId, b])), paid: new Map(paid.map((p) => [p.adatiId, p])) };
 }
 
-/** Every supplier with what is owed, as of a day (default: everything). */
-ledgerRoutes.get("/", can("ledger.read"), async (c) => {
-  const biz = c.get("auth")!.businessId!;
-  const asOf = c.req.query("asOf");
-  if (asOf && !ISO_DATE.test(asOf)) throw bad("Date must be YYYY-MM-DD");
+/** Every supplier with what is owed, as of a day (default: everything): the ledger list, and the pay sheet built from it. */
+async function ledgerList(biz: string, asOf?: string) {
   const suppliers = await db.select({
     id: schema.adati.id, nameHi: schema.adati.nameHi, nameHinglish: schema.adati.nameHinglish,
-    village: schema.adati.village, phone: schema.adati.phone, active: schema.adati.active,
+    village: schema.adati.village, villageHi: schema.adati.villageHi, phone: schema.adati.phone, active: schema.adati.active,
     openingBalancePaise: schema.adati.openingBalancePaise,
   }).from(schema.adati).where(eq(schema.adati.businessId, biz));
   const { bought, paid } = await sums(biz, { upTo: asOf });
@@ -96,7 +99,91 @@ ledgerRoutes.get("/", can("ledger.read"), async (c) => {
     toPayPaise: rows.filter((r) => r.balancePaise > 0).reduce((s, r) => s + r.balancePaise, 0),
     paidAheadPaise: rows.filter((r) => r.balancePaise < 0).reduce((s, r) => s - r.balancePaise, 0),
   };
-  return c.json({ rows, totals });
+  return { rows, totals };
+}
+
+ledgerRoutes.get("/", can("ledger.read"), async (c) => {
+  const asOf = c.req.query("asOf");
+  if (asOf && !ISO_DATE.test(asOf)) throw bad("Date must be YYYY-MM-DD");
+  return c.json(await ledgerList(c.get("auth")!.businessId!, asOf));
+});
+
+/**
+ * The supplier pay sheet, as Excel or CSV: what is to be paid, one row per adati.
+ *   mode=till  every adati with something to pay on `date`, largest first
+ *   mode=day   every adati with slips on `date`: that day's purchases, what
+ *              was paid that day, and what is to pay at the end of it
+ * Every figure is the ledger list's own sum. A slip with no rate yet counts
+ * its weight and no money, and the file says how many there are.
+ * ?mode=till|day&date=YYYY-MM-DD [&names=hi|hinglish|both] [&cols=a,b] [&format=xlsx|csv|json]
+ * Registered before "/:adatiId", which would otherwise take "sheet" for a supplier.
+ */
+ledgerRoutes.get("/sheet", canAll("export.data", "ledger.read"), async (c) => {
+  const auth = c.get("auth")!;
+  const biz = auth.businessId!;
+  const mode = c.req.query("mode") === "day" ? "day" : "till";
+  const date = c.req.query("date") ?? "";
+  if (!ISO_DATE.test(date)) throw bad("Pick a date", "bad_date");
+
+  const prefs = readDevicePrefs(auth.user.id) ?? parsePrefs(auth.user.prefs).dailyList;
+  const known = new Set<string>(SUPPLIER_SHEET_COLUMNS.map((x) => x.key));
+  const asked = new Set(c.req.query("cols")?.split(",").filter((k) => known.has(k)) ?? []);
+  const chosen = asked.size ? asked : new Set<string>(SUPPLIER_SHEET_COLUMNS.filter((x) => prefs.supplierSheetColumns[x.key]).map((x) => x.key));
+  // the name is always there: a sheet of figures with no one to pay is no use
+  const columns: SupplierSheetColumnKey[] = SUPPLIER_SHEET_COLUMNS.map((x) => x.key).filter((k) => k === "name" || chosen.has(k));
+  const n = c.req.query("names") ?? prefs.supplierSheetNames;
+  const names: SheetNames = n === "both" ? "both" : n === "hinglish" || n === "latin" ? "hinglish" : "hi";
+
+  const list = await ledgerList(biz, date);
+  const base = (r: (typeof list.rows)[number]) => ({
+    nameHi: r.nameHi, nameLatin: r.nameHinglish || r.nameHi,
+    village: (names === "hinglish" ? r.village || r.villageHi : r.villageHi || r.village) ?? "",
+  });
+  let rows: SupplierSheetRow[];
+  if (mode === "till") {
+    // the list is already largest first; "to pay" here adds up to its toPayPaise
+    rows = list.rows.filter((r) => r.balancePaise > 0).map((r) => ({
+      ...base(r), slips: r.slips, netGrams: r.netGrams, unpriced: r.unpriced,
+      goodsPaise: r.goodsPaise, commissionPaise: r.commissionPaise, gaushalaPaise: r.gaushalaPaise,
+      payablePaise: r.purchasesPaise, beforePaise: r.openingBalancePaise, paidPaise: r.paymentsPaise, toPayPaise: r.balancePaise,
+    }));
+  } else {
+    const day = await sums(biz, { from: date, upTo: date });
+    rows = list.rows.filter((r) => day.bought.has(r.id)).map((r) => {
+      const b = day.bought.get(r.id)!;
+      const paidThatDay = day.paid.get(r.id)?.amountPaise ?? 0;
+      return {
+        ...base(r), slips: b.slips, netGrams: b.netGrams, unpriced: b.unpriced,
+        goodsPaise: b.goodsPaise, commissionPaise: b.commissionPaise, gaushalaPaise: b.gaushalaPaise, payablePaise: b.amountPaise,
+        // the balance at the day's end, less what the day did to it
+        beforePaise: r.balancePaise - b.amountPaise + paidThatDay, paidPaise: paidThatDay, toPayPaise: r.balancePaise,
+      };
+    }).sort((a, b) => b.payablePaise - a.payablePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
+  }
+
+  const [business] = await db.select({ name: schema.businesses.name }).from(schema.businesses).where(eq(schema.businesses.id, biz)).limit(1);
+  const L = (await supplierChargesOf(biz)).labels;
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const data: SupplierSheetData = {
+    mode, date, madeAt: `${dmy(now.toLocaleDateString("en-CA"))} ${hhmm}`, businessName: business?.name ?? "",
+    names, columns, labels: { commission: L.commission, gaushala: L.gaushala, payable: L.payable }, rows,
+  };
+  const format = c.req.query("format") ?? "xlsx";
+  const fileBase = mode === "till" ? `pay-sheet-till-${date}` : `pay-sheet-${date}`;
+  if (format === "json") return c.json({ ...data, totals: sheetTotals(rows) });
+  if (format === "csv") {
+    return new Response(supplierSheetCsv(data), {
+      headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": attachment(`${fileBase}.csv`) },
+    });
+  }
+  const buf = await supplierSheetXlsx(data);
+  return new Response(new Uint8Array(buf), {
+    headers: {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": attachment(`${fileBase}.xlsx`),
+    },
+  });
 });
 
 /**
