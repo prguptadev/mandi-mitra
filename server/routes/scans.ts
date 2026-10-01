@@ -20,7 +20,7 @@ import {
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
 import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
-import { normRst, checkPages, slipMarks, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
+import { normRst, checkPages, slipMarks, hasRate, pageOrder, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
 import { approvedOnDays } from "../lib/parcha.ts";
 import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
@@ -40,6 +40,8 @@ export const scanRoutes = new Hono<Env>();
  * without killing it. The browser polls the batch instead of holding a socket
  * open, so nothing is lost by navigating away and coming back. */
 const inFlight = new Set<string>();
+/** Scans with one page being read again, and which page: the screen says so while it runs. */
+const rereading = new Map<string, number>();
 
 /** A process restart leaves reads orphaned; nothing is running for them. */
 export function recoverInterruptedScans() {
@@ -50,8 +52,15 @@ export function recoverInterruptedScans() {
     .filter((s) => SAFE_ID.test(s.id) && fs.existsSync(path.join(SCAN_DIR, s.id)));
   if (!stale.length) return 0;
   for (const s of stale) {
-    const b = db.select({ pagesDone: schema.scanBatches.pagesDone }).from(schema.scanBatches).where(eq(schema.scanBatches.id, s.id)).get();
+    const b = db.select({ pagesDone: schema.scanBatches.pagesDone, filePaths: schema.scanBatches.filePaths, parsedRows: schema.scanBatches.parsedRows })
+      .from(schema.scanBatches).where(eq(schema.scanBatches.id, s.id)).get();
     const done = b?.pagesDone ?? 0;
+    // one page was being read again: every page's lines from before are still there
+    if (b?.parsedRows && done >= (JSON.parse(b.filePaths) as unknown[]).length) {
+      db.update(schema.scanBatches).set({ status: "review", errorText: null, warningText: "The reader was interrupted while reading a page again. The lines read before are kept." })
+        .where(eq(schema.scanBatches.id, s.id)).run();
+      continue;
+    }
     db.update(schema.scanBatches).set(done > 0
       // pages already read are kept; "Read again" resumes after them
       ? { status: "failed", errorText: `The reader was interrupted. Pages 1–${done} are kept; press "Read again" to continue from page ${done + 1}.`, warningText: null }
@@ -286,11 +295,17 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   const range = await usualRateRange(businessId, batch.jinsId, batch.slipDate);
   // page, then position on the page — the same order everywhere
   const ordered = [...rows].sort((a, b) => (a.page ?? 1) - (b.page ?? 1) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
-  const marks = slipMarks(rows);
   const meta = JSON.parse(batch.pageMeta ?? "[]") as PageMeta[];
+  /* Pages put in the wrong order (page 1 runs 31–60): the sheet is asked to
+     be put in order first. Until then the top of a page is not "lines
+     missing" — it is the other page's place. */
+  const order = pageOrder(rows);
+  const head = [...meta].sort((a, b) => a.page - b.page)[0];
+  const orderKept = Boolean(order && head?.confirmed?.includes("order") && head.confirmedFor?.order === order.join(","));
+  const marks = slipMarks(rows).filter((m) => !(order && !orderKept && m.code === "sr_top"));
   const rowsChecked = (page: number) => (meta.find((m) => m.page === page)?.confirmed ?? []).includes("rows");
   const netPages = new Set(rows.filter((r) => r.ocr.netQtl != null).map((r) => r.page ?? 1));
-  const ratePages = new Set(rows.filter((r) => !r.excluded && (r.ratePaisePerQtl ?? 0) > 0).map((r) => r.page ?? 1));
+  const ratePages = new Set(rows.filter((r) => !r.excluded && hasRate(r)).map((r) => r.page ?? 1));
   const checked: CheckedRow[] = ordered.map((r) => {
     const c = checkRow(r, {
       katauti, resolve: resolver.resolve, byId: resolver.byId, existingRst, dupeInBatch,
@@ -311,7 +326,7 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
     }
     return c;
   });
-  const pageChecks = checkPages(meta, checked, batch.slipDate, marks, await headerDiffers(businessId, batch, meta));
+  const pageChecks = checkPages(meta, checked, batch.slipDate, marks, { ...(await headerDiffers(businessId, batch, meta)), order });
 
   const active = checked.filter((r) => !r.excluded);
   return {
@@ -496,8 +511,10 @@ async function performRead(opts: {
   actorInfo: { userId: string | null; userName: string | null };
   /** Pages already read by an attempt that stopped at a quota limit. */
   resumeFrom?: number; resumeRows?: ReviewRow[];
+  /** Read only this page (1-based) again; every other page's lines stay as they are. */
+  only?: number;
 }) {
-  const { biz, id, apiKey, cfg, wanted } = opts;
+  const { biz, id, apiKey, cfg, wanted, only } = opts;
   const batch = await loadBatch(biz, id);
   const files: { name: string; mimeType: string }[] = JSON.parse(batch.filePaths);
 
@@ -529,16 +546,33 @@ async function performRead(opts: {
     return null;
   }
 
-  const collected: ReviewRow[] = [...(opts.resumeRows ?? [])];
+  const before: ReviewRow[] = batch.parsedRows ? JSON.parse(batch.parsedRows) : [];
+  const collected: ReviewRow[] = only ? before.filter((r) => (r.page ?? 1) !== only) : [...(opts.resumeRows ?? [])];
   // header date and bottom total of each page, kept for the page checks
-  const pageMeta: PageMeta[] = opts.resumeFrom
+  const pageMeta: PageMeta[] = only
+    ? (JSON.parse(batch.pageMeta ?? "[]") as PageMeta[]).filter((m) => m.page !== only)
+    : opts.resumeFrom
     ? (JSON.parse(batch.pageMeta ?? "[]") as PageMeta[]).filter((m) => m.page <= opts.resumeFrom!)
     : [];
   const notes: string[] = [];
-  let tokensIn = 0, tokensOut = 0;
+  let tokensIn = batch.tokensIn ?? 0, tokensOut = batch.tokensOut ?? 0;
+  if (!only && !opts.resumeFrom) { tokensIn = 0; tokensOut = 0; }
   let modelUsed = wanted ?? cfg.model;
 
-  for (let p = opts.resumeFrom ?? 0; p < files.length; p++) {
+  /** A page read again that could not be read: the sheet stays as it was, and says so. */
+  const keepAsWas = async (why: string) => {
+    await db.update(schema.scanBatches).set({
+      status: "review", errorText: null,
+      warningText: `Page ${only} could not be read again: ${why} Its lines are as they were.`,
+    }).where(eq(schema.scanBatches.id, id));
+    await audit({
+      actor: { ...opts.actorInfo, businessId: biz },
+      action: "scan.read.fail", entity: "scan_batch", entityId: id,
+      entityLabel: `page ${only} read again: ${why}`,
+    });
+  };
+
+  for (let p = only ? only - 1 : opts.resumeFrom ?? 0; p < (only ?? files.length); p++) {
     const image = [{
       base64: fs.readFileSync(scanFile(id, files[p].name)).toString("base64"),
       mimeType: files[p].mimeType,
@@ -611,6 +645,18 @@ async function performRead(opts: {
     tokensIn += result.tokensIn ?? 0;
     tokensOut += result.tokensOut ?? 0;
 
+    if (only && (result.quota || !result.ok || !result.page)) {
+      await db.update(schema.scanBatches).set({ tokensIn, tokensOut }).where(eq(schema.scanBatches.id, id));
+      await keepAsWas(result.error ?? "the reader stopped.");
+      return;
+    }
+    // a page that had lines, read again as empty, is a bad read: its lines are not thrown away for it
+    if (only && result.page && !result.page.rows.length && before.some((r) => (r.page ?? 1) === only)) {
+      await db.update(schema.scanBatches).set({ tokensIn, tokensOut }).where(eq(schema.scanBatches.id, id));
+      await keepAsWas("no line was read on it.");
+      return;
+    }
+
     if (result.quota) {
       // keep what was read; "Read again" resumes from this page instead of page 1
       await db.update(schema.scanBatches).set({
@@ -653,10 +699,16 @@ async function performRead(opts: {
     } else {
       modelUsed = result.model;
       if (result.truncated) notes.push(`page ${p + 1} reply was cut short; complete rows were kept`);
-      const offset = collected.length;
+      // after every line already held, so a page read again never takes another page's line number
+      const offset = collected.reduce((n, r) => Math.max(n, (Number(r.id.slice(1)) || 0) + 1), 0);
       for (const [i, r] of result.page.rows.entries()) {
         // the page is the image's position — never the model's guess
         collected.push(ocrToReviewRow({ ...r, page: p + 1 }, offset + i));
+      }
+      if (only) {
+        // in page order, as a whole read leaves them
+        collected.sort((a, b) => (a.page ?? 1) - (b.page ?? 1) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
+        notes.push(`page ${p + 1} was read again: ${result.page.rows.length} lines`);
       }
       pageMeta.push({
         page: p + 1, date: result.page.date ?? null, millName: result.page.millName ?? null,
@@ -668,9 +720,9 @@ async function performRead(opts: {
 
     // save after every page so the grid fills in while the rest is read
     await db.update(schema.scanBatches).set({
-      pageMeta: JSON.stringify(pageMeta),
+      pageMeta: JSON.stringify([...pageMeta].sort((a, b) => a.page - b.page)),
       parsedRows: JSON.stringify(collected),
-      pagesDone: p + 1,
+      pagesDone: only ? files.length : p + 1,
       model: modelUsed,
       tokensIn, tokensOut,
     }).where(eq(schema.scanBatches.id, id));
@@ -702,7 +754,9 @@ async function performRead(opts: {
   await audit({
     actor: { ...opts.actorInfo, businessId: biz },
     action: "scan.read", entity: "scan_batch", entityId: id,
-    entityLabel: `${collected.length} rows from ${files.length} page(s) via ${modelUsed}`,
+    entityLabel: only
+      ? `page ${only} of ${files.length} read again via ${modelUsed}: ${collected.filter((r) => r.page === only).length} rows`
+      : `${collected.length} rows from ${files.length} page(s) via ${modelUsed}`,
     after: { rows: collected.length, pages: files.length, model: modelUsed, tokensIn, tokensOut, notes },
   });
 }
@@ -712,7 +766,7 @@ async function performRead(opts: {
  * Starts reading a scan in the background. Used by the Read button and by
  * the scanner folder (auto-read). Throws the same errors the button shows.
  */
-export async function startRead(biz: string, id: string, actorInfo: { userId: string | null; userName: string | null }, req: { model?: string; force?: boolean } = {}) {
+export async function startRead(biz: string, id: string, actorInfo: { userId: string | null; userName: string | null }, req: { model?: string; force?: boolean; page?: number } = {}) {
   const batch = await loadBatch(biz, id);
   if (batch.status === "committed") throw new HttpError(409, "This scan is already on the daily list", "already_committed");
   if (inFlight.has(id)) return { started: true, alreadyRunning: true };
@@ -725,38 +779,55 @@ export async function startRead(biz: string, id: string, actorInfo: { userId: st
   const cfg = cfgRaw ? GeminiConfigSchema.parse(JSON.parse(cfgRaw)) : defaultGeminiConfig();
   const wanted = req.model;
   const files: { name: string }[] = JSON.parse(batch.filePaths);
-  assertImagesHere(id, files);
+  /* One page read again (its answer was cut short, or it was read badly):
+     only that page's lines are replaced; every other page, and the changes
+     made on it, stay. The screen asks before it sends this. */
+  const only = req.page;
+  if (only !== undefined) {
+    if (!Number.isInteger(only) || only < 1 || only > files.length) throw bad(`This scan has ${files.length} page(s)`, "no_page");
+    if (batch.status !== "review" || pagesRead(batch) < files.length) {
+      throw new HttpError(409, "One page can be read again once every page of the sheet is read.", "not_read");
+    }
+    assertImagesHere(id, [files[only - 1]]);
+  } else assertImagesHere(id, files);
   const partial: ReviewRow[] = batch.parsedRows ? JSON.parse(batch.parsedRows) : [];
-  const resume = batch.status === "failed" && batch.pagesDone > 0 && batch.pagesDone < files.length;
+  const resume = only === undefined && batch.status === "failed" && batch.pagesDone > 0 && batch.pagesDone < files.length;
   // a full read replaces every row: ask first whenever there are rows to lose
-  if ((batch.status === "review" || (!resume && partial.length > 0)) && !req.force) {
+  if (only === undefined && (batch.status === "review" || (!resume && partial.length > 0)) && !req.force) {
     throw new HttpError(409, "This sheet is already read. Reading it again replaces every row and your edits, and uses one read per page.", "confirm_reread");
   }
 
   await db.update(schema.scanBatches)
-    .set(resume
+    .set(resume || only
       ? { status: "reading", errorText: null, warningText: null }
       : { status: "reading", errorText: null, warningText: null, pagesDone: 0, parsedRows: null, pageMeta: null })
     .where(eq(schema.scanBatches.id, id));
 
   inFlight.add(id);
+  if (only) rereading.set(id, only);
   void performRead({
     biz, id, apiKey, cfg, wanted, actorInfo,
     ...(resume ? { resumeFrom: batch.pagesDone, resumeRows: partial } : {}),
+    ...(only ? { only } : {}),
   })
     .catch(async (err) => {
       console.error("[scan]", id, err);
-      await db.update(schema.scanBatches).set({
-        status: "failed",
-        errorText: err instanceof Error ? err.message : "The reader stopped unexpectedly",
-      }).where(eq(schema.scanBatches.id, id));
+      await db.update(schema.scanBatches).set(only
+        // the other pages' lines are all still there: the sheet stays as it was
+        ? { status: "review", warningText: `Page ${only} could not be read again: ${err instanceof Error ? err.message : "the reader stopped."} Its lines are as they were.` }
+        : { status: "failed", errorText: err instanceof Error ? err.message : "The reader stopped unexpectedly" },
+      ).where(eq(schema.scanBatches.id, id));
     })
-    .finally(() => inFlight.delete(id));
+    .finally(() => { inFlight.delete(id); rereading.delete(id); });
   return { started: true };
 }
 
 scanRoutes.post("/:id/run", can("scan.create"), async (c) => {
-  const reqBody = (await c.req.json().catch(() => ({}))) as { model?: string; force?: boolean };
+  const reqBody = z.object({
+    model: z.string().trim().min(3).max(80).optional(),
+    force: z.boolean().optional(),
+    page: z.number().int().min(1).optional(),
+  }).parse(await c.req.json().catch(() => ({})));
   const actorInfo = { userId: c.get("auth")!.user.id, userName: c.get("auth")!.user.name };
   return c.json(await startRead(c.get("auth")!.businessId!, param(c, "id"), actorInfo, reqBody ?? {}));
 });
@@ -887,6 +958,7 @@ scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
     slipDate: batch.slipDate, merchantId: batch.merchantId, jinsId: batch.jinsId,
     model: batch.model, errorText: batch.errorText, warningText: batch.warningText,
     running: inFlight.has(batch.id),
+    rereadPage: rereading.get(batch.id) ?? null,
     pagesDone: pagesRead(batch),
     tokensIn: batch.tokensIn, tokensOut: batch.tokensOut,
     createdAt: batch.createdAt, reviewedAt: batch.reviewedAt,
@@ -929,7 +1001,12 @@ scanRoutes.get("/:id/page/:index", can("scan.review", "scan.create"), async (c) 
   const biz = c.get("auth")!.businessId!;
   const batch = await loadBatch(biz, param(c, "id"));
   const files: { name: string; mimeType: string }[] = JSON.parse(batch.filePaths);
-  const file = files[Number(param(c, "index"))];
+  /* The screen asks for a page by its place and its file name. Pictures are
+     kept in the browser for an hour, and putting the pages in order changes
+     which picture is at a place: by name, the picture shown beside a page's
+     lines is always that page's, never one cached from before the move. */
+  const byName = c.req.query("f");
+  const file = byName ? files.find((x) => x.name === byName) : files[Number(param(c, "index"))];
   if (!file) throw notFound("Page not found");
   const full = scanFile(batch.id, file.name);
   if (!fs.existsSync(full)) throw notFound("This page's picture is on the computer that scanned it");
@@ -1027,7 +1104,7 @@ scanRoutes.put("/:id/page-confirm", can("scan.review"), async (c) => {
   const id = param(c, "id");
   const { page, what, on } = z.object({
     page: z.number().int().min(1),
-    what: z.enum(["rows", "date", "total", "cut", "count", "struck", "mill", "jins", "norate"]),
+    what: z.enum(["rows", "date", "total", "cut", "count", "struck", "mill", "jins", "norate", "order"]),
     on: z.boolean(),
   }).parse(await c.req.json());
   const batch = await loadBatch(biz, id);
@@ -1196,20 +1273,30 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
 });
 
 /**
- * Put the pages in the right order before they are read. The order matters:
- * the model reads them as one continuous list, and the daily list keeps that
- * order. Only allowed before reading, since the row-to-page mapping comes from
- * the read itself.
+ * Put the pages in the right order. The order matters: the daily list keeps
+ * it, and each page's first line follows the last line of the page before.
+ * Before reading, only the pictures move. Once every page is read — each on
+ * its own, so a page's lines belong to its picture whatever its place — the
+ * lines, the header and the ticks of each page move with its picture, and
+ * nothing is read again.
  */
 scanRoutes.put("/:id/order", can("scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const id = param(c, "id");
+  const { order, rev } = z.object({
+    order: z.array(z.number().int().min(0)),
+    rev: z.string().max(64).optional(),
+  }).parse(await c.req.json());
   const batch = await loadBatch(biz, id);
-  if (!["uploaded", "failed"].includes(batch.status) || batch.pagesDone > 0) {
-    throw new HttpError(409, "Pages can only be reordered before the sheet is read", "already_read");
-  }
   const files: { name: string; mimeType: string; bytes: number }[] = JSON.parse(batch.filePaths);
-  const { order } = z.object({ order: z.array(z.number().int().min(0)) }).parse(await c.req.json());
+  const unread = ["uploaded", "failed"].includes(batch.status) && batch.pagesDone === 0;
+  const read = batch.status === "review" && pagesRead(batch) === files.length;
+  if (!unread && !read) {
+    throw new HttpError(409, "Pages can be put in order before the sheet is read, or once every page of it is read", "already_read");
+  }
+  if (read && rev && rev !== revOf(batch)) {
+    throw new HttpError(409, "Someone else changed this sheet while you were on it. It has been loaded again: check your last change.", "stale_rows");
+  }
 
   const valid = order.length === files.length
     && new Set(order).size === files.length
@@ -1217,15 +1304,27 @@ scanRoutes.put("/:id/order", can("scan.create"), async (c) => {
   if (!valid) throw bad("The new order must list every page exactly once", "bad_order");
 
   const next = order.map((i) => files[i]);
-  await db.update(schema.scanBatches).set({ filePaths: JSON.stringify(next) })
-    .where(eq(schema.scanBatches.id, id));
+  // page n now is the picture that was at order[n - 1]
+  const moved = (page: number) => order.indexOf(page - 1) + 1;
+  const rows: ReviewRow[] = read ? JSON.parse(batch.parsedRows ?? "[]") : [];
+  const meta: PageMeta[] = read ? JSON.parse(batch.pageMeta ?? "[]") : [];
+  await db.update(schema.scanBatches).set({
+    filePaths: JSON.stringify(next),
+    ...(read ? {
+      parsedRows: JSON.stringify(rows.map((r) => ({ ...r, page: moved(r.page ?? 1) }))),
+      pageMeta: JSON.stringify(meta.map((m) => ({ ...m, page: moved(m.page) })).sort((a, b) => a.page - b.page)),
+    } : {}),
+  }).where(and(eq(schema.scanBatches.id, id), eq(schema.scanBatches.status, batch.status)));
   await refreshScanMeta(biz, id);
   await audit({
     actor: actor(c), action: "scan.reorder", entity: "scan_batch", entityId: id,
-    entityLabel: `pages reordered`,
+    entityLabel: read ? `pages put in order after reading: ${order.map((i) => i + 1).join(", ")}` : `pages reordered`,
     before: files.map((f) => f.name), after: next.map((f) => f.name),
   });
-  return c.json({ ok: true, pages: next.map((f, i) => ({ index: i, name: f.name, mimeType: f.mimeType, bytes: f.bytes })) });
+  const pages = next.map((f, i) => ({ index: i, name: f.name, mimeType: f.mimeType, bytes: f.bytes }));
+  if (!read) return c.json({ ok: true, pages });
+  const fresh = await loadBatch(biz, id);
+  return c.json({ ok: true, pages, ...(await checkAll(biz, fresh)), rev: revOf(fresh) });
 });
 
 /**

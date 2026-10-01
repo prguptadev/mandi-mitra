@@ -294,8 +294,10 @@ export function checkRow(
       code: "rate_missing",
       /* Never a silent ₹0. On a page that carries rates this line's rate is
          typed, or ✓'d as "not on the paper yet, price it later"; a page with
-         no rate at all is asked about once, for the whole page. */
-      level: confirmedField(row, "rate") || opts.pageHasRate === false ? "warn" : "error",
+         no rate at all is asked about once, for the whole page. A rate that
+         is written but could not be read ("34S0") is on the paper: it is
+         typed, never put off to later. */
+      level: !rateRead && (confirmedField(row, "rate") || opts.pageHasRate === false) ? "warn" : "error",
       message: rateRead ? `Rate read as "${rateRead}", which is not a number — type it` : "Rate could not be read — type it, or ✓ to fill it in later",
       ...(rateRead ? { params: { read: rateRead } } : {}),
     });
@@ -318,6 +320,9 @@ export function checkRow(
     blocking: issues.some((i) => i.level === "error"),
   };
 }
+
+/** A line that carries a rate: a figure, or something written in the rate column that is not one yet. */
+export const hasRate = (r: ReviewRow) => (r.ratePaisePerQtl ?? 0) > 0 || Boolean(r.ocr.unreadable?.rate);
 
 /** RST values that appear more than once in the batch. */
 export function findDupes(rows: ReviewRow[]): Set<string> {
@@ -378,7 +383,7 @@ export interface PageMeta {
 }
 export type PageCheckCode =
   | "page_total" | "page_date" | "page_rows" | "page_cut" | "page_count" | "page_struck"
-  | "page_mill" | "page_jins" | "page_norate";
+  | "page_mill" | "page_jins" | "page_norate" | "page_order";
 export type PageCheck = {
   page: number; code: PageCheckCode; params: Record<string, string | number>; confirmed: boolean;
   /** The value a tick is tied to (see PageMeta.confirmedFor). */
@@ -397,7 +402,7 @@ export interface HeaderDiffers { page: number; written: string; id: string | nul
  */
 export function checkPages(
   meta: PageMeta[], rows: CheckedRow[], slipDate: string | null, marks: SlipMark[] = [],
-  ctx: { mill?: HeaderDiffers | null; jins?: HeaderDiffers | null; today?: Date } = {},
+  ctx: { mill?: HeaderDiffers | null; jins?: HeaderDiffers | null; today?: Date; order?: number[] | null } = {},
 ) {
   const out: PageCheck[] = [];
   const add = (page: number, code: PageCheckCode, params: Record<string, string | number>, stamp: string) => {
@@ -474,9 +479,13 @@ export function checkPages(
       }, struck.map((r) => r.id).join(","));
     }
 
+    // a rate written but not read is still a rate on this page: the page is not "without rates"
     const live = mine.filter((r) => !r.excluded);
-    if (live.length && !live.some((r) => (r.ratePaisePerQtl ?? 0) > 0)) add(m.page, "page_norate", { n: live.length }, "");
+    if (live.length && !live.some(hasRate)) add(m.page, "page_norate", { n: live.length }, "");
   }
+
+  // the pages' line numbers run in another order than the pages: one tap puts them right
+  if (ctx.order && pages.length) add(pages[0].page, "page_order", { order: ctx.order.join(", "), firstPage: ctx.order[0] }, ctx.order.join(","));
 
   for (const [code, h] of [["page_mill", ctx.mill], ["page_jins", ctx.jins]] as const) {
     if (h) add(h.page, code, { written: h.written, id: h.id ?? "", label: h.label, filed: h.filed }, `${h.id ?? "own"}|${h.filedId ?? "own"}`);
@@ -519,6 +528,30 @@ export function srBreaks(rows: ReviewRow[]) {
     lastOfPrev = prev == null ? null : prev + between;
   }
   return out;
+}
+
+/**
+ * The order the pages belong in, when their line numbers say they were put
+ * in the wrong order (page 1 runs 31–60 and page 2 runs 1–30): the pages as
+ * they are now, listed in the order they should be. null when they are in
+ * order, when each page starts again at 1, or when the numbers do not tell.
+ */
+export function pageOrder(rows: ReviewRow[]): number[] | null {
+  const pages = [...new Set(rows.map((r) => r.page ?? 1))].sort((a, b) => a - b);
+  if (pages.length < 2) return null;
+  const span = pages.map((page) => {
+    // a crossed-out line is still a line of its page: its number places the page too
+    const srs = rows.filter((r) => (r.page ?? 1) === page && r.ocr.srNo != null)
+      .sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1))).map((r) => r.ocr.srNo!);
+    return { page, first: srs[0] ?? null, last: srs.length ? Math.max(...srs) : null };
+  });
+  // a page without line numbers cannot be placed
+  if (span.some((s) => s.first == null)) return null;
+  if (span.every((s, i) => i === 0 || s.first! >= span[i - 1].first!)) return null;
+  const sorted = [...span].sort((a, b) => a.first! - b.first!);
+  // the pages, so put, must follow on from each other without overlapping
+  if (!sorted.every((s, i) => i === 0 || s.first! > sorted[i - 1].last!)) return null;
+  return sorted.map((s) => s.page);
 }
 
 export type SlipMark = { page: number; rowId: string; code: "sr_gap" | "sr_repeat" | "sr_back" | "sr_top" | "name_only" | "figures_only"; params: Record<string, string | number> };
