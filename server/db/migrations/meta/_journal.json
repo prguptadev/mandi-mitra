@@ -148,6 +148,13 @@
       "when": 1790531658918,
       "tag": "0020_mill_mandi_licence",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1790872135638,
+      "tag": "0021_parcha_no_repeats",
+      "breakpoints": true
     }
   ]
 }

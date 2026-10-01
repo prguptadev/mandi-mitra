@@ -418,7 +418,9 @@ export const parchas = sqliteTable(
     createdAt: integer("created_at").notNull().$defaultFn(now),
   },
   (t) => ({
-    uq: uniqueIndex("parcha_no_uq").on(t.businessId, t.parchaNo, t.version),
+    // not unique: a number may be on two trucks (a warning), and two computers
+    // can give the same number its first version before either sees the other's
+    noIdx: index("parcha_no_idx").on(t.businessId, t.parchaNo),
     loadIdx: index("parcha_load_idx").on(t.loadId),
     dateIdx: index("parcha_biz_date_idx").on(t.businessId, t.invoiceDate),
     // one live parcha per truck: a second approval can never slip in beside it

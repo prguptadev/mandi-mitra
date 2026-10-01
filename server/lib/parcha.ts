@@ -133,6 +133,10 @@ export function revisions(all: { id: string; loadId: string }[]) {
   return out;
 }
 
+/** The frozen paper with the revision it prints. Parchas approved before the paper kept it
+ *  take the figure the register and truck page show, so paper and screens agree. */
+export const withRevision = (doc: ParchaDoc, revision: number): ParchaDoc => (doc.revision != null ? doc : { ...doc, revision });
+
 /**
  * Invoice numbers are numeric on paper (196); suggest the next one: one past
  * the highest of the financial year `onDate` falls in, or — the first parcha
@@ -483,7 +487,7 @@ export async function loadState(businessId: string, loadId: string) {
     blockers,
     warnings,
     doc,
-    approved: approved ? { ...approved, snapshot: undefined, revision: revisionAt(approved.id), doc: JSON.parse(approved.snapshot) as ParchaDoc } : null,
+    approved: approved ? { ...approved, snapshot: undefined, revision: revisionAt(approved.id), doc: withRevision(JSON.parse(approved.snapshot) as ParchaDoc, revisionAt(approved.id)) } : null,
     /* The approved parcha is frozen. When the figures behind it have moved
        since (a slip's rate on one of its days, the mill's charges), say what
        it would be now, so the owner can void and re-approve — or leave it. */
