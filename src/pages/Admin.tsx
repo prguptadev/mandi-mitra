@@ -512,7 +512,7 @@ function BooksCheckCard() {
   const [open, setOpen] = useState(false);
   const q = useQuery({
     queryKey: ["books-check"],
-    queryFn: () => api.get<{ businesses: { name: string; sections: { title: string; lines: { ok: boolean | null; text: string }[] }[]; problems: number }[]; problems: number; at: number }>("/audit/books-check"),
+    queryFn: () => api.get<{ businesses: { name: string; sections: { title: string; lines: { ok: boolean | null; text: string; warn?: boolean }[] }[]; problems: number }[]; problems: number; warnings?: number; at: number }>("/audit/books-check"),
     enabled: false, retry: false, staleTime: Infinity,
   });
   if (!can("audit.read")) return null;
@@ -524,8 +524,10 @@ function BooksCheckCard() {
       {q.isError && <div className="p-4"><Alert tone="bad">{q.error instanceof ApiError ? q.error.message : t("common.somethingWrong")}</Alert></div>}
       {r && open && (
         <div className="space-y-3 p-4">
-          <Alert tone={r.problems ? "bad" : "ok"}>
+          <Alert tone={r.problems ? "bad" : r.warnings ? "warn" : "ok"}>
             <span className="font-semibold">{r.problems ? t("books.problems", { n: r.problems }) : t("books.ok")}</span>
+            {/* not arithmetic errors, but things a person should open: never shown as a tick */}
+            {r.warnings ? <span className="ml-2">{t("books.warnings", { n: r.warnings })}</span> : null}
             <span className="ml-2 text-[11px] opacity-80">{t("books.at", { at: fmtDateTime(r.at, lang) })}</span>
           </Alert>
           {r.businesses.map((b) => (
@@ -535,8 +537,8 @@ function BooksCheckCard() {
                   <p className="mb-1.5 text-[12px] font-semibold text-ink">{sec.title}</p>
                   <ul className="space-y-1 text-[12px] leading-snug">
                     {sec.lines.map((l, i) => (
-                      <li key={i} className={cn("flex gap-2", l.ok === false ? "text-bad" : l.ok === true ? "text-ink" : "text-muted")}>
-                        <span className="shrink-0 font-mono">{l.ok === true ? "✓" : l.ok === false ? "✗" : "·"}</span>
+                      <li key={i} className={cn("flex gap-2", l.ok === false ? "text-bad" : l.ok === true ? "text-ink" : l.warn ? "font-medium text-warn" : "text-muted")}>
+                        <span className="shrink-0 font-mono">{l.ok === true ? "✓" : l.ok === false ? "✗" : l.warn ? "!" : "·"}</span>
                         <span className="num break-words">{l.text}</span>
                       </li>
                     ))}

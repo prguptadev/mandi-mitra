@@ -1,36 +1,44 @@
 import type Database from "better-sqlite3";
-import { amountPaise } from "./money.ts";
+import { amountPaise, divHalfUp } from "./money.ts";
 import { deriveKatauti, ChargeConfigSchema, type Katauti } from "./charges.ts";
 import type { ParchaDoc } from "./parcha.ts";
+import { rstKey, dayGap, RST_WINDOW_DAYS } from "./slipChecks.ts";
 
 /* An independent audit of every rupee and quintal, read-only. It does not
    use the app's routes or its stored totals: each figure is re-worked from
    the raw rows and anything that disagrees is named. The Audit screen runs
    it on the live books; scripts/money-check.ts runs it on a copy. */
 
-export interface CheckLine { ok: boolean | null; text: string }
+/** ok: true = re-works, false = a figure that does not (a problem), null = a note.
+ *  A note with `warn` is something a person should look at: it is not an
+ *  arithmetic error, so it does not count as a problem, but it is never a tick. */
+export interface CheckLine { ok: boolean | null; text: string; warn?: boolean }
 export interface CheckSection { title: string; lines: CheckLine[] }
-export interface BusinessCheck { businessId: string; name: string; sections: CheckSection[]; problems: number }
-export interface BooksCheck { businesses: BusinessCheck[]; problems: number; at: number }
+export interface BusinessCheck { businessId: string; name: string; sections: CheckSection[]; problems: number; warnings: number }
+export interface BooksCheck { businesses: BusinessCheck[]; problems: number; warnings: number; at: number }
 
 const rs = (p: number) => ((p || 0) / 100 + 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const qt = (g: number) => (g / 100_000).toFixed(2);
 const DEFAULT_K: Katauti = { mode: "per_quintal_rounded", kgPerUnit: 1, rounding: "half_up" } as Katauti;
 const fyOf = (iso: string) => { const y = Number(iso.slice(0, 4)); return Number(iso.slice(5, 7)) >= 4 ? y : y - 1; };
+const dm = (iso: string) => `${iso.slice(8, 10)}-${iso.slice(5, 7)}-${iso.slice(0, 4)}`;
+/** A long list is named in part: the screen has the rest. */
+const some = (items: string[], n = 15) => items.slice(0, n).join("; ") + (items.length > n ? `; and ${items.length - n} more` : "");
 
 export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksCheck {
   const all = <T,>(sql: string, ...p: unknown[]) => db.prepare(sql).all(...p) as T[];
-  const out: BooksCheck = { businesses: [], problems: 0, at: Math.floor(Date.now() / 1000) };
+  const out: BooksCheck = { businesses: [], problems: 0, warnings: 0, at: Math.floor(Date.now() / 1000) };
   const bizList = all<{ id: string; name: string }>("select id, name from businesses" + (onlyBusiness ? " where id = ?" : ""), ...(onlyBusiness ? [onlyBusiness] : []));
 
   for (const biz of bizList) {
-    const B: BusinessCheck = { businessId: biz.id, name: biz.name, sections: [], problems: 0 };
+    const B: BusinessCheck = { businessId: biz.id, name: biz.name, sections: [], problems: 0, warnings: 0 };
     out.businesses.push(B);
     let cur: CheckSection = { title: "", lines: [] };
     const section = (title: string) => { cur = { title, lines: [] }; B.sections.push(cur); };
     const bad = (text: string) => { B.problems++; out.problems++; cur.lines.push({ ok: false, text }); };
     const ok = (text: string) => cur.lines.push({ ok: true, text });
     const note = (text: string) => cur.lines.push({ ok: null, text });
+    const look = (text: string) => { B.warnings++; out.warnings++; cur.lines.push({ ok: null, warn: true, text }); };
 
     const mills = all<{ id: string; code: string; charge_config: string; opening_balance_paise: number }>("select id, code, charge_config, opening_balance_paise from merchants where business_id = ?", biz.id);
     const kOf = new Map<string, Katauti>();
@@ -81,6 +89,39 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     const owedFor = (x: { amount_paise: number; payable_paise?: number }) => x.payable_paise ?? x.amount_paise;
     const unpriced = slips.filter((s) => !s.rate_paise_per_qtl);
     if (unpriced.length) note(`${unpriced.length} slip(s) have no rate yet and count as ₹0 until priced`);
+    /* 1c. the same weighbridge slip on the books twice. RST numbers repeat, so
+       across dates only the same RST with the same gross weight counts — the
+       same sheet entered again. Each is for a person to open, not an error. */
+    {
+      const supplierOf = new Map(all<{ id: string; name_hi: string }>("select id, name_hi from adati where business_id = ?", biz.id).map((a) => [a.id, a.name_hi]));
+      const byDay = new Map<string, Slip[]>();
+      const byWeight = new Map<string, Slip[]>();
+      for (const s of slips) {
+        const k = rstKey(s.rst_no);
+        const dk = `${s.slip_date}|${k}`;
+        if (!byDay.has(dk)) byDay.set(dk, []);
+        byDay.get(dk)!.push(s);
+        const wk = `${k}|${s.gross_grams}`;
+        if (!byWeight.has(wk)) byWeight.set(wk, []);
+        byWeight.get(wk)!.push(s);
+      }
+      const sameDay = [...byDay.values()].filter((g) => g.length > 1)
+        .sort((a, b) => b[0].slip_date.localeCompare(a[0].slip_date))
+        .map((g) => `${dm(g[0].slip_date)} RST ${g[0].rst_no} ×${g.length}`);
+      if (sameDay.length) look(`${sameDay.length} RST number(s) appear more than once on one day — open the daily list and check none is entered twice: ${some(sameDay)}`);
+      // dates within 30 days of each other, one group per run of dates
+      const twice: string[] = [];
+      for (const g of byWeight.values()) {
+        const dates = [...new Set(g.map((s) => s.slip_date))].sort();
+        if (dates.length < 2) continue;
+        const near = dates.filter((d, i) => (i > 0 && dayGap(dates[i - 1], d) <= RST_WINDOW_DAYS) || (i < dates.length - 1 && dayGap(d, dates[i + 1]) <= RST_WINDOW_DAYS));
+        if (near.length < 2) continue;
+        const names = new Set(g.filter((s) => near.includes(s.slip_date)).map((s) => supplierOf.get(s.adati_id) ?? s.adati_id));
+        twice.push(`RST ${g[0].rst_no} ${qt(g[0].gross_grams)} qtl on ${near.map(dm).join(", ")}${names.size > 1 ? ` (${names.size} different suppliers)` : ""}`);
+      }
+      if (twice.length) look(`${twice.length} slip(s) have the same RST and the same weight on two or more dates — likely one sheet entered twice; check before paying: ${some(twice.sort())}`);
+      else ok("no RST is on the books twice with the same weight on another date");
+    }
 
     // 2. suppliers
     section("2. Supplier ledger (what we owe)");
@@ -173,30 +214,82 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     if (orphanRecs.length) bad(`${orphanRecs.length} receipt(s) point at a mill that is not in this business`);
     if (!recs.length) note("no money from mills recorded yet — every approved parcha counts as still owed");
 
-    // 5. stock: bought − loaded, per mill
+    // 5. stock: bought − loaded, per mill, then per mill, commodity and purchase day
     section("5. Stock (bought − loaded)");
-    const lines = all<{ load_id: string; net_grams: number | null }>("select load_id, net_grams from load_lines where business_id = ?", biz.id);
-    let stockValue = 0;
+    const lines = all<{ id: string; load_id: string; jins_id: string; stock_date: string; net_grams: number | null; rate_paise_per_qtl: number | null }>(
+      "select id, load_id, jins_id, stock_date, net_grams, rate_paise_per_qtl from load_lines where business_id = ? order by sort, created_at", biz.id);
+    /* Each truck row's weight: typed, or for the one blank row whatever the
+       mill's net leaves after the typed rows (the rest get nothing). */
+    const weightOf = new Map<string, number>();
+    const linesOf = new Map<string, typeof lines>();
+    for (const x of lines) { if (!linesOf.has(x.load_id)) linesOf.set(x.load_id, []); linesOf.get(x.load_id)!.push(x); }
+    for (const l of loads) {
+      const rows = linesOf.get(l.id) ?? [];
+      const typed = rows.reduce((s, x) => s + (x.net_grams ?? 0), 0);
+      let restGiven = false;
+      for (const x of rows) {
+        if (x.net_grams != null) weightOf.set(x.id, x.net_grams);
+        else if (!restGiven && l.mill_net_grams != null) { restGiven = true; weightOf.set(x.id, l.mill_net_grams - typed); }
+        else weightOf.set(x.id, 0);
+      }
+    }
+    const loadOf = new Map(loads.map((l) => [l.id, l]));
     for (const m of mills) {
       const bought = slips.filter((s) => s.merchant_id === m.id).reduce((s, x) => s + x.net_grams, 0);
-      const priced = slips.filter((s) => s.merchant_id === m.id && s.rate_paise_per_qtl > 0);
-      const pricedNet = priced.reduce((s, x) => s + x.net_grams, 0);
-      const boughtValue = priced.reduce((s, x) => s + x.amount_paise, 0);
-      let loaded = 0;
-      for (const l of loads.filter((x) => x.merchant_id === m.id)) {
-        const rows = lines.filter((x) => x.load_id === l.id);
-        const typed = rows.filter((x) => x.net_grams != null).reduce((s, x) => s + x.net_grams!, 0);
-        const blank = rows.filter((x) => x.net_grams == null).length;
-        loaded += typed + (blank && l.mill_net_grams != null ? l.mill_net_grams - typed : 0);
-      }
+      const loaded = lines.filter((x) => loadOf.get(x.load_id)?.merchant_id === m.id).reduce((s, x) => s + (weightOf.get(x.id) ?? 0), 0);
       if (!bought && !loaded) continue;
       const left = bought - loaded;
-      const avg = pricedNet ? boughtValue / (pricedNet / 100_000) : 0;
-      stockValue += Math.max(0, left) / 100_000 * avg;
-      ok(`${m.code}: bought ${qt(bought)} − loaded ${qt(loaded)} = ${qt(left)} qtl left${left < 0 ? "  ← more loaded than bought" : ""}`);
+      if (left < 0) look(`${m.code}: bought ${qt(bought)} − loaded ${qt(loaded)} = ${qt(left)} qtl — more loaded than bought: a slip is missing from the daily list, or a truck took another mill's goods`);
+      else ok(`${m.code}: bought ${qt(bought)} − loaded ${qt(loaded)} = ${qt(left)} qtl left`);
     }
     const noMill = slips.filter((s) => !s.merchant_id);
-    if (noMill.length) note(`${noMill.length} slip(s), ${qt(noMill.reduce((s, x) => s + x.net_grams, 0))} qtl, have no mill and sit in no mill's stock`);
+    if (noMill.length) note(`${noMill.length} slip(s), ${qt(noMill.reduce((s, x) => s + x.net_grams, 0))} qtl, have no mill: the firm's own stock, counted in the stock value below`);
+    /* Valued the way the dashboard's money card values it, so both screens tell
+       one story: every purchase day (mill, commodity, date — no-mill slips
+       included) keeps what no truck has taken, at that day's own weighted
+       average, in whole paise. A day trucks took more from counts below zero. */
+    const dayKey = (m: string | null, j: string, d: string) => `${m ?? "-"}|${j}|${d}`;
+    const days = new Map<string, { m: string | null; j: string; d: string; net: number; pricedNet: number; value: bigint }>();
+    for (const s of slips) {
+      const k = dayKey(s.merchant_id, s.jins_id, s.slip_date);
+      const g = days.get(k) ?? { m: s.merchant_id, j: s.jins_id, d: s.slip_date, net: 0, pricedNet: 0, value: 0n };
+      g.net += s.net_grams;
+      if (s.rate_paise_per_qtl > 0) { g.pricedNet += s.net_grams; g.value += BigInt(s.net_grams) * BigInt(s.rate_paise_per_qtl); }
+      days.set(k, g);
+    }
+    const dayAvg = (k: string) => { const g = days.get(k); return g && g.pricedNet ? Number(divHalfUp(g.value, BigInt(g.pricedNet))) : 0; };
+    const taken = new Map<string, number>();
+    for (const x of lines) {
+      const l = loadOf.get(x.load_id);
+      if (!l) continue;
+      const k = dayKey(l.merchant_id, x.jins_id, x.stock_date);
+      taken.set(k, (taken.get(k) ?? 0) + (weightOf.get(x.id) ?? 0));
+    }
+    const millCode = (id: string | null) => mills.find((m) => m.id === id)?.code ?? "no mill";
+    const jinsCode = new Map(all<{ id: string; code: string }>("select id, code from jins where business_id = ?", biz.id).map((j) => [j.id, j.code]));
+    let stockValue = 0, stockLeft = 0, unpricedLeft = 0;
+    const over: string[] = [];
+    for (const k of new Set([...days.keys(), ...taken.keys()])) {
+      const g = days.get(k);
+      const bought = g?.net ?? 0;
+      const left = bought - (taken.get(k) ?? 0);
+      if (left < 0) {
+        const [m, j, d] = k.split("|");
+        over.push(`${millCode(m === "-" ? null : m)} ${jinsCode.get(j) ?? ""} ${dm(d)}: bought ${qt(bought)}, taken ${qt(bought - left)} (${qt(-left)} over)`);
+      }
+      // a truck row on a day with no slips at all is not stock the dashboard values; it is named above
+      if (!g || left === 0) continue;
+      stockLeft += left;
+      if (!g.pricedNet) { unpricedLeft += left; continue; }
+      stockValue += amountPaise(left, dayAvg(k));
+    }
+    if (over.length) look(`${over.length} purchase day(s) trucks took more from than was bought — check the trucks' purchase days: ${some(over.sort().reverse())}`);
+    ok(`stock in hand ${qt(stockLeft)} qtl, valued ₹${rs(stockValue)} at each purchase day's own average rate${unpricedLeft ? ` (${qt(unpricedLeft)} qtl of it has no rate yet and is valued at ₹0)` : ""}`);
+    // trucks loaded but not billed yet: their goods, at the row's own rate or the purchase day's average
+    const drafts = loads.filter((l) => l.status !== "billed");
+    const unbilledGoods = drafts.reduce((s, l) => s + (linesOf.get(l.id) ?? [])
+      .reduce((t, x) => t + amountPaise(weightOf.get(x.id) ?? 0, x.rate_paise_per_qtl ?? dayAvg(dayKey(l.merchant_id, x.jins_id, x.stock_date))), 0), 0);
+    if (drafts.length) note(`${drafts.length} truck(s) loaded but not billed yet carry goods of ₹${rs(unbilledGoods)}`);
 
     // 5b. records pointing at something that is gone
     const dangling = all<{ table: string; parent: string }>("pragma foreign_key_check");
@@ -222,16 +315,16 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     if (rv.twice.length) bad(`receipt voucher number(s) used twice in one year: RV-${rv.twice.join(", RV-")} (two computers saved offline — renumber one in Tally)`);
     if (!pv.missing && !pv.twice.length && !rv.missing && !rv.twice.length) ok(`${pays.length} payments and ${recs.length} receipts each carry one number, none repeated within a year`);
 
-    // 7. where the money stands
+    // 7. where the money stands — the same parts, worked the same way, as the dashboard's money card
     section("7. Money position");
-    const unbilled = loads.filter((l) => l.status !== "billed").length;
     const cashIn = recs.filter((r) => r.voided_at == null).reduce((s, r) => s + r.amount_paise, 0);
+    const weOwe = opening + purchases - paid;
     note(`mills owe us ₹${rs(owedTotal)}`);
-    note(`we owe suppliers ₹${rs(opening + purchases - paid)}`);
-    note(`stock in hand (at cost) ≈ ₹${rs(Math.round(stockValue))}`);
-    note(`trucks not yet billed: ${unbilled}${unbilled ? " (their goods are not valued here; the dashboard adds them)" : ""}`);
+    note(`we owe suppliers ₹${rs(weOwe)}`);
+    note(`stock in hand ₹${rs(stockValue)} (${qt(stockLeft)} qtl, each purchase day at its own average)`);
+    note(`trucks not yet billed: ${drafts.length}, goods ₹${rs(unbilledGoods)}`);
     note(`cash from trade ₹${rs(cashIn - paid)} (in from mills ₹${rs(cashIn)} − out to suppliers ₹${rs(paid)})`);
-    note(`net (mills owe + stock + cash − we owe) ≈ ₹${rs(Math.round(owedTotal + stockValue + cashIn - paid - (opening + purchases - paid)))}`);
+    note(`net (mills owe + stock + unbilled trucks + cash − we owe) = ₹${rs(owedTotal + stockValue + unbilledGoods + cashIn - paid - weOwe)} — the dashboard's net position`);
   }
   return out;
 }

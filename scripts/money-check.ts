@@ -16,8 +16,8 @@ for (const b of r.businesses) {
   console.log(`\n══ ${b.name}`);
   for (const s of b.sections) {
     console.log(`\n ${s.title}`);
-    for (const l of s.lines) console.log(`   ${l.ok === true ? "✓" : l.ok === false ? "✗" : "·"} ${l.text}`);
+    for (const l of s.lines) console.log(`   ${l.ok === true ? "✓" : l.ok === false ? "✗" : l.warn ? "!" : "·"} ${l.text}`);
   }
 }
-console.log(r.problems ? `\n${r.problems} problem(s) found.` : "\nEvery figure re-works exactly.");
+console.log((r.problems ? `\n${r.problems} problem(s) found.` : "\nEvery figure re-works exactly.") + (r.warnings ? ` ${r.warnings} thing(s) marked ! to look at.` : ""));
 process.exit(r.problems ? 1 : 0);
