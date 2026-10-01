@@ -20,7 +20,8 @@ import {
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
 import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
-import { normRst, checkPages, slipMarks, hasRate, pageOrder, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
+import { normRst, checkPages, slipMarks, hasRate, pageOrder, hundredths, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
+import { GRAMS_PER_QTL } from "../lib/money.ts";
 import { approvedOnDays } from "../lib/parcha.ts";
 import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
@@ -315,7 +316,12 @@ async function headerDiffers(businessId: string, batch: typeof schema.scanBatche
 }
 
 async function checkAll(businessId: string, batch: typeof schema.scanBatches.$inferSelect) {
-  const rows: ReviewRow[] = batch.parsedRows ? JSON.parse(batch.parsedRows) : [];
+  const stored: ReviewRow[] = batch.parsedRows ? JSON.parse(batch.parsedRows) : [];
+  /* A sheet read before weights were kept in whole kilograms may hold a
+     third decimal (20.205): it is taken to the kilo here, as a new read is,
+     so the box, the check and the slip all carry one figure, and it is asked. */
+  const rows = batch.status === "committed" ? stored : stored.map((r) => r.grossGrams !== null && r.grossGrams % 1000 !== 0
+    ? { ...r, grossGrams: hundredths(r.grossGrams / GRAMS_PER_QTL) * (GRAMS_PER_QTL / 100) } : r);
   const katauti = await katautiFor(businessId, batch.merchantId);
   const resolver = await loadResolver(businessId);
 
@@ -329,10 +335,12 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   const existingRst = new Set<string>();
   let rstOtherDays = new Map<string, { id: string; date: string }[]>();
   if (batch.slipDate) {
+    // a sheet already added is never flagged against its own slips
     const taken = await db.select({ rstNo: schema.purchaseSlips.rstNo }).from(schema.purchaseSlips)
       .where(and(
         eq(schema.purchaseSlips.businessId, businessId),
         eq(schema.purchaseSlips.slipDate, batch.slipDate),
+        or(sql`${schema.purchaseSlips.scanBatchId} is null`, ne(schema.purchaseSlips.scanBatchId, batch.id)),
       ));
     const takenKeys = new Set(taken.map((r) => rstKey(r.rstNo)));
     // the row's own spelling goes in, so the check below finds it whatever the zeros
@@ -721,6 +729,12 @@ async function performRead(opts: {
       await keepAsWas("no line was read on it.");
       return;
     }
+    // cut short again, with fewer lines than the page has: the lines read before (and the changes on them) stay
+    if (only && result.truncated && result.page && result.page.rows.length < before.filter((r) => (r.page ?? 1) === only).length) {
+      await db.update(schema.scanBatches).set({ tokensIn, tokensOut }).where(eq(schema.scanBatches.id, id));
+      await keepAsWas("its new answer was cut short too, with fewer lines.");
+      return;
+    }
 
     if (result.quota) {
       // keep what was read; "Read again" resumes from this page instead of page 1
@@ -809,9 +823,11 @@ async function performRead(opts: {
     return;
   }
 
+  /* Which model read which page is for the audit trail, not the munshi: a
+     cut answer is already a question on its page. */
   await db.update(schema.scanBatches).set({
     status: "review",
-    warningText: notes.length ? notes.join(". ") + "." : null,
+    warningText: null,
     errorText: null,
   }).where(eq(schema.scanBatches.id, id));
   await refreshScanMeta(biz, id);
@@ -1177,15 +1193,22 @@ scanRoutes.put("/:id/page-confirm", can("scan.review"), async (c) => {
   const batch = await loadBatch(biz, id);
   if (batch.status === "committed") throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
   const shown = on ? (await checkAll(biz, batch)).pageChecks.find((p) => p.page === page && p.code === `page_${what}`) : undefined;
-  const meta = JSON.parse(batch.pageMeta ?? "[]") as PageMeta[];
-  let m = meta.find((x) => x.page === page);
-  if (!m) { m = { page, date: null, millName: null, jins: null, total: null }; meta.push(m); }
-  const set = new Set(m.confirmed ?? []);
-  const given = { ...(m.confirmedFor ?? {}) };
-  if (on) { set.add(what); given[what] = shown?.stamp ?? ""; } else { set.delete(what); delete given[what]; }
-  m.confirmed = [...set];
-  m.confirmedFor = given;
-  await db.update(schema.scanBatches).set({ pageMeta: JSON.stringify(meta) }).where(eq(schema.scanBatches.id, id));
+  /* The ticks as they are now, read and written in one go: two ticks sent
+     together each keep the other's, and none is lost. */
+  db.transaction((tx) => {
+    const now = tx.select({ pageMeta: schema.scanBatches.pageMeta, status: schema.scanBatches.status })
+      .from(schema.scanBatches).where(eq(schema.scanBatches.id, id)).get();
+    if (!now || now.status === "committed") throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
+    const meta = JSON.parse(now.pageMeta ?? "[]") as PageMeta[];
+    let m = meta.find((x) => x.page === page);
+    if (!m) { m = { page, date: null, millName: null, jins: null, total: null }; meta.push(m); }
+    const set = new Set(m.confirmed ?? []);
+    const given = { ...(m.confirmedFor ?? {}) };
+    if (on) { set.add(what); given[what] = shown?.stamp ?? ""; } else { set.delete(what); delete given[what]; }
+    m.confirmed = [...set];
+    m.confirmedFor = given;
+    tx.update(schema.scanBatches).set({ pageMeta: JSON.stringify(meta) }).where(eq(schema.scanBatches.id, id)).run();
+  });
   await audit({
     actor: actor(c), action: "scan.page_confirm", entity: "scan_batch", entityId: id,
     entityLabel: `Page ${page}: ${what} ${on ? "checked" : "unchecked"}`,
@@ -1306,6 +1329,11 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
   const learned: { rawText: string; adatiId: string }[] = [];
 
   db.transaction((tx) => {
+    /* The sheet is marked added first, and only if it is still waiting: of
+       two "Add"s sent together, the second writes nothing. */
+    const claimed = tx.update(schema.scanBatches).set({ status: "committed", reviewedBy: userId, reviewedAt: nowSec() })
+      .where(and(eq(schema.scanBatches.id, id), eq(schema.scanBatches.status, "review"))).run();
+    if (claimed.changes !== 1) throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
     for (const v of slipRows) tx.insert(schema.purchaseSlips).values(v).run();
     for (const a of aliasOps) {
       const ex = aliasByRaw.get(a.raw);
@@ -1324,8 +1352,6 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
         learned.push({ rawText: a.raw, adatiId: a.adatiId });
       }
     }
-    tx.update(schema.scanBatches).set({ status: "committed", reviewedBy: userId, reviewedAt: nowSec() })
-      .where(eq(schema.scanBatches.id, id)).run();
   });
   const created = slipRows.map((v) => v.id as string);
   for (const v of slipRows) await enqueueSync(biz, "purchase_slip", v.id as string, "insert", { rstNo: v.rstNo, adatiId: v.adatiId });

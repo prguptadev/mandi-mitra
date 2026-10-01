@@ -4,7 +4,7 @@ import { useLocation } from "wouter";
 import {
   ZoomIn, ZoomOut, Maximize2, Check, AlertTriangle,
   ArrowRight, ArrowLeft, Trash2, RotateCcw, ScanLine, ChevronLeft, ChevronRight,
-  PanelRightClose, PanelRightOpen, UserPlus, FileText, LocateFixed, ArrowDownUp, Expand, Shrink,
+  PanelRightClose, PanelRightOpen, UserPlus, FileText, ArrowDownUp, Expand, Shrink,
 } from "lucide-react";
 import { api, ApiError, apiStatus, type ScanBatch, type PageCheck, type ScanRow, type Jins, type Merchant } from "@/lib/api.ts";
 import { sayServer } from "@/lib/serverHi.ts";
@@ -19,7 +19,7 @@ import { GeminiUsageBar } from "@/components/GeminiUsage.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { TryModelsButton } from "@/components/GeminiModels.tsx";
 import {
-  Button, Card, CardHeader, Select, Input, Badge, Alert, Spinner, EmptyState,
+  Button, Card, CardHeader, Select, Input, Alert, Spinner, EmptyState,
 } from "@/components/ui/index.tsx";
 import { useOwnCode } from "@/components/OwnFirm.tsx";
 import { cn } from "@/lib/utils.ts";
@@ -46,7 +46,6 @@ function PageViewer({ scanId, pages, focus }: {
 }) {
   const { t } = useI18n();
   const [zoom, setZoomNow] = useState(1);
-  const [follow, setFollow] = useState(true);
   // a zoom chosen by hand is kept: following a line never undoes it
   const byHand = useRef(false);
   const setZoom = (z: number | ((v: number) => number)) => { byHand.current = true; setZoomNow(z); };
@@ -81,7 +80,7 @@ function PageViewer({ scanId, pages, focus }: {
         sc.scrollTo({ top: sc.scrollTop + (wrap.getBoundingClientRect().top - box.top) - 4, behavior: "smooth" });
       }
     };
-    if (follow && focus.y != null && zoom < 1.75 && !byHand.current) {
+    if (focus.y != null && zoom < 1.75 && !byHand.current) {
       setZoomNow(1.75);
       // after the bigger picture is laid out
       requestAnimationFrame(() => requestAnimationFrame(go));
@@ -93,10 +92,6 @@ function PageViewer({ scanId, pages, focus }: {
       <div className="flex items-center gap-1 border-b border-line px-2 py-1.5">
         <span className="text-[12px] text-muted">{t("scan.pages", { n: pages.length })}</span>
         <div className="flex-1" />
-        <Button size="sm" variant={follow ? "secondary" : "ghost"} className="h-7" onClick={() => setFollow((v) => !v)}
-          title={t("scan.followHint")} icon={<LocateFixed className={cn("h-3.5 w-3.5", follow && "text-brand")} />}>
-          <span className="hidden 2xl:inline">{t("scan.follow")}</span>
-        </Button>
         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))} title={t("scan.zoomOut")}>
           <ZoomOut className="h-3.5 w-3.5" />
         </Button>
@@ -238,7 +233,7 @@ function PageCheckLine({ pc, busy, onConfirm, onUse, onReread, onOrder, onShow }
   onConfirm: (on: boolean) => void;
   /** page_mill / page_jins: take what the header says. */
   onUse: () => void;
-  /** page_cut: read this one page again. */
+  /** page_cut, page_count, page_total: read this one page again. */
   onReread: () => void;
   /** page_order: put the pages in the order their line numbers run. */
   onOrder: () => void;
@@ -280,7 +275,7 @@ function PageCheckLine({ pc, busy, onConfirm, onUse, onReread, onOrder, onShow }
           {(pc.code === "page_mill" || pc.code === "page_jins") && (
             <Button size="sm" variant="primary" loading={busy} onClick={onUse}>{t("scan.pc.use", { label: p.label })}</Button>
           )}
-          {pc.code === "page_cut" && (
+          {(pc.code === "page_cut" || pc.code === "page_count" || (pc.code === "page_total" && p.allNet == null)) && (
             <Button size="sm" variant="primary" icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={onReread}>{t("scan.pc.readPage", { page: pc.page })}</Button>
           )}
           {pc.code === "page_order" && (
@@ -409,10 +404,13 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
       setErr(e instanceof ApiError ? e.message : t("common.somethingWrong"));
     },
   });
-  // the version from a load, unless edits of this screen are on their way
+  /* The version of the rows on screen, whenever no edit of this screen is on
+     its way. Looked at again once the edit has gone (or was refused), not
+     only when a load brings a new version: a load that came in while an edit
+     was pending, then a refusal, must not leave every later save refused. */
   useEffect(() => {
     if (batch.data?.rev && !draft && !save.isPending) rev.current = batch.data.rev;
-  }, [batch.data?.rev]);
+  }, [batch.data?.rev, draft, save.isPending]);
 
   /** The edits typed in the last moments go to the server first; then its answer is the truth. */
   const flush = async () => {
@@ -535,11 +533,21 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
     timer.current = setTimeout(() => { timer.current = null; save.mutate({ rows: next }); }, now ? 0 : 400);
   };
 
-  // leaving the screen within the 400 ms keeps the last edit: it is sent, not dropped
+  /* Leaving the screen within the 400 ms keeps the last edit: it is sent
+     after any save still on its way, and the answer goes into the cache, so
+     the sheet opened again shows that edit and its version. */
   useEffect(() => () => {
     if (timer.current) {
       clearTimeout(timer.current);
-      if (latest.current) void api.put(`/scans/${scanId}/rows`, { rows: latest.current, rev: rev.current }).catch(() => undefined);
+      const last = latest.current;
+      if (last) {
+        void chain.current.catch(() => undefined)
+          .then(() => api.put<SaveResp>(`/scans/${scanId}/rows`, { rows: last, rev: rev.current }))
+          .then((resp) => qc.setQueryData<ScanBatch>(["scan", scanId], (old) => old ? {
+            ...old, rows: resp.rows, summary: resp.summary, pageChecks: resp.pageChecks ?? old.pageChecks, rev: resp.rev,
+          } : old))
+          .catch(() => undefined);
+      }
     }
   }, []);
   useEffect(() => {
@@ -785,30 +793,26 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
         </span>
       ) : <div className="flex-1" />}
       {save.isPending && <Spinner />}
-      {b.model && (
-        <Badge tone="neutral" className="hidden 2xl:inline-flex"
-          title={b.tokensIn != null ? t("scan.costNote", { in: b.tokensIn, out: b.tokensOut ?? 0 }) : undefined}>{b.model}</Badge>
-      )}
-      {!reading && can("scan.create") && b.status !== "uploaded" && <TryModelsButton scanId={scanId} pages={b.pages.length} />}
+      {/* trying other models spends reads: the owner's tool, not the munshi's, and never on a sheet already added */}
+      {!reading && !locked && can("settings.write") && b.status !== "uploaded" && <TryModelsButton scanId={scanId} pages={b.pages.length} />}
       {!reading && !locked && (
+        <Button size="sm" variant="ghost" icon={<Trash2 className="h-3.5 w-3.5 text-bad" />}
+          onClick={async () => { if (await ask({ title: t("scan.confirmDelete"), danger: true, confirmLabel: t("confirm.yesDelete") })) remove.mutate(); }} title={t("common.delete")} aria-label={t("common.delete")} />
+      )}
+      {/* a sheet not read yet shows its picture by itself: nothing to hide, nothing to fill the screen with */}
+      {b.status !== "uploaded" && (
         <>
-          <Button size="sm" variant="secondary" loading={run.isPending}
-            icon={<RotateCcw className="h-3.5 w-3.5" />} onClick={() => run.mutate(undefined)}>
-            {t("scan.tryAgain")}
+          <Button size="sm" variant="ghost" onClick={() => setShowScan((v) => !v)}
+            icon={showScan ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRightOpen className="h-3.5 w-3.5" />}>
+            <span className="hidden sm:inline">{showScan ? t("scan.hideScan") : t("scan.showScan")}</span>
           </Button>
-          <Button size="sm" variant="ghost" icon={<Trash2 className="h-3.5 w-3.5 text-bad" />}
-            onClick={async () => { if (await ask({ title: t("scan.confirmDelete"), danger: true, confirmLabel: t("confirm.yesDelete") })) remove.mutate(); }} title={t("common.delete")} aria-label={t("common.delete")} />
+          <Button size="sm" variant={full ? "secondary" : "ghost"} onClick={toggleFull} title={full ? t("scan.exitFullScreen") : t("scan.fullScreen")}
+            aria-label={full ? t("scan.exitFullScreen") : t("scan.fullScreen")}
+            icon={full ? <Shrink className="h-3.5 w-3.5" /> : <Expand className="h-3.5 w-3.5" />}>
+            <span className="hidden 2xl:inline">{full ? t("scan.exitFullScreen") : t("scan.fullScreen")}</span>
+          </Button>
         </>
       )}
-      <Button size="sm" variant="ghost" onClick={() => setShowScan((v) => !v)}
-        icon={showScan ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRightOpen className="h-3.5 w-3.5" />}>
-        <span className="hidden sm:inline">{showScan ? t("scan.hideScan") : t("scan.showScan")}</span>
-      </Button>
-      <Button size="sm" variant={full ? "secondary" : "ghost"} onClick={toggleFull} title={full ? t("scan.exitFullScreen") : t("scan.fullScreen")}
-        aria-label={full ? t("scan.exitFullScreen") : t("scan.fullScreen")}
-        icon={full ? <Shrink className="h-3.5 w-3.5" /> : <Expand className="h-3.5 w-3.5" />}>
-        <span className="hidden 2xl:inline">{full ? t("scan.exitFullScreen") : t("scan.fullScreen")}</span>
-      </Button>
     </div>
   );
 
@@ -905,19 +909,34 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
           <Alert tone="bad">
             <p className="font-semibold">{t("scan.failedTitle")}</p>
             <p className="mt-0.5 break-words leading-relaxed">{sayServer(b.errorText, lang)}</p>
-            {/^Google rejected/.test(b.errorText) && can("business.read") && (
-              <Button size="sm" variant="secondary" className="mt-2" onClick={() => navigate("/settings?tab=scan")}>{t("nav.settings")}</Button>
-            )}
+            <div className="mt-2 flex flex-wrap gap-2 empty:hidden">
+              {b.status === "failed" && can("scan.create") && (
+                <Button size="sm" variant="secondary" icon={<RotateCcw className="h-3.5 w-3.5" />} loading={run.isPending}
+                  onClick={() => { setErr(null); run.mutate(undefined); }}>{t("scan.readAgain")}</Button>
+              )}
+              {/^Google rejected/.test(b.errorText) && can("business.read") && (
+                <Button size="sm" variant="secondary" onClick={() => navigate("/settings?tab=scan")}>{t("nav.settings")}</Button>
+              )}
+            </div>
           </Alert>
         )}
       </div>
 
       {b.status === "uploaded" ? (
-        <Card>
-          <EmptyState icon={<ScanLine className="h-8 w-8" />} title={t("scan.status.uploaded")}
-            sub={t("scan.pages", { n: b.pages.length })}
-            action={<Button variant="primary" size="lg" loading={run.isPending} icon={<ScanLine className="h-4 w-4" />}
-              onClick={() => run.mutate(undefined)}>{t("scan.read")}</Button>} />
+        <Card className="flex flex-col items-center gap-3 p-4">
+          {can("scan.create") && (
+            <Button variant="primary" size="lg" loading={run.isPending} icon={<ScanLine className="h-4 w-4" />}
+              onClick={() => run.mutate(undefined)}>{t("scan.read")}</Button>
+          )}
+          {b.pages.map((p, i) => (
+            <div key={`${p.name}-${i}`} className="w-full max-w-3xl">
+              {p.mimeType === "application/pdf" ? (
+                <iframe title={p.name} src={pageSrc(scanId, i, p.name)} className="h-[70vh] w-full rounded border border-line bg-white" />
+              ) : (
+                <PageImage src={pageSrc(scanId, i, p.name)} alt={t("scan.page", { n: i + 1 })} zoom={1} heic={/hei[cf]/i.test(p.mimeType)} line={null} />
+              )}
+            </div>
+          ))}
         </Card>
       ) : showScan ? (
         <SplitPane storageKey="mandi.split.scanReview" title={t("scan.dragToResize")} initial={0.36} min={0.2} max={0.65}

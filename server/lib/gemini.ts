@@ -600,7 +600,9 @@ export async function usageToday(apiKey: string, model: string) {
     gte(schema.geminiCalls.at, dayStart),
   ));
   const used = rows.filter((r) => !r.refused).length;
-  const refusedToday = rows.some((r) => r.refused);
+  /* Used up for the day only on a daily refusal: a spend cap or a per-minute
+     limit is not "today's free reads", and reads work again once it clears. */
+  const refusedToday = await spentToday(apiKey, model);
   const known = [...rows].reverse().find((r) => r.reportedLimit != null)?.reportedLimit ?? null;
   const allTime = await db.select({ l: schema.geminiCalls.reportedLimit }).from(schema.geminiCalls)
     .where(and(eq(schema.geminiCalls.keyHash, keyHash(apiKey)), eq(schema.geminiCalls.model, model)));
