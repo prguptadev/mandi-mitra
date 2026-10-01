@@ -587,7 +587,9 @@ export function MillStatementPage({ id }: { id: string }) {
               against a truck pays its parcha; money on account pays the opening and then the
               oldest parcha first. The dues less the money on account left over are the balance. */}
           <Card>
-            <CardHeader title={t("mm.billsTitle", { n: s.bills.length })} sub={t("mm.billsSubRule", { amt: f.money(s.stillDuePaise) })} />
+            {/* worked out up to the statement's end date, so a past year's dues can differ from today's register */}
+            <CardHeader title={t("mm.billsTitle", { n: s.bills.length })}
+              sub={t("mm.billsSubRule", { amt: f.money(s.stillDuePaise) }) + (s.to ? ` ${t("mm.dueAsOf", { d: dmy(s.to) })}` : "")} />
             {!s.bills.length && !s.openingDue && !s.onAccount.totalPaise ? <EmptyState title={t("mm.noBills")} /> : (
               <Table>
                 <thead>

@@ -283,11 +283,22 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
         const [m, j, d] = k.split("|");
         over.push(`${millCode(m === "-" ? null : m)} ${jinsCode.get(j) ?? ""} ${dm(d)}: bought ${qt(bought)}, taken ${qt(bought - left)} (${qt(-left)} over)`);
       }
-      // a truck row on a day with no slips at all is not stock the dashboard values; it is named above
       if (!g || left === 0) continue;
       stockLeft += left;
       if (!g.pricedNet) { unpricedLeft += left; continue; }
       stockValue += amountPaise(left, dayAvg(k));
+    }
+    /* A truck row taken from a day with no slips under that mill (it is named
+       above) is stock gone out that was never counted in: take each row off,
+       at its own typed rate, else as unpriced — as the dashboard does — or the
+       same goods would count again among the unbilled trucks or the bills. */
+    for (const x of lines) {
+      const l = loadOf.get(x.load_id);
+      const w = weightOf.get(x.id) ?? 0;
+      if (!l || !w || days.has(dayKey(l.merchant_id, x.jins_id, x.stock_date))) continue;
+      stockLeft -= w;
+      if (x.rate_paise_per_qtl) stockValue -= amountPaise(w, x.rate_paise_per_qtl);
+      else unpricedLeft -= w;
     }
     if (over.length) look(`${over.length} purchase day(s) trucks took more from than was bought — check the trucks' purchase days: ${some(over.sort().reverse())}`);
     ok(`stock in hand ${qt(stockLeft)} qtl, valued ₹${rs(stockValue)} at each purchase day's own average rate${unpricedLeft ? ` (${qt(unpricedLeft)} qtl of it has no rate yet and is valued at ₹0)` : ""}`);

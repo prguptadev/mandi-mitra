@@ -180,6 +180,8 @@ export function DailyListPage() {
   const rateRef = useRef<HTMLInputElement>(null);
 
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
+  // a slip of a mill since made inactive is still re-worked on that mill's own katauti
+  const allMills = useQuery({ queryKey: ["merchants", "all"], queryFn: () => api.get<Merchant[]>("/merchants?all=1") });
   const jinsList = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
   /** Commission and gaushala each supplier adds, and what the columns are called (Settings). */
   const sc = useQuery({ queryKey: ["settings", "supplier-charges"], queryFn: () => api.get<SupplierCharges>("/settings/supplier-charges") });
@@ -993,9 +995,11 @@ export function DailyListPage() {
                      until its weight changes — then the mill's terms of today apply. */
                   const reweighed = (editing.grossShown === undefined || ed.gross !== editing.grossShown)
                     && parseQtlToGrams(ed.gross) !== r.grossGrams;
-                  const millNow: KatautiConfig = mills.data?.find((m) => m.id === r.merchantId)?.chargeConfig.katauti
+                  const millNow: KatautiConfig = (allMills.data ?? mills.data)?.find((m) => m.id === r.merchantId)?.chargeConfig.katauti
                     ?? { mode: f.cfg.katautiMode, kgPerUnit: f.cfg.katautiKgPerUnit };
-                  const dd = derive(ed, reweighed ? millNow : r.katautiCfg);
+                  // an untouched gross box shows the weight to 2 places; the server keeps the stored grams, so does the preview
+                  const kept = editing.grossShown !== undefined && ed.gross === editing.grossShown ? { ...ed, gross: String(r.grossGrams / GRAMS_PER_QTL) } : ed;
+                  const dd = derive(kept, reweighed ? millNow : r.katautiCfg);
                   return (
                     <tr key={r.id} className="bg-brand/[0.06]">
                       <td className={cn("border-b border-line/70 px-2", PAD)} />

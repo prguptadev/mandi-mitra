@@ -1,4 +1,5 @@
 import "./_guard.ts";
+import { numberOnly } from "../server/lib/slipChecks.ts";
 /* End-to-end check against a RUNNING dev server: enters the real L.B daily
  * list of 20-09-2026 through the HTTP API and asserts the day totals match
  * the paper (331.05 qtl net, 3413.45 weighted average).
@@ -266,6 +267,10 @@ console.log("\nA typed name is a supplier");
   check("an edit says the same as a new slip", [ed.rstRepeated, ed.flags.otherDays.map((o: any) => o.date)], [true, ["2027-01-10"]]);
 
   console.log("\nRate numbers only, and figures far from the day");
+  // the number box: a word's dot ("Rs.", "Qtl.") is never read as a decimal point
+  check("a pasted rate keeps only its number: Rs. 3,450/- → 3450, Rs.3450 → 3450, रु. 3,450 → 3450, ₹3,450.00/- → 3450.00",
+    ["Rs. 3,450/-", "Rs.3450", "रु. 3,450", "₹3,450.00/-"].map((x) => numberOnly(x)), ["3450", "3450", "3450", "3450.00"]);
+  check("  ...and a pasted weight too: Qtl. 19.20 → 19.20, 19.20 q. → 19.20", ["Qtl. 19.20", "19.20 q."].map((x) => numberOnly(x)), ["19.20", "19.20"]);
   check("a rate with letters in it is refused, never saved as 0", (await raw("POST", "/slips", { slipDate: "2027-01-20", rstNo: "R1", adatiId: tester, jinsId: j.id, grossGrams: 2_000_000, ratePaisePerQtl: "3450/-" })).status, 400);
   for (const [rst, rate] of [["R2", 3400], ["R3", 3450], ["R4", 3500], ["R5", 3450], ["R6", 3420]] as const) {
     await put({ slipDate: "2027-01-20", rstNo: rst, merchantId: lbM.id, grossGrams: 2_000_000, ratePaisePerQtl: rate * 100 });

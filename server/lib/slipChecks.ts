@@ -28,6 +28,8 @@ export function rstKey(v: string | null | undefined): string {
 export function numberOnly(v: string, opts: { decimal?: boolean } = {}): string {
   const decimal = opts.decimal !== false;
   let s = String(v ?? "").replace(/[०-९]/g, (d) => String(HINDI_DIGITS.indexOf(d)));
+  // a word's own dot ("Rs.", "Qtl.", "रु.") goes with it: it is never a decimal point
+  s = s.replace(/[\p{L}\p{M}]+\.?/gu, "");
   s = s.replace(decimal ? /[^0-9.]/g : /[^0-9]/g, "");
   const dot = s.indexOf(".");
   if (dot >= 0) s = s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, "");
