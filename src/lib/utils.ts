@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { toHinglish } from "../../server/lib/translit.ts";
+import { toHinglish } from "@server/lib/translit.ts";
 
 export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 
@@ -64,13 +64,20 @@ const sound = (w: string) => {
   return (x[0] + x.slice(1).replace(/[AEIOUY]/g, "")).replace(/(.)\1+/g, "$1");
 };
 
+/* The kind of trade a generic word names, so "Ent." and "ENTERPRISES", or
+   "DAL" and "DHAAL", read as one kind. Titles (Shri, The) name no trade. */
+const TITLE = /^(?:SHRI+|SHREE|SRI|SIRI|THE|AND)$/;
+const KINDS: [RegExp, string][] = [[/^(?:ENT|INTER?P)/, "E"], [/^(?:TRAD|TRED)/, "T"], [/^(?:CO|KAMP|CMPNY)/, "C"], [/^MIL/, "M"], [/^DH?A/, "D"]];
+const tradeKind = (w: string) => KINDS.find(([re]) => re.test(w))?.[1] ?? w[0];
+
 function firmWords(name: string) {
   const hindi = /[ऀ-ॿ]/.test(name);
   const latin = (hindi ? toHinglish(name) : name).toUpperCase()
     .replace(/\bM\s*\/\s*S\b\.?/g, " ") // "M/S Vijay Laxmi…"
     .replace(/&/g, " AND ").replace(/[^A-Z]+/g, " ").trim();
   const all = latin ? latin.split(" ").map((w) => (hindi ? LETTER_NAMES[w] ?? w : w)) : [];
-  return { all, distinct: all.filter((w) => !GENERIC.test(w)) };
+  const generic = all.filter((w) => GENERIC.test(w));
+  return { all, distinct: all.filter((w) => !GENERIC.test(w)), trades: new Set(generic.filter((w) => !TITLE.test(w)).map(tradeKind)) };
 }
 
 /**
@@ -91,15 +98,21 @@ export function looksLikeSameFirm(a: string, b: string): FirmMatch {
   const [small, big] = sa.size <= sb.size ? [sa, sb] : [sb, sa];
   const within = [...small].every((w) => big.has(w));
   if (small.size && within && (small.size === big.size || small.size >= 2)) return "same";
+  // written together or apart — "Vijaylaxmi" is "Vijay Laxmi"
+  if (sa.size && sb.size && sound(A.distinct.join("")) === sound(B.distinct.join(""))) return "same";
 
   /* Initials: "VLDM" is Vijay Laxmi Dal Mill, "VCE" or "VC Ent." is
      V C Enterprises. A name of short pieces only is read as initials, and
-     must match the other name's initials exactly. */
+     must match the other name's initials exactly. When the initials leave the
+     trade out ("VK" of Vijay Kumar), the trade words must not disagree: VK
+     Traders is not plainly Vijay Kumar Dal Mill — that is asked, not assumed. */
   const initials = (x: { all: string[]; distinct: string[] }) =>
     [x.all.map((w) => w[0]).join(""), x.distinct.map((w) => w[0]).join(""), x.distinct.filter((w) => w.length === 1).join("")];
   const asInitials = (x: { distinct: string[] }) => (x.distinct.length && x.distinct.every((w) => w.length <= 5) ? x.distinct.join("") : null);
   const ia = asInitials(A), ib = asInitials(B);
-  if ((ia && initials(B).includes(ia)) || (ib && initials(A).includes(ib))) return "same";
+  const tradesAgree = !A.trades.size || !B.trades.size || [...A.trades].some((k) => B.trades.has(k));
+  if ((ia && initials(B)[0] === ia) || (ib && initials(A)[0] === ib)) return "same";
+  if ((ia && initials(B).includes(ia)) || (ib && initials(A).includes(ib))) return tradesAgree ? "same" : "unknown";
 
   if (!sa.size || !sb.size) return "unknown";
   // "Vijay Traders" and "Vijay Laxmi Dal Mill": one name inside the other is not enough either way

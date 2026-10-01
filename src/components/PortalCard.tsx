@@ -53,20 +53,27 @@ export function PortalCard() {
   const [find, setFind] = useState("");
 
   const save = useMutation({
-    mutationFn: () => api.put<PortalStatus>("/emandi", {
-      ...(user !== null ? { user: user.trim() } : {}),
-      ...(password ? { password } : {}),
-      ...(watch !== null ? { watch } : {}),
-    }),
-    onSuccess: (s) => {
+    mutationFn: (b: { user?: string; password?: string; watch?: string[] }) => api.put<PortalStatus>("/emandi", b),
+    onSuccess: (s, b) => {
+      const loginChanged = Boolean(b.password) || (b.user !== undefined && b.user !== q.data?.user);
       setErr(null); setPassword(""); setUser(null); setWatch(null);
       /* A new user name clears the password saved with the old one — say so
-         here, rather than leave "Saved" over a login that cannot sign in. */
-      setSaved(!s.configured && s.user ? t("portal.savedNeedsPassword", { user: s.user }) : t("portal.savedNote"));
+         here, rather than leave "Saved" over a login that cannot sign in. A
+         change of commodities keeps the session, so it does not ask for a
+         sign-in that is not needed. */
+      setSaved(!s.configured && s.user ? t("portal.savedNeedsPassword", { user: s.user })
+        : s.signedIn ? t("portal.savedSignedIn") : t("portal.savedNote"));
       qc.setQueryData(["emandi"], s);
-      dropPortalReadings(qc);
+      // a changed login may be another licence: nothing read with the old one stays
+      if (loginChanged) dropPortalReadings(qc);
+      else void qc.invalidateQueries({ queryKey: ["emandi", "rates"] });
     },
     onError: (e) => setErr(say(e)),
+  });
+  const saveNow = () => save.mutate({
+    ...(user !== null ? { user: user.trim() } : {}),
+    ...(password ? { password } : {}),
+    ...(watch !== null ? { watch } : {}),
   });
   const forget = useMutation({
     mutationFn: () => api.del<PortalStatus>("/emandi"),
@@ -171,7 +178,7 @@ export function PortalCard() {
 
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="primary" disabled={!dirty || !shownUser.trim()} loading={save.isPending}
-            onClick={() => save.mutate()}>{t("common.save")}</Button>
+            onClick={saveNow}>{t("common.save")}</Button>
           {(s?.configured || s?.user) && (
             <Button variant="ghost" icon={<Trash2 className="h-3.5 w-3.5 text-bad/80" />} loading={forget.isPending}
               onClick={() => void askForget()}>{t("portal.forget")}</Button>

@@ -76,6 +76,8 @@ export function PortalRatesCard() {
   const [captcha, setCaptcha] = useState("");
   const [shown, setShown] = useState<{ image: string; ticket: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  /** Whether `err` is e-Mandi refusing a sign-in — only then are its own words shown under it. */
+  const [errIsRefusal, setErrIsRefusal] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
   /** The portal firm the operator said is not theirs — until the login changes. */
   const [notOurs, setNotOurs] = useState<string | null>(null);
@@ -107,6 +109,8 @@ export function PortalRatesCard() {
     queryFn: async () => {
       const r = await api.get<RatesReply>("/emandi/rates");
       qc.setQueryData(["emandi"], r.status); // a session found ended turns the card to "Sign in" now
+      // the first rates after a sign-in read the commodity list too; Settings should see it
+      void qc.invalidateQueries({ queryKey: ["emandi", "crops"] });
       return r;
     },
     enabled: readRates, staleTime: 5 * 60_000, retry: false,
@@ -120,6 +124,8 @@ export function PortalRatesCard() {
     queryFn: async () => {
       try {
         const r = await api.get<StockReply>("/emandi/stock");
+        // filed under the licence it was read for, so learning the licence just now does not read it twice
+        qc.setQueryData(["emandi", "stock", licenceKey(r.licence)], r);
         qc.setQueryData(["emandi"], r.status);
         return r;
       } catch (e) {
@@ -130,7 +136,7 @@ export function PortalRatesCard() {
     enabled: readStock, staleTime: 5 * 60_000, retry: false,
   });
 
-  const fail = (e: unknown) => { setInfo(null); setErr(say(e)); };
+  const fail = (e: unknown) => { setInfo(null); setErr(say(e)); setErrIsRefusal(false); };
 
   const addLogin = useMutation({
     mutationFn: () => api.put<PortalStatus>("/emandi", { user: (user ?? s?.user ?? "").trim(), password }),
@@ -172,10 +178,12 @@ export function PortalRatesCard() {
     onError: (e) => {
       fail(e);
       setCaptcha("");
-      void qc.invalidateQueries({ queryKey: ["emandi"], exact: true }); // carries e-Mandi's own words
+      const code = e instanceof ApiError ? e.code : null;
+      // e-Mandi's own words come with the status; they belong under a refusal only, not under "replaced" or "slow"
+      setErrIsRefusal(code === "captcha" || code === "credentials" || code === "denied");
+      void qc.invalidateQueries({ queryKey: ["emandi"], exact: true });
       /* A captcha is good for one try. Put a fresh one up straight away, so
          the next attempt is just typing — unless no captcha can help. */
-      const code = e instanceof ApiError ? e.code : null;
       if (code !== "no_account" && code !== "password_unreadable") start.mutate({ keepErr: true });
       else setShown(null);
     },
@@ -227,7 +235,7 @@ export function PortalRatesCard() {
     return (
       <Card className="mb-5">
         <CardHeader title={t("portal.title")} sub={t("portal.notSetUp")}
-          action={<Link href="/settings?tab=data"><Button size="sm" variant="ghost">{t("portal.moreSettings")}</Button></Link>} />
+          action={<Link href="/settings?tab=business"><Button size="sm" variant="ghost">{t("portal.moreSettings")}</Button></Link>} />
         <div className="space-y-3 p-4">
           {storeAlert}
           {s.passwordUnreadable && !err && <Alert tone="warn">{t("portal.err.password_unreadable")}</Alert>}
@@ -263,9 +271,11 @@ export function PortalRatesCard() {
   const stockState: "off" | "loading" | "error" | "ready" = !readStock ? "off"
     : lines ? "ready" : stock.isError ? "error" : stock.isFetching || stock.isPending ? "loading" : "off";
   const stockOf = new Map((lines ?? []).filter((l) => l.cropCode).map((l) => [l.cropCode, l]));
-  const watched = new Set(list.map((r) => r.cropCode));
-  // every commodity e-Mandi holds stock in is shown — the ones not watched as stock-only rows
-  const extra = (lines ?? []).filter((l) => !l.cropCode || !watched.has(l.cropCode));
+  const inTable = new Set(list.map((r) => r.cropCode));
+  // every commodity e-Mandi holds stock in is shown — the ones without a rate row as stock-only rows
+  const extra = (lines ?? []).filter((l) => !l.cropCode || !inTable.has(l.cropCode));
+  // "rate not watched" only when it is not; a watched one whose rate failed is not called unwatched
+  const watched = new Set([...(s?.watch ?? []), ...inTable]);
 
   const rupees = (p: number | null) => (p === null ? "—" : f.amount(p));
   /* e-Mandi states quintals to three decimals; shown as stated, from whole
@@ -314,11 +324,11 @@ export function PortalRatesCard() {
         {err && (
           <Alert tone="bad">
             {err}
-            {s?.refused?.said && <span className="mt-1 block text-[12px] opacity-80">{t("portal.said", { said: s.refused.said })}</span>}
+            {errIsRefusal && s?.refused?.said && <span className="mt-1 block text-[12px] opacity-80">{t("portal.said", { said: s.refused.said })}</span>}
           </Alert>
         )}
         {info && !err && <Alert tone="ok">{info}</Alert>}
-        {s?.noteCode && !err && <Alert tone="warn">{say(s.noteCode)}</Alert>}
+        {s?.noteCode && !err && s.noteCode !== problem?.code && <Alert tone="warn">{say(s.noteCode)}</Alert>}
 
         {s?.signedIn && firm && (firm.match === "different" && firm.by === "licence" ? (
           <Alert tone="warn">{t("portal.wrongLicence", { portal: s.firm ?? "—", pl: s.portalLicence ?? "—", here, hl: biz?.mandiLicense ?? "—" })}</Alert>
@@ -419,7 +429,7 @@ export function PortalRatesCard() {
                       <td className="px-2 py-1.5">
                         <span lang="hi" className="text-[14px] text-ink">{l.crop || l.cropCode}</span>
                         {l.cropCode && <span className="num ml-1.5 text-[11px] text-faint">#{l.cropCode}</span>}
-                        <span className="block text-[11px] text-faint">{t("portal.notWatched")}</span>
+                        {!watched.has(l.cropCode) && <span className="block text-[11px] text-faint">{t("portal.notWatched")}</span>}
                       </td>
                       <td className="num border-l border-line/70 px-2 py-1.5 text-right text-faint">—</td>
                       <td className="num px-2 py-1.5 text-right text-faint">—</td>

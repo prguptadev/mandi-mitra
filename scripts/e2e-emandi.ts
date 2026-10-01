@@ -395,6 +395,9 @@ const pairs: [string, string, string][] = [
   ["V C ENTERPRISES", "विजय लक्ष्मी दाल मिल", "different"], ["SHIVAM TRADING COMPANY", "Shyam Trading Company", "different"],
   ["VIJAY LAXMI DALL MILL", "V C Enterprise", "different"], ["GUPTA DAL MILL", "Gupta", "same"],
   ["VIJAY LAXMI DALL MILL", "Vijay Traders", "unknown"], ["TRADING COMPANY", "Vijay Laxmi Dal Mill", "unknown"],
+  // written together or apart is one name; initials that leave out a different trade are asked about
+  ["VIJAYLAXMI DAL MILL", "Vijay Laxmi Dal Mill", "same"], ["VIJAY LAXMI DALL MILL", "विजयलक्ष्मी दाल मिल", "same"],
+  ["VIJAY LAXMI DALL MILL", "वी सी इंटरप्राइजेज", "different"], ["VK TRADERS", "Vijay Kumar Dal Mill", "unknown"],
 ];
 const wrongPairs = pairs.filter(([a, b, want]) => looksLikeSameFirm(a, b) !== want).map(([a, b, want]) => `${a} | ${b}: ${looksLikeSameFirm(a, b)} (want ${want})`);
 check("initials, Hindi names and spelling are the same firm; a shared 'Enterprises' or 'Dal Mill' is not", wrongPairs.length === 0, wrongPairs);
