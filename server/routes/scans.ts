@@ -90,6 +90,53 @@ function assertImagesHere(id: string, files: { name: string }[]) {
     throw new HttpError(409, "The pictures of this sheet are on the computer that scanned it. Read it again there.", "images_elsewhere");
   }
 }
+
+/** One page of a scan as kept in file_paths. sha256 is there for pages saved since 01-10-2026. */
+type PageFile = { name: string; mimeType: string; bytes: number; sha256?: string };
+const sha256Of = (bytes: Buffer) => crypto.createHash("sha256").update(bytes).digest("hex");
+/** A page's fingerprint: kept from the upload, or worked out from its picture when the picture is here. */
+function pageHash(id: string, f: PageFile): string | null {
+  if (f.sha256) return f.sha256;
+  try {
+    const p = scanFile(id, f.name);
+    return fs.existsSync(p) ? sha256Of(fs.readFileSync(p)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pages of this sheet that are the very same picture as a page of another
+ * sheet: the same paper uploaded twice. Only ever a warning, never a stop,
+ * but it is said before a read is spent and before the slips go in twice.
+ * Pages are compared by size first, so a picture is only opened when another
+ * page has exactly its size.
+ */
+async function samePictures(businessId: string, batch: { id: string; filePaths: string }) {
+  const S = schema.scanBatches;
+  const others = await db.select({ id: S.id, slipDate: S.slipDate, status: S.status, filePaths: S.filePaths, createdAt: S.createdAt })
+    .from(S).where(and(eq(S.businessId, businessId), ne(S.id, batch.id)));
+  const bySize = new Map<number, { o: (typeof others)[number]; page: number; f: PageFile }[]>();
+  for (const o of others) {
+    for (const [i, f] of (JSON.parse(o.filePaths) as PageFile[]).entries()) {
+      const list = bySize.get(f.bytes) ?? [];
+      list.push({ o, page: i + 1, f });
+      bySize.set(f.bytes, list);
+    }
+  }
+  const out: { page: number; scanId: string; otherPage: number; slipDate: string | null; status: string; createdAt: number }[] = [];
+  for (const [i, f] of (JSON.parse(batch.filePaths) as PageFile[]).entries()) {
+    const same = bySize.get(f.bytes);
+    if (!same?.length) continue;
+    const mine = pageHash(batch.id, f);
+    if (!mine) continue;
+    for (const s of same) {
+      if (pageHash(s.o.id, s.f) !== mine) continue;
+      out.push({ page: i + 1, scanId: s.o.id, otherPage: s.page, slipDate: s.o.slipDate, status: s.o.status, createdAt: s.o.createdAt });
+    }
+  }
+  return out.sort((a, b) => a.page - b.page || a.createdAt - b.createdAt);
+}
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_BYTES = 12 * 1024 * 1024;
 const OK_TYPES = new Set([
@@ -212,6 +259,16 @@ async function usualRateRange(businessId: string, jinsId: string | null, day: st
   return { floor: Math.round(median * 0.7), ceil: Math.round(median * 1.4), from: "recent" as const };
 }
 
+/** The rates already on the daily list for the sheet's day and commodity, not counting this sheet's own slips. */
+async function ratesOfDay(businessId: string, batch: { id: string; slipDate: string | null; jinsId: string | null }) {
+  if (!batch.slipDate || !batch.jinsId) return [];
+  const S = schema.purchaseSlips;
+  return (await db.select({ r: S.ratePaisePerQtl }).from(S).where(and(
+    eq(S.businessId, businessId), eq(S.slipDate, batch.slipDate), eq(S.jinsId, batch.jinsId), sql`${S.ratePaisePerQtl} > 0`,
+    or(sql`${S.scanBatchId} is null`, ne(S.scanBatchId, batch.id)),
+  ))).map((x) => x.r);
+}
+
 /** Letters and digits only, upper case: "L.B", "lb" and "L B" are one mill code. */
 const codeKey = (s: string | null | undefined) => String(s ?? "").toUpperCase().replace(/[^A-Z0-9ऀ-ॿ]/g, "");
 
@@ -306,11 +363,16 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   const rowsChecked = (page: number) => (meta.find((m) => m.page === page)?.confirmed ?? []).includes("rows");
   const netPages = new Set(rows.filter((r) => r.ocr.netQtl != null).map((r) => r.page ?? 1));
   const ratePages = new Set(rows.filter((r) => !r.excluded && hasRate(r)).map((r) => r.page ?? 1));
+  // the day's rates: the daily list's for this commodity, and this sheet's own lines
+  const dayRates = [
+    ...await ratesOfDay(businessId, batch),
+    ...rows.filter((r) => !r.excluded && (r.ratePaisePerQtl ?? 0) > 0).map((r) => r.ratePaisePerQtl!),
+  ];
   const checked: CheckedRow[] = ordered.map((r) => {
     const c = checkRow(r, {
       katauti, resolve: resolver.resolve, byId: resolver.byId, existingRst, dupeInBatch,
       rateFloorPaise: range.floor, rateCeilPaise: range.ceil, pageHasNet: netPages.has(r.page ?? 1),
-      pageHasRate: ratePages.has(r.page ?? 1),
+      pageHasRate: ratePages.has(r.page ?? 1), dayRates,
     });
     flagOtherDays(c);
     if (!c.excluded) {
@@ -390,7 +452,7 @@ export async function createScan(o: {
   const id = newId();
   const dir = path.join(SCAN_DIR, id);
   fs.mkdirSync(dir, { recursive: true });
-  const saved: { name: string; mimeType: string; bytes: number }[] = [];
+  const saved: PageFile[] = [];
   for (const [i, f] of o.pages.entries()) {
     const mimeType = f.mimeType!;
     const ext = mimeType === "application/pdf" ? "pdf"
@@ -399,7 +461,8 @@ export async function createScan(o: {
       : mimeType === "image/heic" || mimeType === "image/heif" ? "heic" : "jpg";
     const name = `${String(i).padStart(2, "0")}.${ext}`;
     fs.writeFileSync(path.join(dir, name), f.bytes);
-    saved.push({ name, mimeType, bytes: f.size });
+    // the picture's fingerprint: the same paper uploaded twice is noticed (and only said)
+    saved.push({ name, mimeType, bytes: f.size, sha256: sha256Of(f.bytes) });
   }
 
   /* An empty commodity silently blocked approval, with nothing on screen
@@ -476,19 +539,21 @@ scanRoutes.post("/", can("scan.create"), async (c) => {
     biz, pages, slipDate, merchantId, jinsId, sourceKind,
     user: { id: c.get("auth")!.user.id, name: c.get("auth")!.user.name }, actor: actor(c),
   });
-  return c.json({ id, pages: saved.length });
+  // the screen does not spend a read on a picture already held: it shows the warning first
+  const same = await samePictures(biz, { id, filePaths: JSON.stringify(saved) });
+  return c.json({ id, pages: saved.length, samePictures: same.length });
 });
 
 /** Adds a page to a scan that has not been read yet (the scanner's "next page"). */
 export async function appendPage(biz: string, id: string, bytes: Buffer, mimeType: string) {
   const batch = await loadBatch(biz, id);
   if (batch.status !== "uploaded") throw new HttpError(409, "This sheet is already being read or has been read. Start a new scan for more pages.", "not_open");
-  const files: { name: string; mimeType: string; bytes: number }[] = JSON.parse(batch.filePaths);
+  const files: PageFile[] = JSON.parse(batch.filePaths);
   if (files.length >= 10) throw bad("Ten pages at a time is the limit", "too_many");
   if (bytes.length > MAX_BYTES) throw bad("That page is over 12 MB. Scan at 200–300 dpi instead.", "too_big");
   const name = `${String(files.length).padStart(2, "0")}.${mimeType === "image/png" ? "png" : "jpg"}`;
   fs.writeFileSync(scanFile(id, name), bytes);
-  files.push({ name, mimeType, bytes: bytes.length });
+  files.push({ name, mimeType, bytes: bytes.length, sha256: sha256Of(bytes) });
   await db.update(schema.scanBatches).set({ filePaths: JSON.stringify(files) }).where(eq(schema.scanBatches.id, id));
   await refreshScanMeta(biz, id);
   return files.length;
@@ -964,6 +1029,8 @@ scanRoutes.get("/:id", can("scan.review", "scan.create"), async (c) => {
     createdAt: batch.createdAt, reviewedAt: batch.reviewedAt,
     pages: files.map((f, i) => ({ index: i, name: f.name, mimeType: f.mimeType, bytes: f.bytes })),
     header, rev: revOf(batch),
+    // the same paper uploaded on another sheet: a warning beside it, never a stop
+    samePictures: await samePictures(biz, batch),
     ...checked,
   });
 });
@@ -1133,8 +1200,14 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
   const biz = c.get("auth")!.businessId!;
   const userId = c.get("auth")!.user.id;
   const id = param(c, "id");
+  /** The version of the sheet the "are you sure" box was built from; left out by older screens and scripts. */
+  const { rev } = z.object({ rev: z.string().max(64).optional() }).parse(await c.req.json().catch(() => ({})));
   const batch = await loadBatch(biz, id);
   if (batch.status === "committed") throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
+  // what was confirmed is what is written: a change from another screen since then is shown first
+  if (rev && rev !== revOf(batch)) {
+    throw new HttpError(409, "Someone else changed this sheet while you were on it. It has been loaded again: check your last change.", "stale_rows");
+  }
   if (!batch.slipDate) throw bad("Set the sheet date before adding it to the daily list", "no_date");
   if (!batch.jinsId) throw bad("Set the commodity before adding it to the daily list", "no_jins");
   await assertDaysOpen(biz, batch.slipDate);
@@ -1151,6 +1224,26 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
   const { rows, summary, katauti } = await checkAll(biz, batch);
   const toWrite = rows.filter((r) => !r.excluded);
   if (!toWrite.length) throw bad("Every row is excluded — nothing to add", "nothing_to_commit");
+  /* Every refusal comes before anything is written: a sheet that is not
+     added leaves no new supplier behind, and its rows keep their "new
+     supplier" marks and close suggestions. */
+  // the same rules as typing a slip by hand
+  if (toWrite.some((r) => (r.ratePaisePerQtl ?? 0) > 0) && !c.get("auth")!.permissions.has("rate.edit")) {
+    throw new HttpError(403, "This sheet carries rates, and you may not set purchase rates. Ask someone who may to add it.", "forbidden");
+  }
+  if (summary && summary.blocking > 0) {
+    throw new HttpError(409, `${summary.blocking} row${summary.blocking === 1 ? "" : "s"} still need fixing before this can be added`, "has_blocking");
+  }
+  if (summary && summary.pagesBlocking > 0) {
+    throw new HttpError(409, "A page's date, total or rows still need checking against the paper before this can be added", "has_blocking");
+  }
+  const outOfRange = (r: CheckedRow) => r.grossGrams === null || r.grossGrams <= 0 || r.grossGrams > LIMIT.grams
+    || (r.ratePaisePerQtl ?? 0) < 0 || (r.ratePaisePerQtl ?? 0) > LIMIT.rate;
+  const nameless = (r: CheckedRow) => !(r.adatiId ?? r.match?.adatiId) && !r.adatiRawText.trim();
+  const unfitFirst = toWrite.filter((r) => outOfRange(r) || nameless(r));
+  if (unfitFirst.length) {
+    throw new HttpError(409, `${unfitFirst.length} row${unfitFirst.length === 1 ? " has" : "s have"} no supplier, no weight, or a figure out of range (RST ${unfitFirst.slice(0, 5).map((r) => r.rstNo || "—").join(", ")})`, "has_blocking");
+  }
   // names nobody matched: made into suppliers now, the way a typed name on the daily list is
   const newlyMade: { rowId: string; adatiId: string; nameHi: string }[] = [];
   const madeByName = new Map<string, string>();
@@ -1169,20 +1262,10 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
     await db.update(schema.scanBatches).set({ parsedRows: JSON.stringify(stored.map((x) => (by.has(x.id) ? { ...x, adatiId: by.get(x.id), nameCorrected: false } : x))) })
       .where(eq(schema.scanBatches.id, id));
   }
-  // the same rules as typing a slip by hand
-  if (toWrite.some((r) => (r.ratePaisePerQtl ?? 0) > 0) && !c.get("auth")!.permissions.has("rate.edit")) {
-    throw new HttpError(403, "This sheet carries rates, and you may not set purchase rates. Ask someone who may to add it.", "forbidden");
-  }
-  const unfit = toWrite.filter((r) => !(r.adatiId ?? r.match?.adatiId) || r.grossGrams === null || r.grossGrams <= 0 || r.grossGrams > LIMIT.grams
-    || (r.ratePaisePerQtl ?? 0) < 0 || (r.ratePaisePerQtl ?? 0) > LIMIT.rate);
+  // a supplier for every line now, or nothing is written
+  const unfit = toWrite.filter((r) => !(r.adatiId ?? r.match?.adatiId));
   if (unfit.length) {
-    throw new HttpError(409, `${unfit.length} row${unfit.length === 1 ? " has" : "s have"} no supplier, no weight, or a figure out of range (RST ${unfit.slice(0, 5).map((r) => r.rstNo || "—").join(", ")})`, "has_blocking");
-  }
-  if (summary && summary.blocking > 0) {
-    throw new HttpError(409, `${summary.blocking} row${summary.blocking === 1 ? "" : "s"} still need fixing before this can be added`, "has_blocking");
-  }
-  if (summary && summary.pagesBlocking > 0) {
-    throw new HttpError(409, "A page's date, total or rows still need checking against the paper before this can be added", "has_blocking");
+    throw new HttpError(409, `${unfit.length} row${unfit.length === 1 ? " has" : "s have"} no supplier (RST ${unfit.slice(0, 5).map((r) => r.rstNo || "—").join(", ")})`, "has_blocking");
   }
 
   // work everything out first, then write it all or nothing

@@ -193,6 +193,9 @@ try {
   if (!ok) bad++;
   console.log(` ${ok ? "PASS" : "FAIL"}  refused: ${ok ? "has_blocking" : m.slice(0, 80)}`);
 }
+// a sheet that is not added leaves nothing behind: no supplier made from its unknown names
+check("the refused sheet made no new supplier", (sqlite.prepare("select count(*) as n from adati where name_hi in (?, ?)").get("अज्ञात व्यापारी", "रामू लाल") as { n: number }).n, 0);
+check("  ...and its rows still say who is new", (await call("GET", `/scans/${scanId}`)).rows.filter((r: any) => r.issues.some((i: any) => i.code === "name_unresolved")).length > 0, true);
 
 console.log("\nOperator fixes the blocking rows");
 const suppliers = await call("GET", "/adati");
@@ -486,7 +489,10 @@ console.log("\nA two-page sheet, read page by page");
   console.log("\nAdding the sheet");
   const ready = await call("GET", `/scans/${id3}`);
   check("nothing left to answer", [ready.summary.blocking, ready.summary.pagesBlocking], [0, 0]);
-  const res3 = await call("POST", `/scans/${id3}/commit`);
+  // the "are you sure" box was built from an older version: what it showed is not what would be written
+  const staleAdd = await fetch(`${BASE}/scans/${id3}/commit`, { method: "POST", headers: { "Content-Type": "application/json", cookie }, body: JSON.stringify({ rev: "0000000000000000" }) });
+  check("adding from an older copy of the sheet is refused", [staleAdd.status, ((await staleAdd.json()) as { code?: string }).code], [409, "stale_rows"]);
+  const res3 = await call("POST", `/scans/${id3}/commit`, { rev: ready.rev });
   check("six slips added", res3.created, 6);
   check("the answer says which approved parchas no longer match (none)", res3.approvedParchas, []);
   const slips3 = sqlite.prepare("select id, gross_grams as g, rst_no as rst from purchase_slips where scan_batch_id = ?").all(id3) as { id: string; g: number; rst: string }[];
@@ -560,6 +566,57 @@ console.log("\nWhat is refused at upload, and what is never lost from the list")
   const listed = await call("GET", "/scans?from=2026-04-01&to=2027-03-31&limit=1");
   check("a sheet with no date still shows in the year's list", listed.some((r: any) => r.id === undated), true);
   await call("DELETE", `/scans/${undated}`);
+
+  /* The same paper uploaded twice: said beside the sheet, never refused. A
+     picture of exactly the same size but other content is not the same paper. */
+  const tag = `same-paper-${Date.now()}`;
+  const paper = Buffer.concat([PNG, Buffer.from(tag)]);
+  const lookalike = Buffer.concat([PNG, Buffer.from(tag.replace(/\d/g, "x"))]);
+  const upOne = async (bytes: Buffer, name: string) => {
+    const f = new FormData();
+    f.append("files", new File([bytes], name, { type: "image/png" }));
+    f.append("slipDate", "2026-09-25");
+    return await (await fetch(`${BASE}/scans`, { method: "POST", body: f, headers: { cookie } })).json() as { id: string; samePictures?: number };
+  };
+  const first = await upOne(paper, "first.png");
+  const second = await upOne(paper, "again.png");
+  const other = await upOne(lookalike, "other.png");
+  check("the same picture uploaded again: the upload says so", [first.samePictures, second.samePictures], [0, 1]);
+  const s2 = await call("GET", `/scans/${second.id}`);
+  check("  ...the sheet names the one it repeats, page by page", s2.samePictures.map((x: any) => `${x.page}:${x.scanId === first.id}:${x.otherPage}`), ["1:true:1"]);
+  check("  ...and it is only a warning: the sheet waits to be read as usual", s2.status, "uploaded");
+  check("  ...the first sheet is told about the second too", (await call("GET", `/scans/${first.id}`)).samePictures.some((x: any) => x.scanId === second.id), true);
+  check("a picture of the same size but other content is not taken for it", (await call("GET", `/scans/${other.id}`)).samePictures.length, 0);
+  for (const x of [first, second, other]) await call("DELETE", `/scans/${x.id}`);
+}
+
+/* A rate inside the season's usual range but unlike the day's: a 1 read as a
+   7 (3150 as 3750). Amber, in words, one ✓ — never a stop. */
+console.log("\nA rate unlike the day's other rates");
+{
+  const fd5 = new FormData();
+  fd5.append("files", new File([PNG], "rates.png", { type: "image/png" }));
+  fd5.append("slipDate", "2026-09-26");
+  fd5.append("merchantId", grm.id);
+  fd5.append("jinsId", j1509.id);
+  const { id: id5 } = await (await fetch(`${BASE}/scans`, { method: "POST", body: fd5, headers: { cookie } })).json() as { id: string };
+  const rates = [3400, 3500, 3500, 3500, 3450, 3750];
+  const lines = rates.map((rate, i) => ({
+    id: `r${i}`, page: 1,
+    ocr: { rstNo: String(951 + i), adatiName: "फूलसिंह वर्मा", grossQtl: 20, katauti: 20, netQtl: 19.8, rate, confidence: 0.95, struckThrough: false, srNo: i + 1 },
+    rstNo: String(951 + i), adatiId: null, adatiRawText: "फूलसिंह वर्मा", grossGrams: 2_000_000,
+    katautiOverride: null, ratePaisePerQtl: rate * 100, excluded: false, nameCorrected: false, modelPick: null, confirmed: [],
+  }));
+  sqlite.prepare("update scan_batches set parsed_rows = ?, page_meta = ?, status = 'review', model = 'simulated', pages_done = 1 where id = ?")
+    .run(JSON.stringify(lines), JSON.stringify([{ page: 1, date: "26-09-2026", millName: null, jins: null, total: 118.8 }]), id5);
+  const s5 = await call("GET", `/scans/${id5}`);
+  const odd = s5.rows.find((r: any) => r.ratePaisePerQtl === 375_000);
+  check("3750 among 3400–3500 is flagged, saying what the day's rate is", odd.issues.find((i: any) => i.code === "rate_day")?.params, { median: 3500, low: 0 });
+  check("  ...as a look, not a stop", [odd.issues.find((i: any) => i.code === "rate_day")?.level, odd.blocking], ["warn", false]);
+  check("  ...the day's ordinary rates are not", s5.rows.filter((r: any) => r.issues.some((i: any) => i.code === "rate_day")).length, 1);
+  const seen = await call("PUT", `/scans/${id5}/rows`, { rows: s5.rows.map((r: any) => r.id === odd.id ? { ...r, confirmed: ["rate"] } : r), rev: s5.rev });
+  check("  ...✓ 'right as read' clears it", seen.rows.find((r: any) => r.id === odd.id).issues.some((i: any) => i.code === "rate_day"), false);
+  await call("DELETE", `/scans/${id5}`);
 }
 
 console.log(bad === 0 ? "\nOCR review pipeline works end to end." : `\n${bad} FAILED`);

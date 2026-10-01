@@ -146,6 +146,23 @@ export function decimalFix(row: ReviewRow, katauti: Katauti): number | null {
 /** The operator accepted this field as read (one click), or edited it. */
 const confirmedField = (row: { confirmed?: string[] }, f: string) => (row.confirmed ?? []).includes(f);
 
+/**
+ * A rate unlike the day's: the middle of the other rates of that day (this
+ * sheet's other lines and the slips already on the daily list) and whether
+ * this one is more than 6% away from it. A 1 read as 7 (3150 as 3750) stays
+ * inside the usual range for the season, but not inside one day's rates.
+ * Needs four other rates to say anything. Paise in, integers only.
+ */
+export function rateUnlikeDay(rate: number, dayRates: number[]): { median: number; low: boolean } | null {
+  const others = [...dayRates];
+  const own = others.indexOf(rate);
+  if (own !== -1) others.splice(own, 1);
+  if (others.length < 4 || rate <= 0) return null;
+  others.sort((a, b) => a - b);
+  const median = others[Math.floor(others.length / 2)];
+  return Math.abs(rate - median) * 100 > 6 * median ? { median, low: rate < median } : null;
+}
+
 export function checkRow(
   row: ReviewRow,
   opts: {
@@ -162,6 +179,8 @@ export function checkRow(
     pageHasNet?: boolean;
     /** False when no line on this row's page has a rate: the page is asked about once, as a whole. */
     pageHasRate?: boolean;
+    /** Every rate of the sheet's day and commodity, this row's own among them (see rateUnlikeDay). */
+    dayRates?: number[];
   },
 ): CheckedRow {
   const issues: Issue[] = [];
@@ -307,6 +326,16 @@ export function checkRow(
       code: "rate_range", level: confirmedField(row, "rate") ? "warn" : "error", message: "Rate is outside the usual range — confirm it or fix it",
       params: { floor: Math.round(opts.rateFloorPaise / 100), ceil: Math.round(opts.rateCeilPaise / 100) },
     });
+  } else if (!confirmedField(row, "rate")) {
+    // inside the season's range but not the day's: a look, never a stop
+    const odd = rateUnlikeDay(row.ratePaisePerQtl, opts.dayRates ?? []);
+    if (odd) {
+      issues.push({
+        code: "rate_day", level: "warn",
+        message: `Rate looks ${odd.low ? "low" : "high"} for this day — most are about ${Math.round(odd.median / 100)}`,
+        params: { median: Math.round(odd.median / 100), low: odd.low ? 1 : 0 },
+      });
+    }
   }
 
   if ((row.ocr.confidence ?? 1) < 0.6) {
