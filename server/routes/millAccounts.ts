@@ -6,7 +6,7 @@ import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } from "../lib/http.ts";
 import { amountPaise } from "../lib/money.ts";
-import type { ParchaDoc } from "../lib/parcha.ts";
+import { revisions, type ParchaDoc } from "../lib/parcha.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 import { nextVoucherNo } from "../lib/vouchers.ts";
 
@@ -210,17 +210,19 @@ millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
 
   type Entry = {
     kind: "parcha" | "shortage" | "receipt"; id: string; date: string; at: number; deductionGrams?: number;
-    parchaNo?: string; version?: number; truckNo?: string | null; netGrams?: number | null; loadId?: string | null;
+    parchaNo?: string; version?: number; revision?: number; truckNo?: string | null; netGrams?: number | null; loadId?: string | null;
     mode?: string; reference?: string | null; notes?: string | null; deductionNote?: string | null; voucherNo?: number | null;
     amountPaise?: number; deductionPaise?: number; voided?: boolean; voidReason?: string | null;
     debitPaise: number; creditPaise: number; balancePaise?: number;
   };
   // a receipt names its truck's parcha even when that parcha is dated after the period
   const truckOf = new Map((to ? await billed(biz, { merchantId }) : allBills).map((b) => [b.loadId, b]));
+  // a parcha approved again after a void is a revised paper: the statement says so beside its number
+  const revOf = revisions(bills.length ? await db.select({ id: Pa.id, loadId: Pa.loadId }).from(Pa).where(inArray(Pa.loadId, bills.map((b) => b.loadId))) : []);
   const entries: Entry[] = [
     ...bills.map((b) => ({
       kind: "parcha" as const, id: b.id, date: b.date, at: b.createdAt,
-      parchaNo: b.parchaNo, version: b.version, truckNo: b.truckNo, netGrams: b.netGrams, loadId: b.loadId,
+      parchaNo: b.parchaNo, version: b.version, revision: revOf.get(b.id)?.revision ?? 1, truckNo: b.truckNo, netGrams: b.netGrams, loadId: b.loadId,
       debitPaise: b.grandTotalPaise, creditPaise: 0,
     })),
     // the mill's weight cut on a billed truck, right after its bill

@@ -40,7 +40,7 @@ export interface MillLedgerList {
 }
 interface MillEntry {
   kind: "parcha" | "shortage" | "receipt"; id: string; date: string; deductionGrams?: number;
-  parchaNo?: string; version?: number; truckNo?: string | null; netGrams?: number | null; loadId?: string | null;
+  parchaNo?: string; version?: number; revision?: number; truckNo?: string | null; netGrams?: number | null; loadId?: string | null;
   mode?: Mode; reference?: string | null; notes?: string | null; deductionNote?: string | null; voucherNo?: number | null;
   amountPaise?: number; deductionPaise?: number; voided?: boolean; voidReason?: string | null;
   debitPaise: number; creditPaise: number; balancePaise: number;
@@ -89,6 +89,8 @@ export const invalidateMillMoney = (qc: ReturnType<typeof useQueryClient>) => Pr
   qc.invalidateQueries({ queryKey: ["mill-ledger"] }),
   qc.invalidateQueries({ queryKey: ["mill-receipts"] }),
   qc.invalidateQueries({ queryKey: ["parchas"] }),
+  // the follow-up shows the same dues, by the same rule
+  qc.invalidateQueries({ queryKey: ["mill-followup"] }),
   qc.invalidateQueries({ queryKey: ["dashboard"] }),
 ]);
 
@@ -535,6 +537,7 @@ export function MillStatementPage({ id }: { id: string }) {
                       <Td className="whitespace-nowrap">{dmy(e.date)}</Td>
                       {e.kind === "parcha" ? (
                         <Td><Link href="/parcha" className="font-medium text-ink hover:text-brand">{t("mm.parchaN", { no: e.parchaNo ?? "" })}</Link>
+                          {e.revision && e.revision > 1 ? <span className="text-faint"> · {t("parcha.revised", { n: e.revision })}</span> : null}
                           {e.truckNo ? <span className="text-muted"> · {e.truckNo}</span> : null}</Td>
                       ) : e.kind === "shortage" ? (
                         <Td className="text-warn"><Link href="/challan" className="hover:underline">{t("mm.cutOn", { no: e.parchaNo ?? "", q: f.weight(e.deductionGrams ?? 0) })}</Link>

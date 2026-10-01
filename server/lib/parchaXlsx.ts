@@ -44,7 +44,10 @@ export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean; voided
   const q = (g: number) => Math.round(g / 1000) / 100; // grams -> quintals, 2 dp
   const rs = (p: number) => Math.round(p) / 100;
 
-  const mark = opts.voided ? `  (VOID — ${opts.voided})` : opts.draft ? "  (DRAFT — not approved)" : "";
+  // a truck approved again after a void: this paper replaces the one given before (older parchas carry only the version)
+  const revision = doc.revision ?? doc.version;
+  const revised = revision > 1 ? `REVISED (${revision})${doc.revisedOn ? ` ${dmy(doc.revisedOn)}` : ""}` : "";
+  const mark = opts.voided ? `  (VOID — ${opts.voided})` : opts.draft ? "  (DRAFT — not approved)" : revised ? `  (${revised})` : "";
   put(`A${row}:H${row}`, `${doc.title}${mark}`, { bold: true, size: 16, align: "center" });
   ws.getRow(row).height = 26;
   row++;
@@ -63,7 +66,7 @@ export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean; voided
   row++;
   put(`A${row}:B${row}`, "BARDANA WEIGHT", { bold: true });
   put(`C${row}:E${row}`, q(w.bardanaGrams), { align: "right", fmt: QTL });
-  put(`F${row}:H${row + 1}`, doc.invoiceNo ?? "", { size: 14, align: "center" });
+  put(`F${row}:H${row + 1}`, revised ? `${doc.invoiceNo ?? ""}\n${revised}` : doc.invoiceNo ?? "", { size: 14, align: "center" });
   row++;
   put(`A${row}:B${row}`, "NET WEIGHT", { bold: true });
   put(`C${row}:E${row}`, q(w.netGrams), { align: "right", fmt: QTL });

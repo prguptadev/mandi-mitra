@@ -244,7 +244,7 @@ export function LoadsPage() {
                   <Td numeric>{r.millNetGrams == null ? <span className="text-faint">—</span> : f.weight(r.millNetGrams)}</Td>
                   <Td>
                     {r.parcha
-                      ? <Badge tone="ok">#{r.parcha.parchaNo}{r.parcha.version > 1 ? ` v${r.parcha.version}` : ""}</Badge>
+                      ? <Badge tone="ok">#{r.parcha.parchaNo}{r.parcha.revision > 1 ? ` · ${t("parcha.revised", { n: r.parcha.revision })}` : ""}</Badge>
                       : <Badge tone="neutral">{t("load.status.draft")}</Badge>}
                   </Td>
                   <Td numeric className="font-medium">{r.parcha ? f.money(r.parcha.grandTotalPaise) : <span className="text-faint">—</span>}</Td>
@@ -338,7 +338,6 @@ function useLoadMessages() {
   const f = useFormat();
   const blocker = (b: LoadBlocker) => {
     switch (b.code) {
-      case "invoice_taken": return t("load.b.invoice_taken", { truck: b.truckNo ?? "—" });
       case "line_no_rate": return t("load.b.line_no_rate", { d: dmy(b.date) });
       case "line_not_positive": return t("load.b.line_not_positive", { d: dmy(b.date), q: f.weight(b.grams) });
       case "lines_mismatch": return t("load.b.lines_mismatch", { rows: f.weight(b.linesGrams), net: f.weight(b.millNetGrams) });
@@ -351,6 +350,8 @@ function useLoadMessages() {
       case "po_over": return t("load.w.po_over", { po: w.po, q: f.weight(w.overGrams) });
       case "po_closed": return t("load.w.po_closed", { po: w.po });
       case "po_expired": return t("load.w.po_expired", { po: w.po, d: dmy(w.validTill) });
+      case "day_unpriced": return t("load.w.day_unpriced", { d: dmy(w.date), jins: w.jinsCode, n: w.slips });
+      case "invoice_repeated": return t("load.w.invoice_repeated", { no: w.parchaNo, trucks: w.others.map((o) => o.truckNo ?? "—").join(", ") });
       default: return t(`load.w.${w.code}`);
     }
   };
@@ -392,13 +393,13 @@ export function ParchaVersionDialog({ parchaId, onClose }: { parchaId: string; o
   const f = useFormat();
   const q = useQuery({
     queryKey: ["parcha", parchaId],
-    queryFn: () => api.get<{ id: string; parchaNo: string; version: number; status: "approved" | "void"; voidReason: string | null; voidedAt: number | null; voidedByName: string | null; doc: ParchaDoc }>(`/parchas/${parchaId}`),
+    queryFn: () => api.get<{ id: string; parchaNo: string; version: number; revision: number; status: "approved" | "void"; voidReason: string | null; voidedAt: number | null; voidedByName: string | null; doc: ParchaDoc }>(`/parchas/${parchaId}`),
   });
   const v = q.data;
   const isVoid = v?.status === "void";
   return (
     <Dialog open onClose={onClose} wide
-      title={v ? t(isVoid ? "parcha.viewVoid" : "parcha.previewApproved", { no: `${v.parchaNo}${v.version > 1 ? ` v${v.version}` : ""}` }) : "…"}
+      title={v ? t(isVoid ? "parcha.viewVoid" : "parcha.previewApproved", { no: `${v.parchaNo}${v.revision > 1 ? ` · ${t("parcha.revised", { n: v.revision })}` : ""}` }) : "…"}
       sub={isVoid ? t("parcha.voidedBecause", { why: v?.voidReason ?? "", who: v?.voidedByName ?? "", when: v?.voidedAt ? new Date(v.voidedAt * 1000).toLocaleString(lang === "hi" ? "hi-IN" : "en-IN", { dateStyle: "medium", timeStyle: "short" }) : "" }) : t("parcha.previewSub")}
       footer={<>
         <a href={`/api/parchas/${parchaId}/parcha.xlsx`} download className="mr-auto">
@@ -499,15 +500,29 @@ export function LoadDetailPage({ id }: { id: string }) {
   }, [st?.load.invoiceNo, st?.suggestedInvoiceNo]);
 
   const approve = useMutation({
-    mutationFn: () => api.post<{ parchaNo: string; version: number }>(`/loads/${id}/approve`, {
+    mutationFn: (opts: { acceptRepeatedNo?: boolean } = {}) => api.post<{ parchaNo: string; version: number; revision: number }>(`/loads/${id}/approve`, {
       invoiceNo: invoice.trim() || undefined,
       expectedGrandTotalPaise: (st!.approved?.doc ?? st!.doc)?.result.grandTotalPaise,
+      acceptRepeatedNo: opts.acceptRepeatedNo,
     }),
     onSuccess: async () => { await refresh(); await qc.invalidateQueries({ queryKey: ["parchas"] }); },
     onError: async (e) => {
       await refresh();
       if (e instanceof ApiError && e.code === "offline") { setErr(t("parcha.needsInternet")); return; }
-      if (e instanceof ApiError && e.code === "number_taken") { setErr(t("parcha.numberTaken", { no: invoice.trim() })); return; }
+      /* the number is already on another parcha this year: a warning, not a refusal —
+         say where, and let the approver keep it or go back and type the next one */
+      if (e instanceof ApiError && e.code === "number_repeated") {
+        const no = invoice.trim();
+        const others = ((e.data as { others?: { truckNo: string | null; date: string | null }[] } | undefined)?.others ?? [])
+          .map((o) => `${o.truckNo ?? "—"}${o.date ? ` · ${dmy(o.date)}` : ""}`);
+        const keep = await ask({
+          title: t("parcha.repeatTitle", { no }),
+          message: t("parcha.repeatBody", { where: others.length ? others.join(", ") : t("parcha.repeatElsewhere") }),
+          confirmLabel: t("parcha.repeatKeep", { no }),
+        });
+        if (keep) { setErr(null); approve.mutate({ acceptRepeatedNo: true }); }
+        return;
+      }
       onErr(e);
     },
   });
@@ -554,7 +569,7 @@ export function LoadDetailPage({ id }: { id: string }) {
           <span className="text-muted">→</span>
           <span>{st.mill.code}</span>
           {billed
-            ? <Badge tone="ok">{t("load.approvedNo", { no: st.approved?.parchaNo ?? "", v: st.approved && st.approved.version > 1 ? ` v${st.approved.version}` : "" })}</Badge>
+            ? <Badge tone="ok">{t("load.approvedNo", { no: st.approved?.parchaNo ?? "", v: st.approved && st.approved.revision > 1 ? ` · ${t("parcha.revised", { n: st.approved.revision })}` : "" })}</Badge>
             : <Badge tone="neutral">{t("load.status.draft")}</Badge>}
         </span>}
         sub={`${dmy(l.loadDate)} · ${pick(st.mill.name, st.mill.nameHi)} · ${st.jinsList.length > 1 ? st.jinsList.map((j) => j.code).join(" + ") : `${st.jins.code} ${pick(st.jins.name, st.jins.nameHi)}`}`}
@@ -811,12 +826,15 @@ export function LoadDetailPage({ id }: { id: string }) {
                 {blockers.map((b, i) => (
                   <p key={`b${i}`} className="flex items-start gap-2 text-bad">
                     <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span>{msg.blocker(b)}{b.code === "invoice_taken" && <> · <Link href={`/loads/${b.loadId}`} className="underline">{t("load.open")}</Link></>}</span>
+                    <span>{msg.blocker(b)}</span>
                   </p>
                 ))}
                 {st.warnings.map((wn, i) => (
                   <p key={`w${i}`} className="flex items-start gap-2 text-warn">
-                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" /><span>{msg.warning(wn)}</span>
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>{msg.warning(wn)}{wn.code === "invoice_repeated" && wn.others.map((o) => (
+                      <span key={o.loadId}> · <Link href={`/loads/${o.loadId}`} className="underline">{o.truckNo ?? t("load.open")}</Link></span>
+                    ))}</span>
                   </p>
                 ))}
               </div>
@@ -893,10 +911,14 @@ export function LoadDetailPage({ id }: { id: string }) {
                         ...(d.result.advancePaise ? [{ label: t("parcha.confirmAdvance"), value: f.money(d.result.advancePaise) }] : []),
                         { label: t("parcha.confirmGrand"), value: f.money(d.result.grandTotalPaise), big: true },
                       ],
-                      warnings: [t("parcha.approveLocks"), ...(!l.truckNo ? [t("parcha.warnNoTruck")] : []), ...st.warnings.map((wn) => msg.warning(wn))],
+                      warnings: [t("parcha.approveLocks"), ...(!l.truckNo ? [t("parcha.warnNoTruck")] : []),
+                        ...((d.revision ?? 1) > 1 ? [t("parcha.revisedWillPrint", { n: d.revision ?? 1 })] : []),
+                        ...st.warnings.map((wn) => msg.warning(wn))],
                       confirmLabel: t("parcha.approveConfirm"),
                     });
-                    if (ok) { setErr(null); approve.mutate(); }
+                    // a repeated number was shown in the box above and approved anyway: that is the answer to it
+                    const seen = st.warnings.some((wn) => wn.code === "invoice_repeated" && wn.parchaNo === invoice.trim());
+                    if (ok) { setErr(null); approve.mutate({ acceptRepeatedNo: seen }); }
                   }}>
                   {t("parcha.approve")}
                 </Button>
@@ -912,7 +934,8 @@ export function LoadDetailPage({ id }: { id: string }) {
                 {st.history.map((p) => (
                   <div key={p.id} className="flex items-start justify-between gap-2 px-4 py-2">
                     <div>
-                      <span className="font-mono font-medium">#{p.parchaNo}{p.version > 1 ? ` v${p.version}` : ""}</span>
+                      <span className="font-mono font-medium">#{p.parchaNo}</span>
+                      {p.revision > 1 && <span className="ml-1.5 text-[12px] text-muted">{t("parcha.revised", { n: p.revision })}</span>}
                       <Badge tone={p.status === "approved" ? "ok" : "bad"} className="ml-2">{t(p.status === "void" ? "parcha.status.void" : "parcha.status.approved")}</Badge>
                       {p.voidReason && <p className="mt-0.5 text-[12px] text-muted">{p.voidReason}</p>}
                     </div>
@@ -978,14 +1001,16 @@ export function ParchaRegisterPage() {
   const rows = useMemo(() => (list.data ?? []).filter((r) => showVoid || r.status === "approved"), [list.data, showVoid]);
   const approved = rows.filter((r) => r.status === "approved");
   const total = approved.reduce((s, r) => s + r.grandTotalPaise, 0);
-  // what is still to come on each bill; a bill paid over does not cut another's due (as on the mill statement)
-  const dueTotal = approved.reduce((s, r) => s + Math.max(0, r.duePaise ?? 0), 0);
+  // each row re-adds: grand total − mill cut − paid on it = due (the mill statement's rule, from the server)
+  const cutTotal = approved.reduce((s, r) => s + (r.shortagePaise ?? 0), 0);
+  const paidTotal = approved.reduce((s, r) => s + (r.receivedPaise ?? 0), 0);
+  const dueTotal = approved.reduce((s, r) => s + (r.duePaise ?? 0), 0);
   const [viewing, setViewing] = useState<string | null>(null);
   const { can } = useSession();
   const money = can("millledger.read");
   const sort = useSort(rows, {
     no: (r) => r.parchaNo, date: (r) => r.invoiceDate, mill: (r) => r.millCode, truck: (r) => r.truckNo,
-    status: (r) => r.status, total: (r) => r.grandTotalPaise, received: (r) => r.receivedPaise, due: (r) => r.duePaise,
+    status: (r) => r.status, total: (r) => r.grandTotalPaise, cut: (r) => r.shortagePaise, received: (r) => r.receivedPaise, due: (r) => r.duePaise,
   }, { storageKey: "parcha-register" });
 
   return (
@@ -1011,14 +1036,27 @@ export function ParchaRegisterPage() {
                 <Th {...sort.th("no")}>{t("parcha.invoiceNo")}</Th><Th {...sort.th("date")}>{t("parcha.invoiceDate")}</Th>
                 <Th {...sort.th("mill")}>{t("load.mill")}</Th><Th {...sort.th("truck")}>{t("load.truckNo")}</Th>
                 <Th {...sort.th("status")}>{t("po.status")}</Th><Th numeric {...sort.th("total")}>{t("load.grandTotal")}</Th>
-                {money && <><Th numeric {...sort.th("received")}>{t("parcha.received")}</Th><Th numeric {...sort.th("due")}>{t("parcha.due")}</Th></>}
+                {money && <>
+                  <Th numeric {...sort.th("cut")}>{t("mm.cutShort")}</Th>
+                  <Th numeric {...sort.th("received")} title={t("parcha.paidOnHint")}>{t("parcha.paidOn")}</Th>
+                  <Th numeric {...sort.th("due")}>{t("parcha.due")}</Th>
+                </>}
                 <Th className="w-10" />
               </tr>
             </thead>
             <tbody>
               {sort.sorted.map((r) => (
                 <Tr key={r.id} onClick={() => navigate(`/loads/${r.loadId}`)} className={cn(r.status === "void" && "opacity-60")}>
-                  <Td className="font-mono font-medium">{r.parchaNo}{r.version > 1 ? ` v${r.version}` : ""} <TallyMark flag={parchaFlags[r.id]} /></Td>
+                  <Td className="font-medium">
+                    <span className="font-mono">{r.parchaNo}</span> <TallyMark flag={parchaFlags[r.id]} />
+                    {r.revision > 1 && (
+                      <span className="block text-[11px] font-normal text-muted">
+                        {t("parcha.revisedOn", { n: r.revision, d: r.approvedAt ? dmy(new Date(r.approvedAt * 1000).toLocaleDateString("en-CA")) : "" })}
+                        {r.previousId && <> · <button type="button" className="underline hover:text-ink" onClick={(e) => { e.stopPropagation(); setViewing(r.previousId); }}>{t("parcha.seeEarlier")}</button></>}
+                      </span>
+                    )}
+                    {r.numberRepeated && <Badge tone="warn" className="mt-0.5">{t("parcha.numberRepeated")}</Badge>}
+                  </Td>
                   <Td className="whitespace-nowrap">{r.invoiceDate ? dmy(r.invoiceDate) : "—"}</Td>
                   <Td><Badge tone="brand" className="num">{r.millCode}</Badge> <span className="text-muted">{pick(r.millName, r.millNameHi)}</span></Td>
                   <Td className="font-mono">{r.truckNo ?? "—"}</Td>
@@ -1028,7 +1066,11 @@ export function ParchaRegisterPage() {
                   </Td>
                   <Td numeric className={cn("font-medium", r.status === "void" && "line-through")}>{f.money(r.grandTotalPaise)}</Td>
                   {money && <>
-                    <Td numeric className="text-ok">{r.receivedPaise ? f.money(r.receivedPaise) : r.status === "approved" ? "—" : ""}</Td>
+                    <Td numeric className="whitespace-nowrap text-warn">{r.shortagePaise ? `− ${f.money(r.shortagePaise)}` : r.status === "approved" ? "—" : ""}</Td>
+                    <Td numeric className="text-ok">
+                      {r.receivedPaise ? f.money(r.receivedPaise) : r.status === "approved" ? "—" : ""}
+                      {r.fromAccountPaise ? <span className="block text-[10px] text-muted">{t("parcha.paidSplit", { a: f.money(r.againstPaise ?? 0), b: f.money(r.fromAccountPaise) })}</span> : null}
+                    </Td>
                     <Td numeric className="font-medium">{r.duePaise == null ? "" : r.duePaise <= 0 ? <Badge tone="ok">{t("mm.paid")}</Badge> : f.money(r.duePaise)}</Td>
                   </>}
                   <Td className="text-right">
@@ -1044,7 +1086,8 @@ export function ParchaRegisterPage() {
                 <td colSpan={5} className="px-3 py-2 text-right text-muted">{t("parcha.registerTotal", { n: approved.length })}</td>
                 <td className="num px-3 py-2 text-right">{f.money(total)}</td>
                 {money && <>
-                  <td className="num px-3 py-2 text-right text-ok">{f.money(approved.reduce((s, r) => s + (r.receivedPaise ?? 0), 0))}</td>
+                  <td className="num px-3 py-2 text-right text-warn">{cutTotal ? `− ${f.money(cutTotal)}` : "—"}</td>
+                  <td className="num px-3 py-2 text-right text-ok">{f.money(paidTotal)}</td>
                   <td className="num px-3 py-2 text-right">{f.money(dueTotal)}</td>
                 </>}
                 <td />
@@ -1052,6 +1095,7 @@ export function ParchaRegisterPage() {
             </tfoot>
           </Table>
         )}
+        {money && rows.length > 0 && <p className="border-t border-line px-3 py-2 text-[11px] text-faint">{t("parcha.dueRule")}</p>}
       </Card>
       {viewing && <ParchaVersionDialog parchaId={viewing} onClose={() => setViewing(null)} />}
     </div>

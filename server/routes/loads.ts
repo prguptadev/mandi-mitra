@@ -1,11 +1,15 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, and, desc, asc, sql, inArray, isNull, gte, lte, like, or, ne } from "drizzle-orm";
+import { eq, and, desc, asc, sql, inArray, gte, lte, like, or } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { ChargeConfigSchema } from "../lib/charges.ts";
-import { loadState, storedWeighment, stockDays, linesWithWeights, type ParchaDoc } from "../lib/parcha.ts";
+import {
+  loadState, storedWeighment, stockDays, linesWithWeights, sameNumberElsewhere, sameNumberCount, revisions, fyKey, fyNumberLabel,
+  type ParchaDoc,
+} from "../lib/parcha.ts";
+import { billed, receipts, settle, type DueLine } from "./millAccounts.ts";
 import { parchaXlsx } from "../lib/parchaXlsx.ts";
 import { poLabel } from "./orders.ts";
 import { claimParchaNumber, CloudError } from "../lib/cloud.ts";
@@ -166,9 +170,11 @@ loadRoutes.get("/", can("load.read"), async (c) => {
   const jinsCodes = new Map((await db.select({ id: schema.jins.id, code: schema.jins.code }).from(schema.jins).where(eq(schema.jins.businessId, biz))).map((j) => [j.id, j.code]));
   const parchas = ids.length ? await db.select({
     loadId: schema.parchas.loadId, id: schema.parchas.id, parchaNo: schema.parchas.parchaNo,
-    version: schema.parchas.version, grandTotalPaise: schema.parchas.grandTotalPaise,
-  }).from(schema.parchas).where(and(inArray(schema.parchas.loadId, ids), eq(schema.parchas.status, "approved"))) : [];
-  const parchaByLoad = new Map(parchas.map((p) => [p.loadId, p]));
+    version: schema.parchas.version, grandTotalPaise: schema.parchas.grandTotalPaise, status: schema.parchas.status,
+  }).from(schema.parchas).where(inArray(schema.parchas.loadId, ids)) : [];
+  // the live parcha of each truck, with which approval of the truck it is (2 and up = revised)
+  const revs = revisions(parchas);
+  const parchaByLoad = new Map(parchas.filter((p) => p.status === "approved").map(({ status: _s, ...p }) => [p.loadId, { ...p, revision: revs.get(p.id)?.revision ?? 1 }]));
 
   // parcha money (grand total, advance, dara) is for those who may read parchas
   const bills = c.get("auth")!.permissions.has("parcha.read");
@@ -423,6 +429,8 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
     invoiceNo: z.string().trim().min(1).max(20).optional(),
     /** The grand total the approver was looking at; a change since then is refused. */
     expectedGrandTotalPaise: z.number().int().optional(),
+    /** The approver saw that this number is already on another parcha this year, and keeps it. */
+    acceptRepeatedNo: z.boolean().optional(),
   }).parse(await c.req.json().catch(() => ({})));
   if (req.invoiceNo && req.invoiceNo !== (l.invoiceNo ?? "")) {
     await db.update(schema.loads).set({ invoiceNo: req.invoiceNo, updatedAt: nowSec() }).where(eq(schema.loads.id, id));
@@ -437,19 +445,30 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
     return c.json({ error: "The parcha changed since you looked at it (someone edited the truck or a slip). Check the new total and approve again.", code: "changed" }, 409);
   }
   const parchaNo = s.doc.invoiceNo!;
-  // one number, one truck: a number billed to another truck (even if voided) is not reused
-  const [other] = await db.select({ loadId: schema.parchas.loadId }).from(schema.parchas)
-    .where(and(eq(schema.parchas.businessId, biz), eq(schema.parchas.parchaNo, parchaNo), ne(schema.parchas.loadId, id))).limit(1);
-  if (other) {
-    return c.json({ error: `Parcha #${parchaNo} is already used for another truck. Change the parcha number to the next one and approve again.`, code: "number_taken", parchaNo }, 409);
+  /* A number belongs to one live parcha of the firm in a financial year. The
+     same number on another one is a warning the approver answers, never a
+     refusal: approving again with acceptRepeatedNo keeps it. */
+  const others = await sameNumberElsewhere(biz, parchaNo, s.doc.invoiceDate, id);
+  if (others.length && !req.acceptRepeatedNo) {
+    return c.json({
+      error: `Parcha #${parchaNo} is already on truck ${others.map((o) => o.truckNo ?? "—").join(", ")} this financial year. Use the next number, or approve again to keep #${parchaNo}.`,
+      code: "number_repeated", parchaNo, others,
+    }, 409);
   }
-  // with sync on, the number is claimed in the cloud first (needs the internet)
+  // with sync on, the number is claimed in the cloud first (needs the internet), one financial year at a time
   try {
-    await claimParchaNumber(biz, parchaNo, id);
+    await claimParchaNumber(biz, fyNumberLabel(s.doc.invoiceDate, parchaNo), id);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Could not reserve the parcha number";
-    const code = e instanceof CloudError && e.offline ? "offline" : /already used/.test(msg) ? "number_taken" : "cloud";
-    return c.json({ error: msg, code, parchaNo }, 409);
+    const offline = e instanceof CloudError && e.offline;
+    const elsewhere = !offline && /already used/.test(msg);
+    // the shared books hold it for another truck this year (another computer, or a voided parcha): the same warning, and the same answer keeps it
+    if (!(elsewhere && req.acceptRepeatedNo)) {
+      return c.json({
+        error: elsewhere ? `Parcha #${parchaNo} is already used for another truck this financial year, perhaps on another computer. Use the next number, or approve again to keep #${parchaNo}.` : msg,
+        code: offline ? "offline" : elsewhere ? "number_repeated" : "cloud", parchaNo, others: [],
+      }, 409);
+    }
   }
 
   // the claim waited on the network: look again, and freeze only what is there now
@@ -468,7 +487,10 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
       const last = tx.select({ v: sql<number>`max(${schema.parchas.version})` }).from(schema.parchas)
         .where(and(eq(schema.parchas.businessId, biz), eq(schema.parchas.parchaNo, parchaNo))).get();
       const version = (last?.v ?? 0) + 1;
-      const doc: ParchaDoc = { ...s2.doc!, version };
+      // the truck's earlier (voided) parchas: one or more means this paper is a revised one, dated today
+      const before = tx.select({ n: sql<number>`count(*)` }).from(schema.parchas).where(eq(schema.parchas.loadId, id)).get();
+      const revision = (before?.n ?? 0) + 1;
+      const doc: ParchaDoc = { ...s2.doc!, version, revision, revisedOn: revision > 1 ? new Date().toLocaleDateString("en-CA") : null };
       // the stored mill figures are what stock and PO balances read: make them the billed ones
       const moved = tx.update(schema.loads).set({
         status: "billed", invoiceDate: doc.invoiceDate, updatedAt: at,
@@ -490,11 +512,12 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
   }
   if (!frozen) return c.json({ error: "This truck was approved a moment ago.", code: "already_approved" }, 409);
   const { version, doc } = frozen;
+  const revision = doc.revision ?? 1;
   await audit({ actor: actor(c), action: "parcha.approve", entity: "parcha", entityId: pid,
-    entityLabel: `Parcha ${parchaNo}${version > 1 ? ` v${version}` : ""} — ${s.mill.code} ${l.truckNo ?? ""}`.trim(),
-    after: { parchaNo, version, grandTotalPaise: doc.result.grandTotalPaise, loadId: id, rows: doc.lines.length } });
+    entityLabel: `Parcha ${parchaNo}${revision > 1 ? ` revised ${revision}` : ""}${others.length ? " (number also on another parcha this year)" : ""} — ${s.mill.code} ${l.truckNo ?? ""}`.trim(),
+    after: { parchaNo, version, revision, grandTotalPaise: doc.result.grandTotalPaise, loadId: id, rows: doc.lines.length, repeatedNo: others.length > 0 } });
   await enqueueSync(biz, "parcha", pid, "insert", { id: pid, loadId: id, parchaNo, version });
-  return c.json({ id: pid, parchaNo, version, grandTotalPaise: doc.result.grandTotalPaise });
+  return c.json({ id: pid, parchaNo, version, revision, grandTotalPaise: doc.result.grandTotalPaise });
 });
 
 /** Excel in the paper's layout. The approved copy when there is one, else a marked draft. */
@@ -505,7 +528,8 @@ loadRoutes.get("/:id/parcha.xlsx", can("parcha.read"), async (c) => {
   const doc = s.approved?.doc ?? s.doc;
   if (!doc) throw bad("Enter the mill weight and bags first — there is no parcha to export yet", "not_ready");
   const buf = await parchaXlsx(doc, { draft: !s.approved });
-  const name = `parcha-${doc.invoiceNo ?? "draft"}-${doc.mill.code}-${doc.invoiceDate}.xlsx`;
+  const rev = s.approved?.revision ?? doc.revision ?? 1;
+  const name = `parcha-${doc.invoiceNo ?? "draft"}${rev > 1 ? `-revised-${rev}` : ""}-${doc.mill.code}-${doc.invoiceDate}.xlsx`;
   return new Response(new Uint8Array(buf), {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -536,21 +560,42 @@ parchaRoutes.get("/", can("parcha.read"), async (c) => {
     .orderBy(desc(schema.parchas.invoiceDate), desc(schema.parchas.approvedAt))
     // a season is a few hundred trucks; the screens total what they get, so send them all
     .limit(20_000);
-  // money the mill has sent against each truck (cancelled receipts count for nothing)
-  const R = schema.millReceipts;
-  const loadIds = [...new Set(rows.map((r) => r.loadId))];
-  const got = loadIds.length
-    ? await db.select({ loadId: R.loadId, p: sql<number>`sum(${R.amountPaise} + ${R.deductionPaise})` }).from(R)
-      .where(and(inArray(R.loadId, loadIds), isNull(R.voidedAt))).groupBy(R.loadId)
-    : [];
-  const gotBy = new Map(got.map((g) => [g.loadId, g.p]));
-  // the mill's weight cut, valued as the mill account values it
-  const { billed } = await import("./millAccounts.ts");
-  const cut = new Map((await billed(biz)).map((b) => [b.id, b.shortagePaise]));
+  /* What is due on each live parcha, by the mill statement's own rule
+     (settle(): money marked against the truck first, then money on account
+     to the oldest parcha), over every bill and receipt of its mill whatever
+     the register's dates — so a parcha shows the same due on every screen. */
   const money = c.get("auth")!.permissions.has("millledger.read");
-  return c.json(rows.map((r) => r.status === "approved" && money
-    ? { ...r, shortagePaise: cut.get(r.id) ?? 0, receivedPaise: gotBy.get(r.loadId) ?? 0, duePaise: r.grandTotalPaise - (cut.get(r.id) ?? 0) - (gotBy.get(r.loadId) ?? 0) }
-    : { ...r, shortagePaise: null, receivedPaise: null, duePaise: null }));
+  const dueOf = new Map<string, DueLine>();
+  if (money) {
+    const allBills = await billed(biz);
+    const allRecs = await receipts(biz);
+    const openings = await db.select({ id: schema.merchants.id, o: schema.merchants.openingBalancePaise })
+      .from(schema.merchants).where(eq(schema.merchants.businessId, biz));
+    for (const m of openings) {
+      const b = allBills.filter((x) => x.merchantId === m.id);
+      if (!b.length) continue;
+      for (const l of settle(m.o, b, allRecs.filter((x) => x.merchantId === m.id)).lines) if (l.loadId) dueOf.set(l.loadId, l);
+    }
+  }
+  // every parcha of the business, whatever the dates: revisions and repeated numbers are worked out over all of them
+  const every = await db.select({
+    id: schema.parchas.id, loadId: schema.parchas.loadId, parchaNo: schema.parchas.parchaNo, status: schema.parchas.status,
+    invoiceDate: schema.parchas.invoiceDate, approvedAt: schema.parchas.approvedAt, version: schema.parchas.version,
+  }).from(schema.parchas).where(eq(schema.parchas.businessId, biz));
+  const sameNo = sameNumberCount(every);
+  const revs = revisions(every);
+  return c.json(rows.map((r) => {
+    const rev = revs.get(r.id);
+    const extra = {
+      revision: rev?.revision ?? 1, previousId: rev?.previousId ?? null,
+      // the same number on another live parcha of the same financial year: allowed, but shown
+      numberRepeated: r.status === "approved" && r.invoiceDate ? (sameNo.get(fyKey(r.invoiceDate, r.parchaNo)) ?? 0) > 1 : false,
+    };
+    const d = r.status === "approved" ? dueOf.get(r.loadId) : undefined;
+    return d && money
+      ? { ...r, ...extra, shortagePaise: d.shortagePaise, againstPaise: d.againstPaise, fromAccountPaise: d.fromAccountPaise, receivedPaise: d.againstPaise + d.fromAccountPaise, duePaise: d.duePaise }
+      : { ...r, ...extra, shortagePaise: null, againstPaise: null, fromAccountPaise: null, receivedPaise: null, duePaise: null };
+  }));
 });
 
 /** One parcha version as it was frozen, approved or voided — for viewing and reprinting. */
@@ -560,7 +605,8 @@ async function parchaVersion(biz: string, id: string) {
     .where(and(eq(schema.parchas.id, id), eq(schema.parchas.businessId, biz))).limit(1);
   if (!p) throw notFound("Parcha not found");
   const { snapshot, ...rest } = p.p;
-  return { ...rest, voidedByName: p.voidedByName, doc: JSON.parse(snapshot) as ParchaDoc };
+  const same = await db.select({ id: schema.parchas.id, loadId: schema.parchas.loadId }).from(schema.parchas).where(eq(schema.parchas.loadId, rest.loadId));
+  return { ...rest, revision: revisions(same).get(rest.id)?.revision ?? 1, voidedByName: p.voidedByName, doc: JSON.parse(snapshot) as ParchaDoc };
 }
 
 parchaRoutes.get("/:id", can("parcha.read"), async (c) => {
@@ -570,7 +616,7 @@ parchaRoutes.get("/:id", can("parcha.read"), async (c) => {
 parchaRoutes.get("/:id/parcha.xlsx", can("parcha.read"), async (c) => {
   const v = await parchaVersion(c.get("auth")!.businessId!, param(c, "id"));
   const buf = await parchaXlsx(v.doc, v.status === "void" ? { voided: v.voidReason ?? "voided" } : {});
-  const name = `parcha-${v.parchaNo}${v.version > 1 ? `-v${v.version}` : ""}${v.status === "void" ? "-VOID" : ""}-${v.doc.mill.code}.xlsx`;
+  const name = `parcha-${v.parchaNo}${v.revision > 1 ? `-revised-${v.revision}` : ""}${v.status === "void" ? "-VOID" : ""}-${v.doc.mill.code}.xlsx`;
   return new Response(new Uint8Array(buf), {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -603,8 +649,9 @@ parchaRoutes.post("/:id/void", can("parcha.void"), async (c) => {
       bags: again.weighment.bags, millBardanaGrams: again.weighment.bardanaGrams, millNetGrams: again.weighment.netGrams,
     }).where(eq(schema.loads.id, p.loadId));
   }
+  const rev = revisions(await db.select({ id: schema.parchas.id, loadId: schema.parchas.loadId }).from(schema.parchas).where(eq(schema.parchas.loadId, p.loadId))).get(id)?.revision ?? 1;
   await audit({ actor: actor(c), action: "parcha.void", entity: "parcha", entityId: id,
-    entityLabel: `Parcha ${p.parchaNo}${p.version > 1 ? ` v${p.version}` : ""}`,
+    entityLabel: `Parcha ${p.parchaNo}${rev > 1 ? ` revised ${rev}` : ""}`,
     before: { status: "approved" }, after: { status: "void", reason } });
   await enqueueSync(biz, "parcha", id, "update", { status: "void" });
   return c.json({ ok: true });

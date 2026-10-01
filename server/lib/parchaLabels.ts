@@ -96,6 +96,16 @@ export const qtl2 = (grams: number) => {
   return `${grams < 0 ? "-" : ""}${Math.floor(kg / 100)}.${String(kg % 100).padStart(2, "0")}`;
 };
 
+/**
+ * "196 (2026-27)": a parcha number with its financial year (1 April – 31
+ * March). Numbers belong to one live parcha a year, so this is how a number
+ * is claimed across computers.
+ */
+export const fyNumberLabel = (iso: string, no: string) => {
+  const y = Number(iso.slice(0, 4)) - (Number(iso.slice(5, 7)) >= 4 ? 0 : 1);
+  return `${no.trim()} (${y}-${String((y + 1) % 100).padStart(2, "0")})`;
+};
+
 /** "2026-09-20" -> "20-09-2026", as the parcha writes it. */
 export const dmy = (iso: string) => {
   const [y, m, d] = iso.split("-");

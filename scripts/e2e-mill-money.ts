@@ -86,6 +86,8 @@ let ok = true, run = st.broughtForwardPaise;
 for (const e of st.entries) { run += e.debitPaise - e.creditPaise; if (run !== e.balancePaise) ok = false; }
 check("every running balance = the one before + bill − money", ok);
 const b196 = st.bills.find((b: any) => b.parchaNo === "196");
+check("196 was approved again after a void: the statement marks it revised 2",
+  st.entries.filter((e: any) => e.kind === "parcha" && e.parchaNo === "196").map((e: any) => e.revision).join() === "2", st.entries.filter((e: any) => e.kind === "parcha").map((e: any) => [e.parchaNo, e.revision]));
 /* What is due on each parcha, by hand, by the one rule every screen uses: money
    against a truck pays its parcha (any extra goes on account); money on account
    (the 2,00,000 cheque) pays the 10,000 opening first, then the oldest parcha. */

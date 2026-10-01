@@ -31,6 +31,8 @@ export function ParchaPaper({ doc, draft, voided, className }: { doc: ParchaDoc;
   const money = (p: number) => indianMoney(p);
   // every amount inside the grand total is printed: a dara added to it shows even where the mill's layout hides the row
   const daraShown = paperShowsDara(r, doc.config);
+  // a truck approved again after a void: this paper replaces the one given before (older parchas carry only the version)
+  const revision = doc.revision ?? doc.version;
 
   return (
     <div className={cn("parcha-paper relative mx-auto w-full max-w-[720px] bg-white p-6 text-[12.5px] leading-tight text-black", className)}
@@ -64,7 +66,12 @@ export function ParchaPaper({ doc, draft, voided, className }: { doc: ParchaDoc;
           <tr>
             <td colSpan={2} className={cn(cellL, head)}>BARDANA WEIGHT</td>
             <td colSpan={3} className={cellR}>{qtl2(w.bardanaGrams)}</td>
-            <td colSpan={3} rowSpan={2} className={cn(cellC, "text-[17px]")}>{doc.invoiceNo ?? ""}</td>
+            <td colSpan={3} rowSpan={2} className={cn(cellC, "text-[17px]")}>
+              {doc.invoiceNo ?? ""}
+              {revision > 1 && (
+                <span className="block text-[11px] font-bold tracking-wide">REVISED ({revision}){doc.revisedOn ? ` ${dmy(doc.revisedOn)}` : ""}</span>
+              )}
+            </td>
           </tr>
           <tr>
             <td colSpan={2} className={cn(cellL, head)}>NET WEIGHT</td>

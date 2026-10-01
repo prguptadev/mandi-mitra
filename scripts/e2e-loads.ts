@@ -176,6 +176,13 @@ console.log("\nSafeguards");
   await call("PUT", `/loads/${t3.id}`, { katteCount: 800 });
   await call("PUT", `/loads/${t3.id}`, { katteCount: null });
   check("katte 800 then the box cleared: 0 katte, not the old 800", (await call("GET", `/loads/${t3.id}`)).weighment.bags === 0);
+  // its row from DAY2 is priced at that day's average; a slip of that day with no rate yet is left out of it
+  const noRate = await call("POST", "/slips", { slipDate: DAY2, rstNo: "996", adatiId: (byHi.get("अमित ट्रेडिंग") as any).id, jinsId: j1509.id, merchantId: lb.id, grossGrams: q(10), ratePaisePerQtl: 0 });
+  const s3u = await call("GET", `/loads/${t3.id}`);
+  check(`${DAY2} has a slip with no rate: a truck at that day's average is warned, not blocked`,
+    s3u.warnings.some((w: any) => w.code === "day_unpriced" && w.date === DAY2 && w.slips === 1) && !s3u.blockers.some((b: any) => /rate|unpriced/.test(b.code)), s3u.warnings);
+  await call("DELETE", `/slips/${noRate.id}`);
+  check("…and once that slip is gone (or priced), the warning goes", !(await call("GET", `/loads/${t3.id}`)).warnings.some((w: any) => w.code === "day_unpriced"));
   await call("DELETE", `/loads/${t3.id}`);
   const huge = await status("POST", "/slips", { slipDate: DAY1, rstNo: "999", adatiId: (byHi.get("अमित ट्रेडिंग") as any).id, jinsId: j1509.id, merchantId: lb.id, grossGrams: q(192000), ratePaisePerQtl: 350000 });
   check("an absurd gross (1,92,000 qtl) is refused", huge.status === 400, huge.json?.error);
@@ -226,11 +233,28 @@ check("Excel carries the grand total 1127851.22 as a number", values.includes(11
 check("Excel carries truck, invoice no and date", values.includes("UP25CT5038") && values.includes("196") && values.includes("25-09-2026"));
 
 await call("PUT", `/loads/${t2.id}`, { invoiceNo: "196" });
+const dupSt = await call("GET", `/loads/${t2.id}`);
+check("196 again this financial year: a warning naming the other truck, not a blocker",
+  dupSt.warnings.some((w: any) => w.code === "invoice_repeated" && w.parchaNo === "196" && w.others.some((o: any) => o.loadId === t1.id))
+  && !dupSt.blockers.some((b: any) => /invoice/.test(b.code)), { w: dupSt.warnings, b: dupSt.blockers });
 const dup = await status("POST", `/loads/${t2.id}/approve`);
-check("invoice 196 cannot be used twice", dup.status === 409 && dup.json.blockers.some((x: any) => x.code === "invoice_taken"), dup.json?.blockers);
+check("approving with 196 asks first (number_repeated), never silently", dup.status === 409 && dup.json.code === "number_repeated" && dup.json.others?.[0]?.truckNo === "UP25CT5038", dup.json);
+check("…and nothing was approved by asking", (await call("GET", `/loads/${t2.id}`)).load.status === "draft");
 await call("PUT", `/loads/${t2.id}`, { invoiceNo: null });
 const s2b = await call("GET", `/loads/${t2.id}`);
 check("the next number is suggested as 197", s2b.suggestedInvoiceNo === "197", s2b.suggestedInvoiceNo);
+// numbers are one per live parcha within a financial year: April may start a series of its own
+const ny1 = await call("POST", "/loads", { loadDate: "2027-04-02", merchantId: lb.id, jinsId: j1509.id, stockDate: DAY2, truckNo: "UP25CT5038" });
+await call("PUT", `/loads/${ny1.id}`, { invoiceNo: "196" });
+const nySt = await call("GET", `/loads/${ny1.id}`);
+check("196 again in the next financial year (2027-28) is no repeat: no warning", !nySt.warnings.some((w: any) => w.code === "invoice_repeated"), nySt.warnings);
+check("the same truck on another load is normal: nothing is said about it",
+  ![...nySt.warnings, ...nySt.blockers].some((x: any) => /truck/i.test(x.code)), { w: codes(nySt.warnings), b: codes(nySt.blockers) });
+await call("PUT", `/loads/${ny1.id}`, { invoiceNo: "1" });
+const ny2 = await call("POST", "/loads", { loadDate: "2027-04-03", merchantId: lb.id, jinsId: j1509.id, stockDate: DAY2 });
+const ny2St = await call("GET", `/loads/${ny2.id}`);
+check("…and after no. 1 that year the next suggested is 2: the year's own series", ny2St.suggestedInvoiceNo === "2", ny2St.suggestedInvoiceNo);
+for (const x of [ny1, ny2]) await call("DELETE", `/loads/${x.id}`);
 
 console.log("\nVoid and re-approve");
 const noReason = await status("POST", `/parchas/${ap.id}/void`, { reason: "" });
@@ -239,9 +263,22 @@ await call("POST", `/parchas/${ap.id}/void`, { reason: "advance was 12000, not 1
 await call("PUT", `/loads/${t1.id}`, { advancePaise: 1_200_000 });
 const ap2 = await call("POST", `/loads/${t1.id}/approve`);
 check("re-approved as 196 v2 with the new advance", ap2.parchaNo === "196" && ap2.version === 2 && ap2.grandTotalPaise === 112_785_122 + 200_000, ap2);
+const revSt = await call("GET", `/loads/${t1.id}`);
+check("the new paper is REVISED 2, dated the day it was approved again",
+  ap2.revision === 2 && revSt.approved.doc.revision === 2 && revSt.approved.doc.revisedOn === new Date().toLocaleDateString("en-CA"),
+  { revision: ap2.revision, on: revSt.approved.doc.revisedOn });
+const revX = await raw("GET", `/loads/${t1.id}/parcha.xlsx`);
+const revWb = new ExcelJS.Workbook();
+await revWb.xlsx.load(Buffer.from(await revX.arrayBuffer()) as any);
+const revCells: string[] = [];
+revWb.worksheets[0].eachRow((row) => row.eachCell((c) => revCells.push(String(c.value ?? ""))));
+check("…and its Excel says REVISED (2) beside the number", revCells.some((v) => /^196\nREVISED \(2\)/.test(v)), revCells.filter((v) => /REVISED/.test(v)));
 const reg = await call("GET", "/parchas");
 const mine = reg.filter((p: any) => p.parchaNo === "196");
 check("register keeps v1 (void) and v2 (approved)", mine.length === 2 && mine.some((p: any) => p.status === "void") && mine.some((p: any) => p.status === "approved"));
+check("the register marks the live one revised 2 and points back to the voided one",
+  mine.find((p: any) => p.status === "approved").revision === 2 && mine.find((p: any) => p.status === "approved").previousId === mine.find((p: any) => p.status === "void").id,
+  mine.map((p: any) => [p.status, p.revision, p.previousId]));
 const v1 = mine.find((p: any) => p.status === "void");
 const v1doc = await call("GET", `/parchas/${v1.id}`);
 check("the voided v1 can still be opened, as it was frozen", v1doc.status === "void" && v1doc.doc.result.grandTotalPaise === 112_785_122 && v1doc.voidReason === "advance was 12000, not 10000", { status: v1doc.status, why: v1doc.voidReason });
