@@ -270,7 +270,10 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
    office calls the dara. Σ(net × rate) / Σ net over the slips that carry a
    rate, so it is the same number the parcha and the mill report print. A mill
    that took two commodities that day gets a line for each. A line whose slips
-   have no rate yet has no average to show, so it is left out and counted. */
+   have no rate yet has no average to show, so it is left out and counted.
+   Net on a line is the priced net — the weight the average is taken over — so
+   net × average is the amount beside it; weight still without a rate is
+   given on its own. */
 dashboardRoutes.get("/day-averages", can("dashboard.view"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const f = filterOf(c);
@@ -313,10 +316,12 @@ dashboardRoutes.get("/day-averages", can("dashboard.view"), async (c) => {
         millId: r.merchantId, millCode: mill(r.merchantId)?.code ?? null,
         millName: mill(r.merchantId)?.name ?? null, millNameHi: mill(r.merchantId)?.nameHi ?? null,
         jinsId: r.jinsId, jinsCode: jins(r.jinsId)?.code ?? "", jinsName: jins(r.jinsId)?.name ?? "", jinsNameHi: jins(r.jinsId)?.nameHi ?? null,
-        slips: r.slips, bags: r.bags, grossGrams: r.grossGrams, netGrams: r.netGrams,
+        slips: r.slips, bags: r.bags, grossGrams: r.grossGrams, netGrams: r.pricedNet,
         amountPaise: r.amountPaise, payablePaise: r.payablePaise,
         avgRatePaisePerQtl: avgOver([r]),
         waiting: r.slips - r.pricedSlips,
+        /** Net of this line's slips still without a rate: not in the net, the average or the amount. */
+        unpricedNetGrams: r.netGrams - r.pricedNet,
       }))
       .sort((a, b) => (a.millCode ?? "~").localeCompare(b.millCode ?? "~") || a.jinsCode.localeCompare(b.jinsCode));
     const priced = mine.filter((r) => r.pricedNet > 0);
@@ -328,13 +333,15 @@ dashboardRoutes.get("/day-averages", can("dashboard.view"), async (c) => {
         slips: priced.reduce((s, r) => s + r.pricedSlips, 0),
         bags: priced.reduce((s, r) => s + r.bags, 0),
         grossGrams: priced.reduce((s, r) => s + r.grossGrams, 0),
-        netGrams: priced.reduce((s, r) => s + r.netGrams, 0),
+        netGrams: priced.reduce((s, r) => s + r.pricedNet, 0),
         amountPaise: priced.reduce((s, r) => s + r.amountPaise, 0),
         payablePaise: priced.reduce((s, r) => s + r.payablePaise, 0),
         avgRatePaisePerQtl: avgOver(priced),
       } : null,
       /** Slips of that day still without a rate: no average can be worked out for them. */
       waiting: mine.reduce((s, r) => s + (r.slips - r.pricedSlips), 0),
+      /** …and their net, every mill: the day's net is the total's net plus this. */
+      unpricedNetGrams: mine.reduce((s, r) => s + (r.netGrams - r.pricedNet), 0),
     };
   }).filter((d) => d.lines.length > 0 || d.waiting > 0);
   return c.json({ days: out });
