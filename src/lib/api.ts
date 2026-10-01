@@ -186,6 +186,10 @@ export interface ScanRow {
     confidence: number | null; struckThrough: boolean | null;
     /** The printed SR NO the reader put this row on. */
     srNo?: number | null;
+    /** Where the line sits on its page, 0 (top) to 1000 (bottom), when the reader said. */
+    lineY?: number | null;
+    /** Number cells that came back as something else, as written ("34S0"). */
+    unreadable?: Record<string, string> | null;
   };
   rstNo: string;
   adatiId: string | null;
@@ -222,7 +226,8 @@ export interface ScanSummary {
   totalNetGrams: number; totalAmountPaise: number; meanConfidence: number;
 }
 
-export interface PageCheck { page: number; code: "page_total" | "page_date" | "page_rows"; params: Record<string, string | number>; confirmed: boolean }
+export type PageCheckCode = "page_total" | "page_date" | "page_rows" | "page_cut" | "page_count" | "page_struck" | "page_mill" | "page_jins" | "page_norate" | "page_order";
+export interface PageCheck { page: number; code: PageCheckCode; params: Record<string, string | number>; confirmed: boolean; stamp?: string }
 
 export interface ScanBatch {
   id: string; status: string; sourceKind: string;
@@ -231,6 +236,8 @@ export interface ScanBatch {
   tokensIn: number | null; tokensOut: number | null;
   createdAt: number; reviewedAt: number | null;
   running: boolean;
+  /** The one page being read again just now, if that is what the reader is doing. */
+  rereadPage?: number | null;
   pagesDone: number;
   pages: { index: number; name: string; mimeType: string; bytes: number }[];
   rows: ScanRow[];
@@ -238,6 +245,10 @@ export interface ScanBatch {
   /** Whole-page checks: rows that may have slid, the header date and the bottom total. */
   pageChecks?: PageCheck[];
   rateRange?: { floorPaise: number; ceilPaise: number; from: "recent" | "default" } | null;
+  /** What the reader saw at the head and foot of each page. */
+  header?: { page: number; date: string | null; millName: string | null; jins: string | null; total: number | null; truncated: boolean }[];
+  /** The version of the rows and header this screen has; sent back with every save. */
+  rev?: string;
 }
 
 export interface ScanListRow {

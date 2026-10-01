@@ -4,6 +4,7 @@ import { DatabaseBackup, Download, FolderSync, FolderOpen, History } from "lucid
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
+import { cn } from "@/lib/utils.ts";
 import { Alert, Badge, Button, Card, CardHeader, Dialog, Field, Input } from "@/components/ui/index.tsx";
 
 /* Backups of the whole database: automatic (every 12 hours), before every
@@ -12,6 +13,8 @@ import { Alert, Badge, Button, Card, CardHeader, Dialog, Field, Input } from "@/
 
 interface BackupState {
   folder: string | null; lastAt: string | null; lastError: string | null; copiedAt: string | null;
+  /** Scan pictures in the second folder after the last backup, of how many on this computer. */
+  pictures?: { inFolder: number; here: number; at: string } | null;
   folders?: { data: string; db: string; scans: string; backups: string };
   backups: { name: string; kind: "auto" | "before-update" | "manual" | "before-restore"; bytes: number; at: string }[];
 }
@@ -63,6 +66,10 @@ export function BackupCard() {
               icon={<FolderSync className="h-3.5 w-3.5" />} onClick={() => saveFolder.mutate(folder?.trim() || null)}>{t("common.save")}</Button>
           </div>
           {b?.folder && b.copiedAt && <p className="mt-1 text-[11px] text-ok">{t("backup.copied", { when: when(b.copiedAt) })}</p>}
+          {/* the pictures behind every scanned slip are files, not in the database: say where they are */}
+          {b && (b.folder && b.pictures
+            ? <p className={cn("mt-1 text-[11px]", b.pictures.inFolder < b.pictures.here ? "text-warn" : "text-ok")}>{t("backup.pictures", { n: b.pictures.inFolder, m: b.pictures.here })}</p>
+            : !b.folder && <p className="mt-1 text-[11px] text-warn">{t("backup.picturesHere")}</p>)}
         </Field>
         {(b?.backups.length ?? 0) > 0 && (
           <div className="max-h-56 divide-y divide-line overflow-y-auto rounded-lg border border-line">
