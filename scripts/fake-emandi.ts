@@ -30,6 +30,8 @@
  *   /__slow?path=&ms=&times=       the next N calls to a path wait that long
  *   /__fieldErrors       the next wrong captcha is refused the ASP.NET way, under
  *                        the captcha field's name, in words that never say "captcha"
+ *   /__plainDashboard    the dashboard greets nobody and carries no licence, as
+ *                        when the portal changes its page; the stock page still has it
  *   /__reset             all of the above off
  *   /__calls             every request, with its headers, so tests can count them
  */
@@ -86,6 +88,7 @@ let nextSession = 1;
 let nextCaptcha = 1;
 const faults: { path: string; status?: number; to?: string; ms?: number; times: number }[] = [];
 let fieldErrors = false;
+let plainDashboard = false;
 
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///+/v7+jQ3Y5AAAADklEQVQI12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII=",
@@ -131,7 +134,8 @@ http.createServer((req, res) => {
 
     // the test's own switches; not recorded as portal calls
     if (url.pathname === "/__calls") return send(200, "application/json", JSON.stringify(calls));
-    if (url.pathname === "/__reset") { faults.length = 0; fieldErrors = false; return send(200, "application/json", "{}"); }
+    if (url.pathname === "/__reset") { faults.length = 0; fieldErrors = false; plainDashboard = false; return send(200, "application/json", "{}"); }
+    if (url.pathname === "/__plainDashboard") { plainDashboard = true; return send(200, "application/json", "{}"); }
     if (url.pathname === "/__fieldErrors") { fieldErrors = true; return send(200, "application/json", "{}"); }
     if (url.pathname === "/__expire" || url.pathname === "/__unland") {
       for (const s of sessions.values()) {
@@ -236,6 +240,7 @@ http.createServer((req, res) => {
       }]));
     }
     if (url.pathname === "/Traders/add_six_r") return send(200, "text/html", sixRPage());
+    if (url.pathname === "/Traders/Dashboard" && plainDashboard) return send(200, "text/html", "<html><body><h2>Dashboard</h2></body></html>");
     if (url.pathname === "/Traders/Dashboard") return send(200, "text/html",
       `<html><body><input type="hidden" value="${login.owner}" id="username" />
        <input type="hidden" value="${login.licence}" id="MerchantLicense" />

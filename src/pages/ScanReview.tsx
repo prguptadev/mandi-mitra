@@ -305,7 +305,7 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
   const ownCode = useOwnCode();
   const f = useFormat();
   const qc = useQueryClient();
-  const { can } = useSession();
+  const { can, switchBusiness } = useSession();
   const ask = useConfirm();
   const [, navigate] = useLocation();
 
@@ -336,10 +336,9 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
     enabled: false,
     retry: false,
   });
-  const goThere = useMutation({
-    mutationFn: (businessId: string) => api.post("/auth/switch-business", { businessId }),
-    onSuccess: async () => { await qc.invalidateQueries(); },
-  });
+  /* The same switch as the business menu: everything held for the business
+     left is dropped, not just marked old, so none of it shows under this one. */
+  const goThere = useMutation({ mutationFn: (businessId: string) => switchBusiness(businessId) });
 
   const batch = useQuery({
     queryKey: ["scan", scanId],

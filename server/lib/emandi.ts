@@ -98,8 +98,9 @@ const blank = (): PortalAccount => ({ user: "", enc: null, watch: ["1"], session
   firm: null, portalLicence: null, crops: null, cropsAt: null, updatedAt: null });
 
 /* What happened the last time the file was found damaged, for the screen. It
-   stays until a login is saved again. */
-let storeTrouble: "store_restored" | "store_lost" | null = null;
+   stays for each business until that business saves its own login again —
+   one firm putting its login back says nothing about the other's. */
+let storeTrouble: { note: "store_restored" | "store_lost"; cleared: Set<string> } | null = null;
 
 const parseStore = (text: string): Store | null => {
   try {
@@ -153,7 +154,7 @@ function readStore(): Store {
   try { prev = parseStore(fs.readFileSync(`${file}.prev`, "utf8")); } catch { /* no spare copy */ }
   console.warn(`[emandi] emandi.json could not be read; kept as ${path.basename(aside)}`
     + (prev ? ", and the copy from the write before was put back" : ", and there was no earlier copy"));
-  storeTrouble = prev ? "store_restored" : "store_lost";
+  storeTrouble = { note: prev ? "store_restored" : "store_lost", cleared: new Set() };
   if (prev) writeAtomic(file, prev);
   return prev ?? {};
 }
@@ -191,7 +192,7 @@ export function saveAccount(biz: string, p: { user?: string; password?: string; 
     updatedAt: new Date().toISOString(),
   };
   writeStore(s);
-  storeTrouble = null;
+  storeTrouble?.cleared.add(biz);
   if (loginChanged) dropSession(biz); // a changed login must not keep the old session
   return accountOf(biz);
 }
@@ -366,8 +367,11 @@ const LANG = "en-US,en;q=0.9,hi;q=0.8";
  * Sec-Fetch headers, and no header that only a page navigation carries.
  *
  * This is for compatibility, not for hiding: the captcha is still read and
- * typed by a person at sign-in, we ask only for what is ours, and nothing is
- * ever posted to e-Mandi except the login itself.
+ * typed by a person at sign-in, and we ask only for what is ours. Nothing is
+ * ever submitted to e-Mandi — no 6R, 9R or gate pass. Three calls are POSTs,
+ * because the portal's own pages make them that way: the login itself, and
+ * two read-only lookups — the rate band (/Traders/get_crop_fees, a crop code)
+ * and the stock register (/Stock/GetDayBookList, the licence and the dates).
  */
 type Kind = "page" | "xhr" | "image";
 const headersFor = (kind: Kind, referer: string | null): Record<string, string> => {
@@ -776,6 +780,8 @@ export function statusOf(biz: string) {
      data folder was copied without its key) is not a saved password. */
   const passwordReadable = Boolean(readablePassword(acc));
   return {
+    /** Whose status this is: a screen keeps it only under this business. */
+    businessId: biz,
     configured: Boolean(acc.user && passwordReadable),
     passwordUnreadable: Boolean(acc.enc) && !passwordReadable,
     user: acc.user,
@@ -789,7 +795,7 @@ export function statusOf(biz: string) {
     noteCode: s.noteCode,
     note: s.noteCode ? SAY[s.noteCode] ?? null : null,
     refused: s.refused,
-    storeNote: storeTrouble,
+    storeNote: storeTrouble && !storeTrouble.cleared.has(biz) ? storeTrouble.note : null,
     base: BASE,
   };
 }
@@ -840,8 +846,8 @@ export interface RateBand {
   at: string;
 }
 
-/** The band the portal allows for a commodity today, with its fee and cess. */
-export async function rateBand(biz: string, cropCode: string): Promise<RateBand> {
+/** The band the portal allows for a commodity today, with its fee and cess; `names` gives the commodity its name. */
+export async function rateBand(biz: string, cropCode: string, names = new Map<string, string>()): Promise<RateBand> {
   const text = await signedInCall(biz, "/Traders/get_crop_fees", {
     kind: "xhr", referer: "/Traders/add_six_r", // where the page that asks this lives
     body: new URLSearchParams({ crop_code: cropCode }),
@@ -853,11 +859,10 @@ export async function rateBand(biz: string, cropCode: string): Promise<RateBand>
   /* A reply without the rate fields is not "no band": it is an answer we do
      not understand, and it must not be shown as a decision by the mandi. */
   if (!row || typeof row !== "object" || (!("min_rate" in row) && !("max_rate" in row))) throw new PortalError("rate_shape", said);
-  const crops = await cropList(biz).catch(() => []);
   const pct = (v: unknown) => (v == null || v === "" ? null : Number(v));
   return {
     cropCode,
-    cropName: crops.find((c) => c.code === cropCode)?.name ?? null,
+    cropName: names.get(cropCode) ?? null,
     minRatePaise: decimalUnits(row.min_rate, 2),
     maxRatePaise: decimalUnits(row.max_rate, 2),
     mandiFeePct: pct(row.mandi_fees),
@@ -896,7 +901,7 @@ export async function ratesFor(biz: string, codes: string[]): Promise<{ rows: Ra
   const readAll = async () => {
     rows.length = 0;
     for (const code of codes) {
-      try { rows.push({ ...(await rateBand(biz, code)), error: null, code: null }); } catch (e) {
+      try { rows.push({ ...(await rateBand(biz, code, names)), error: null, code: null }); } catch (e) {
         const pe = e instanceof PortalError ? e : new PortalError("portal_error");
         if (STOPS.has(pe.code)) return pe;
         rows.push(blankRow(code, pe));
@@ -907,15 +912,28 @@ export async function ratesFor(biz: string, codes: string[]): Promise<{ rows: Ra
   let problem: PortalError | null = null;
   try {
     const { landedNow } = await freshSession(biz);
+    /* The names, asked for once per round: when the 6R form is slow, that is
+       one wait, not one on each commodity in turn. A name is only a label —
+       no list leaves the rows named by code. */
+    if (!names.size) names = new Map((await cropList(biz).catch(() => [])).map((c) => [c.code, c.name]));
+    // a licence the dashboard did not show is read once, so whose login this is can be settled (and checked)
+    if (!accountOf(biz).portalLicence) {
+      await licenceOf(biz).catch((e: unknown) => { if (e instanceof PortalError && STOPS.has(e.code)) throw e; });
+    }
     problem = await readAll();
     const s = sessionOf(biz);
-    const bandless = !problem && rows.length > 0 && rows.every((r) => !r.error && !r.minRatePaise && !r.maxRatePaise);
+    const zero = () => !problem && rows.length > 0 && rows.every((r) => !r.error && !r.minRatePaise && !r.maxRatePaise);
     const key = codes.join(",");
     const confirmed = s.bandless?.codes === key && Date.now() - s.bandless.at < 30 * 60_000;
-    if (bandless && !landedNow && !confirmed) {
+    if (zero() && !landedNow && !confirmed) {
       if ((await look(biz)) === "ended") throw new PortalError("ended");
       problem = await readAll();
-      s.bandless = { codes: key, at: Date.now() };
+      /* Believed for half an hour only when landing again changed nothing.
+         A band after the landing means the 0.00 was the session's, not the
+         mandi's — so the next 0.00 is looked at again too. */
+      s.bandless = zero() ? { codes: key, at: Date.now() } : null;
+    } else if (!problem && !zero()) {
+      s.bandless = null; // a band came through: a later 0.00 is not taken on trust
     }
   } catch (e) {
     problem = e instanceof PortalError ? e : new PortalError("portal_error");
@@ -977,17 +995,25 @@ const DAYBOOK_COLUMNS = ["crop_name_hi", "ins_primary", "ins_secondary", "outs_p
  * The window is the last month, counted back from today each time it is asked
  * — so tomorrow it is tomorrow's month, without anyone setting a date.
  */
+/**
+ * This login's licence: as kept, or read from the stock page (a read-only GET)
+ * when the dashboard did not show it — and then kept.
+ */
+async function licenceOf(biz: string): Promise<string> {
+  const kept = accountOf(biz).portalLicence;
+  if (kept) return kept;
+  const page = await signedInCall(biz, "/Stock/DayBook");
+  const licence = /<input[^>]*id="license_number"[^>]*>/.exec(page)?.[0]?.match(/value="([^"]*)"/)?.[1]?.trim() ?? "";
+  // asking with an empty licence gets an empty register, which would read as "no stock"
+  if (!licence) throw new PortalError("no_licence");
+  const st = readStore();
+  if (st[biz] && !st[biz].portalLicence) { st[biz] = { ...st[biz], portalLicence: licence }; writeStore(st); }
+  return licence;
+}
+
 export async function availableStock(biz: string, days = 30): Promise<{ lines: StockLine[]; licence: string; from: string; to: string; at: string }> {
   await freshSession(biz);
-  let licence = accountOf(biz).portalLicence ?? "";
-  if (!licence) {
-    const page = await signedInCall(biz, "/Stock/DayBook");
-    licence = /<input[^>]*id="license_number"[^>]*>/.exec(page)?.[0]?.match(/value="([^"]*)"/)?.[1]?.trim() ?? "";
-    // asking with an empty licence gets an empty register, which would read as "no stock"
-    if (!licence) throw new PortalError("no_licence");
-    const st = readStore();
-    if (st[biz] && !st[biz].portalLicence) { st[biz] = { ...st[biz], portalLicence: licence }; writeStore(st); }
-  }
+  const licence = await licenceOf(biz);
   const to = new Date();
   const from = new Date();
   from.setDate(from.getDate() - days);
@@ -1079,5 +1105,13 @@ export async function cropList(biz: string, force = false): Promise<{ code: stri
   return out;
 }
 
-/** "l/2016/75/17121983 " and "L/2016/75/17121983" are one licence. */
-export const licenceKey = (l: string | null | undefined) => (l ?? "").toUpperCase().replace(/\s+/g, "");
+/**
+ * One licence however it is written: "L/2016/75/17121983", "l-2016-075-17121983.",
+ * "2016/75/17121983". Letters and numbers only, a number without its leading
+ * zeros, and the "L" in front left out. The same rule is in src/lib/utils.ts.
+ */
+export const licenceKey = (l: string | null | undefined) => {
+  const parts = ((l ?? "").toUpperCase().match(/[A-Z]+|\d+/g) ?? []).map((p) => (/^\d/.test(p) ? p.replace(/^0+(?=\d)/, "") : p));
+  if (parts[0] === "L" && parts.length > 1) parts.shift();
+  return parts.join("/");
+};

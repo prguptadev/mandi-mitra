@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Landmark, Trash2, RefreshCw, Search } from "lucide-react";
 import { api } from "@/lib/api.ts";
@@ -8,6 +8,7 @@ import { useConfirm } from "@/components/Confirm.tsx";
 import { Alert, Badge, Button, Card, CardHeader, Checkbox, Field, Input } from "@/components/ui/index.tsx";
 import { sameFirm } from "@/lib/utils.ts";
 import { usePortalSay, dropPortalReadings, type PortalStatus } from "@/components/PortalRatesCard.tsx";
+import { emandiKey, emandiPath, isBusinessChanged, ownReply, putStatus } from "@/lib/emandiKeys.ts";
 
 /* The mandi portal login for THIS business. The two firms have separate
    logins there, so this card follows whichever business is open.
@@ -20,7 +21,15 @@ import { usePortalSay, dropPortalReadings, type PortalStatus } from "@/component
    it shows, and as many as the server takes. */
 const WATCH_MAX = 12;
 
+/* The card follows the business open: switching starts it afresh, so nothing
+   typed or read for one firm's login stays on screen for the other. */
 export function PortalCard() {
+  const { me } = useSession();
+  const biz = me?.activeBusinessId ?? null;
+  return <LoginCard key={biz ?? ""} bizId={biz} />;
+}
+
+function LoginCard({ bizId }: { bizId: string | null }) {
   const { t } = useI18n();
   const { can, me } = useSession();
   const qc = useQueryClient();
@@ -33,28 +42,31 @@ export function PortalCard() {
   const [saved, setSaved] = useState<string | null>(null);
 
   const q = useQuery({
-    queryKey: ["emandi"], queryFn: () => api.get<PortalStatus>("/emandi"),
-    enabled: can("business.write"), staleTime: 60_000,
+    queryKey: emandiKey(bizId), queryFn: async () => ownReply(bizId, await api.get<PortalStatus>(emandiPath(bizId, "/emandi"))),
+    enabled: can("business.write") && Boolean(bizId), staleTime: 60_000,
+    retry: (n, e) => !isBusinessChanged(e) && n < 3,
   });
-  // the business can be switched under us; forget what was typed for the old one
-  useEffect(() => { setUser(null); setPassword(""); setWatch(null); setSaved(null); }, [me?.activeBusinessId]);
+  // a reply for a business switched away from is not said here
+  const fail = (e: unknown) => { if (!isBusinessChanged(e)) setErr(say(e)); };
 
   /* The portal's commodity list is read once and kept on this computer, so the
      choice can be made whether or not anyone is signed in just now. */
   const crops = useQuery({
-    queryKey: ["emandi", "crops"], queryFn: () => api.get<{ crops: { code: string; name: string }[]; at: string | null }>("/emandi/crops"),
-    enabled: can("business.write"), staleTime: 60 * 60_000,
+    queryKey: emandiKey(bizId, "crops"),
+    queryFn: () => api.get<{ crops: { code: string; name: string }[]; at: string | null }>(emandiPath(bizId, "/emandi/crops")),
+    enabled: can("business.write") && Boolean(bizId), staleTime: 60 * 60_000,
   });
   const reread = useMutation({
-    mutationFn: () => api.post<{ crops: { code: string; name: string }[]; at: string }>("/emandi/crops/refresh", {}),
-    onSuccess: (r) => { setErr(null); qc.setQueryData(["emandi", "crops"], r); },
-    onError: (e) => setErr(say(e)),
+    mutationFn: () => api.post<{ crops: { code: string; name: string }[]; at: string }>(emandiPath(bizId, "/emandi/crops/refresh"), {}),
+    onSuccess: (r) => { setErr(null); qc.setQueryData(emandiKey(bizId, "crops"), r); },
+    onError: fail,
   });
   const [find, setFind] = useState("");
 
   const save = useMutation({
-    mutationFn: (b: { user?: string; password?: string; watch?: string[] }) => api.put<PortalStatus>("/emandi", b),
+    mutationFn: (b: { user?: string; password?: string; watch?: string[] }) => api.put<PortalStatus>(emandiPath(bizId, "/emandi"), b),
     onSuccess: (s, b) => {
+      if (!putStatus(qc, bizId, s)) return;
       const loginChanged = Boolean(b.password) || (b.user !== undefined && b.user !== q.data?.user);
       setErr(null); setPassword(""); setUser(null); setWatch(null);
       /* A new user name clears the password saved with the old one — say so
@@ -63,12 +75,11 @@ export function PortalCard() {
          sign-in that is not needed. */
       setSaved(!s.configured && s.user ? t("portal.savedNeedsPassword", { user: s.user })
         : s.signedIn ? t("portal.savedSignedIn") : t("portal.savedNote"));
-      qc.setQueryData(["emandi"], s);
       // a changed login may be another licence: nothing read with the old one stays
-      if (loginChanged) dropPortalReadings(qc);
-      else void qc.invalidateQueries({ queryKey: ["emandi", "rates"] });
+      if (loginChanged) dropPortalReadings(qc, bizId);
+      else void qc.invalidateQueries({ queryKey: emandiKey(bizId, "rates") });
     },
-    onError: (e) => setErr(say(e)),
+    onError: fail,
   });
   const saveNow = () => save.mutate({
     ...(user !== null ? { user: user.trim() } : {}),
@@ -76,9 +87,12 @@ export function PortalCard() {
     ...(watch !== null ? { watch } : {}),
   });
   const forget = useMutation({
-    mutationFn: () => api.del<PortalStatus>("/emandi"),
-    onSuccess: (s) => { setErr(null); setSaved(null); setUser(null); setWatch(null); qc.setQueryData(["emandi"], s); dropPortalReadings(qc); },
-    onError: (e) => setErr(say(e)),
+    mutationFn: () => api.del<PortalStatus>(emandiPath(bizId, "/emandi")),
+    onSuccess: (s) => {
+      if (!putStatus(qc, bizId, s)) return;
+      setErr(null); setSaved(null); setUser(null); setWatch(null); dropPortalReadings(qc, bizId);
+    },
+    onError: fail,
   });
   const askForget = async () => {
     const firm = me?.business?.name ?? "";

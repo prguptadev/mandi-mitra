@@ -119,8 +119,16 @@ export function looksLikeSameFirm(a: string, b: string): FirmMatch {
   return within ? "unknown" : "different";
 }
 
-/** "l/2016/75/17121983 " and "L/2016/75/17121983" are one licence. */
-export const licenceKey = (l: string | null | undefined) => (l ?? "").toUpperCase().replace(/\s+/g, "");
+/**
+ * One licence however it is written: "L/2016/75/17121983", "l-2016-075-17121983.",
+ * "2016/75/17121983". Letters and numbers only, a number without its leading
+ * zeros, and the "L" in front left out. The same rule is in server/lib/emandi.ts.
+ */
+export const licenceKey = (l: string | null | undefined) => {
+  const parts = ((l ?? "").toUpperCase().match(/[A-Z]+|\d+/g) ?? []).map((p) => (/^\d/.test(p) ? p.replace(/^0+(?=\d)/, "") : p));
+  if (parts[0] === "L" && parts.length > 1) parts.shift();
+  return parts.join("/");
+};
 
 /**
  * Is the e-Mandi login the firm open here? The licence decides when both

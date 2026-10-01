@@ -15,6 +15,29 @@ import {
    may see the dashboard. */
 export const emandiRoutes = new Hono<Env>();
 
+/*
+ * The wall between the firms holds while a request is on its way, too. A
+ * screen says which business it is asking for (?biz=); a request for any other
+ * business than the one open is refused before it does anything. And a request
+ * that was still running when the business was switched does not answer with
+ * the firm it started under: the reply is replaced by "business_changed",
+ * which no screen shows. The portal is slow, so this is not rare.
+ */
+const CHANGED = { error: "The business was switched while this was being read", code: "business_changed" };
+emandiRoutes.use("*", async (c, next) => {
+  const auth = c.get("auth");
+  const asked = c.req.query("biz");
+  if (auth?.businessId && asked && asked !== auth.businessId) return c.json(CHANGED, 409);
+  await next();
+  if (!auth?.businessId) return;
+  const [now] = await db.select({ b: schema.sessions.activeBusinessId }).from(schema.sessions)
+    .where(eq(schema.sessions.id, auth.session.id)).limit(1);
+  if (now?.b !== auth.businessId) {
+    c.res = undefined;
+    c.res = new Response(JSON.stringify(CHANGED), { status: 409, headers: { "Content-Type": "application/json" } });
+  }
+});
+
 /* A session kept from before the app was closed is looked at once as the app
    starts, so it is kept alive (or known to be over) before anyone opens the
    dashboard. */
@@ -177,12 +200,15 @@ emandiRoutes.get("/rates", can("dashboard.view"), async (c) => {
   const asked = (c.req.query("codes") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   try {
     const codes = asked.length ? asked.slice(0, 12) : accountOf(biz).watch;
-    const clash = await licenceClash(biz, accountOf(biz).portalLicence);
+    let clash = await licenceClash(biz, accountOf(biz).portalLicence);
+    const read = clash ? null : await ratesFor(biz, codes);
+    // a licence read for the first time just now is held to the same check
+    clash ??= await licenceClash(biz, accountOf(biz).portalLicence);
     const { rows, problem } = clash
       ? { rows: codes.map((code) => ({ cropCode: code, cropName: null, minRatePaise: null, maxRatePaise: null, mandiFeePct: null,
           developmentCessPct: null, onMandiSthal: null, directLicence: null, at: new Date().toISOString(),
           said: clash.said, error: clash.message, code: clash.code })), problem: clash }
-      : await ratesFor(biz, codes);
+      : read!;
     return c.json({
       rates: rows,
       problem: problem ? { code: problem.code, error: problem.message, said: problem.said } : null,
