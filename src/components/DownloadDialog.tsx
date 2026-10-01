@@ -21,6 +21,17 @@ function save(blob: Blob, name: string) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+/** Fetch a file the server makes and save it under the server's name; errors come back as ApiError. */
+export async function fetchAndSave(url: string, fallbackName: string) {
+  const res = await fetch(url, { credentials: "same-origin" });
+  if (!res.ok) {
+    const j = await res.json().catch(() => null);
+    throw new ApiError(res.status, j?.error ?? res.statusText);
+  }
+  const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? fallbackName;
+  save(await res.blob(), name);
+}
+
 /** Fetch the Dara (mill report) file and save it; errors come back as ApiError. */
 export async function downloadDara(opts: {
   merchantId: string; from: string; to: string; names: "hi" | "latin"; sort: SlipSortOrder;
@@ -31,13 +42,7 @@ export async function downloadDara(opts: {
     ...(opts.jinsId ? { jinsId: opts.jinsId } : {}),
     ...(opts.columns.length ? { cols: opts.columns.join(",") } : {}),
   });
-  const res = await fetch(`/api/reports/mill?${qs}`, { credentials: "same-origin" });
-  if (!res.ok) {
-    const j = await res.json().catch(() => null);
-    throw new ApiError(res.status, j?.error ?? res.statusText);
-  }
-  const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? `dara.${opts.format}`;
-  save(await res.blob(), name);
+  await fetchAndSave(`/api/reports/mill?${qs}`, `dara.${opts.format}`);
 }
 
 export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId = "", jinsList = [], initial = "list" }: {
