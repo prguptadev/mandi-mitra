@@ -307,7 +307,10 @@ loadRoutes.put("/:id", can("load.write"), async (c) => {
     daraPaise: body.daraPaise ?? before.daraPaise,
     updatedAt: nowSec(),
   };
-  await db.update(schema.loads).set(patch).where(eq(schema.loads.id, id));
+  // both bag boxes emptied: the truck has no bags. The stored total goes too, or the
+  // weighment would read it as an old truck's katte and bill the bags just cleared.
+  const bagsCleared = (body.katteCount !== undefined || body.boreCount !== undefined) && patch.katteCount == null && patch.boreCount == null;
+  await db.update(schema.loads).set(bagsCleared ? { ...patch, bags: null } : patch).where(eq(schema.loads.id, id));
 
   await refreshWeighment(id);
 

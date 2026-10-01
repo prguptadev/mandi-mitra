@@ -1,5 +1,8 @@
 import "./_guard.ts";
 import ExcelJS from "exceljs";
+import { sqlite } from "../server/db/client.ts";
+import { parchaXlsx } from "../server/lib/parchaXlsx.ts";
+import { screenLines, paperShowsDara, roundOffPaise } from "../server/lib/parchaLabels.ts";
 /* End-to-end: PO -> truck -> mill weighment -> kaccha parcha -> stock, through
  * the HTTP API, on the test database only. The real L.B sheet of 20-09-2026
  * goes into L.B's stock; truck UP25CT5038 takes the mill's 310.74 qtl from it
@@ -159,6 +162,20 @@ console.log("\nSafeguards");
   const ap3 = await status("POST", `/loads/${t3.id}/approve`);
   check("…and approval is refused", ap3.status === 409, ap3.status);
   void s3;
+  // a truck from before katte and bore were split has only a bag total: it keeps it until a box is emptied
+  sqlite.prepare("update loads set katte_count = null, bore_count = null, bags = 200 where id = ?").run(t3.id);
+  await call("PUT", `/loads/${t3.id}`, { notes: "an older truck" });
+  const legacy = (await call("GET", `/loads/${t3.id}`)).weighment;
+  check("an old truck with only a bag total still counts its 200 bags, as katte", legacy.katte === 200 && legacy.bags === 200, legacy);
+  // an emptied bags box is no bags of that kind: never the old count, and cleared bore never turn into katte
+  await call("PUT", `/loads/${t3.id}`, { katteCount: null, boreCount: 200 });
+  await call("PUT", `/loads/${t3.id}`, { boreCount: null });
+  const cleared = await call("GET", `/loads/${t3.id}`);
+  check("bore 200 then the box cleared: no bags at all (not 200 katte), and approval waits for bags",
+    cleared.weighment.katte === 0 && cleared.weighment.bore === 0 && cleared.blockers.some((b: any) => b.code === "no_bags"), cleared.weighment);
+  await call("PUT", `/loads/${t3.id}`, { katteCount: 800 });
+  await call("PUT", `/loads/${t3.id}`, { katteCount: null });
+  check("katte 800 then the box cleared: 0 katte, not the old 800", (await call("GET", `/loads/${t3.id}`)).weighment.bags === 0);
   await call("DELETE", `/loads/${t3.id}`);
   const huge = await status("POST", "/slips", { slipDate: DAY1, rstNo: "999", adatiId: (byHi.get("अमित ट्रेडिंग") as any).id, jinsId: j1509.id, merchantId: lb.id, grossGrams: q(192000), ratePaisePerQtl: 350000 });
   check("an absurd gross (1,92,000 qtl) is refused", huge.status === 400, huge.json?.error);
@@ -316,6 +333,32 @@ check("no other charge on the parcha moved",
 check("  ...only the total and the grand total grew, by the same amount",
   withExtra.lines.find((l: any) => l.key === "total").amountPaise - plain.lines.find((l: any) => l.key === "total").amountPaise === 30_000
   && withExtra.grandTotalPaise - plain.grandTotalPaise === 30_000, true);
+
+console.log("\nEvery amount in the grand total is on the paper");
+{
+  // terms that add the dara to the grand total but hide the dara row, and round to the rupee
+  const live = (await call("GET", `/loads/${t1.id}`)).approved.doc;
+  const cfg = { ...live.config, dara: { ...live.config.dara, mode: "manual", includeInGrandTotal: true }, parcha: { ...live.config.parcha, showDaraRow: false }, grandTotalRounding: "nearest_rupee" };
+  const rr = await call("POST", "/merchants/preview", { chargeConfig: cfg, grossQtl: 315.3, bags: 800, rate: 3413.45, advanceRupees: 10000, manualDaraRupees: 3597.38 });
+  const adv = cfg.advance.treatment === "add" ? rr.advancePaise : cfg.advance.treatment === "subtract" ? -rr.advancePaise : 0;
+  const ro = roundOffPaise(rr, cfg);
+  check("the dara 3,597.38 is inside the grand total, and the rupee rounding moved it",
+    rr.grandTotalPaise === rr.totalPaise + adv + 359_738 + ro && ro !== 0 && Math.abs(ro) <= 50, { grand: rr.grandTotalPaise, total: rr.totalPaise, ro });
+  check("the paper prints that dara though the layout hides the dara row", paperShowsDara(rr, cfg));
+  const xb = new ExcelJS.Workbook();
+  await xb.xlsx.load(await parchaXlsx({ ...live, config: cfg, result: rr }, {}) as any);
+  const nums: number[] = [];
+  xb.worksheets[0].eachRow((row) => row.eachCell((c) => { if (typeof c.value === "number") nums.push(c.value); }));
+  check("…the Excel sheet carries it, and the round-off", nums.includes(3597.38) && nums.includes(ro / 100), { ro: ro / 100 });
+  // the truck screen lists the same lines, so its column re-adds to the grand total
+  const shown = screenLines(rr, cfg, "Round off");
+  const ti = shown.findIndex((x) => x.key === "total"), gi = shown.findIndex((x) => x.key === "grand");
+  const readd = shown[ti].amountPaise + shown.slice(ti + 1, gi)
+    .filter((x) => x.kind !== "info" || (x.key === "dara" && cfg.dara.includeInGrandTotal))
+    .reduce((t, x) => t + (x.sign === "subtract" ? -x.amountPaise : x.amountPaise), 0);
+  check("the screen lists the dara and the round-off, and re-adds to the grand total",
+    readd === rr.grandTotalPaise && shown.some((x) => x.key === "dara") && shown.some((x) => x.key === "roundOff"), { readd, grand: rr.grandTotalPaise, keys: shown.map((x) => x.key) });
+}
 
 console.log(bad === 0 ? "\nLoads, PO, parcha and stock work end to end." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

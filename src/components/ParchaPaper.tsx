@@ -1,5 +1,5 @@
 import type { ParchaDoc } from "@/lib/api.ts";
-import { printedLabel, indianMoney, qtl2, dmy, partyHeading, roundOffPaise } from "@server/lib/parchaLabels.ts";
+import { printedLabel, indianMoney, qtl2, dmy, partyHeading, roundOffPaise, paperShowsDara } from "@server/lib/parchaLabels.ts";
 import { cn } from "@/lib/utils.ts";
 
 /* The kaccha parcha as it prints: the same boxes, order and wording as the
@@ -29,6 +29,8 @@ export function ParchaPaper({ doc, draft, voided, className }: { doc: ParchaDoc;
   }) : [];
   const charges = r.lines.filter((l) => l.kind !== "goods" && l.kind !== "total" && l.key !== "dara" && l.key !== "advance");
   const money = (p: number) => indianMoney(p);
+  // every amount inside the grand total is printed: a dara added to it shows even where the mill's layout hides the row
+  const daraShown = paperShowsDara(r, doc.config);
 
   return (
     <div className={cn("parcha-paper relative mx-auto w-full max-w-[720px] bg-white p-6 text-[12.5px] leading-tight text-black", className)}
@@ -145,7 +147,7 @@ export function ParchaPaper({ doc, draft, voided, className }: { doc: ParchaDoc;
             <td colSpan={2} className={cellR}>{r.advancePaise && doc.config.advance.treatment !== "exclude" ? (advSubtract ? "-" : "") + money(r.advancePaise) : "-"}</td>
           </tr>
           <tr>
-            <td colSpan={5} className={cn(cellR, "h-9")}>{r.daraPaise && doc.config.parcha.showDaraRow && doc.config.dara.mode !== "none" ? money(r.daraPaise) : "-"}</td>
+            <td colSpan={5} className={cn(cellR, "h-9")}>{daraShown ? money(r.daraPaise) : "-"}</td>
             <td className={cn(cellL, head)}>GRAND TOTAL</td>
             <td colSpan={2} className={cn(cellR, "text-[14px] font-bold")}>{money(r.grandTotalPaise)}</td>
           </tr>

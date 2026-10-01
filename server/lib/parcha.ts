@@ -93,6 +93,9 @@ export async function suggestInvoiceNo(businessId: string, exceptLoadId?: string
 
 /** Bardana: typed weight if the operator gave one, else bags x kg per bag. */
 function weighment(l: LoadRow, cfg: ChargeConfig) {
+  /* A truck entered before bags were split into katte and bore has only the
+     total, read as katte. Emptying both boxes clears that total too (PUT
+     /loads), so an emptied box never bills the old bags, nor cleared bore as katte. */
   const katte = l.katteCount ?? (l.boreCount == null ? (l.bags ?? 0) : 0);
   const bore = l.boreCount ?? 0;
   const katteBardanaGrams = l.katteBardanaGrams ?? bardanaKg(katte, cfg.millBardanaKgPerBag);

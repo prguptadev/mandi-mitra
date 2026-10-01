@@ -23,7 +23,7 @@ import { Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badg
 import { LoadError } from "@/components/LoadError.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
-import { dmy } from "@server/lib/parchaLabels.ts";
+import { dmy, screenLines } from "@server/lib/parchaLabels.ts";
 import { PoProgress, poName } from "@/pages/Orders.tsx";
 
 const Q = 100_000;
@@ -833,7 +833,8 @@ export function LoadDetailPage({ id }: { id: string }) {
                       </td>
                       <td className="num py-1 text-right">{f.money(shownDoc.totals.goodsPaise)}</td>
                     </tr>
-                    {shownDoc.result.lines.filter((x) => x.kind !== "goods").map((x) => {
+                    {/* what the paper prints, so the column re-adds to the grand total (a hidden dara inside it, the round-off) */}
+                    {screenLines(shownDoc.result, shownDoc.config, t("parcha.roundOff")).map((x) => {
                       const strong = x.kind === "total";
                       const sub = x.kind === "subtotal";
                       return (
@@ -841,7 +842,8 @@ export function LoadDetailPage({ id }: { id: string }) {
                           <td className={cn("py-1 pr-2", strong && "text-[14px] font-semibold", sub && "font-medium", x.kind === "info" && "text-muted")}>
                             {pick(x.label, x.labelHi)}
                             {x.detail && x.kind !== "info" && <span className="ml-1.5 text-[11px] text-faint">{x.per === "pct" ? `${x.rate}%` : x.detail}</span>}
-                            {x.kind === "info" && !cfg.dara.includeInGrandTotal && <span className="ml-1.5 text-[11px] text-faint">{t("parcha.daraOut")}</span>}
+                            {x.kind === "info" && !shownDoc.config.dara.includeInGrandTotal && <span className="ml-1.5 text-[11px] text-faint">{t("parcha.daraOut")}</span>}
+                            {x.key === "dara" && shownDoc.config.dara.includeInGrandTotal && <span className="ml-1.5 text-[11px] text-faint">{t("parcha.daraIn")}</span>}
                           </td>
                           <td className={cn("num py-1 text-right whitespace-nowrap", strong && "text-[15px] font-bold text-brand", sub && "font-semibold", x.kind === "info" && "text-muted")}>
                             {x.sign === "subtract" ? "−" : ""}{f.money(x.amountPaise)}

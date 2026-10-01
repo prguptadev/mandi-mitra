@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import type { ParchaDoc } from "./parcha.ts";
-import { printedLabel, partyHeading, dmy, roundOffPaise } from "./parchaLabels.ts";
+import { printedLabel, partyHeading, dmy, roundOffPaise, paperShowsDara } from "./parchaLabels.ts";
 
 /* The kaccha parcha as an Excel sheet, laid out like invoice 196: the same
    boxes in the same order, eight columns wide, Indian number grouping. Values
@@ -142,7 +142,9 @@ export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean; voided
   put(`F${row}`, advSubtract ? "LESS ADVANCE" : "ADVANCE", { bold: true });
   put(`G${row}:H${row}`, r.advancePaise && doc.config.advance.treatment !== "exclude" ? rs(r.advancePaise) * (advSubtract ? -1 : 1) : "-", { align: "right", fmt: INR });
   row++;
-  put(`A${row}:E${row}`, r.daraPaise && doc.config.parcha.showDaraRow && doc.config.dara.mode !== "none" ? rs(r.daraPaise) : "-", { align: "right", fmt: INR });
+  // every amount inside the grand total is printed: a dara added to it shows even where the mill's layout hides the row
+  const daraShown = paperShowsDara(r, doc.config);
+  put(`A${row}:E${row}`, daraShown ? rs(r.daraPaise) : "-", { align: "right", fmt: INR });
   put(`F${row}`, "GRAND TOTAL", { bold: true });
   put(`G${row}:H${row}`, rs(r.grandTotalPaise), { bold: true, align: "right", fmt: INR });
   row++;
