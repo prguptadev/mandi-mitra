@@ -311,6 +311,55 @@ check("…and the number is claimed in the cloud", (await cloud("select load_id 
 await settle();
 check("the parcha arrives on every computer", ALL.every((x) => x.q("select 1 from parchas where load_id = ?", truck.id).length === 1));
 
+console.log("\nOne parcha number on two computers is a warning, never a missing parcha");
+// three trucks, each on its own day's stock, on both computers
+const tr: any[] = [];
+for (const [i, day] of ["2026-10-10", "2026-10-11", "2026-10-12"].entries()) {
+  await A.call("POST", "/slips", { slipDate: day, rstNo: `912${i}`, adatiId: sup.id, jinsId: j.id, merchantId: lb.id, grossGrams: 1_000_000, ratePaisePerQtl: 340_000 });
+  const t = await A.call("POST", "/loads", { loadDate: day, merchantId: lb.id, jinsId: j.id, stockDate: day, truckNo: `UP82T001${i}` });
+  await A.call("PUT", `/loads/${t.id}`, { millGrossGrams: 950_000, katteCount: 20, advancePaise: 0, daraPaise: 0 });
+  tr.push(t);
+}
+const [tX, tY, tZ] = tr;
+await settle([A, B]);
+// update day: a computer still on v0.3.17 claims the plain number ("7199"), made this financial year
+await cloud("insert into mm_claims (business_id, kind, value, load_id, device) values ($1, 'parcha', '7199', 'old-pc-truck', 'old-pc')", [biz]);
+const legacy = await A.raw("POST", `/loads/${tX.id}/approve`, { invoiceNo: "7199" });
+check("a number an older computer has claimed this year is warned about, not silently reused",
+  legacy.status === 409 && legacy.json.code === "number_repeated", legacy.json);
+// ...but its plain claim from an earlier financial year is that year's number
+await cloud("insert into mm_claims (business_id, kind, value, load_id, device, at) values ($1, 'parcha', '7198', 'old-pc-truck', 'old-pc', '2026-03-01')", [biz]);
+const lastYear = await A.raw("POST", `/loads/${tX.id}/approve`, { invoiceNo: "7198" });
+check("  ...while one it claimed last financial year is no warning", lastYear.status === 200, lastYear.json);
+await A.call("POST", `/parchas/${lastYear.json.id}/void`, { reason: "test number" });
+// a voided parcha's number is free again, with sync on as without it
+await A.call("POST", `/loads/${tX.id}/approve`, { invoiceNo: "7200" });
+await A.call("POST", `/parchas/${(await A.call("GET", `/loads/${tX.id}`)).approved.id}/void`, { reason: "number given to the next truck" });
+const reuse = await A.raw("POST", `/loads/${tY.id}/approve`, { invoiceNo: "7200" });
+check("a voided parcha's number can be given to another truck with no warning", reuse.status === 200, reuse.json);
+// A bills X as #7201 and sends it; B has not pulled it yet
+await A.call("POST", `/loads/${tX.id}/approve`, { invoiceNo: "7201" });
+check("  ...the number is claimed in the plain form an older computer checks too",
+  (await cloud("select load_id from mm_claims where business_id = $1 and value = '7201'", [biz]))[0]?.load_id === tX.id);
+await A.sync();
+const warnB = await B.raw("POST", `/loads/${tZ.id}/approve`, { invoiceNo: "7201" });
+check("the other computer is warned that the number is already used", warnB.status === 409 && warnB.json.code === "number_repeated", warnB.json);
+const keptB = await B.raw("POST", `/loads/${tZ.id}/approve`, { invoiceNo: "7201", acceptRepeatedNo: true });
+check("  ...and may keep it", keptB.status === 200, keptB.json);
+await settle([A, B]);
+check("both parchas with that number reach both computers",
+  [A, B].every((x) => x.q("select 1 from parchas where parcha_no = '7201' and status = 'approved' and load_id in (?, ?)", tX.id, tZ.id).length === 2),
+  [A, B].map((x) => x.q("select load_id, version from parchas where parcha_no = '7201'")));
+check("  ...and no truck is left billed without its parcha",
+  [A, B].every((x) => x.q("select 1 from loads l where l.id in (?, ?, ?) and l.status = 'billed' and not exists (select 1 from parchas p where p.load_id = l.id and p.status = 'approved')", tX.id, tY.id, tZ.id).length === 0));
+for (const x of [A, B]) {
+  const reg = await x.call("GET", "/parchas");
+  const both = (Array.isArray(reg) ? reg : reg.rows).filter((p: any) => p.parchaNo === "7201" && p.status === "approved");
+  check(`  ...and ${x.name} says the number is used twice this year`, both.length === 2 && both.every((p: any) => p.numberRepeated), both);
+}
+check("  ...with nothing held back in the clashes list",
+  ![A, B].some((x) => x.state("select 1 from retry where tbl = 'parchas'").length), [A, B].map((x) => x.state("select row_id from retry where tbl = 'parchas'")));
+
 console.log("\nAn older app pauses instead of damaging newer data");
 const meta = (await cloud("select value from mm_meta where key = 'schema'"))[0].value;
 await cloud("update mm_meta set value = $1::jsonb where key = 'schema'", [JSON.stringify({ migrations: meta.migrations + 1, version: "9.9.9" })]);

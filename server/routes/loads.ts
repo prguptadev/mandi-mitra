@@ -6,7 +6,7 @@ import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { ChargeConfigSchema } from "../lib/charges.ts";
 import {
-  loadState, storedWeighment, stockDays, linesWithWeights, sameNumberElsewhere, sameNumberCount, revisions, fyKey, fyNumberLabel,
+  loadState, storedWeighment, stockDays, linesWithWeights, sameNumberElsewhere, sameNumberCount, revisions, withRevision, fyKey,
   type ParchaDoc,
 } from "../lib/parcha.ts";
 import { billed, receipts, settle, type DueLine } from "./millAccounts.ts";
@@ -457,7 +457,7 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
   }
   // with sync on, the number is claimed in the cloud first (needs the internet), one financial year at a time
   try {
-    await claimParchaNumber(biz, fyNumberLabel(s.doc.invoiceDate, parchaNo), id);
+    await claimParchaNumber(biz, parchaNo, s.doc.invoiceDate, id);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Could not reserve the parcha number";
     const offline = e instanceof CloudError && e.offline;
@@ -606,7 +606,8 @@ async function parchaVersion(biz: string, id: string) {
   if (!p) throw notFound("Parcha not found");
   const { snapshot, ...rest } = p.p;
   const same = await db.select({ id: schema.parchas.id, loadId: schema.parchas.loadId }).from(schema.parchas).where(eq(schema.parchas.loadId, rest.loadId));
-  return { ...rest, revision: revisions(same).get(rest.id)?.revision ?? 1, voidedByName: p.voidedByName, doc: JSON.parse(snapshot) as ParchaDoc };
+  const revision = revisions(same).get(rest.id)?.revision ?? 1;
+  return { ...rest, revision, voidedByName: p.voidedByName, doc: withRevision(JSON.parse(snapshot) as ParchaDoc, revision) };
 }
 
 parchaRoutes.get("/:id", can("parcha.read"), async (c) => {

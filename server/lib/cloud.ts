@@ -10,6 +10,7 @@ import { settleVoucherNumbers } from "./voucherRepair.ts";
 import { backupNow } from "./backup.ts";
 import { newId } from "./ids.ts";
 import { fyNumberLabel } from "./parchaLabels.ts";
+import { fyRange } from "./vouchers.ts";
 
 /* Two-way sync of several computers through one cloud Postgres (Supabase).
  *
@@ -727,21 +728,68 @@ export async function restoreFromCloud() {
 
 /* ------------------------------------------------------------ parcha numbers */
 
-/**
- * With sync on, a parcha number is claimed in the cloud before it is used,
- * so two computers can never bill the same number. Needs the internet.
- * Re-approving the same truck (a new version) keeps its number.
+/*
+ * With sync on, a parcha number is claimed in the cloud as it is approved, so
+ * two computers do not give the same number WITHOUT KNOWING: one already held
+ * is the same "already used this year" warning the approver answers, and a
+ * number kept after it syncs like any other parcha (it shows as used twice on
+ * every computer). Re-approving the same truck keeps its number.
+ *
+ * A number is claimed twice: "196 (2026-27)", and the plain "196" that a
+ * computer still on v0.3.17 claims and checks, so on the day one computer is
+ * updated before the other neither can take the other's number unwarned.
  */
+
+/** Where the truck holding a claim stands on this computer. */
+function holderHere(businessId: string, holder: string | null, parchaNo: string, onDate: string, claimedHere: boolean): "live" | "free" | "away" {
+  if (!holder) return "away";
+  const rows = sqlite.prepare(
+    "select p.status, coalesce(p.invoice_date, l.load_date) as day from parchas p join loads l on l.id = p.load_id where p.business_id = ? and p.load_id = ? and p.parcha_no = ?",
+  ).all(businessId, holder, parchaNo) as { status: string; day: string }[];
+  const { from, to } = fyRange(onDate);
+  if (rows.some((r) => r.status === "approved" && r.day >= from && r.day <= to)) return "live";
+  // its parcha with this number was voided (or is another year's), or this computer claimed it and then used another
+  return rows.length || claimedHere ? "free" : "away";
+}
+
 /**
- * Claims a parcha number so two computers can never bill the same one.
+ * Claims the number for this truck; returns who holds it when another truck
+ * does. A claim whose truck has no live parcha with the number here passes to
+ * this truck; a plain (v0.3.17) claim made before this financial year is an
+ * earlier year's number.
+ */
+async function claimNumber(client: pg.PoolClient, device: string, businessId: string, parchaNo: string, onDate: string, loadId: string) {
+  const no = parchaNo.trim();
+  for (const [value, plain] of [[fyNumberLabel(onDate, no), false], [no, true]] as const) {
+    const got = await client.query(
+      "insert into mm_claims (business_id, kind, value, load_id, device) values ($1, 'parcha', $2, $3, $4) on conflict do nothing returning load_id",
+      [businessId, value, loadId, device]);
+    if (got.rows.length) continue;
+    const who = (await client.query(
+      "select load_id, device, at >= $3::date as this_year from mm_claims where business_id = $1 and kind = 'parcha' and value = $2",
+      [businessId, value, fyRange(onDate).from])).rows[0] as { load_id: string | null; device: string | null; this_year: boolean } | undefined;
+    if (!who || who.load_id === loadId) continue;
+    const here = holderHere(businessId, who.load_id, no, onDate, who.device === device);
+    if (here === "free") {
+      await client.query("update mm_claims set load_id = $3, device = $4, at = now() where business_id = $1 and kind = 'parcha' and value = $2",
+        [businessId, value, loadId, device]);
+      continue;
+    }
+    if (here === "away" && plain && !who.this_year) continue;
+    return { loadId: who.load_id, device: who.device };
+  }
+  return null;
+}
+
+/**
+ * Claims a parcha number so two computers do not bill the same one unknowingly.
  *
  * The shop must not stop when the Wi-Fi is off: an approval with no internet
  * takes the number here and the claim waits (claims_waiting), to be sent on
  * the next sync. If another computer had already taken it by then, that lands
- * in the clashes list saying which truck to renumber — loudly, afterwards,
- * rather than blocking the operator now.
+ * in the clashes list — loudly, afterwards, rather than blocking the operator now.
  */
-export async function claimParchaNumber(businessId: string, parchaNo: string, loadId: string) {
+export async function claimParchaNumber(businessId: string, parchaNo: string, onDate: string, loadId: string) {
   if (!syncEnabled()) return;
   const cfg = readCloudConfig();
   const conn = decryptSecret(cfg.enc!);
@@ -751,21 +799,22 @@ export async function claimParchaNumber(businessId: string, parchaNo: string, lo
     const client = await p.connect();
     try {
       await ensureCloud(client, conn);
-      const got = await client.query(
-        "insert into mm_claims (business_id, kind, value, load_id, device) values ($1, 'parcha', $2, $3, $4) on conflict do nothing returning load_id",
-        [businessId, parchaNo, loadId, cfg.deviceId]);
-      if (got.rows.length) return;
-      const who = await client.query("select load_id from mm_claims where business_id = $1 and kind = 'parcha' and value = $2", [businessId, parchaNo]);
-      if (who.rows[0]?.load_id !== loadId) {
-        throw new CloudError(`Parcha #${parchaNo} is already used on another computer. Pick the next number and approve again.`);
+      // all or nothing: a number refused here leaves no claim for a truck that may take another
+      await client.query("begin");
+      let taken: Awaited<ReturnType<typeof claimNumber>>;
+      try { taken = await claimNumber(client, cfg.deviceId, businessId, parchaNo, onDate, loadId); } catch (e) {
+        await client.query("rollback").catch(() => undefined);
+        throw e;
       }
+      await client.query(taken ? "rollback" : "commit");
+      if (taken) throw new CloudError(`Parcha #${parchaNo} is already used on another computer. Pick the next number and approve again.`);
     } finally { client.release(); }
   } catch (e) {
     const err = explain(e);
     if (!err.offline) throw err;
     // no internet: take the number now, claim it when there is
     state().prepare("insert or replace into claims_waiting (business_id, value, load_id, at) values (?, ?, ?, ?)")
-      .run(businessId, parchaNo, loadId, new Date().toISOString());
+      .run(businessId, fyNumberLabel(onDate, parchaNo), loadId, new Date().toISOString());
     return;
   } finally { await p.end(); }
 }
@@ -778,17 +827,16 @@ async function sendWaitingClaims(client: pg.PoolClient) {
   const cfg = readCloudConfig();
   const clash = st.prepare("insert into clashes (at, tbl, row_id, kept, other_device, lost, note) values (?, ?, ?, ?, ?, ?, ?)");
   const done = st.prepare("delete from claims_waiting where business_id = ? and value = ?");
+  const liveOf = sqlite.prepare(
+    "select p.parcha_no, coalesce(p.invoice_date, l.load_date) as day from parchas p join loads l on l.id = p.load_id where p.load_id = ? and p.status = 'approved'");
   let sent = 0;
   for (const w of waiting) {
-    const got = await client.query(
-      "insert into mm_claims (business_id, kind, value, load_id, device) values ($1, 'parcha', $2, $3, $4) on conflict do nothing returning load_id",
-      [w.business_id, w.value, w.load_id, cfg.deviceId]);
-    if (!got.rows.length) {
-      const who = await client.query("select load_id, device from mm_claims where business_id = $1 and kind = 'parcha' and value = $2", [w.business_id, w.value]);
-      if (who.rows[0]?.load_id !== w.load_id) {
-        clash.run(new Date().toISOString(), "parchas", w.load_id, "theirs", who.rows[0]?.device ?? null, JSON.stringify({ parchaNo: w.value }),
-          `Parcha #${w.value} was approved here while the internet was off, but another computer had already used that number. Void this parcha, give it the next free number and approve again.`);
-      }
+    // the parcha as it stands now: one voided meanwhile holds no number
+    const live = (liveOf.all(w.load_id) as { parcha_no: string; day: string }[]).find((x) => fyNumberLabel(x.day, x.parcha_no) === w.value);
+    const who = live ? await claimNumber(client, cfg.deviceId, w.business_id, live.parcha_no, live.day, w.load_id) : null;
+    if (who) {
+      clash.run(new Date().toISOString(), "parchas", w.load_id, "theirs", who.device ?? null, JSON.stringify({ parchaNo: w.value }),
+        `Parcha #${w.value} was approved here while the internet was off, but another computer had already used that number. Void this parcha, give it the next free number and approve again.`);
     }
     done.run(w.business_id, w.value);
     sent++;
