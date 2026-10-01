@@ -244,6 +244,31 @@ try {
   console.log(` ${ok ? "PASS" : "FAIL"}  refused: already_committed`);
 }
 
+/* The same sheet uploaded again under another date: the rows already on the
+   books (same RST, same weight, within 30 days) are flagged with the date they
+   are on. A flag for the operator — it never blocks the sheet. */
+console.log("\nThe same sheet scanned again under another date");
+{
+  const fd3 = new FormData();
+  fd3.append("files", new File([PNG], "again.png", { type: "image/png" }));
+  fd3.append("slipDate", "2026-09-23");
+  fd3.append("merchantId", grm.id);
+  fd3.append("jinsId", j1509.id);
+  const { id: id3 } = await (await fetch(`${BASE}/scans`, { method: "POST", body: fd3, headers: { cookie } })).json() as { id: string };
+  // two lines of the sheet just saved on 21-09, and one line not seen before
+  const again = [rows[0], rows[1], { ...rows[2], rstNo: "699", ocr: { ...rows[2].ocr, rstNo: "699" }, grossGrams: 2_222_000 }]
+    .map((r, i) => ({ ...r, id: `r${i}`, excluded: false }));
+  sqlite.prepare("update scan_batches set parsed_rows = ?, status = 'review', model = 'simulated', pages_done = json_array_length(file_paths) where id = ?")
+    .run(JSON.stringify(again), id3);
+  const s = await call("GET", `/scans/${id3}`);
+  const flagged = s.rows.filter((r: any) => r.issues.some((i: any) => i.code === "rst_other_day"));
+  check("rows already saved on 21-09 are flagged", flagged.map((r: any) => r.rstNo), ["626", "629"]);
+  check("  ...naming the date they are on", flagged[0]?.issues.find((i: any) => i.code === "rst_other_day")?.params.dates, "21-09-2026");
+  check("  ...as a warning that never blocks", flagged.every((r: any) => r.issues.find((i: any) => i.code === "rst_other_day").level === "warn"), true);
+  check("a line not seen before carries no such flag", s.rows.find((r: any) => r.rstNo === "699")?.issues.some((i: any) => i.code === "rst_other_day"), false);
+  await call("DELETE", `/scans/${id3}`);
+}
+
 /* Clean up. A committed scan cannot be deleted through the API by design, and
    leaving a 1x1 test image behind means the owner clicks a row in the daily
    list and gets a green square. */

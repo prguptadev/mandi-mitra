@@ -80,6 +80,20 @@ check("it re-works this business only", bc.businesses.length === 1);
 check("every figure re-works exactly", bc.problems === 0, bc.businesses[0]?.sections.flatMap((s: any) => s.lines.filter((l: any) => l.ok === false).map((l: any) => l.text)));
 check("it covers slips, ledgers, parchas, mills, stock and voucher numbers", bc.businesses[0]?.sections.length >= 7, bc.businesses[0]?.sections.map((s: any) => s.title));
 check("voucher numbers are one each, none repeated", bc.businesses[0]?.sections.find((s: any) => s.title.startsWith("6."))?.lines.every((l: any) => l.ok !== false));
+{
+  // one story for a CA: the audit's net position is the dashboard money card's, to the paisa
+  const m = await call("GET", "/dashboard/money");
+  const dashNet = (m.mills.toReceivePaise - m.mills.paidAheadPaise) + m.stock.valuePaise + m.stock.unbilledGoodsPaise
+    + (m.cash.receivedFromMillsPaise - m.cash.paidToSuppliersPaise) - (m.suppliers.toPayPaise - m.suppliers.paidAheadPaise);
+  const rsOf = (p: number) => (p / 100 + 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const lines7 = bc.businesses[0]?.sections.find((s: any) => s.title.startsWith("7."))?.lines ?? [];
+  const netLine = lines7.find((l: any) => l.text.startsWith("net ("))?.text ?? "";
+  check("the books check's net position is the dashboard's", netLine.includes(`₹${rsOf(dashNet)} `), { netLine, dashNet });
+  check("  ...its stock is valued the way the dashboard values it", lines7.some((l: any) => l.text.startsWith(`stock in hand ₹${rsOf(m.stock.valuePaise)} `)), { lines7, stock: m.stock.valuePaise });
+  // more loaded than bought is never shown with a tick: it is a line to look at
+  const stock5 = bc.businesses[0]?.sections.find((s: any) => s.title.startsWith("5."))?.lines ?? [];
+  check("negative stock is never a tick", stock5.filter((l: any) => /more loaded than bought|took more from/.test(l.text)).every((l: any) => l.ok === null && l.warn === true), stock5);
+}
 const op = session();
 await op.login("Munshi Ji", "271830");
 check("an operator cannot run the books check", (await op.req("GET", "/audit/books-check")).status === 403);

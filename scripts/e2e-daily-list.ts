@@ -189,7 +189,7 @@ console.log("\nA typed name is a supplier");
   const dayList = await call("GET", `/slips?date=${DATE}`);
   check("the day has a line for the mill and commodity", (dayRow?.lines?.length ?? 0) >= 1, true);
   check("  ...its average is the daily list's own weighted average", dayRow.total.avgRatePaisePerQtl, dayList.totals.weightedAvgRatePaise);
-  check("  ...and its net weight is the daily list's net", dayRow.lines.reduce((s: number, l: any) => s + l.netGrams, 0), dayList.totals.netGrams);
+  check("  ...and its net weight is the daily list's priced net", dayRow.lines.reduce((s: number, l: any) => s + l.netGrams, 0), dayList.totals.pricedNetGrams);
   /* A slip with no mill on it was bought by the firm itself. "All mills" counts
      it; "added mills only" leaves it out, and the average moves accordingly. */
   const own = await call("POST", "/slips", { slipDate: "2026-12-05", rstNo: "OWN1", adatiName: "अपनी खरीद", jinsId: j.id, grossGrams: 2_000_000, ratePaisePerQtl: 300_000 });
@@ -235,6 +235,83 @@ console.log("\nA typed name is a supplier");
   const resolved = await call("POST", "/adati/resolve", { text: "मिलाओ आढ़ती ख" });
   check("the old name now reads as the supplier that stays", resolved.match?.adatiId ?? resolved.suggestions?.[0]?.adatiId, A.id);
   for (const id of [sa.id, sb.id]) await call("DELETE", `/slips/${id}`);
+
+  /* Book guards: the same weighbridge slip twice, and figures that look like a
+     lost decimal point. Every one is a flag — the slip is always saved. */
+  console.log("\nThe same RST on any date: a flag, never a block");
+  const lbM = mills.find((x: any) => x.code === "LB");
+  const grmM = mills.find((x: any) => x.code === "GRM");
+  const made: string[] = [];
+  // a supplier already on the books (the sheet's RST 633 trader), so nothing new is left behind
+  const tester = (byHi.get(SHEET[3][1]) as any).id;
+  const put = async (b: any) => { const s = await call("POST", "/slips", { jinsId: j.id, adatiId: tester, ratePaisePerQtl: 345_000, ...b }); made.push(s.id); return s; };
+  const g1 = await put({ slipDate: "2027-01-10", rstNo: "1630", merchantId: lbM.id, grossGrams: 2_860_000 });
+  check("a first slip carries no flag", [g1.rstRepeated, g1.flags.sameDay.length, g1.flags.otherDays.length], [false, 0, 0]);
+  const g2 = await put({ slipDate: "2027-01-15", rstNo: "०१६३०", merchantId: lbM.id, grossGrams: 2_860_000 });
+  check("RST typed in Hindi digits is saved in English digits", (await call("GET", "/slips?date=2027-01-15")).rows.find((r: any) => r.id === g2.id)?.rstNo, "01630");
+  check("the same RST and weight five days before is flagged, naming the date (0 and Hindi digits read as a number)", g2.flags.otherDays.map((o: any) => [o.date, o.millCode]), [["2027-01-10", "LB"]]);
+  check("  ...and the slip is saved all the same", typeof g2.id, "string");
+  const g3 = await put({ slipDate: "2027-01-15", rstNo: "1630", merchantId: grmM.id, grossGrams: 3_000_000 });
+  check("the same RST under another mill that day is a repeat, naming the mill", [g3.rstRepeated, g3.flags.sameDay.map((o: any) => o.millCode)], [true, ["LB"]]);
+  check("  ...a different weight on another date is not flagged (kanta numbers repeat)", g3.flags.otherDays.length, 0);
+  const g4 = await put({ slipDate: "2027-03-01", rstNo: "1630", merchantId: lbM.id, grossGrams: 2_860_000 });
+  check("the same RST and weight more than 30 days away is not flagged", g4.flags.otherDays.length, 0);
+  const onlyGrm = await call("GET", `/slips?date=2027-01-15&merchantId=${grmM.id}`);
+  check("a list showing one mill still marks the repeat from the other mill", onlyGrm.rows.map((r: any) => r.rstDay), [2]);
+  const onlyLb = await call("GET", `/slips?date=2027-01-15&merchantId=${lbM.id}`);
+  check("the row carries the other date, for the orange mark", onlyLb.rows.map((r: any) => r.rstOtherDays), [["2027-01-10"]]);
+  check("  ...and the day counts such rows for its banner", onlyLb.totals.rstOtherDayRows, 1);
+  check("the new row's RST box knows the whole day's numbers", (await call("GET", "/slips/next-rst?date=2027-01-15")).taken.includes("1630"), true);
+  const ed = await call("PUT", `/slips/${g3.id}`, { grossGrams: 2_860_000 });
+  check("an edit says the same as a new slip", [ed.rstRepeated, ed.flags.otherDays.map((o: any) => o.date)], [true, ["2027-01-10"]]);
+
+  console.log("\nRate numbers only, and figures far from the day");
+  check("a rate with letters in it is refused, never saved as 0", (await raw("POST", "/slips", { slipDate: "2027-01-20", rstNo: "R1", adatiId: tester, jinsId: j.id, grossGrams: 2_000_000, ratePaisePerQtl: "3450/-" })).status, 400);
+  for (const [rst, rate] of [["R2", 3400], ["R3", 3450], ["R4", 3500], ["R5", 3450], ["R6", 3420]] as const) {
+    await put({ slipDate: "2027-01-20", rstNo: rst, merchantId: lbM.id, grossGrams: 2_000_000, ratePaisePerQtl: rate * 100 });
+  }
+  const odd = await put({ slipDate: "2027-01-20", rstNo: "R7", merchantId: lbM.id, grossGrams: 28_600_000, ratePaisePerQtl: 3_450_000 });
+  check("286 qtl on one slip is flagged as a likely lost decimal point", odd.flags.grossOdd, "large");
+  check("a rate of 34,500 on a 3,450 day is flagged", odd.flags.rateOdd?.medianPaise, 345_000);
+  check("  ...and both are saved", typeof odd.id, "string");
+  const day20 = await call("GET", "/slips?date=2027-01-20");
+  check("the list marks the row", [day20.rows.find((r: any) => r.id === odd.id)?.grossOdd, Boolean(day20.rows.find((r: any) => r.id === odd.id)?.rateOdd)], ["large", true]);
+  check("an ordinary row is not marked", day20.rows.filter((r: any) => r.id !== odd.id).every((r: any) => !r.grossOdd && !r.rateOdd), true);
+
+  console.log("\nMoving slips to a mill keeps the ones already there");
+  // a slip made at GRM on 1 kg a quintal; GRM's katauti then becomes 1.5 kg
+  const stay = await put({ slipDate: "2027-01-25", rstNo: "V1", merchantId: grmM.id, grossGrams: 2_860_000 });
+  const stayBefore = (await call("GET", "/slips?date=2027-01-25")).rows.find((r: any) => r.id === stay.id);
+  const cfg0 = grmM.chargeConfig;
+  await call("PUT", `/merchants/${grmM.id}`, { chargeConfig: { ...cfg0, katauti: { ...cfg0.katauti, kgPerUnit: 1.5 } } });
+  try {
+    const mover = await put({ slipDate: "2027-01-25", rstNo: "V2", merchantId: lbM.id, grossGrams: 2_860_000 });
+    const mv = await call("POST", "/slips/reassign", { slipIds: [mover.id, stay.id], merchantId: grmM.id });
+    const after = (await call("GET", "/slips?date=2027-01-25")).rows;
+    const stayAfter = after.find((r: any) => r.id === stay.id);
+    check("only the slip changing mill is moved", mv.updated, 1);
+    check("a slip already at that mill keeps the net and payable it was made with", [stayAfter.netGrams, stayAfter.payablePaise], [stayBefore.netGrams, stayBefore.payablePaise]);
+    check("the moved slip takes its new mill's katauti (29 × 1.5 kg)", after.find((r: any) => r.id === mover.id).netGrams, 2_860_000 - 43_500);
+    check("moving only slips already there changes nothing", (await call("POST", "/slips/reassign", { slipIds: [stay.id], merchantId: grmM.id })).updated, 0);
+  } finally {
+    await call("PUT", `/merchants/${grmM.id}`, { chargeConfig: cfg0 });
+  }
+
+  console.log("\nThe day's rate card: net × average is the amount");
+  await put({ slipDate: "2027-01-28", rstNo: "D1", merchantId: grmM.id, grossGrams: 2_000_000, ratePaisePerQtl: 300_000 });
+  await put({ slipDate: "2027-01-28", rstNo: "D2", merchantId: grmM.id, grossGrams: 1_000_000, ratePaisePerQtl: 0 });
+  const dd = (await call("GET", "/dashboard/day-averages?days=1&from=2027-01-28&to=2027-01-28")).days[0];
+  const line = dd.lines[0];
+  check("a line's net is its priced net (20.00 − 0.20)", line.netGrams, 1_980_000);
+  check("  ...so net × average is its amount", Math.round(line.netGrams * line.avgRatePaisePerQtl / 100_000), line.amountPaise);
+  check("  ...and the weight with no rate is given apart (10.00 − 0.10)", [line.unpricedNetGrams, dd.unpricedNetGrams], [990_000, 990_000]);
+
+  console.log("\nThe books check names the same slip on two dates");
+  const books = await call("GET", "/audit/books-check");
+  const twice = books.businesses[0].sections[0].lines.find((l: any) => /same RST and the same weight/.test(l.text));
+  check("as a note to look at, not a tick and not a failure", [twice?.ok, twice?.warn], [null, true]);
+  check("  ...naming the RST and both dates", /RST 1630 28\.60 qtl on 10-01-2027, 15-01-2027/.test(twice?.text ?? ""), true);
+  for (const id of made) await call("DELETE", `/slips/${id}`);
 }
 console.log(bad === 0 ? "\nDaily list reproduces the sheet exactly." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

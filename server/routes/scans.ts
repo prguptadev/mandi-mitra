@@ -172,15 +172,34 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   const katauti = await katautiFor(businessId, batch.merchantId);
   const resolver = await loadResolver(businessId);
 
+  /* The RST check (book guards). Same date: any repeat, compared as numbers
+     ("0634", "६३४" and "634" are one slip). Another date within 30 days: the
+     same RST with the same gross — the same sheet entered again. Both are
+     flags for the operator; neither stops the save. */
+  const { rstKey } = await import("../lib/slipChecks.ts");
+  const { sameSlipOtherDays } = await import("../lib/slipFlags.ts");
+  const { dmy } = await import("../lib/parchaLabels.ts");
   const existingRst = new Set<string>();
+  let rstOtherDays = new Map<string, { id: string; date: string }[]>();
   if (batch.slipDate) {
     const taken = await db.select({ rstNo: schema.purchaseSlips.rstNo }).from(schema.purchaseSlips)
       .where(and(
         eq(schema.purchaseSlips.businessId, businessId),
         eq(schema.purchaseSlips.slipDate, batch.slipDate),
       ));
-    for (const r of taken) existingRst.add(r.rstNo);
+    const takenKeys = new Set(taken.map((r) => rstKey(r.rstNo)));
+    // the row's own spelling goes in, so the check below finds it whatever the zeros
+    for (const r of rows) if (r.rstNo && takenKeys.has(rstKey(r.rstNo))) existingRst.add(r.rstNo);
+    rstOtherDays = await sameSlipOtherDays(businessId,
+      rows.filter((r) => !r.excluded).map((r) => ({ key: r.id, slipDate: batch.slipDate!, rstNo: r.rstNo, grossGrams: r.grossGrams })),
+      { exceptBatch: batch.id });
   }
+  const flagOtherDays = (c: { id: string; rstNo: string; excluded: boolean; issues: { code: string; level: "error" | "warn"; message: string; params?: Record<string, string | number> }[] }) => {
+    const od = c.excluded ? undefined : rstOtherDays.get(c.id);
+    if (!od?.length) return;
+    const dates = [...new Set(od.map((o) => dmy(o.date)))].join(", ");
+    c.issues.push({ code: "rst_other_day", level: "warn", message: `RST ${c.rstNo} is also on ${dates} with the same weight — this sheet may already be entered`, params: { rst: c.rstNo, dates } });
+  };
 
   const dupeInBatch = findDupes(rows);
   const range = await usualRateRange(businessId, batch.jinsId, batch.slipDate);
@@ -195,6 +214,7 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
       katauti, resolve: resolver.resolve, byId: resolver.byId, existingRst, dupeInBatch,
       rateFloorPaise: range.floor, rateCeilPaise: range.ceil, pageHasNet: netPages.has(r.page ?? 1),
     });
+    flagOtherDays(c);
     if (!c.excluded) {
       /* Rows may have slid on this page (a name with no weight, or numbers that
          break): every row on it waits until the page is checked line by line

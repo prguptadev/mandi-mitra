@@ -24,8 +24,10 @@ import { DownloadDialog } from "@/components/DownloadDialog.tsx";
 import { WhatsAppDialog } from "@/components/WhatsAppDialog.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { useFY } from "@/lib/fy.tsx";
-import { slipCharges, defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
+import { slipCharges, defaultSupplierCharges, supplierTermsOf, type SupplierCharges, type SupplierTerms } from "@server/lib/supplierTerms.ts";
 import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
+import { rstKey, numberOnly, grossOdd, rateOdd, DEFAULT_RATE_RANGE, type GrossOdd, type RateRange } from "@server/lib/slipChecks.ts";
+import { dmy } from "@server/lib/parchaLabels.ts";
 import {
   Button, Card, Select, Input, Badge, Alert, EmptyState, Dialog, Field, Spinner, Checkbox,
 } from "@/components/ui/index.tsx";
@@ -46,6 +48,27 @@ interface Draft {
   jinsId?: string;
 }
 const emptyDraft = (): Draft => ({ rstNo: "", adatiId: null, adatiName: "", gross: "", katauti: "", rate: "" });
+
+/** A row as the day's list sends it: checked against the whole day and the days around it. */
+type Row = SlipRow & {
+  /** The terms the slip was made with (JSON), which an edit keeps. */
+  supplierTerms?: string | null;
+  /** Slips on this date with this RST, every mill and commodity, this one included. */
+  rstDay?: number;
+  /** Other dates (30 days either side) with this RST and exactly this gross. */
+  rstOtherDays?: string[];
+  grossOdd?: GrossOdd;
+  rateOdd?: RateRange | null;
+};
+type Totals = SlipTotals & { rstOtherDayRows?: number; usualRate?: Record<string, RateRange> };
+type OtherSlip = { date: string; rstNo: string; millCode: string | null; nameHi: string; nameHinglish: string };
+/** What the server found when a slip was saved — flags only, the slip is saved. */
+type SavedFlags = { sameDay: OtherSlip[]; otherDays: OtherSlip[]; grossOdd: GrossOdd; rateOdd: RateRange | null };
+
+/** A box that has something in it which does not read as a number. */
+const unreadable = (s: string) => s.trim() !== "" && parseLooseNumber(s) === null;
+/** The RST box keeps what was typed, with Hindi digits as English ones and no spaces. */
+const rstTyped = (s: string) => s.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "");
 
 const halfUp = (n: number) => Math.sign(n) * Math.round(Math.abs(n));
 
@@ -114,7 +137,8 @@ export function DailyListPage() {
   const canSlip = can("slip.write") && !dayClosed;
   const canDel = can("slip.delete") && !dayClosed;
   const tallyFlags = useTallyFlags("slip", date, date);
-  const [merchantId, setMerchantId] = useState<string>("");
+  // the dashboard's day-rate card links a mill's line here as /daily?date=…&mill=<id>
+  const [merchantId, setMerchantId] = useState<string>(() => new URLSearchParams(search).get("mill") ?? "");
   /** Commodity new rows get. */
   const [jinsId, setJinsId] = useState<string>("");
   /** Commodity the list shows; "" = all of them. */
@@ -129,6 +153,20 @@ export function DailyListPage() {
   const warnStale = (r: unknown) => {
     const list = (r as { approvedParchas?: { parchaNo: string; truckNo: string | null }[] } | null)?.approvedParchas ?? [];
     setStaleWarn(list.length ? t("daily.parchaStale", { nos: list.map((p) => `#${p.parchaNo}${p.truckNo ? ` (${p.truckNo})` : ""}`).join(", ") }) : null);
+  };
+  /** After a save: what deserves a second look. The slip is saved either way. */
+  const [flagWarn, setFlagWarn] = useState<{ rst: string; lines: string[]; saved?: boolean } | null>(null);
+  const who = (o: OtherSlip) => [o.millCode, pick(o.nameHinglish, o.nameHi)].filter(Boolean).join(" · ");
+  const warnFlags = (rst: string, fl: SavedFlags | undefined, grossGrams: number | null, ratePaise: number | null) => {
+    if (!fl) { setFlagWarn(null); return; }
+    const lines = [
+      fl.sameDay.length ? t("daily.flagSameDay", { rst, who: fl.sameDay.map(who).join(", ") }) : "",
+      fl.otherDays.length ? t("daily.flagOtherDay", { rst, dates: fl.otherDays.map((o) => `${dmy(o.date)} (${who(o)})`).join(", ") }) : "",
+      fl.grossOdd === "large" ? t("daily.flagGrossLarge", { q: f.weight(grossGrams ?? 0) }) : "",
+      fl.grossOdd === "small" ? t("daily.flagGrossSmall", { q: f.weight(grossGrams ?? 0) }) : "",
+      fl.rateOdd ? t("daily.flagRateFar", { rate: f.rate(ratePaise ?? 0), floor: f.rate(fl.rateOdd.floorPaise), ceil: f.rate(fl.rateOdd.ceilPaise) }) : "",
+    ].filter(Boolean);
+    setFlagWarn(lines.length ? { rst, lines, saved: true } : null);
   };
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sheetTotal, setSheetTotal] = useState("");
@@ -151,14 +189,15 @@ export function DailyListPage() {
     : c.key === "gaushala" ? pick(terms.labels.gaushala, terms.labels.gaushalaHi)
     : c.key === "payable" ? pick(terms.labels.payable, terms.labels.payableHi)
     : pick(c.en, c.hi);
-  /** A row being typed: what the supplier will add, worked out exactly as the server will. */
-  const preview = (amountPaise: number | null, netGrams: number | null, ratePaise: number | null) =>
-    amountPaise === null || netGrams === null || ratePaise === null ? null : slipCharges(amountPaise, netGrams, ratePaise, terms);
+  /** A row being typed: what the supplier will add, worked out exactly as the server will —
+   *  a new row on today's terms, a row being edited on the terms it was made with. */
+  const preview = (amountPaise: number | null, netGrams: number | null, ratePaise: number | null, own: SupplierTerms = terms) =>
+    amountPaise === null || netGrams === null || ratePaise === null ? null : slipCharges(amountPaise, netGrams, ratePaise, own);
   const days = useQuery({ queryKey: ["slips", "days"], queryFn: () => api.get<SlipDay[]>("/slips/days") });
 
   const sheet = useQuery({
     queryKey: ["slips", { date, merchantId, jinsId: filterJins }],
-    queryFn: () => api.get<{ rows: SlipRow[]; totals: SlipTotals }>(
+    queryFn: () => api.get<{ rows: Row[]; totals: Totals }>(
       `/slips?${new URLSearchParams({ date, ...(merchantId ? { merchantId } : {}), ...(filterJins ? { jinsId: filterJins } : {}) })}`),
   });
 
@@ -171,6 +210,7 @@ export function DailyListPage() {
     setErr(null);
     setNotice(null);
     setStaleWarn(null);
+    setFlagWarn(null);
     setSheetTotal("");
   }, [date, merchantId, filterJins]);
 
@@ -198,15 +238,18 @@ export function DailyListPage() {
     ];
   };
 
-  const rstTaken = useMemo(
-    () => draft.rstNo.trim() !== "" && rows.some((r) => r.rstNo === draft.rstNo.trim()),
-    [draft.rstNo, rows],
-  );
-
   const nextRst = useQuery({
     queryKey: ["slips", "next-rst", date],
-    queryFn: () => api.get<{ rstNo: string | null }>(`/slips/next-rst?date=${date}`),
+    queryFn: () => api.get<{ rstNo: string | null; taken?: string[] }>(`/slips/next-rst?date=${date}`),
   });
+  /* The new row's RST against the whole day — every mill and commodity, not
+     only the rows this filtered list shows — compared as numbers ("0634" is 634). */
+  const rstTaken = useMemo(() => {
+    const k = rstKey(draft.rstNo);
+    if (!k) return false;
+    const taken = nextRst.data?.taken;
+    return taken ? taken.includes(k) : rows.some((r) => rstKey(r.rstNo) === k);
+  }, [draft.rstNo, rows, nextRst.data]);
 
   const lastRate = useQuery({
     queryKey: ["slips", "last-rate", draft.adatiId, jinsId],
@@ -216,7 +259,7 @@ export function DailyListPage() {
   });
 
   const create = useMutation({
-    mutationFn: () => api.post<{ id: string; approvedParchas?: { parchaNo: string; truckNo: string | null }[]; supplierCreated?: { nameHi: string; nameHinglish: string } | null }>("/slips", {
+    mutationFn: () => api.post<{ id: string; approvedParchas?: { parchaNo: string; truckNo: string | null }[]; supplierCreated?: { nameHi: string; nameHinglish: string } | null; flags?: SavedFlags }>("/slips", {
       slipDate: date, rstNo: draft.rstNo.trim(),
       adatiId: draft.adatiId ?? undefined,
       adatiName: draft.adatiId ? undefined : (draft.adatiName?.trim() || undefined),
@@ -224,11 +267,13 @@ export function DailyListPage() {
       merchantId: merchantId || null,
       grossGrams: d.grossGrams,
       katautiUnits: d.overridden ? d.katautiUnits : null,
+      // blank is "rate to be agreed"; anything that does not read as a number never gets here (draftReady)
       ratePaisePerQtl: d.ratePaise ?? 0,
     }),
     onSuccess: async (r) => {
       setErr(null);
       warnStale(r);
+      warnFlags(draft.rstNo.trim(), r.flags, d.grossGrams, d.ratePaise);
       if (r.supplierCreated) { setNotice(t("daily.supplierAdded", { name: pick(r.supplierCreated.nameHinglish, r.supplierCreated.nameHi) })); await qc.invalidateQueries({ queryKey: ["adati"] }); }
       // most rows on a sheet share a rate, so keep it unless told otherwise
       setDraft(P.carryRateForward ? { ...emptyDraft(), rate: draft.rate } : emptyDraft());
@@ -241,7 +286,7 @@ export function DailyListPage() {
   const update = useMutation({
     mutationFn: ({ id, draft: dr, grossShown }: { id: string; draft: Draft; grossShown?: string }) => {
       const dd = derive(dr, katautiCfg);
-      return api.put<{ supplierCreated?: { nameHi: string; nameHinglish: string } | null }>(`/slips/${id}`, {
+      return api.put<{ supplierCreated?: { nameHi: string; nameHinglish: string } | null; flags?: SavedFlags }>(`/slips/${id}`, {
         rstNo: dr.rstNo.trim(),
         adatiId: dr.adatiId ?? undefined,
         adatiName: dr.adatiId ? undefined : (dr.adatiName?.trim() || undefined),
@@ -252,7 +297,10 @@ export function DailyListPage() {
         ratePaisePerQtl: dd.ratePaise ?? 0,
       });
     },
-    onSuccess: async (r) => {
+    onSuccess: async (r, v) => {
+      const dd = derive(v.draft, katautiCfg);
+      const was = rows.find((x) => x.id === v.id);
+      warnFlags(v.draft.rstNo.trim(), r?.flags, v.grossShown !== undefined && v.draft.gross === v.grossShown ? was?.grossGrams ?? dd.grossGrams : dd.grossGrams, dd.ratePaise);
       setEditing(null); setErr(null); warnStale(r);
       if (r?.supplierCreated) { setNotice(t("daily.supplierAdded", { name: pick(r.supplierCreated.nameHinglish, r.supplierCreated.nameHi) })); await qc.invalidateQueries({ queryKey: ["adati"] }); }
       await qc.invalidateQueries({ queryKey: ["slips"] });
@@ -306,9 +354,18 @@ export function DailyListPage() {
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
+  /* A box with something in it that is not a number is never saved as 0 or
+     as blank: the row waits, with that box red. */
+  const draftBad = { gross: unreadable(draft.gross), katauti: unreadable(draft.katauti), rate: unreadable(draft.rate) };
   const draftReady =
     draft.rstNo.trim() !== "" && (draft.adatiId !== null || (draft.adatiName ?? "").trim() !== "") &&
-    d.grossGrams !== null && d.grossGrams > 0 && d.netGrams !== null && d.netGrams > 0;
+    d.grossGrams !== null && d.grossGrams > 0 && d.netGrams !== null && d.netGrams > 0 &&
+    !draftBad.gross && !draftBad.katauti && !draftBad.rate;
+  /* Figures that look like a lost or extra decimal point, while typing: an
+     orange box and a reason. A flag only — Enter still saves. */
+  const draftGrossOdd = grossOdd(d.grossGrams);
+  const draftRange = totals?.usualRate?.[jinsId] ?? DEFAULT_RATE_RANGE;
+  const draftRateOdd = rateOdd(d.ratePaise, draftRange);
 
   /** Enter walks the row; Enter on the last field saves and starts the next. */
   const step = (next: "adati" | "gross" | "bags" | "rate" | "save") =>
@@ -320,8 +377,34 @@ export function DailyListPage() {
       else if (next === "gross") grossRef.current?.focus();
       else if (next === "bags") bagsRef.current?.focus();
       else if (next === "rate") rateRef.current?.focus();
+      else if (draftBad.gross || draftBad.katauti || draftBad.rate) setErr(t("daily.boxUnreadable"));
       else if (draftReady && !create.isPending) create.mutate();
     };
+
+  /** Saving an edited row — the tick and Enter go through here, and send exactly the same. */
+  const saveEdit = async () => {
+    if (!editing || update.isPending) return;
+    const ed = editing.draft;
+    if (ed.gross.trim() === "" || unreadable(ed.gross) || unreadable(ed.katauti) || unreadable(ed.rate)) {
+      setErr(t("daily.boxUnreadable"));
+      return;
+    }
+    const was = rows.find((x) => x.id === editing.id);
+    const rateNow = derive(ed, katautiCfg).ratePaise ?? 0;
+    // taking the rate off a priced slip wipes what its supplier is owed: say so first
+    if (was && was.ratePaisePerQtl > 0 && rateNow === 0) {
+      const ok = await ask({
+        title: t("daily.rateOffTitle", { rst: was.rstNo }), message: t("daily.rateOffSub"), danger: true, confirmLabel: t("daily.rateOffGo"),
+        rows: [
+          { label: t("daily.rate"), value: `${f.rate(was.ratePaisePerQtl)} → —` },
+          { label: t("daily.amount"), value: `${f.money(was.amountPaise)} → ${f.money(0)}` },
+          { label: pick(terms.labels.payable, terms.labels.payableHi), value: `${f.money(was.payablePaise)} → ${f.money(0)}`, big: true },
+        ],
+      });
+      if (!ok) return;
+    }
+    update.mutate(editing);
+  };
 
   const sheetTotalGrams = parseQtlToGrams(sheetTotal);
   const sheetDiff = sheetTotalGrams !== null && totals ? totals.netGrams - sheetTotalGrams : null;
@@ -418,18 +501,39 @@ export function DailyListPage() {
     return P.sortOrder === cyc[0] ? "▲" : P.sortOrder === cyc[1] ? "▼" : null;
   };
 
+  /* The repeat mark comes from the server, which counts the whole day (every
+     mill and commodity), so a filtered list still shows it. */
   const rstCount = useMemo(() => {
     const m = new Map<string, number>();
-    for (const r of rows) m.set(r.rstNo, (m.get(r.rstNo) ?? 0) + 1);
+    for (const r of rows) m.set(rstKey(r.rstNo), (m.get(rstKey(r.rstNo)) ?? 0) + 1);
     return m;
   }, [rows]);
+  const rstOnDay = (r: Row) => r.rstDay ?? rstCount.get(rstKey(r.rstNo)) ?? 1;
 
-  function displayCell(key: DailyColumnKey, r: SlipRow, i: number) {
+  function displayCell(key: DailyColumnKey, r: Row, i: number) {
     switch (key) {
       case "sr": return <span className="inline-flex items-center gap-1"><span className="num text-[11px] text-faint">{i + 1}</span><TallyMark flag={tallyFlags[r.id]} /></span>;
-      case "rstNo": return (rstCount.get(r.rstNo) ?? 0) > 1
-        ? <span className="num rounded border-2 border-warn px-1 font-medium" title={t("daily.rstRepeated")}>{r.rstNo}</span>
-        : <span className="num font-medium">{r.rstNo}</span>;
+      case "rstNo": {
+        // orange: the same RST again today, or the same RST and weight on another date — a flag, never a block
+        const other = r.rstOtherDays ?? [];
+        const why = [
+          rstOnDay(r) > 1 ? t("daily.rstRepeated") : "",
+          other.length ? t("daily.rstOtherDays", { rst: r.rstNo, dates: other.map(dmy).join(", ") }) : "",
+        ].filter(Boolean).join(" · ");
+        if (!why) return <span className="num font-medium">{r.rstNo}</span>;
+        return (
+          <span className="inline-flex flex-wrap items-center gap-1" title={why}>
+            <span className="num rounded border-2 border-warn px-1 font-medium">{r.rstNo}</span>
+            {/* the other date in plain sight, so a tap or a glance is enough */}
+            {other.length > 0 && (
+              <button type="button" className="num rounded bg-warn-soft px-1 text-[10px] font-medium text-warn"
+                aria-label={why} onClick={() => setFlagWarn({ rst: r.rstNo, lines: [why] })}>
+                {dmy(other[0]).slice(0, 5)}{other.length > 1 ? ` +${other.length - 1}` : ""}
+              </button>
+            )}
+          </span>
+        );
+      }
       case "adatiHi": return (
         <span className="flex items-center gap-1.5">
           <span lang="hi" className="truncate text-[14px] text-ink">{r.adatiNameHi}</span>
@@ -446,7 +550,9 @@ export function DailyListPage() {
       case "village": return <span className="text-[12px] text-muted">{lang === "hi" ? (r.adatiVillage ?? "") : (r.adatiVillage ?? "")}</span>;
       case "mill": return r.merchantCode ? <Badge tone="neutral" className="num">{r.merchantCode}</Badge> : <span className="text-faint">—</span>;
       case "jins": return <span className="num text-[12px] text-muted">{r.jinsCode}</span>;
-      case "gross": return f.weight(r.grossGrams);
+      case "gross": return r.grossOdd
+        ? <span className="text-warn" title={t(r.grossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip")}>{f.weight(r.grossGrams)} !</span>
+        : f.weight(r.grossGrams);
       case "katauti": return (
         <span className={cn(r.katautiOverride && "text-warn")}>
           {f.int(r.katautiUnits)}
@@ -460,7 +566,10 @@ export function DailyListPage() {
           {r.netMismatchGrams !== 0 && <span className="ml-1 text-[10px]">({f.weight(r.expectedNetGrams)})</span>}
         </span>
       );
-      case "rate": return r.ratePending ? <span className="text-faint">—</span> : f.rate(r.ratePaisePerQtl);
+      case "rate": return r.ratePending ? <span className="text-faint">—</span>
+        : r.rateOdd
+          ? <span className="text-warn" title={t("daily.rateFarTip", { floor: f.rate(r.rateOdd.floorPaise), ceil: f.rate(r.rateOdd.ceilPaise) })}>{f.rate(r.ratePaisePerQtl)} !</span>
+          : f.rate(r.ratePaisePerQtl);
       case "amount": return r.ratePending
         ? <span className="text-faint">—</span>
         : <span className="font-semibold">{f.amount(r.amountPaise)}</span>;
@@ -477,35 +586,38 @@ export function DailyListPage() {
 
   function editCell(
     key: DailyColumnKey, ed: Draft,
-    dd: ReturnType<typeof derive>, r: SlipRow, i: number,
+    dd: ReturnType<typeof derive>, r: Row, i: number,
   ) {
     const upd = (patch: Partial<Draft>) => setEditing((e) => ({ ...e, id: r.id, draft: { ...ed, ...patch } }));
+    // the edit keeps the supplier terms the slip was made with, so the preview uses them too
+    const own = supplierTermsOf({ supplierTerms: r.supplierTerms ?? null }, terms);
     switch (key) {
       case "sr": return <span className="num text-[11px] text-faint">{i + 1}</span>;
       case "rstNo": return <input className={cn(CELL, "text-left")} value={ed.rstNo} autoFocus
-        onChange={(e) => upd({ rstNo: e.target.value })} />;
+        onChange={(e) => upd({ rstNo: rstTyped(e.target.value) })} />;
       case "adatiHi":
       case "adatiLatin":
         if (key !== nameCol) return displayCell(key, r, i);
         return <SupplierPicker value={ed.adatiId}
           selectedLabel={{ nameHi: r.adatiNameHi, nameHinglish: r.adatiNameHinglish }}
           onChange={(v) => upd({ adatiId: v })} onQueryChange={(q) => upd({ adatiName: q })} />;
-      case "gross": return <input className={CELL} value={ed.gross} inputMode="decimal"
-        onChange={(e) => upd({ gross: e.target.value })} />;
-      case "katauti": return <input className={cn(CELL, !ed.katauti && "text-faint")} inputMode="numeric"
+      case "gross": return <input className={cn(CELL, (unreadable(ed.gross) || !ed.gross.trim()) && "border-2 border-bad")} value={ed.gross} inputMode="decimal"
+        onChange={(e) => upd({ gross: numberOnly(e.target.value) })} />;
+      case "katauti": return <input className={cn(CELL, !ed.katauti && "text-faint", unreadable(ed.katauti) && "border-2 border-bad")} inputMode="numeric"
         value={ed.katauti} placeholder={dd.suggested === null ? "" : String(dd.suggested)}
-        onChange={(e) => upd({ katauti: e.target.value })} />;
+        onChange={(e) => upd({ katauti: numberOnly(e.target.value) })} />;
       case "deduction": return <span className="num text-faint">{dd.katautiGrams === null ? "—" : f.weight(dd.katautiGrams)}</span>;
       case "net": return <span className="num font-semibold">{dd.netGrams === null ? "—" : f.weight(dd.netGrams)}</span>;
-      case "rate": return <input className={CELL} value={ed.rate} inputMode="decimal" disabled={!can("rate.edit")}
-        onChange={(e) => upd({ rate: e.target.value })}
+      case "rate": return <input className={cn(CELL, unreadable(ed.rate) && "border-2 border-bad")} value={ed.rate} inputMode="decimal" disabled={!can("rate.edit")}
+        onChange={(e) => upd({ rate: numberOnly(e.target.value) })}
         onKeyDown={(e) => {
-          if (e.key === "Enter") { e.preventDefault(); update.mutate({ id: r.id, draft: ed }); }
+          // Enter saves exactly as the tick does: an untouched gross is not re-sent
+          if (e.key === "Enter") { e.preventDefault(); void saveEdit(); }
           if (e.key === "Escape") setEditing(null);
         }} />;
       case "amount": return <span className="num font-semibold">{dd.amountPaise === null ? "—" : f.amount(dd.amountPaise)}</span>;
       case "commission": case "gaushala": case "payable": {
-        const p = preview(dd.amountPaise, dd.netGrams, dd.ratePaise);
+        const p = preview(dd.amountPaise, dd.netGrams, dd.ratePaise, own);
         return <span className="num text-muted">{p ? f.amount(key === "commission" ? p.commissionPaise : key === "gaushala" ? p.gaushalaPaise : p.payablePaise) : "—"}</span>;
       }
       case "jins": return (
@@ -552,7 +664,8 @@ export function DailyListPage() {
             : c.key === "rstNo" ? (
               <input ref={rstRef} className={cn(CELL, "text-left", rstTaken && "border-2 border-warn")}
                 value={draft.rstNo} placeholder={t("daily.rstPlaceholder")}
-                onChange={(e) => setDraft((p) => ({ ...p, rstNo: e.target.value }))}
+                title={rstTaken ? t("daily.rstTakenTip") : undefined}
+                onChange={(e) => setDraft((p) => ({ ...p, rstNo: rstTyped(e.target.value) }))}
                 onKeyDown={step("adati")} />
             ) : c.key === nameCol ? (
               <SupplierPicker ref={adatiRef} value={draft.adatiId}
@@ -561,15 +674,17 @@ export function DailyListPage() {
                 onCommit={() => grossRef.current?.focus()}
                 placeholder={t("daily.typeNameAuto")} />
             ) : c.key === "gross" ? (
-              <input ref={grossRef} className={CELL} value={draft.gross} inputMode="decimal" placeholder="19.20"
-                onChange={(e) => setDraft((p) => ({ ...p, gross: e.target.value }))}
+              <input ref={grossRef} value={draft.gross} inputMode="decimal" placeholder="19.20"
+                className={cn(CELL, draftBad.gross ? "border-2 border-bad" : draftGrossOdd && "border-2 border-warn")}
+                title={draftBad.gross ? t("daily.boxUnreadable") : draftGrossOdd ? t(draftGrossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip") : undefined}
+                onChange={(e) => setDraft((p) => ({ ...p, gross: numberOnly(e.target.value) }))}
                 onKeyDown={step("bags")} />
             ) : c.key === "katauti" ? (
               <input ref={bagsRef} inputMode="numeric" value={draft.katauti}
-                className={cn(CELL, !draft.katauti && "text-faint")}
+                className={cn(CELL, !draft.katauti && "text-faint", draftBad.katauti && "border-2 border-bad")}
                 placeholder={d.suggested === null ? "" : String(d.suggested)}
                 title={t("daily.katautiAuto")}
-                onChange={(e) => setDraft((p) => ({ ...p, katauti: e.target.value }))}
+                onChange={(e) => setDraft((p) => ({ ...p, katauti: numberOnly(e.target.value) }))}
                 onKeyDown={step("rate")} />
             ) : c.key === "deduction" ? (
               <span className="num text-faint">{d.katautiGrams === null ? "—" : f.weight(d.katautiGrams)}</span>
@@ -578,10 +693,14 @@ export function DailyListPage() {
                 {d.netGrams === null ? "—" : f.weight(d.netGrams)}
               </span>
             ) : c.key === "rate" ? (
-              <input ref={rateRef} className={CELL} value={draft.rate} inputMode="decimal"
+              <input ref={rateRef} value={draft.rate} inputMode="decimal"
+                className={cn(CELL, draftBad.rate ? "border-2 border-bad" : draftRateOdd && "border-2 border-warn")}
+                title={draftBad.rate ? t("daily.boxUnreadable")
+                  : draftRateOdd ? t("daily.rateFarTip", { floor: f.rate(draftRange.floorPaise), ceil: f.rate(draftRange.ceilPaise) })
+                  : t("daily.rateBlankTip")}
                 disabled={!can("rate.edit")}
                 placeholder={lastRate.data?.ratePaisePerQtl ? f.rate(lastRate.data.ratePaisePerQtl) : "3500"}
-                onChange={(e) => setDraft((p) => ({ ...p, rate: e.target.value }))}
+                onChange={(e) => setDraft((p) => ({ ...p, rate: numberOnly(e.target.value) }))}
                 onKeyDown={step("save")} />
             ) : c.key === "amount" ? (
               <span className="num font-semibold text-brand">{d.amountPaise === null ? "—" : f.amount(d.amountPaise)}</span>
@@ -700,6 +819,23 @@ export function DailyListPage() {
             <button type="button" className="shrink-0 text-faint hover:text-ink" onClick={() => setStaleWarn(null)} aria-label={t("common.close")}><X className="h-3.5 w-3.5" /></button></span>
         </Alert>
       )}
+      {flagWarn && (
+        <Alert tone="warn" className="mb-3">
+          <span className="flex items-start justify-between gap-2">
+            <span>
+              <b>{t(flagWarn.saved ? "daily.flagSavedTitle" : "daily.flagTitle", { rst: flagWarn.rst })}</b>
+              {flagWarn.lines.map((l, i) => <span key={i} className="block">{l}</span>)}
+            </span>
+            <button type="button" className="shrink-0 text-faint hover:text-ink" onClick={() => setFlagWarn(null)} aria-label={t("common.close")}><X className="h-3.5 w-3.5" /></button>
+          </span>
+        </Alert>
+      )}
+      {totals && (totals.rstOtherDayRows ?? 0) > 0 && (
+        <Alert tone="warn" className="mb-3">
+          <p className="font-semibold">{t("daily.rstOtherDayRows", { n: totals.rstOtherDayRows ?? 0 })}</p>
+          <p>{t("daily.rstOtherDaySub")}</p>
+        </Alert>
+      )}
       {totals && totals.ratePendingRows > 0 && (
         <Alert tone="warn" className="mb-3">
           <p className="font-semibold">{t("daily.ratePendingRows", { n: totals.ratePendingRows })}</p>
@@ -745,8 +881,23 @@ export function DailyListPage() {
               <Button key={m.id} size="sm" variant="secondary" loading={reassign.isPending}
                 icon={<Truck className="h-3.5 w-3.5" />}
                 onClick={async () => {
+                  /* Rows already at this mill stay exactly as they are; the rest are
+                     worked out again on its katauti — shown before, so nothing moves unseen. */
+                  const picked = rows.filter((r) => selected.has(r.id));
+                  const moving = picked.filter((r) => r.merchantId !== m.id);
+                  const after = moving.map((r) => derive({ ...emptyDraft(), gross: String(r.grossGrams / GRAMS_PER_QTL), katauti: r.katautiOverride ? String(r.katautiUnits) : "", rate: String(r.ratePaisePerQtl / 100) }, m.chargeConfig.katauti));
+                  const netNow = moving.reduce((x, r) => x + r.netGrams, 0);
+                  const netAfter = after.reduce((x, a) => x + (a.netGrams ?? 0), 0);
+                  const amtNow = moving.reduce((x, r) => x + r.amountPaise, 0);
+                  const amtAfter = after.reduce((x, a) => x + (a.amountPaise ?? 0), 0);
                   if (await ask({ title: t("daily.confirmMoveTitle", { mill: m.code }), message: t("daily.confirmMoveSub"),
-                    rows: [{ label: t("daily.mill"), value: `${m.code} — ${pick(m.name, m.nameHi)}`, big: true }, ...pickedSummary()] })) reassign.mutate(m.id);
+                    rows: [
+                      { label: t("daily.mill"), value: `${m.code} — ${pick(m.name, m.nameHi)}`, big: true },
+                      { label: t("daily.moveCount"), value: t("daily.moveCountOf", { n: moving.length, stay: picked.length - moving.length }) },
+                      { label: t("daily.net"), value: netAfter === netNow ? f.weight(netNow, { unit: true }) : `${f.weight(netNow, { unit: true })} → ${f.weight(netAfter, { unit: true })}` },
+                      { label: t("daily.amount"), value: amtAfter === amtNow ? f.money(amtNow) : `${f.money(amtNow)} → ${f.money(amtAfter)}`, big: amtAfter !== amtNow },
+                    ],
+                    warnings: [amtAfter !== amtNow ? t("daily.moveChangesMoney") : ""] })) reassign.mutate(m.id);
                 }}>
                 {m.code}
               </Button>
@@ -838,7 +989,13 @@ export function DailyListPage() {
               {!sheet.isLoading && shown.map((r, i) => {
                 if (editing?.id === r.id) {
                   const ed = editing.draft;
-                  const dd = derive(ed, r.katautiCfg);
+                  /* As the server will: a slip keeps the katauti it was made with,
+                     until its weight changes — then the mill's terms of today apply. */
+                  const reweighed = (editing.grossShown === undefined || ed.gross !== editing.grossShown)
+                    && parseQtlToGrams(ed.gross) !== r.grossGrams;
+                  const millNow: KatautiConfig = mills.data?.find((m) => m.id === r.merchantId)?.chargeConfig.katauti
+                    ?? { mode: f.cfg.katautiMode, kgPerUnit: f.cfg.katautiKgPerUnit };
+                  const dd = derive(ed, reweighed ? millNow : r.katautiCfg);
                   return (
                     <tr key={r.id} className="bg-brand/[0.06]">
                       <td className={cn("border-b border-line/70 px-2", PAD)} />
@@ -850,7 +1007,7 @@ export function DailyListPage() {
                       <td className={cn("border-b border-line/70 px-1", PAD)}>
                         <div className="flex items-center gap-0.5">
                           <Button size="icon" variant="primary" className="h-7 w-7" loading={update.isPending}
-                            onClick={() => update.mutate(editing)} title={t("common.save")} aria-label={t("common.save")}><Check className="h-3.5 w-3.5" /></Button>
+                            onClick={() => void saveEdit()} title={t("common.save")} aria-label={t("common.save")}><Check className="h-3.5 w-3.5" /></Button>
                           <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setEditing(null)} title={t("common.cancel")} aria-label={t("common.cancel")}>
                             <X className="h-3.5 w-3.5" />
                           </Button>

@@ -21,19 +21,23 @@ const weekday = (iso: string, lang: string) =>
    tomorrow. The rate is Σ(net × rate) / Σ net over the slips that carry a rate,
    the same figure the parcha and the mill report print, so the three agree.
    A line whose slips have no rate yet has no rate to show: it is left out and
-   counted at the foot instead. */
+   counted at the foot instead. Net is the priced net, so net × average is the
+   amount on the same line; weight still without a rate is shown apart. */
 
 interface Line {
   millId: string | null; millCode: string | null; millName: string | null; millNameHi: string | null;
   jinsId: string; jinsCode: string; jinsName: string; jinsNameHi: string | null;
   slips: number; bags: number; grossGrams: number; netGrams: number;
   amountPaise: number; payablePaise: number; avgRatePaisePerQtl: number; waiting: number;
+  /** Net of this line's slips with no rate yet: in none of net, average or amount. */
+  unpricedNetGrams?: number;
 }
 interface Day {
   date: string;
   lines: Line[];
   total: { slips: number; bags: number; grossGrams: number; netGrams: number; amountPaise: number; payablePaise: number; avgRatePaisePerQtl: number } | null;
   waiting: number;
+  unpricedNetGrams?: number;
 }
 
 export function DayAveragesCard() {
@@ -117,7 +121,12 @@ export function DayAveragesCard() {
                             : <OwnFirm withName />}
                         </td>
                         <td className={td}><span className="num">{l.jinsCode}</span></td>
-                        <td className={tdNum}>{f.weight(l.netGrams)}</td>
+                        <td className={tdNum}>
+                          {f.weight(l.netGrams)}
+                          {(l.unpricedNetGrams ?? 0) > 0 && (
+                            <span className="block text-[11px] font-normal text-warn">{t("dash.dayUnpricedLine", { q: f.weight(l.unpricedNetGrams ?? 0) })}</span>
+                          )}
+                        </td>
                         <td className={cn(tdNum, "font-semibold text-brand")}>{f.rate(l.avgRatePaisePerQtl)}</td>
                         <td className={tdNum}>{f.amount(l.amountPaise)}</td>
                       </tr>
@@ -133,6 +142,9 @@ export function DayAveragesCard() {
                   </tbody>
                 </table>
               </div>
+            )}
+            {(d.unpricedNetGrams ?? 0) > 0 && (
+              <p className="mt-1.5 px-2 text-[12px] text-warn">{t("dash.dayUnpricedNote", { q: f.weight(d.unpricedNetGrams ?? 0), n: d.waiting })}</p>
             )}
           </div>
         ))}
