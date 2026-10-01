@@ -248,7 +248,7 @@ check("an unpriced slip: its 4.95 qtl is counted, its money is 0",
 check("…and the sheet counts it", oneDay.totals.unpriced === daySlips.totals.ratePendingRows && oneDay.totals.unpriced >= 1, oneDay.totals.unpriced);
 
 /* The files themselves: Excel read back cell by cell, CSV parsed by hand. */
-const ALL = "name,village,slips,net,goods,commission,gaushala,payable,before,paid,toPay";
+const ALL = "name,net,goods,commission,gaushala,paid,toPay";
 const fileOf = async (q: string) => {
   const res = await raw("GET", `/ledger/sheet?${q}`);
   if (!res.ok) throw new Error(`/ledger/sheet?${q} -> ${res.status} ${await res.text()}`);
@@ -287,7 +287,7 @@ check("its head: the business, 'Supplier pay sheet — till 30-09-2026', and whe
   String(hiRows[0]?.[0] ?? "").length > 0 && hiRows[1]?.[0] === "Supplier pay sheet — till 30-09-2026" && /^Made on \d{2}-\d{2}-\d{4} \d{2}:\d{2}$/.test(String(hiRows[2]?.[0])),
   hiRows.slice(0, 3).map((r) => r?.[0]));
 const hiHead = header(hiRows);
-check("Hindi names: one name column, in Hindi", hiHead[0] === "Adati name" && hiHead[1] === "Village" && hiRows.some((r) => r?.[0] === spL.nameHi && r[1] === "रामपुर"), hiHead);
+check("Hindi names: one name column, in Hindi", hiHead[0] === "Adati name" && hiHead[1] === "Net weight (qtl)" && hiRows.some((r) => r?.[0] === spL.nameHi), hiHead);
 const hiTotal = totalRow(hiRows);
 check("…its total row: to pay = the ledger's to-pay total", hiTotal[0] === `Total (${till.totals.count})` && hiTotal[hiHead.indexOf("To pay")] === ledgerOn.totals.toPayPaise / 100,
   { total: hiTotal, ledger: ledgerOn.totals.toPayPaise / 100 });
@@ -296,8 +296,8 @@ check("…and a line under it says how many slips have no rate yet",
   hiRows.some((r) => typeof r?.[0] === "string" && (r[0] as string).startsWith(`${till.totals.unpriced} slip(s) have no rate yet`)), till.totals.unpriced);
 
 const enX = await xlsxRows((await fileOf(`mode=till&date=${PD}&names=hinglish&cols=${ALL}&format=xlsx`)).buf);
-check("Hinglish names: one name column, in Hinglish, and the village in English",
-  header(enX)[0] === "Adati name" && enX.some((r) => r?.[0] === spL.nameHinglish && r[1] === "Rampur") && !enX.some((r) => r?.[0] === spL.nameHi), spL.nameHinglish);
+check("Hinglish names: one name column, in Hinglish",
+  header(enX)[0] === "Adati name" && enX.some((r) => r?.[0] === spL.nameHinglish) && !enX.some((r) => r?.[0] === spL.nameHi), spL.nameHinglish);
 const bothX = await fileOf(`mode=till&date=${PD}&names=both&cols=${ALL}&format=xlsx`);
 const bothRows = await xlsxRows(bothX.buf);
 const bothHead = header(bothRows);
@@ -320,11 +320,49 @@ check("…to pay to the paisa: the ledger's total", csvTotal[bothHead.indexOf("T
 
 const dayX = await xlsxRows((await fileOf(`mode=day&date=${PD}&names=hi&cols=${ALL}&format=xlsx`)).buf);
 const dayHead = header(dayX);
-check("the one-day Excel: '30-09-2026', and its payable total is the day's slips'",
-  dayX[1]?.[0] === "Supplier pay sheet — 30-09-2026" && totalRow(dayX)[dayHead.indexOf("Net amount")] === daySlips.totals.payablePaise / 100,
-  { title: dayX[1]?.[0], total: totalRow(dayX) });
+const dayTot = totalRow(dayX);
+const cell = (label: string) => Number(dayTot[dayHead.findIndex((h) => String(h).startsWith(label))] ?? NaN);
+check("the one-day Excel: '30-09-2026', and amount + commission + gaushala is the day's slips' payable",
+  dayX[1]?.[0] === "Supplier pay sheet — 30-09-2026"
+  && Math.round((cell("Amount") + cell(dayHead[dayHead.indexOf("Amount") + 1] as string) + cell(dayHead[dayHead.indexOf("Amount") + 2] as string)) * 100) === daySlips.totals.payablePaise,
+  { title: dayX[1]?.[0], total: dayTot, payable: daySlips.totals.payablePaise });
 check("…with the unpriced slips noted", dayX.some((r) => typeof r?.[0] === "string" && (r[0] as string).startsWith(`${oneDay.totals.unpriced} slip(s) have no rate yet`)));
 check("a date is needed", (await raw("GET", "/ledger/sheet?mode=day&format=json")).status === 400);
+check("…and it must be a real day", (await raw("GET", "/ledger/sheet?mode=till&date=2026-02-31&format=json")).status === 400);
+check("the CSV starts with the mark that tells Excel it is UTF-8 (Hindi stays Hindi)", csvF.buf[0] === 0xef && csvF.buf[1] === 0xbb && csvF.buf[2] === 0xbf);
+
+/* Paid ahead on the day: money to recover, never a minus inside "To pay". */
+const ahead = await call("POST", "/adati", { nameHi: "अग्रिम जाँच भंडार", nameHinglish: "Agrim Jaanch Bhandar" });
+const a821 = await slipOf(ahead.id, "821", 3.00, 3000);
+await call("POST", "/payments", { adatiId: ahead.id, payDate: PD, amountPaise: a821.payablePaise + rs(1000), mode: "cash" });
+const day2 = await call("GET", `/ledger/sheet?mode=day&date=${PD}&format=json`);
+const aheadRow = day2.rows.find((r: any) => r.nameHi === "अग्रिम जाँच भंडार");
+const ledger2 = await call("GET", `/ledger?asOf=${PD}`);
+const owedOnSheet = ledger2.rows.filter((r: any) => day2.rows.some((x: any) => x.nameHi === r.nameHi) && r.balancePaise > 0).reduce((s: number, r: any) => s + r.balancePaise, 0);
+check("one day: a supplier paid ahead shows 0 to pay, not a minus", aheadRow?.toPayPaise === 0, aheadRow?.toPayPaise);
+check("…the to-pay total is only what is really owed", day2.totals.toPayPaise === owedOnSheet, { sheet: day2.totals.toPayPaise, owed: owedOnSheet });
+check("…and the advance is named under the total", day2.notes.some((n: string) => n.startsWith("Paid ahead") && n.includes("अग्रिम जाँच भंडार") && n.includes("1,000.00")), day2.notes);
+
+/* Two suppliers whose Hinglish names come out the same are told apart by village. */
+const r1 = await call("POST", "/adati", { nameHi: "राम लाल जाँच", nameHinglish: "Ram Lal Jaanch", village: "Etah", villageHi: "एटा" });
+const r2 = await call("POST", "/adati", { nameHi: "रामलाल जाँच", nameHinglish: "Ram Lal Jaanch", village: "Nagla", villageHi: "नगला" });
+await slipOf(r1.id, "831", 2.00, 3000);
+await slipOf(r2.id, "832", 3.00, 3000);
+const twin = await call("GET", `/ledger/sheet?mode=till&date=${PD}&names=hinglish&format=json`);
+const latin = twin.rows.map((r: any) => r.nameLatin).filter((n: string) => n.startsWith("RAM LAL JAANCH"));
+check("two RAM LAL JAANCHs on a Hinglish sheet carry their village", latin.includes("RAM LAL JAANCH (Etah)") && latin.includes("RAM LAL JAANCH (Nagla)"), latin);
+
+/* An opening balance gets its own column, so the row adds up to "to pay". */
+const op = await call("POST", "/adati", { nameHi: "पुराना जाँच भंडार", nameHinglish: "Purana Jaanch Bhandar", openingBalanceRupees: 5000 });
+await slipOf(op.id, "841", 1.00, 3000);
+const opX = await xlsxRows((await fileOf(`mode=till&date=${PD}&names=hi&cols=${ALL}&format=xlsx`)).buf);
+const opHead = header(opX);
+const opRow = opX.find((r) => r?.[0] === "पुराना जाँच भंडार")!;
+const at = (label: string) => Number(opRow[opHead.findIndex((h) => String(h).startsWith(label))] ?? 0);
+const comm = Number(opRow[opHead.indexOf("Amount") + 1]), gau = Number(opRow[opHead.indexOf("Amount") + 2]);
+check("an opening balance gets its own column on the till-date sheet", opHead.includes("Opening balance"), opHead);
+check("…and the row adds up: opening + amount + commission + gaushala − paid = to pay",
+  Math.round((at("Opening balance") + at("Amount") + comm + gau - at("Paid")) * 100) === Math.round(at("To pay") * 100), opRow);
 
 console.log(bad === 0 ? "\nLedger and payments add up." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

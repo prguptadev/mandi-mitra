@@ -9,9 +9,9 @@ import { fetchAndSave } from "@/components/DownloadDialog.tsx";
 import { defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
 
 /* The supplier pay sheet, from the ledger: what is to be paid to each adati,
-   as Excel or CSV — till a date, or for one day. The names come in Hindi,
-   Hinglish or both; the columns ticked here are kept for next time on this
-   computer. Every figure in the file is the server's own sum. */
+   as Excel or CSV — till a date, or for one day. The names come in Hindi or
+   Hinglish; the columns ticked here are kept for next time on this computer.
+   Every figure in the file is the server's own sum. */
 
 export function PaySheetDialog({ onClose, date }: { onClose: () => void; date: string }) {
   const { t, pick } = useI18n();
@@ -26,7 +26,7 @@ export function PaySheetDialog({ onClose, date }: { onClose: () => void; date: s
 
   const [mode, setMode] = useState<"till" | "day">("till");
   const [day, setDay] = useState(date);
-  const [names, setNames] = useState<DailyListPrefs["supplierSheetNames"]>(P.supplierSheetNames);
+  const [names, setNames] = useState<DailyListPrefs["supplierSheetNames"]>(P.supplierSheetNames === "hinglish" ? "hinglish" : "hi");
   const [cols, setCols] = useState<Record<string, boolean>>({ ...P.supplierSheetColumns, name: true });
   const [format, setFormat] = useState<"xlsx" | "csv">("xlsx");
   const [busy, setBusy] = useState(false);
@@ -74,7 +74,6 @@ export function PaySheetDialog({ onClose, date }: { onClose: () => void; date: s
           <Select value={names} onChange={(e) => setNames(e.target.value as typeof names)}>
             <option value="hi">{t("common.hindi")}</option>
             <option value="hinglish">{t("common.hinglish")}</option>
-            <option value="both">{t("sheet.both")}</option>
           </Select>
         </Field>
         <Field label={t("dl.format")}>

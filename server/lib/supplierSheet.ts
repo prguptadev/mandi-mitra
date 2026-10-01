@@ -42,7 +42,13 @@ export interface SupplierSheetData {
   columns: SupplierSheetColumnKey[];
   /** What Settings calls these three columns. */
   labels: { commission: string; gaushala: string; payable: string };
+  /** Shown on its own whenever any row has one, so every row adds up:
+      before + amount + commission + gaushala − paid = to pay. */
+  showBefore: boolean;
   rows: SupplierSheetRow[];
+  /** Lines under the total, worked out by the route: who is paid ahead,
+      slips with no rate, entries dated after the sheet. */
+  notes: string[];
 }
 
 export function sheetTotals(rows: SupplierSheetRow[]) {
@@ -83,17 +89,21 @@ function sheetColumns(d: SupplierSheetData): Col[] {
         if (d.names !== "hinglish") out.push({ label: d.names === "both" ? "Adati name (Hindi)" : en(k), kind: "text", width: 30, cell: (r) => r.nameHi });
         if (d.names !== "hi") out.push({ label: d.names === "both" ? "Adati name (Hinglish)" : en(k), kind: "text", width: 30, cell: (r) => r.nameLatin });
         break;
-      case "village": out.push({ label: en(k), kind: "text", width: 16, cell: (r) => r.village }); break;
-      case "slips": out.push({ label: en(k), kind: "count", width: 8, cell: (r) => r.slips, total: (t) => t.slips }); break;
-      case "net": out.push({ label: en(k), kind: "qtl", width: 14, cell: (r) => r.netGrams, total: (t) => t.netGrams }); break;
+      case "net":
+        out.push({ label: en(k), kind: "qtl", width: 14, cell: (r) => r.netGrams, total: (t) => t.netGrams });
+        if (d.showBefore) out.push({ label: till ? "Opening balance" : "Brought forward", kind: "money", width: 16, cell: (r) => r.beforePaise, total: (t) => t.beforePaise });
+        break;
       case "goods": out.push({ label: en(k), kind: "money", width: 15, cell: (r) => r.goodsPaise, total: (t) => t.goodsPaise }); break;
       case "commission": out.push({ label: d.labels.commission, kind: "money", width: 13, cell: (r) => r.commissionPaise, total: (t) => t.commissionPaise }); break;
       case "gaushala": out.push({ label: d.labels.gaushala, kind: "money", width: 12, cell: (r) => r.gaushalaPaise, total: (t) => t.gaushalaPaise }); break;
-      case "payable": out.push({ label: d.labels.payable, kind: "money", width: 15, cell: (r) => r.payablePaise, total: (t) => t.payablePaise }); break;
-      case "before": out.push({ label: till ? "Opening balance" : "Brought forward", kind: "money", width: 16, cell: (r) => r.beforePaise, total: (t) => t.beforePaise }); break;
       case "paid": out.push({ label: till ? en(k) : "Paid that day", kind: "money", width: 14, cell: (r) => r.paidPaise, total: (t) => t.paidPaise }); break;
       case "toPay": out.push({ label: till ? en(k) : "To pay (end of day)", kind: "money", width: 17, cell: (r) => r.toPayPaise, total: (t) => t.toPayPaise }); break;
     }
+  }
+  // without the net weight column, the opening still has to be there for the row to add up
+  if (d.showBefore && !d.columns.includes("net")) {
+    const at = out.findIndex((c) => c.kind !== "text");
+    out.splice(at < 0 ? out.length : at, 0, { label: till ? "Opening balance" : "Brought forward", kind: "money", width: 16, cell: (r) => r.beforePaise, total: (t) => t.beforePaise });
   }
   return out;
 }
@@ -101,15 +111,8 @@ function sheetColumns(d: SupplierSheetData): Col[] {
 const title = (d: SupplierSheetData) => `Supplier pay sheet — ${d.mode === "till" ? `till ${dmy(d.date)}` : dmy(d.date)}`;
 const made = (d: SupplierSheetData) => `Made on ${d.madeAt}`;
 
-/** The lines under the total: why a weight has no money, and what a minus means. */
-function notes(d: SupplierSheetData, t: Totals): string[] {
-  const out: string[] = [];
-  if (t.unpriced) out.push(`${t.unpriced} slip(s) have no rate yet: their weight is counted, their money is 0 until a rate is set.`);
-  const minus = (d.columns.includes("toPay") && d.rows.some((r) => r.toPayPaise < 0))
-    || (d.columns.includes("before") && d.rows.some((r) => r.beforePaise < 0));
-  if (minus) out.push("A minus balance means paid ahead (to recover).");
-  return out;
-}
+/** The lines under the total, as the route worked them out. */
+const notes = (d: SupplierSheetData): string[] => d.notes;
 
 const q2 = (g: number) => Math.round(g / 1000) / 100;
 const rs = (p: number) => Math.round(p) / 100;
@@ -175,7 +178,7 @@ export async function supplierSheetXlsx(d: SupplierSheetData): Promise<Buffer> {
     const f = fmt(col);
     if (f) c.numFmt = f;
   });
-  notes(d, t).forEach((text, i) => { ws.getCell(`A${8 + d.rows.length + i}`).value = text; });
+  notes(d).forEach((text, i) => { ws.getCell(`A${8 + d.rows.length + i}`).value = text; });
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
 
@@ -196,7 +199,7 @@ export function supplierSheetCsv(d: SupplierSheetData): string {
     ...d.rows.map((r) => cols.map((c) => str(c, c.cell(r)))),
     cols.map((c, j) => (j === 0 ? `Total (${t.count})` : c.total ? str(c, c.total(t)) : "")),
   ];
-  const n = notes(d, t);
+  const n = notes(d);
   if (n.length) lines.push([], ...n.map((x) => [x]));
   return "﻿" + lines.map((l) => l.map(esc).join(",")).join("\r\n");
 }

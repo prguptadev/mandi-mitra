@@ -123,7 +123,7 @@ ledgerRoutes.get("/sheet", canAll("export.data", "ledger.read"), async (c) => {
   const biz = auth.businessId!;
   const mode = c.req.query("mode") === "day" ? "day" : "till";
   const date = c.req.query("date") ?? "";
-  if (!ISO_DATE.test(date)) throw bad("Pick a date", "bad_date");
+  if (!isoDay().safeParse(date).success) throw bad("Pick a date", "bad_date");
 
   const prefs = readDevicePrefs(auth.user.id) ?? parsePrefs(auth.user.prefs).dailyList;
   const known = new Set<string>(SUPPLIER_SHEET_COLUMNS.map((x) => x.key));
@@ -135,10 +135,20 @@ ledgerRoutes.get("/sheet", canAll("export.data", "ledger.read"), async (c) => {
   const names: SheetNames = n === "both" ? "both" : n === "hinglish" || n === "latin" ? "hinglish" : "hi";
 
   const list = await ledgerList(biz, date);
-  const base = (r: (typeof list.rows)[number]) => ({
-    nameHi: r.nameHi, nameLatin: r.nameHinglish || r.nameHi,
-    village: (names === "hinglish" ? r.village || r.villageHi : r.villageHi || r.village) ?? "",
-  });
+  // Hindi names are unique, Hinglish ones need not be: two RAM LALs get their village
+  const latinSeen = new Map<string, number>();
+  for (const r of list.rows) { const k = r.nameHinglish || r.nameHi; latinSeen.set(k, (latinSeen.get(k) ?? 0) + 1); }
+  const base = (r: (typeof list.rows)[number]) => {
+    const latin = r.nameHinglish || r.nameHi;
+    const village = (names === "hinglish" ? r.village || r.villageHi : r.villageHi || r.village) ?? "";
+    return {
+      nameHi: r.nameHi,
+      nameLatin: (latinSeen.get(latin) ?? 0) > 1 ? `${latin} (${r.village || r.villageHi || r.nameHi})` : latin,
+      village,
+    };
+  };
+  const money = (n: number) => `₹${(n / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const notes: string[] = [];
   let rows: SupplierSheetRow[];
   if (mode === "till") {
     // the list is already largest first; "to pay" here adds up to its toPayPaise
@@ -147,19 +157,45 @@ ledgerRoutes.get("/sheet", canAll("export.data", "ledger.read"), async (c) => {
       goodsPaise: r.goodsPaise, commissionPaise: r.commissionPaise, gaushalaPaise: r.gaushalaPaise,
       payablePaise: r.purchasesPaise, beforePaise: r.openingBalancePaise, paidPaise: r.paymentsPaise, toPayPaise: r.balancePaise,
     }));
+    // every slip waiting for a rate counts, including those of an adati with nothing to pay yet
+    const waiting = list.rows.reduce((s, r) => s + r.unpriced, 0);
+    const offSheet = waiting - rows.reduce((s, r) => s + r.unpriced, 0);
+    if (waiting) notes.push(`${waiting} slip(s) have no rate yet: their weight is counted, their money is 0 until a rate is set${offSheet ? ` (${offSheet} of them for adatis not on this sheet)` : ""}.`);
+    // a slip or payment dated after the sheet's date is not in it — say so, so the ledger card can be matched
+    const [later] = await db.select({ n: sql<number>`count(*)` }).from(schema.purchaseSlips)
+      .where(and(eq(schema.purchaseSlips.businessId, biz), sql`${schema.purchaseSlips.slipDate} > ${date}`));
+    const [laterPaid] = await db.select({ n: sql<number>`count(*)` }).from(schema.payments)
+      .where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt), sql`${schema.payments.payDate} > ${date}`));
+    const after = (later?.n ?? 0) + (laterPaid?.n ?? 0);
+    if (after) notes.push(`${after} entr${after === 1 ? "y" : "ies"} dated after ${dmy(date)} ${after === 1 ? "is" : "are"} not included.`);
   } else {
     const day = await sums(biz, { from: date, upTo: date });
+    const ahead: string[] = [];
     rows = list.rows.filter((r) => day.bought.has(r.id)).map((r) => {
       const b = day.bought.get(r.id)!;
       const paidThatDay = day.paid.get(r.id)?.amountPaise ?? 0;
+      const row = base(r);
+      // paid ahead is money to recover, not money to pay: it never lowers the total
+      if (r.balancePaise < 0) ahead.push(`${names === "hinglish" ? row.nameLatin : row.nameHi} ${money(-r.balancePaise)}`);
       return {
-        ...base(r), slips: b.slips, netGrams: b.netGrams, unpriced: b.unpriced,
+        ...row, slips: b.slips, netGrams: b.netGrams, unpriced: b.unpriced,
         goodsPaise: b.goodsPaise, commissionPaise: b.commissionPaise, gaushalaPaise: b.gaushalaPaise, payablePaise: b.amountPaise,
         // the balance at the day's end, less what the day did to it
-        beforePaise: r.balancePaise - b.amountPaise + paidThatDay, paidPaise: paidThatDay, toPayPaise: r.balancePaise,
+        beforePaise: r.balancePaise - b.amountPaise + paidThatDay, paidPaise: paidThatDay, toPayPaise: Math.max(0, r.balancePaise),
       };
     }).sort((a, b) => b.payablePaise - a.payablePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
+    const waiting = rows.reduce((s, r) => s + r.unpriced, 0);
+    if (waiting) notes.push(`${waiting} slip(s) have no rate yet: their weight is counted, their money is 0 until a rate is set.`);
+    if (ahead.length) notes.push(`Paid ahead (to recover, not in "To pay"): ${ahead.join("; ")}.`);
+    // money paid that day to an adati with no slip that day is not on this sheet
+    const onSheet = new Set(list.rows.filter((r) => day.bought.has(r.id)).map((r) => r.id));
+    const elsewhere = [...day.paid.entries()].filter(([id]) => !onSheet.has(id)).reduce((s, [, p]) => s + p.amountPaise, 0);
+    if (elsewhere) notes.push(`${money(elsewhere)} paid that day to adatis with no slip that day is not in "Paid that day".`);
   }
+  // an opening (or brought-forward) balance gets its own column whenever the row
+  // shows money that has to add up to "to pay" with it
+  const showBefore = rows.some((r) => r.beforePaise !== 0)
+    && columns.some((k) => k === "goods" || k === "commission" || k === "gaushala" || k === "paid");
 
   const [business] = await db.select({ name: schema.businesses.name }).from(schema.businesses).where(eq(schema.businesses.id, biz)).limit(1);
   const L = (await supplierChargesOf(biz)).labels;
@@ -167,7 +203,7 @@ ledgerRoutes.get("/sheet", canAll("export.data", "ledger.read"), async (c) => {
   const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
   const data: SupplierSheetData = {
     mode, date, madeAt: `${dmy(now.toLocaleDateString("en-CA"))} ${hhmm}`, businessName: business?.name ?? "",
-    names, columns, labels: { commission: L.commission, gaushala: L.gaushala, payable: L.payable }, rows,
+    names, columns, labels: { commission: L.commission, gaushala: L.gaushala, payable: L.payable }, showBefore, rows, notes,
   };
   const format = c.req.query("format") ?? "xlsx";
   const fileBase = mode === "till" ? `pay-sheet-till-${date}` : `pay-sheet-${date}`;

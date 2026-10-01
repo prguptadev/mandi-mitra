@@ -65,21 +65,16 @@ export const DEFAULT_MILL_REPORT_COLUMNS: Record<MillReportColumnKey, boolean> =
  *  Settings; the name column is always there (Hindi, Hinglish or both). */
 export const SUPPLIER_SHEET_COLUMNS = [
   { key: "name",       en: "Adati name",       hi: "आढ़ती का नाम" },
-  { key: "village",    en: "Village",          hi: "गाँव" },
-  { key: "slips",      en: "Slips",            hi: "पर्चियाँ" },
   { key: "net",        en: "Net weight (qtl)", hi: "शुद्ध वज़न (क्विं)" },
   { key: "goods",      en: "Amount",           hi: "राशि" },
   { key: "commission", en: "Commission",       hi: "कमीशन" },
   { key: "gaushala",   en: "Gaushala",         hi: "गौशाला" },
-  { key: "payable",    en: "Net amount",       hi: "कुल देय" },
-  { key: "before",     en: "Previous balance", hi: "पिछला शेष" },
   { key: "paid",       en: "Paid",             hi: "दिया" },
   { key: "toPay",      en: "To pay",           hi: "देना" },
 ] as const;
 export type SupplierSheetColumnKey = (typeof SUPPLIER_SHEET_COLUMNS)[number]["key"];
 export const DEFAULT_SUPPLIER_SHEET_COLUMNS: Record<SupplierSheetColumnKey, boolean> = {
-  name: true, village: false, slips: false, net: true, goods: true, commission: true, gaushala: true,
-  payable: true, before: false, paid: false, toPay: true,
+  name: true, net: true, goods: true, commission: true, gaushala: true, paid: true, toPay: true,
 };
 
 export const DailyListPrefsSchema = z.object({
@@ -98,7 +93,7 @@ export const DailyListPrefsSchema = z.object({
   millReportColumns: ColumnsSchema.default(DEFAULT_MILL_REPORT_COLUMNS),
   /** Columns of the supplier pay sheet, and the script its names are in. */
   supplierSheetColumns: ColumnsSchema.default(DEFAULT_SUPPLIER_SHEET_COLUMNS),
-  supplierSheetNames: z.enum(["hi", "hinglish", "both"]).default("hi"),
+  supplierSheetNames: z.enum(["hi", "hinglish", "both"]).catch("hi").default("hi"),
   /** Column widths (px) dragged by hand on the daily list; the rest size themselves. */
   widths: z.record(z.string(), z.number().int().min(40).max(800)).default({}),
 });
