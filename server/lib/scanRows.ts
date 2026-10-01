@@ -546,7 +546,8 @@ export function srBreaks(rows: ReviewRow[]) {
       if (prev == null) {
         const fresh = 1 + between;
         const carried: number | null = lastOfPrev != null ? lastOfPrev + 1 + between : null;
-        if (n > fresh && n !== carried) out.push({ page, code: "sr_top", rowId: r.id, params: { sr: n, missing: n - fresh } });
+        // counted from where the page before left off, when it carries on from it
+        if (n > fresh && n !== carried) out.push({ page, code: "sr_top", rowId: r.id, params: { sr: n, missing: carried != null && n > carried ? n - carried : n - fresh } });
       } else if (n === prev) out.push({ page, code: "sr_repeat", rowId: r.id, params: { sr: n } });
       else if (n < prev) out.push({ page, code: "sr_back", rowId: r.id, params: { sr: n, prev } });
       // a jump the unnumbered rows in between account for is no gap
