@@ -93,7 +93,7 @@ challanRoutes.get("/", can("load.read"), async (c) => {
  * bill day, so a cut typed later would quietly change a closed day's (and a
  * closed year's) balance; like any other change there, the owner reopens the
  * day first. A truck with no parcha yet is checked like any change to it: its
- * load and invoice days.
+ * load and invoice days. The note alone may be changed on a closed day.
  */
 challanRoutes.put("/:loadId", can("challan.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
@@ -105,11 +105,14 @@ challanRoutes.put("/:loadId", can("challan.write"), async (c) => {
   const [before] = await db.select().from(schema.loads)
     .where(and(eq(schema.loads.id, loadId), eq(schema.loads.businessId, biz))).limit(1);
   if (!before) throw notFound("Truck not found");
-  // the bill day the mill account books the cut on: the live parcha's invoice date
-  const [live] = await db.select({ invoiceDate: schema.parchas.invoiceDate }).from(schema.parchas)
-    .where(and(eq(schema.parchas.loadId, loadId), eq(schema.parchas.status, "approved"))).limit(1);
-  if (live) await assertDaysOpen(biz, live.invoiceDate ?? before.loadDate);
-  else await assertDaysOpen(biz, before.loadDate, before.invoiceDate);
+  // the bill day the mill account books the cut on: the live parcha's invoice date.
+  // A note alone moves no money, so the munshi can still write what the mill said.
+  if (body.deductionGrams !== before.millDeductionGrams) {
+    const [live] = await db.select({ invoiceDate: schema.parchas.invoiceDate }).from(schema.parchas)
+      .where(and(eq(schema.parchas.loadId, loadId), eq(schema.parchas.status, "approved"))).limit(1);
+    if (live) await assertDaysOpen(biz, live.invoiceDate ?? before.loadDate);
+    else await assertDaysOpen(biz, before.loadDate, before.invoiceDate);
+  }
   const [t] = await trucks(biz, { merchantId: before.merchantId, from: before.loadDate, to: before.loadDate }).then((l) => l.filter((x) => x.loadId === loadId));
   if (t && body.deductionGrams > t.weightGrams) throw bad("The cut is more than the truck carried", "cut_too_big");
   const patch = { millDeductionGrams: body.deductionGrams, millDeductionNote: body.note || null, updatedAt: nowSec() };

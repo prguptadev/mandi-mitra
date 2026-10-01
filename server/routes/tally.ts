@@ -8,7 +8,7 @@ import { amountPaise } from "../lib/money.ts";
 import { can, canAll, actor, bad, isoDay, type Env } from "../lib/http.ts";
 import { readSetting, writeSetting } from "./settings.ts";
 import { TallySettingsSchema, defaultTallySettings, vouchersFile, ledgersFile, type TallySettings, type TallyVoucher, type TallyLedger, oneFile } from "../lib/tally.ts";
-import type { ParchaDoc } from "../lib/parcha.ts";
+import { revisions, type ParchaDoc } from "../lib/parcha.ts";
 
 /* Sending the books to Tally Prime: purchases, payments to suppliers, kaccha
    parchas (sales to mills), money from mills and the mills' weight cuts, as
@@ -140,8 +140,12 @@ export async function build(biz: string, from: string, to: string, kinds0: Kind[
         party.merchantId ? eq(schema.loads.merchantId, party.merchantId) : undefined))
     : [];
   if (kinds.includes("parcha")) {
+    // which approval of its truck each is (a revised paper); parchas approved before the
+    // paper kept it are worked out the way the screens do
+    const revOf = revisions(await db.select({ id: PA.id, loadId: PA.loadId }).from(PA).where(eq(PA.businessId, biz)));
     for (const { p, l } of fresh("parcha", parchas, (x) => x.p.id)) {
       const d = JSON.parse(p.snapshot) as ParchaDoc;
+      const rev = d.revision ?? revOf.get(p.id)?.revision ?? 1;
       const r = d.result;
       const lines = [
         { ledger: mill(l.merchantId), paise: r.grandTotalPaise },
@@ -161,9 +165,10 @@ export async function build(biz: string, from: string, to: string, kinds0: Kind[
       const rest = lines.reduce((s, x) => s + x.paise, 0);
       if (rest) lines.push({ ledger: use(L.roundOff, "Indirect Expenses"), paise: -rest });
       vouchers.push({
-        type: T.sales, date: p.invoiceDate ?? l.loadDate, number: p.version > 1 ? `${p.parchaNo}/${p.version}` : p.parchaNo, reference: l.truckNo ?? undefined,
+        // the number the paper prints; a revised paper says so, as the paper does
+        type: T.sales, date: p.invoiceDate ?? l.loadDate, number: p.parchaNo, reference: l.truckNo ?? undefined,
         party: mill(l.merchantId),
-        narration: `Kaccha parcha ${p.parchaNo}${p.version > 1 ? ` v${p.version}` : ""} · truck ${l.truckNo ?? "-"} · ${q2(d.totals.netGrams)} qtl × Rs ${(d.totals.ratePaisePerQtl / 100).toFixed(2)}`,
+        narration: `Kaccha parcha ${p.parchaNo}${rev > 1 ? ` revised ${rev}` : ""} · truck ${l.truckNo ?? "-"} · ${q2(d.totals.netGrams)} qtl × Rs ${(d.totals.ratePaisePerQtl / 100).toFixed(2)}`,
         lines,
       });
       entries.push({ kind: "parcha", id: p.id, fp: fpParcha(p), day: p.invoiceDate ?? l.loadDate });
