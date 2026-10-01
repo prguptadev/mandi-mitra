@@ -18,6 +18,8 @@ import "./_guard.ts";
  *   · the stock is every commodity held, in whole grams, in and out counting
  *     second arrival, rows for one commodity added up, for the right licence
  *   · a session kept on disk is looked at after a restart before it is trusted
+ *   · a read still running when the business is switched never answers for
+ *     the firm it started under
  * Run through: npm run test:e2e
  */
 import fs from "node:fs";
@@ -154,6 +156,10 @@ await portal(`/__unland?user=${USER}`);
 const relanded = await call("GET", "/emandi/rates");
 check("when every band comes back 0.00, the app lands on /Traders/index again and asks once more",
   relanded.rates.find((r: any) => r.cropCode === "1")?.minRatePaise === 340000, relanded.rates);
+await portal(`/__unland?user=${USER}`);
+const relandedAgain = await call("GET", "/emandi/rates");
+check("  ...and when it happens again soon after, it is landed again, not taken as 'no band today'",
+  relandedAgain.rates.find((r: any) => r.cropCode === "1")?.minRatePaise === 340000, relandedAgain.rates);
 
 console.log("\nThe portal having a bad minute does not cost a captcha");
 await portal("/__fail?path=/Traders/index&status=502&times=1");
@@ -230,6 +236,21 @@ await call("PUT", "/emandi", { watch: ["1", "6", "2"] });
 await call("PUT", "/emandi", { watch: ["1", "6"] });
 check("the session survives a change of commodities", (await call("GET", "/emandi")).signedIn === true);
 
+console.log("\nA read still on its way when the business is switched");
+const ownStatus = await call("GET", `/emandi?biz=${vldm.businessId}`);
+check("every status says which business it is for", ownStatus.businessId === vldm.businessId, ownStatus.businessId);
+const askedOther = await raw("GET", `/emandi?biz=${other.businessId}`);
+check("a request naming a business other than the one open is refused, and says nothing of this one",
+  askedOther.status === 409 && askedOther.json?.code === "business_changed" && !JSON.stringify(askedOther.json).includes("VIJAY"), askedOther.json);
+await portal("/__slow?path=/Traders/get_crop_fees&ms=1500&times=1");
+const onItsWay = raw("GET", `/emandi/rates?biz=${vldm.businessId}`);
+await new Promise((r) => setTimeout(r, 300));
+await call("POST", "/auth/switch-business", { businessId: other.businessId });
+const late = await onItsWay;
+check("a slow read for one firm that ends after the switch answers 'business_changed', not that firm's login",
+  late.status === 409 && late.json?.code === "business_changed" && !JSON.stringify(late.json).includes("VIJAY"), late.json);
+await call("POST", "/auth/switch-business", { businessId: vldm.businessId });
+
 console.log("\nThe other firm has its own login there");
 await call("POST", "/auth/switch-business", { businessId: other.businessId });
 const otherStatus = await call("GET", "/emandi");
@@ -272,6 +293,11 @@ check("  ...and no stock", clashStock.status === 400 && clashStock.json?.code ==
 await call("PUT", "/business/current", { mandiLicense: VCE_LICENCE.toLowerCase() });
 check("  ...and the same licence, however it is written, reads as before",
   (await call("GET", "/emandi/stock")).licence === VCE_LICENCE);
+await call("PUT", "/business/current", { mandiLicense: "2019-75-022222222." });
+const otherPunct = await call("GET", "/emandi/rates");
+check("  ...dashes, a dot, a leading zero or no 'L' in front included",
+  otherPunct.problem === null && otherPunct.rates[0]?.minRatePaise === 340000
+  && (await call("GET", "/emandi/stock")).licence === VCE_LICENCE, otherPunct);
 await call("PUT", "/business/current", { mandiLicense: "" });
 
 await call("POST", "/auth/switch-business", { businessId: vldm.businessId });
@@ -335,6 +361,14 @@ check("  ...and the damaged file is kept aside, not written over",
   fs.readdirSync(process.env.MANDI_DATA_DIR!).some((f) => f.startsWith("emandi.json.bad-")));
 await call("PUT", "/emandi", { watch: ["1", "6"] });
 check("  ...saving the login again clears the note", (await call("GET", "/emandi")).storeNote === null);
+fs.rmSync(`${store}.prev`, { force: true });
+fs.writeFileSync(store, "{ cut");
+check("a damaged file with no copy says the logins were lost", (await call("GET", "/emandi")).storeNote === "store_lost");
+await call("PUT", "/emandi", { user: USER, password: PASSWORD, watch: ["1", "6"] });
+await call("POST", "/auth/switch-business", { businessId: other.businessId });
+check("  ...and one firm putting its login back does not hide it from the other",
+  (await call("GET", "/emandi")).storeNote === "store_lost", (await call("GET", "/emandi")).storeNote);
+await call("POST", "/auth/switch-business", { businessId: vldm.businessId });
 
 /* An update must not lose a login, and must not choke on one written by an
    older version — before firm, portalLicence or the kept commodity list
@@ -376,7 +410,12 @@ check("changing the user name drops the password that was saved with the old one
   swapped.configured === false && swapped.user === "somebody-else@example.test", swapped);
 check("  ...and forgets whose licence it opened", swapped.firm === null && swapped.signedIn === false, swapped);
 await call("PUT", "/emandi", { user: USER, password: PASSWORD });
-await signIn();
+await portal("/__plainDashboard");
+const plain = await signIn();
+const learnt = await call("GET", "/emandi/rates");
+check("a licence the dashboard did not show is read from the stock page with the first rates, so it can be checked",
+  plain.portalLicence === null && learnt.status.portalLicence === VLDM_LICENCE && learnt.problem === null, { before: plain.portalLicence, after: learnt.status.portalLicence });
+await portal("/__reset");
 
 console.log("\nSigning out, and forgetting the login");
 await call("POST", "/emandi/signout", {});

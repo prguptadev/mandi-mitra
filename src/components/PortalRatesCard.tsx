@@ -9,6 +9,7 @@ import { useSession } from "@/lib/session.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { Alert, Badge, Button, Card, CardHeader, Field, Input } from "@/components/ui/index.tsx";
 import { cn, sameFirm, licenceKey } from "@/lib/utils.ts";
+import { emandiKey, emandiPath, isBusinessChanged, ownReply, putStatus } from "@/lib/emandiKeys.ts";
 import type { StringKey } from "@/lib/strings.ts";
 
 /* The mandi portal's own rate band for the commodities this firm watches, and
@@ -26,6 +27,8 @@ import type { StringKey } from "@/lib/strings.ts";
    itself, instead of a "Signed in" badge over rates that no longer come. */
 
 export interface PortalStatus {
+  /** The business this status is for; a screen keeps it only under that business. */
+  businessId: string;
   configured: boolean; passwordUnreadable: boolean; user: string; watch: string[];
   firm: string | null; portalLicence: string | null;
   signedIn: boolean; signedInAt: string | null; checkedAt: string | null;
@@ -58,15 +61,23 @@ export function usePortalSay() {
 
 /* Everything read with one login is dropped the moment the login changes, so
    nothing read for one licence is ever drawn under another. */
-export const dropPortalReadings = (qc: ReturnType<typeof useQueryClient>) => {
-  qc.removeQueries({ queryKey: ["emandi", "rates"] });
-  qc.removeQueries({ queryKey: ["emandi", "stock"] });
+export const dropPortalReadings = (qc: ReturnType<typeof useQueryClient>, biz: string | null) => {
+  qc.removeQueries({ queryKey: emandiKey(biz, "rates") });
+  qc.removeQueries({ queryKey: emandiKey(biz, "stock") });
 };
 
 /* The figures a session problem stops: shown once above the table, not on every row. */
 const STOPS = new Set(["signed_out", "ended", "offline", "slow", "portal_error", "store_busy", "other_licence"]);
 
+/* The card belongs to the business open: switching business starts it afresh,
+   so nothing typed, shown or said for one firm stays on screen for the other. */
 export function PortalRatesCard() {
+  const { me } = useSession();
+  const biz = me?.activeBusinessId ?? null;
+  return <RatesCard key={biz ?? ""} bizId={biz} />;
+}
+
+function RatesCard({ bizId }: { bizId: string | null }) {
   const { t, lang } = useI18n();
   const f = useFormat();
   const { can, me, refresh: refreshMe } = useSession();
@@ -87,8 +98,9 @@ export function PortalRatesCard() {
   const [password, setPassword] = useState("");
 
   const status = useQuery({
-    queryKey: ["emandi"], queryFn: () => api.get<PortalStatus>("/emandi"),
-    enabled: can("dashboard.view"), staleTime: 30_000, refetchInterval: 60_000, refetchOnWindowFocus: true,
+    queryKey: emandiKey(bizId), queryFn: async () => ownReply(bizId, await api.get<PortalStatus>(emandiPath(bizId, "/emandi"))),
+    enabled: can("dashboard.view") && Boolean(bizId), staleTime: 30_000, refetchInterval: 60_000, refetchOnWindowFocus: true,
+    retry: (n, e) => !isBusinessChanged(e) && n < 3,
   });
   const s = status.data;
   const biz = me?.business ?? null;
@@ -100,17 +112,21 @@ export function PortalRatesCard() {
   const firm = s?.signedIn ? sameFirm({ firm: s.firm, licence: s.portalLicence }, { name: biz?.name, nameHi: biz?.nameHi, licence: biz?.mandiLicense }) : null;
   const whoKey = `${s?.firm ?? ""}|${s?.portalLicence ?? ""}`;
   const blocked = firm?.match === "different" || notOurs === whoKey;
-  const asking = !blocked && firm?.match === "unknown" && firm.by === "name";
+  /* Asked once e-Mandi has said whose licence it is, so "yes" can settle it.
+     Until then no stock is drawn either way: reading it is what learns the
+     licence, and the reply that brings the licence brings the question. */
+  const asking = !blocked && firm?.match === "unknown" && Boolean(s?.portalLicence);
   const readRates = Boolean(s?.signedIn) && !blocked;
   const readStock = readRates && !asking;
 
   const rates = useQuery({
-    queryKey: ["emandi", "rates"],
+    queryKey: emandiKey(bizId, "rates"),
     queryFn: async () => {
-      const r = await api.get<RatesReply>("/emandi/rates");
-      qc.setQueryData(["emandi"], r.status); // a session found ended turns the card to "Sign in" now
+      const r = await api.get<RatesReply>(emandiPath(bizId, "/emandi/rates"));
+      ownReply(bizId, r.status);
+      putStatus(qc, bizId, r.status); // a session found ended turns the card to "Sign in" now
       // the first rates after a sign-in read the commodity list too; Settings should see it
-      void qc.invalidateQueries({ queryKey: ["emandi", "crops"] });
+      void qc.invalidateQueries({ queryKey: emandiKey(bizId, "crops") });
       return r;
     },
     enabled: readRates, staleTime: 5 * 60_000, retry: false,
@@ -120,30 +136,32 @@ export function PortalRatesCard() {
      under the licence it belongs to, and lines read for any other licence are
      never drawn. */
   const stock = useQuery({
-    queryKey: ["emandi", "stock", licenceKey(s?.portalLicence)],
+    queryKey: emandiKey(bizId, "stock", licenceKey(s?.portalLicence)),
     queryFn: async () => {
       try {
-        const r = await api.get<StockReply>("/emandi/stock");
+        const r = await api.get<StockReply>(emandiPath(bizId, "/emandi/stock"));
+        ownReply(bizId, r.status);
         // filed under the licence it was read for, so learning the licence just now does not read it twice
-        qc.setQueryData(["emandi", "stock", licenceKey(r.licence)], r);
-        qc.setQueryData(["emandi"], r.status);
+        qc.setQueryData(emandiKey(bizId, "stock", licenceKey(r.licence)), r);
+        putStatus(qc, bizId, r.status);
         return r;
       } catch (e) {
-        if (e instanceof ApiError && (e.code === "ended" || e.code === "signed_out")) void qc.invalidateQueries({ queryKey: ["emandi"], exact: true });
+        if (e instanceof ApiError && (e.code === "ended" || e.code === "signed_out")) void qc.invalidateQueries({ queryKey: emandiKey(bizId), exact: true });
         throw e;
       }
     },
     enabled: readStock, staleTime: 5 * 60_000, retry: false,
   });
 
-  const fail = (e: unknown) => { setInfo(null); setErr(say(e)); setErrIsRefusal(false); };
+  // a reply for a business switched away from is not said here
+  const fail = (e: unknown) => { if (isBusinessChanged(e)) return; setInfo(null); setErr(say(e)); setErrIsRefusal(false); };
 
   const addLogin = useMutation({
-    mutationFn: () => api.put<PortalStatus>("/emandi", { user: (user ?? s?.user ?? "").trim(), password }),
+    mutationFn: () => api.put<PortalStatus>(emandiPath(bizId, "/emandi"), { user: (user ?? s?.user ?? "").trim(), password }),
     onSuccess: (st) => {
+      if (!putStatus(qc, bizId, st)) return;
       setErr(null); setPassword("");
-      qc.setQueryData(["emandi"], st);
-      dropPortalReadings(qc);
+      dropPortalReadings(qc, bizId);
       start.mutate({}); // straight on to the captcha: that is what they came for
     },
     onError: fail,
@@ -151,15 +169,15 @@ export function PortalRatesCard() {
 
   const start = useMutation({
     mutationFn: (_v: { keepErr?: boolean }) =>
-      api.post<{ image: string; ticket: string } | { already: true; status: PortalStatus }>("/emandi/signin/start", {}),
+      api.post<{ image: string; ticket: string } | { already: true; status: PortalStatus }>(emandiPath(bizId, "/emandi/signin/start"), {}),
     onSuccess: (r, v) => {
+      if ("already" in r && !putStatus(qc, bizId, r.status)) return;
       if (!v.keepErr) setErr(null);
       setCaptcha("");
       if ("already" in r) {
         // someone else signed in meanwhile, or the session never ended: no captcha needed
         setShown(null); setErr(null); setInfo(t("portal.already"));
-        qc.setQueryData(["emandi"], r.status);
-        void qc.invalidateQueries({ queryKey: ["emandi", "rates"] });
+        void qc.invalidateQueries({ queryKey: emandiKey(bizId, "rates") });
         return;
       }
       setInfo(null);
@@ -168,20 +186,21 @@ export function PortalRatesCard() {
     onError: (e, v) => { if (!v.keepErr) fail(e); setShown(null); },
   });
   const finish = useMutation({
-    mutationFn: () => api.post<PortalStatus>("/emandi/signin/finish", { captcha, ticket: shown?.ticket }),
+    mutationFn: () => api.post<PortalStatus>(emandiPath(bizId, "/emandi/signin/finish"), { captcha, ticket: shown?.ticket }),
     onSuccess: (st) => {
+      if (!putStatus(qc, bizId, st)) return;
       setErr(null); setInfo(null); setShown(null); setCaptcha(""); setNotOurs(null);
-      qc.setQueryData(["emandi"], st);
-      dropPortalReadings(qc);
-      void qc.invalidateQueries({ queryKey: ["emandi", "crops"] });
+      dropPortalReadings(qc, bizId);
+      void qc.invalidateQueries({ queryKey: emandiKey(bizId, "crops") });
     },
     onError: (e) => {
+      if (isBusinessChanged(e)) return;
       fail(e);
       setCaptcha("");
       const code = e instanceof ApiError ? e.code : null;
       // e-Mandi's own words come with the status; they belong under a refusal only, not under "replaced" or "slow"
       setErrIsRefusal(code === "captcha" || code === "credentials" || code === "denied");
-      void qc.invalidateQueries({ queryKey: ["emandi"], exact: true });
+      void qc.invalidateQueries({ queryKey: emandiKey(bizId), exact: true });
       /* A captcha is good for one try. Put a fresh one up straight away, so
          the next attempt is just typing — unless no captcha can help. */
       if (code !== "no_account" && code !== "password_unreadable") start.mutate({ keepErr: true });
@@ -192,19 +211,22 @@ export function PortalRatesCard() {
   /* Refresh looks at the session first (landing on /Traders/index, which is
      what makes e-Mandi give a band), then reads the rates and the stock again. */
   const refresh = useMutation({
-    mutationFn: () => api.post<PortalStatus>("/emandi/check", {}),
+    mutationFn: () => api.post<PortalStatus>(emandiPath(bizId, "/emandi/check"), {}),
     onSuccess: (st) => {
+      if (!putStatus(qc, bizId, st)) return;
       setErr(null); setInfo(null);
-      qc.setQueryData(["emandi"], st);
-      void qc.invalidateQueries({ queryKey: ["emandi", "rates"] });
-      void qc.invalidateQueries({ queryKey: ["emandi", "stock"] });
+      void qc.invalidateQueries({ queryKey: emandiKey(bizId, "rates") });
+      void qc.invalidateQueries({ queryKey: emandiKey(bizId, "stock") });
     },
-    onError: (e) => { fail(e); void qc.invalidateQueries({ queryKey: ["emandi"], exact: true }); },
+    onError: (e) => { fail(e); void qc.invalidateQueries({ queryKey: emandiKey(bizId), exact: true }); },
   });
 
   const signOut = useMutation({
-    mutationFn: () => api.post<PortalStatus>("/emandi/signout", {}),
-    onSuccess: (st) => { setErr(null); setInfo(null); setShown(null); qc.setQueryData(["emandi"], st); dropPortalReadings(qc); },
+    mutationFn: () => api.post<PortalStatus>(emandiPath(bizId, "/emandi/signout"), {}),
+    onSuccess: (st) => {
+      if (!putStatus(qc, bizId, st)) return;
+      setErr(null); setInfo(null); setShown(null); dropPortalReadings(qc, bizId);
+    },
     onError: fail,
   });
   const askSignOut = async () => {
@@ -295,6 +317,7 @@ export function PortalRatesCard() {
   const hhmm = (iso: string | null | undefined) => (iso
     ? new Date(iso).toLocaleTimeString(lang === "hi" ? "hi-IN" : "en-IN", { hour: "2-digit", minute: "2-digit" }) : "—");
   const busy = refresh.isPending || rates.isFetching || stock.isFetching;
+  const stockErr = stock.error instanceof ApiError ? stock.error.code ?? null : null;
   const cols = readStock ? 6 : 3;
 
   return (
@@ -312,14 +335,14 @@ export function PortalRatesCard() {
                 <Button size="sm" variant="ghost" icon={<LogOut className="h-3.5 w-3.5" />}
                   loading={signOut.isPending} onClick={() => void askSignOut()}>{t("portal.signOut")}</Button>
               </>
-            ) : s ? (
+            ) : s && !shown ? (
               <Button size="sm" variant="secondary" icon={<LogIn className="h-3.5 w-3.5" />}
                 loading={start.isPending} onClick={() => start.mutate({})}>{t("portal.signIn")}</Button>
             ) : null}
           </span>
         } />
       <div className="space-y-3 p-4">
-        {status.isError && <Alert tone="bad">{say(status.error)}</Alert>}
+        {status.isError && !isBusinessChanged(status.error) && <Alert tone="bad">{say(status.error)}</Alert>}
         {storeAlert}
         {err && (
           <Alert tone="bad">
@@ -336,7 +359,7 @@ export function PortalRatesCard() {
           <Alert tone="warn">{t("portal.wrongFirm", { portal: s.firm ?? "—", here })}</Alert>
         ) : asking ? (
           <Alert tone="brand">
-            <p>{t("portal.askWhose", { portal: s.firm ?? "—", here })}</p>
+            <p>{t("portal.askWhose", { portal: s.firm ?? s.portalLicence ?? "—", here })}</p>
             {can("business.write") && s.portalLicence ? (
               <>
                 <div className="mt-2 flex flex-wrap gap-2">
@@ -358,13 +381,15 @@ export function PortalRatesCard() {
           <div className="rounded-lg border border-line bg-raised/40 p-3">
             <p className="mb-2 text-[13px] text-muted">{t("portal.captchaAsk", { user: s?.user ?? "" })}</p>
             <div className="flex flex-wrap items-end gap-3">
-              <img src={shown.image} alt={t("portal.captchaAlt")} className="h-11 rounded border border-line bg-white px-1" />
+              {/* the captcha just used is dimmed until the new one comes: it cannot be typed again */}
+              <img src={shown.image} alt={t("portal.captchaAlt")}
+                className={cn("h-11 rounded border border-line bg-white px-1", start.isPending && "opacity-25")} />
               <Button size="sm" variant="ghost" icon={<RefreshCw className="h-3.5 w-3.5" />} loading={start.isPending}
                 onClick={() => start.mutate({})} title={t("portal.captchaAgain")}>{t("portal.captchaNew")}</Button>
               <Field label={t("portal.captchaTyped")} className="w-40">
                 <Input value={captcha} className="num" autoFocus inputMode="numeric"
                   onChange={(e) => setCaptcha(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && captcha.trim() && !finish.isPending) finish.mutate(); }} />
+                  onKeyDown={(e) => { if (e.key === "Enter" && captcha.trim() && !finish.isPending && !start.isPending) finish.mutate(); }} />
               </Field>
               <Button size="sm" variant="primary" disabled={!captcha.trim() || start.isPending} loading={finish.isPending}
                 onClick={() => finish.mutate()}>{t("portal.captchaGo")}</Button>
@@ -449,7 +474,9 @@ export function PortalRatesCard() {
 
             {/* What the stock line means, said for each of its states — never "no stock" while it is still being read. */}
             {stockState === "loading" && <p className="text-[12px] leading-snug text-muted">{t("portal.stockLoading")}</p>}
-            {readStock && stock.isError && <p className="text-[12px] leading-snug text-warn">{t("portal.stockFailed", { why: say(stock.error) })}</p>}
+            {/* the stock failing for the reason already said above is not said again */}
+            {readStock && stock.isError && !(problem && (STOPS.has(stockErr ?? "") || stockErr === problem.code))
+              && <p className="text-[12px] leading-snug text-warn">{t("portal.stockFailed", { why: say(stock.error) })}</p>}
             {stockState === "ready" && stock.data && (lines!.length
               ? <p className="text-[12px] leading-snug text-muted">
                   {t("portal.stockWindow", { from: stock.data.from, to: stock.data.to })} {t("portal.stockCount", { n: lines!.length })}

@@ -337,7 +337,9 @@ does the same — not `/Traders/Dashboard`.
 - when Refresh is pressed (`POST /emandi/check`), and when Sign in is pressed
   on a session that may still be alive — then no captcha is asked for at all;
 - once more, at most every half hour, when every watched commodity answers
-  0.00 — before "e-Mandi has fixed no band" is believed.
+  0.00 — before "e-Mandi has fixed no band" is believed. It is believed for
+  that half hour only when landing again changed nothing; once a band comes
+  through, the next 0.00 is looked at again.
 
 **What ends a session — and what does not**
 
@@ -373,10 +375,27 @@ cannot be read as JSON is never taken for "no logins": it is moved aside as
 `emandi.json.bad-<when>` and the `.prev` copy is used, and the screen says so.
 
 **Whose login.** A business with its mandi licence on record is matched by
-licence, exactly, on the server: a login that opens another licence reads no
-rate and no stock (`other_licence`). Without a licence the screen compares
-names (initials, Hindi, spellings, joined words), and when the names cannot
-tell, asks once — "yes" saves the licence on the business.
+licence on the server: a login that opens another licence reads no rate and
+no stock (`other_licence`). Licences are compared on their letters and
+numbers only, so `L/2016/075/17121983.` and `2016/75/17121983` are one
+licence. When the dashboard does not show the licence, it is read once from
+`/Stock/DayBook` and kept. Without a licence on the business the screen
+compares names (initials, Hindi, spellings, joined words), and when the names
+cannot tell, asks once e-Mandi has said the licence — "yes" saves it on the
+business.
+
+**One firm's request never answers for the other.** Each screen request names
+its business (`?biz=`); one for a business other than the one open is refused,
+and a request still running when the business is switched answers
+`business_changed` instead of the old firm's status. The screens file every
+e-Mandi answer under its business and keep a status only for the business it
+says it is for.
+
+**What is posted.** Nothing is ever submitted to e-Mandi — no 6R, 9R or gate
+pass. Three calls are POSTs because the portal's own pages make them so: the
+login (`/Account`), and two read-only lookups — the rate band
+(`/Traders/get_crop_fees`, a crop code) and the stock register
+(`/Stock/GetDayBookList`, the licence and the dates). Everything else is a GET.
 
 **Stock.** `/Stock/GetDayBookList` answers per commodity in quintals to three
 decimals; they are read straight into whole grams (no floating point). In and
