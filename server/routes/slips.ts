@@ -12,6 +12,9 @@ import { can, actor, param, notFound, bad, HttpError, isoDay, LIMIT, type Env } 
 import { approvedOnDays } from "../lib/parcha.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 import { ensureSupplier } from "../lib/supplierFromName.ts";
+import { normRst } from "../lib/scanRows.ts";
+import { rstKey } from "../lib/slipChecks.ts";
+import { slipFlags, describeFlags } from "../lib/slipFlags.ts";
 
 /** Supplier, commodity and mill must all be this business's own. */
 export async function checkSlipRefs(biz: string, r: { adatiId?: string; jinsId?: string; merchantId?: string | null }) {
@@ -35,7 +38,8 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 const SlipBody = z.object({
   slipDate: isoDay(),
-  rstNo: z.string().trim().min(1, "RST no is required").max(20),
+  // stored the way a scan stores it: "६३०" and "6 30" are RST 630
+  rstNo: z.string().trim().min(1, "RST no is required").max(20).transform(normRst),
   adatiId: z.string().min(1, "Pick a supplier").optional(),
   /** Instead of adatiId: a name as typed, matched to a supplier or made into a new one. */
   adatiName: z.string().trim().min(1).max(120).optional(),
@@ -209,6 +213,21 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     });
   }
 
+  /* One day's list: each row is checked against the whole day (every mill and
+     commodity, not only the rows this filter shows) and against the same RST
+     with the same weight on other dates. Flags only — the screen marks them. */
+  const dayFlags = date && checked.length ? await slipFlags(biz, checked) : null;
+  const flagged = checked.map((r, i) => {
+    const fl = dayFlags?.flags[i];
+    return {
+      ...r,
+      rstDay: fl?.rstDay ?? 1,
+      rstOtherDays: fl ? fl.otherDays.map((o) => o.date) : [],
+      grossOdd: fl?.grossOdd ?? null,
+      rateOdd: fl?.rateOdd ?? null,
+    };
+  });
+
   // A slip with no rate yet would pull the weighted average down and that
   // average becomes the rate on the kaccha parcha. Price only what is priced.
   const priced = checked.filter((r) => !r.ratePending);
@@ -230,9 +249,13 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     mismatchRows: checked.filter((r) => !r.reconciles).length,
     ratePendingRows: checked.length - priced.length,
     bagWarningRows: checked.filter((r) => r.bagWarning).length,
+    /** Rows whose RST and weight are also on another date: possibly a sheet entered twice. */
+    rstOtherDayRows: flagged.filter((r) => r.rstOtherDays.length > 0).length,
+    /** The usual rate of the day per commodity, for the new row's check while typing. */
+    usualRate: dayFlags ? Object.fromEntries([...dayFlags.usual].map(([k, v]) => [k.split("|")[1], v])) : {},
   };
 
-  return c.json({ rows: checked, totals });
+  return c.json({ rows: flagged, totals });
 });
 
 /** Dates that have slips, for the date navigator. */
@@ -273,16 +296,17 @@ slipRoutes.get("/last-rate", can("slip.read"), async (c) => {
   return c.json(row ?? { ratePaisePerQtl: null, slipDate: null });
 });
 
-/** Next free RST no for the day — a nudge, never enforced. */
+/** Next free RST no for the day — a nudge, never enforced — and every RST
+ *  the day already has (all mills), so the new row can mark a repeat while typing. */
 slipRoutes.get("/next-rst", can("slip.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const date = c.req.query("date");
-  if (!date || !ISO_DATE.test(date)) return c.json({ rstNo: null });
+  if (!date || !ISO_DATE.test(date)) return c.json({ rstNo: null, taken: [] });
   const rows = await db.select({ rstNo: schema.purchaseSlips.rstNo })
     .from(schema.purchaseSlips)
     .where(and(eq(schema.purchaseSlips.businessId, biz), eq(schema.purchaseSlips.slipDate, date)));
-  const nums = rows.map((r) => Number(r.rstNo)).filter((n) => Number.isFinite(n));
-  return c.json({ rstNo: nums.length ? String(Math.max(...nums) + 1) : null });
+  const nums = rows.map((r) => Number(rstKey(r.rstNo))).filter((n) => Number.isFinite(n));
+  return c.json({ rstNo: nums.length ? String(Math.max(...nums) + 1) : null, taken: [...new Set(rows.map((r) => rstKey(r.rstNo)))] });
 });
 
 /* ------------------------------------------------------------------- write */
@@ -304,15 +328,6 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
   if (!body.adatiId) throw bad("Pick a supplier", "bad_adati");
   assertRateAllowed(c, body.ratePaisePerQtl > 0);
   await assertDaysOpen(biz, body.slipDate);
-
-  const [dupe] = await db.select({ id: schema.purchaseSlips.id, rst: schema.purchaseSlips.rstNo })
-    .from(schema.purchaseSlips)
-    .where(and(
-      eq(schema.purchaseSlips.businessId, biz),
-      eq(schema.purchaseSlips.slipDate, body.slipDate),
-      eq(schema.purchaseSlips.rstNo, body.rstNo),
-    )).limit(1);
-  const rstRepeated = Boolean(dupe);
 
   const [ad] = await db.select({ id: schema.adati.id, name: schema.adati.nameHinglish }).from(schema.adati)
     .where(and(eq(schema.adati.id, body.adatiId), eq(schema.adati.businessId, biz))).limit(1);
@@ -350,6 +365,8 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
     entityLabel: `${body.slipDate} RST ${body.rstNo} — ${ad.name}`, after: values,
   });
   await enqueueSync(biz, "purchase_slip", id, "insert", values);
+  // flags, never a refusal: the same RST today, the same RST and weight on another date, odd figures
+  const fl = (await slipFlags(biz, [{ id, ...body }])).flags[0];
 
   const claimed = body.netGramsClaimed;
   return c.json({
@@ -363,8 +380,11 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
     katautiGrams: d.katautiGrams,
     /** A supplier made from the typed name, if one was. */
     supplierCreated: made?.created ? { id: made.id, nameHi: made.nameHi, nameHinglish: made.nameHinglish } : null,
+    /** The same RST is already on this date (any mill, any commodity). */
+    rstRepeated: fl.sameDayIds.length > 0,
+    /** Who else carries this RST, and figures that look like a lost decimal point. */
+    flags: await describeFlags(biz, fl),
     /** Set when the sheet's own net differs from the formula. */
-    rstRepeated,
     netWarning: claimed != null && claimed !== d.netGrams
       ? { claimedGrams: claimed, computedGrams: d.netGrams, diffGrams: claimed - d.netGrams }
       : null,
@@ -431,7 +451,10 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
     { merchantId: before.merchantId, jinsId: before.jinsId, date: before.slipDate },
     { merchantId: merged.merchantId, jinsId: merged.jinsId, date: merged.slipDate },
   ]) : [];
+  // the same flags a new slip gets, on what the slip is now
+  const fl = (await slipFlags(biz, [{ id, ...merged }])).flags[0];
   return c.json({ ok: true, netGrams: d.netGrams, amountPaise: d.amountPaise, ...ch, katautiUnits: d.katautiUnits, katautiGrams: d.katautiGrams, approvedParchas,
+    rstRepeated: fl.sameDayIds.length > 0, flags: await describeFlags(biz, fl),
     supplierCreated: made?.created ? { id: made.id, nameHi: made.nameHi, nameHinglish: made.nameHinglish } : null });
 });
 
@@ -459,11 +482,14 @@ slipRoutes.post("/reassign", can("slip.write"), async (c) => {
     merchantId: z.string().nullable(),
   }).parse(await c.req.json());
 
-  const slips = await db.select().from(schema.purchaseSlips)
+  const all = await db.select().from(schema.purchaseSlips)
     .where(and(eq(schema.purchaseSlips.businessId, biz), inArray(schema.purchaseSlips.id, slipIds)));
-  if (slips.length !== slipIds.length) throw bad("Some slips were not found", "missing");
+  if (all.length !== new Set(slipIds).size) throw bad("Some slips were not found", "missing");
+  /* A slip already at that mill is not moving: it keeps the net and amount it
+     was made with. Re-working it on the mill's katauti of today would change
+     what its supplier is owed although nothing about it changed. */
+  const slips = all.filter((s) => s.merchantId !== merchantId);
   await assertDaysOpen(biz, ...slips.map((s) => s.slipDate));
-
 
   let label = "no mill";
   if (merchantId) {
@@ -472,6 +498,7 @@ slipRoutes.post("/reassign", can("slip.write"), async (c) => {
     if (!m) throw bad("Unknown mill", "bad_merchant");
     label = m.code;
   }
+  if (!slips.length) return c.json({ ok: true, updated: 0, approvedParchas: [] });
 
   // katauti terms can differ per mill, so net and amount are re-derived per slip
   const cfg = await katautiCfg(biz, merchantId);
@@ -491,12 +518,15 @@ slipRoutes.post("/reassign", can("slip.write"), async (c) => {
       }).where(eq(schema.purchaseSlips.id, s.id)).run();
     }
   });
-  for (const sl of slips) await enqueueSync(biz, "purchase_slip", sl.id, "update", { merchantId });
+  for (const { s, d, ch } of moved) {
+    await enqueueSync(biz, "purchase_slip", s.id, "update", { merchantId, katautiUnits: d.katautiUnits, netGrams: d.netGrams, amountPaise: d.amountPaise, ...ch });
+  }
+  // the trail keeps each moved slip's figures before and after: a new mill's katauti can change what is owed
   await audit({
     actor: actor(c), action: "slip.reassign", entity: "purchase_slip",
     entityLabel: `${slips.length} slips -> ${label}`,
-    before: slips.map((s) => ({ rstNo: s.rstNo, merchantId: s.merchantId })),
-    after: { merchantId, count: slips.length },
+    before: moved.map(({ s }) => ({ rstNo: s.rstNo, slipDate: s.slipDate, merchantId: s.merchantId, netGrams: s.netGrams, amountPaise: s.amountPaise, payablePaise: s.payablePaise })),
+    after: { merchantId, count: slips.length, slips: moved.map(({ s, d, ch }) => ({ rstNo: s.rstNo, netGrams: d.netGrams, amountPaise: d.amountPaise, payablePaise: ch.payablePaise })) },
   });
   const days = slips.flatMap((x) => [
     { merchantId: x.merchantId, jinsId: x.jinsId, date: x.slipDate }, { merchantId, jinsId: x.jinsId, date: x.slipDate },
