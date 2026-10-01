@@ -5,7 +5,7 @@ import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
 import { can, actor, bad, isoDay, notFound, param, LIMIT, type Env } from "../lib/http.ts";
-import { billed, receipts } from "./millAccounts.ts";
+import { billed, receipts, settle } from "./millAccounts.ts";
 
 /* Chasing the mills for money. For each mill: what it owes, how old the
    oldest unpaid parcha is, the money split by age, when it last paid, and
@@ -23,36 +23,19 @@ export const AGE_BUCKETS = [15, 30, 60] as const; // 0–15, 16–30, 31–60, o
 
 export interface UnpaidBill { loadId: string | null; parchaNo: string | null; date: string | null; truckNo: string | null; billPaise: number; duePaise: number; days: number | null }
 
-/** One mill's unpaid parchas (oldest first) as of a day, and money paid beyond them. */
+/** One mill's unpaid parchas (oldest first) as of a day, and money paid beyond them. Same rule as every other screen: settle(). */
 export function ageBills(
   openingPaise: number,
   bills: { loadId: string; parchaNo: string; date: string; truckNo: string | null; grandTotalPaise: number; shortagePaise: number }[],
   recs: { loadId: string | null; amountPaise: number; deductionPaise: number }[],
   asOf: string,
 ) {
-  const against = new Map<string, number>();
-  let pool = 0;
-  const billedLoads = new Set(bills.map((b) => b.loadId));
-  for (const r of recs) {
-    const v = r.amountPaise + r.deductionPaise;
-    if (r.loadId && billedLoads.has(r.loadId)) against.set(r.loadId, (against.get(r.loadId) ?? 0) + v);
-    else pool += v;
-  }
-  const open: UnpaidBill[] = [];
-  if (openingPaise > 0) open.push({ loadId: null, parchaNo: null, date: null, truckNo: null, billPaise: openingPaise, duePaise: openingPaise, days: null });
-  else pool += -openingPaise;
-  for (const b of [...bills].sort((x, y) => x.date.localeCompare(y.date) || x.parchaNo.localeCompare(y.parchaNo, undefined, { numeric: true }))) {
-    const due = b.grandTotalPaise - b.shortagePaise - (against.get(b.loadId) ?? 0);
-    if (due < 0) pool += -due;
-    open.push({ loadId: b.loadId, parchaNo: b.parchaNo, date: b.date, truckNo: b.truckNo, billPaise: b.grandTotalPaise - b.shortagePaise, duePaise: Math.max(0, due), days: Math.max(0, daysBetween(b.date, asOf)) });
-  }
-  // the rest of the money pays the oldest first
-  for (const o of open) {
-    if (!pool) break;
-    const take = Math.min(pool, o.duePaise);
-    o.duePaise -= take; pool -= take;
-  }
-  const unpaid = open.filter((o) => o.duePaise > 0);
+  const { lines, onAccount } = settle(openingPaise, bills, recs);
+  const pool = onAccount.leftPaise;
+  const unpaid: UnpaidBill[] = lines.filter((l) => l.duePaise > 0).map((l) => ({
+    loadId: l.loadId, parchaNo: l.parchaNo, date: l.date, truckNo: l.truckNo, billPaise: l.billPaise, duePaise: l.duePaise,
+    days: l.date === null ? null : Math.max(0, daysBetween(l.date, asOf)),
+  }));
   const buckets = [0, 0, 0, 0];
   for (const o of unpaid) {
     const d = o.days ?? Infinity; // the opening balance is older than anything in the app

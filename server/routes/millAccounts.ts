@@ -66,6 +66,71 @@ export async function receipts(biz: string, r: Range & { withVoid?: boolean } = 
 
 const settled = (x: { amountPaise: number; deductionPaise: number }) => x.amountPaise + x.deductionPaise;
 
+/** One line of what a mill still owes: the opening balance (no parcha) or one approved parcha. */
+export interface DueLine {
+  loadId: string | null; parchaNo: string | null; date: string | null; truckNo: string | null;
+  grandTotalPaise: number; shortagePaise: number;
+  /** What the mill owes on it: grand total − its weight cut (the opening as it stands). */
+  billPaise: number;
+  /** Money (and anything held back) marked against this truck, up to the bill. */
+  againstPaise: number;
+  /** Money on account set against it, oldest first. */
+  fromAccountPaise: number;
+  duePaise: number;
+}
+
+/**
+ * The one rule for what is due on each parcha, used by the mill statement,
+ * the parcha register, the receipt form and the follow-up screen alike:
+ *   1. money marked against a truck pays that truck's parcha;
+ *   2. everything else — money on account, money paid over a parcha, money
+ *      against a truck that has no live parcha, a minus opening — pays the
+ *      opening balance and then the oldest parchas first.
+ * What it cannot pay off stays on account. So Σ due − left on account is
+ * always the mill's balance, to the paisa.
+ */
+export function settle(
+  openingPaise: number,
+  bills: { loadId: string; parchaNo: string; date: string; truckNo: string | null; grandTotalPaise: number; shortagePaise: number }[],
+  recs: { loadId: string | null; amountPaise: number; deductionPaise: number }[],
+) {
+  const against = new Map<string, number>();
+  const billedLoads = new Set(bills.map((b) => b.loadId));
+  let pool = 0;
+  for (const r of recs) {
+    const v = settled(r);
+    if (r.loadId && billedLoads.has(r.loadId)) against.set(r.loadId, (against.get(r.loadId) ?? 0) + v);
+    else pool += v;
+  }
+  const lines: DueLine[] = [];
+  if (openingPaise > 0) {
+    lines.push({ loadId: null, parchaNo: null, date: null, truckNo: null, grandTotalPaise: openingPaise, shortagePaise: 0,
+      billPaise: openingPaise, againstPaise: 0, fromAccountPaise: 0, duePaise: openingPaise });
+  } else pool += -openingPaise;
+  const oldestFirst = [...bills].sort((x, y) => x.date.localeCompare(y.date) || x.parchaNo.localeCompare(y.parchaNo, undefined, { numeric: true }));
+  for (const b of oldestFirst) {
+    const bill = b.grandTotalPaise - b.shortagePaise;
+    const got = against.get(b.loadId) ?? 0;
+    // paid over this parcha: the extra is money on account
+    if (got > bill) pool += got - bill;
+    lines.push({ loadId: b.loadId, parchaNo: b.parchaNo, date: b.date, truckNo: b.truckNo, grandTotalPaise: b.grandTotalPaise,
+      shortagePaise: b.shortagePaise, billPaise: bill, againstPaise: Math.min(got, Math.max(0, bill)), fromAccountPaise: 0,
+      duePaise: Math.max(0, bill - got) });
+  }
+  const totalOnAccount = pool;
+  for (const l of lines) {
+    if (!pool) break;
+    const take = Math.min(pool, l.duePaise);
+    l.fromAccountPaise += take; l.duePaise -= take; pool -= take;
+  }
+  return {
+    /** The opening (when the mill owed it) and every parcha, oldest first. */
+    lines,
+    /** Money on account: all of it, how much went to the parchas above, and what is left over. */
+    onAccount: { totalPaise: totalOnAccount, appliedPaise: totalOnAccount - pool, leftPaise: pool },
+  };
+}
+
 /** Every mill: opening, billed, received, held back, and what it still owes. */
 export async function millBalances(biz: string, asOf?: string) {
   const mills = await db.select({
@@ -110,34 +175,38 @@ millLedgerRoutes.get("/", can("millledger.read"), async (c) => {
 
 /**
  * One mill's statement: brought forward to `from`, then every parcha and
- * receipt in the period with the running balance, plus each parcha's own
- * outstanding (bill − receipts marked against its truck).
+ * receipt in the period with the running balance, plus what is still due on
+ * each parcha as of `to` (settle(): truck-marked money first, then money on
+ * account to the oldest), so the dues less what is left on account are the
+ * closing balance. ?exceptReceipt= leaves one receipt out, for the form that
+ * is editing it.
  */
 millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const merchantId = param(c, "merchantId");
   const from = c.req.query("from") || undefined;
   const to = c.req.query("to") || undefined;
+  const except = c.req.query("exceptReceipt") || undefined;
   if ((from && !ISO_DATE.test(from)) || (to && !ISO_DATE.test(to))) throw bad("Date must be YYYY-MM-DD");
   if (from && to && from > to) throw bad("The from date is after the to date", "bad_range");
   const [m] = await db.select().from(schema.merchants)
     .where(and(eq(schema.merchants.id, merchantId), eq(schema.merchants.businessId, biz))).limit(1);
   if (!m) throw notFound("Mill not found");
+  const kept = <T extends { id: string }>(rows: T[]) => (except ? rows.filter((r) => r.id !== except) : rows);
 
   let broughtForward = m.openingBalancePaise;
   if (from) {
     const b = await billed(biz, { merchantId, before: from });
-    const r = await receipts(biz, { merchantId, before: from });
+    const r = kept(await receipts(biz, { merchantId, before: from }));
     broughtForward += b.reduce((s, x) => s + x.grandTotalPaise - x.shortagePaise, 0) - r.reduce((s, x) => s + settled(x), 0);
   }
   const bills = await billed(biz, { merchantId, from, to });
-  const recs = await receipts(biz, { merchantId, from, to, withVoid: true });
+  const recs = kept(await receipts(biz, { merchantId, from, to, withVoid: true }));
 
-  // per truck: everything ever billed and received against it (not just this period)
-  const allBills = await billed(biz, { merchantId });
-  const allRecs = await receipts(biz, { merchantId });
-  const againstLoad = new Map<string, number>();
-  for (const r of allRecs) if (r.loadId) againstLoad.set(r.loadId, (againstLoad.get(r.loadId) ?? 0) + settled(r));
+  // per parcha: everything billed and received up to the statement's end, whatever its start
+  const allBills = await billed(biz, { merchantId, upTo: to });
+  const allRecs = kept(await receipts(biz, { merchantId, upTo: to }));
+  const dues = settle(m.openingBalancePaise, allBills, allRecs);
 
   type Entry = {
     kind: "parcha" | "shortage" | "receipt"; id: string; date: string; at: number; deductionGrams?: number;
@@ -146,7 +215,8 @@ millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
     amountPaise?: number; deductionPaise?: number; voided?: boolean; voidReason?: string | null;
     debitPaise: number; creditPaise: number; balancePaise?: number;
   };
-  const truckOf = new Map(allBills.map((b) => [b.loadId, b]));
+  // a receipt names its truck's parcha even when that parcha is dated after the period
+  const truckOf = new Map((to ? await billed(biz, { merchantId }) : allBills).map((b) => [b.loadId, b]));
   const entries: Entry[] = [
     ...bills.map((b) => ({
       kind: "parcha" as const, id: b.id, date: b.date, at: b.createdAt,
@@ -190,13 +260,15 @@ millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
       deductedPaise: live.reduce((s, r) => s + r.deductionPaise, 0),
       closingPaise: run,
     },
-    /** Every approved parcha of this mill with what is still due on it. */
-    bills: allBills.sort((a, b) => b.date.localeCompare(a.date) || b.parchaNo.localeCompare(a.parchaNo)).map((b) => ({
-      loadId: b.loadId, parchaNo: b.parchaNo, date: b.date, truckNo: b.truckNo, grandTotalPaise: b.grandTotalPaise,
-      shortagePaise: b.shortagePaise,
-      receivedPaise: againstLoad.get(b.loadId) ?? 0,
-      duePaise: b.grandTotalPaise - b.shortagePaise - (againstLoad.get(b.loadId) ?? 0),
+    /** Every approved parcha of this mill with what is still due on it, newest first; received = paid on it. */
+    bills: dues.lines.filter((l) => l.loadId).reverse().map((l) => ({
+      ...l, loadId: l.loadId!, parchaNo: l.parchaNo!, date: l.date!, receivedPaise: l.againstPaise + l.fromAccountPaise,
     })),
+    /** The opening balance when the mill owed it, and what of it is still due. */
+    openingDue: dues.lines.find((l) => !l.loadId) ?? null,
+    onAccount: dues.onAccount,
+    /** Σ due − left on account: always the closing balance. */
+    stillDuePaise: dues.lines.reduce((s, l) => s + l.duePaise, 0) - dues.onAccount.leftPaise,
   });
 });
 
