@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
@@ -90,7 +91,9 @@ export function checkFolder(folder: string): string | null {
   if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return "That folder does not exist";
   const probe = path.join(folder, `.mandi-write-test-${process.pid}`);
   try { fs.writeFileSync(probe, "ok"); fs.rmSync(probe); } catch { return "The app cannot write into that folder"; }
-  if (path.resolve(folder).startsWith(path.resolve(DATA_DIR))) return "Pick a folder outside the app's own data folder";
+  // inside the data folder, not merely starting with its name ("…\\Mandi Mitra Backups" beside "…\\Mandi Mitra" is fine)
+  const rel = path.relative(path.resolve(DATA_DIR), path.resolve(folder));
+  if (rel === "" || !(rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel))) return "Pick a folder outside the app's own data folder";
   return null;
 }
 
@@ -102,36 +105,67 @@ export function setBackupFolder(folder: string | null) {
 /** Where the scan pictures live: beside the database, on this computer only. */
 export const SCAN_PICTURES_DIR = path.join(DATA_DIR, "scans");
 
+/** The picture copy running now, if any: a second backup meanwhile waits for it rather than starting another. */
+let picturesRun: Promise<void> | null = null;
+
 /**
  * The scan pictures, copied into the second folder beside the database
  * backups (in scans/<sheet>/). A picture is the paper behind every scanned
  * slip, and the database backup does not hold it. Only what is new or
  * changed is copied, and nothing in the folder is ever deleted, so a sheet
  * deleted here by mistake can still be found there.
+ * The first copy after the update can be a whole season of pictures to a
+ * slow pen drive: it runs in the background, one file at a time, and the
+ * app answers meanwhile. A picture that cannot be read is skipped, counted
+ * and said; the rest are still copied.
  */
-export function copyScanPictures(out: string) {
-  let inFolder = 0, here = 0;
-  if (!fs.existsSync(SCAN_PICTURES_DIR)) return { inFolder, here };
-  for (const id of fs.readdirSync(SCAN_PICTURES_DIR)) {
-    const dir = path.join(SCAN_PICTURES_DIR, id);
-    if (!/^[A-Za-z0-9-]{8,64}$/.test(id) || !fs.statSync(dir).isDirectory()) continue;
-    for (const f of fs.readdirSync(dir)) {
-      const from = path.join(dir, f);
-      const st = fs.statSync(from);
-      if (!st.isFile() || f.endsWith(".tmp")) continue;
-      const picture = f !== "meta.json";
-      if (picture) here++;
-      const to = path.join(out, "scans", id, f);
-      // pictures never change once saved; the small meta.json beside them does
-      if (picture && fs.existsSync(to) && fs.statSync(to).size === st.size) { inFolder++; continue; }
-      fs.mkdirSync(path.dirname(to), { recursive: true });
-      fs.copyFileSync(from, `${to}.tmp`);
-      fs.renameSync(`${to}.tmp`, to);
-      if (picture) inFolder++;
+export function copyScanPictures(out: string, folder: string): Promise<void> {
+  if (picturesRun) return picturesRun;
+  picturesRun = (async () => {
+    let inFolder = 0, here = 0, failed = 0;
+    const ids = await fsp.readdir(SCAN_PICTURES_DIR).catch(() => [] as string[]);
+    for (const id of ids) {
+      if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) continue;
+      const dir = path.join(SCAN_PICTURES_DIR, id);
+      const files = await fsp.readdir(dir).catch(() => null);
+      if (!files) {
+        // a sheet's folder that cannot be opened is said, not passed over
+        if ((await fsp.stat(dir).catch(() => null))?.isDirectory()) failed++;
+        continue;
+      }
+      for (const f of files) {
+        if (f.endsWith(".tmp")) continue;
+        const from = path.join(dir, f);
+        const picture = f !== "meta.json";
+        const to = path.join(out, "scans", id, f);
+        try {
+          const st = await fsp.stat(from);
+          if (!st.isFile()) continue;
+          if (picture) here++;
+          // pictures never change once saved; the small meta.json beside them does
+          const there = await fsp.stat(to).catch(() => null);
+          if (picture && there?.size === st.size) { inFolder++; continue; }
+          await fsp.mkdir(path.dirname(to), { recursive: true });
+          await fsp.copyFile(from, `${to}.tmp`);
+          await fsp.rename(`${to}.tmp`, to);
+          if (picture) inFolder++;
+        } catch {
+          if (picture) failed++;
+          await fsp.rm(`${to}.tmp`, { force: true }).catch(() => undefined);
+        }
+      }
     }
-  }
-  return { inFolder, here };
+    const c = readBackupConfig();
+    writeBackupConfig({
+      ...c, pictures: { inFolder, here, at: new Date().toISOString() },
+      lastError: c.lastError ?? (failed ? `${failed} scan picture(s) could not be copied to ${folder}. The others were copied.` : null),
+    });
+  })().catch(() => undefined).finally(() => { picturesRun = null; });
+  return picturesRun;
 }
+
+/** How long "Back up now" waits for the pictures before it answers; the rest carry on behind it. */
+const PICTURES_WAIT_MS = 2_000;
 
 export async function backupNow(kind: BackupKind) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
@@ -149,31 +183,31 @@ export async function backupNow(kind: BackupKind) {
   prune(BACKUP_DIR, kind, name);
   const c = readBackupConfig();
   let copiedAt = c.copiedAt;
-  let pictures = c.pictures;
   let lastError: string | null = null;
+  let out: string | null = null;
   if (c.folder) {
     const problem = checkFolder(c.folder);
     if (problem) lastError = `Could not copy to ${c.folder}: ${problem}`;
     else {
-      const out = path.join(c.folder, "MandiMitra-backups", hostDir());
+      out = path.join(c.folder, "MandiMitra-backups", hostDir());
       try {
         fs.mkdirSync(out, { recursive: true });
-        fs.copyFileSync(file, path.join(out, `${name}.tmp`));
+        // a pen drive is slow: the copy runs off the app's only thread
+        await fsp.copyFile(file, path.join(out, `${name}.tmp`));
         fs.renameSync(path.join(out, `${name}.tmp`), path.join(out, name));
         prune(out, kind, name);
         copiedAt = new Date().toISOString();
       } catch (e) {
         lastError = `Could not copy to ${c.folder}: ${e instanceof Error ? e.message : "failed"}`;
       }
-      // the pictures go after the database, and a failure with them never costs the backup itself
-      try {
-        pictures = { ...copyScanPictures(out), at: new Date().toISOString() };
-      } catch (e) {
-        lastError = lastError ?? `The scan pictures could not all be copied to ${c.folder}: ${e instanceof Error ? e.message : "failed"}`;
-      }
     }
   }
-  writeBackupConfig({ ...c, lastAt: new Date().toISOString(), lastError, copiedAt, pictures });
+  writeBackupConfig({ ...c, lastAt: new Date().toISOString(), lastError, copiedAt });
+  // the pictures go after the database, and a failure with them never costs the backup itself
+  if (c.folder && out) {
+    const job = copyScanPictures(out, c.folder);
+    await Promise.race([job, new Promise((r) => setTimeout(r, PICTURES_WAIT_MS).unref())]);
+  }
   return { name, bytes: fs.statSync(file).size };
 }
 

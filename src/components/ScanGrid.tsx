@@ -48,11 +48,11 @@ function flagFor(r: ScanRow, f: Field, t: T): Flag {
     if (conf < LOW) return { level: "doubt", why: t("scan.why.unsure" as never), confirmable: true, key: "rst" };
   }
   if (f === "name") {
+    // struck out on the paper, but put back in: only a ✓ says it really belongs (asked first, whatever the name)
+    if (has("struck_included")) return { level: "bad", why: t("issue.struck_included" as never), confirmable: true, key: "struck" };
     if (!r.chosen && !r.match) return r.adatiRawText.trim()
       ? (done ? null : { level: "doubt", why: t("scan.why.newSupplier" as never), confirmable: true, key: "name" })
       : { level: "bad", why: t("scan.fix.pickName" as never) };
-    // struck out on the paper, but put back in: only a ✓ says it really belongs
-    if (has("struck_included")) return { level: "bad", why: t("issue.struck_included" as never), confirmable: true, key: "struck" };
     // this page may have slid (checked for the whole page, in the note above the table)
     const slid = r.issues.find((i) => i.code === "page_slid");
     if (slid) return { level: "bad", why: t("issue.page_slid" as never, slid.params as Record<string, string | number>) };
@@ -200,7 +200,8 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
   const openChecks = locked ? [] : pageChecks.filter((pc) => !pc.confirmed);
   // the lines to look at first; every line once there is nothing left to look at
   const [only, setOnly] = useState(true);
-  const showOnly = only && toCheck.length + openChecks.length > 0;
+  // a sheet already added shows every line it was added with
+  const showOnly = !locked && only && toCheck.length + openChecks.length > 0;
   /* A line fixed while "only lines to check" is on stays in view until the
      next one is taken up, so the cursor is never pulled out from under it. */
   const [kept, setKept] = useState<string | null>(null);
@@ -396,7 +397,7 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
                           {t("scan.page", { n: page })}
                           <span className="font-normal normal-case text-faint">
                             · {t("scan.rowsOnPage", { n: pageRows.length })}
-                            {pageToCheck > 0 && <> · {t("scan.toCheck", { n: pageToCheck })}</>}
+                            {pageToCheck > 0 && !locked && <> · {t("scan.toCheck", { n: pageToCheck })}</>}
                           </span>
                         </button>
                       </td>
@@ -427,7 +428,8 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
     const i = rows.indexOf(r);
     const dead = r.excluded || locked;
     const name = r.chosen ?? r.match;
-    const fl = {
+    // a sheet already added is quiet: nothing on it is asked any more
+    const fl = locked ? { rst: null, name: null, gross: null, katauti: null, rate: null } : {
       rst: flagFor(r, "rst", tt),
       name: flagFor(r, "name", tt), gross: flagFor(r, "gross", tt),
       katauti: flagFor(r, "katauti", tt), rate: flagFor(r, "rate", tt),
@@ -446,7 +448,7 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
             title={r.ocr.confidence == null ? t("scan.srNoHint") : `${t("scan.srNoHint")} · ${t("scan.confHint", { n: Math.round(r.ocr.confidence * 100) })}`}>
             {/* the line's colour: green nothing to do, amber a look, red a fix */}
             <span aria-hidden className={cn("absolute inset-y-0 left-0 w-1",
-              r.excluded ? "bg-line" : st.tone === "fix" ? "bg-bad" : st.tone === "look" ? "bg-warn" : "bg-ok/70")} />
+              r.excluded ? "bg-line" : locked ? "bg-ok/70" : st.tone === "fix" ? "bg-bad" : st.tone === "look" ? "bg-warn" : "bg-ok/70")} />
             {shown(r, i)}
           </td>
 
