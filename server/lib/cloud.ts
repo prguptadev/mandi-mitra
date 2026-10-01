@@ -9,6 +9,7 @@ import { encryptSecret, decryptSecret } from "./secrets.ts";
 import { settleVoucherNumbers } from "./voucherRepair.ts";
 import { backupNow } from "./backup.ts";
 import { newId } from "./ids.ts";
+import { fyNumberLabel } from "./parchaLabels.ts";
 
 /* Two-way sync of several computers through one cloud Postgres (Supabase).
  *
@@ -317,13 +318,14 @@ export function disconnectCloud() {
 
 /** Parcha numbers approved before sync began are claimed, so no other computer reuses them. */
 async function backfillClaims(conn: string) {
-  const rows = sqlite.prepare("select business_id, parcha_no, load_id from parchas").all() as { business_id: string; parcha_no: string; load_id: string }[];
+  const rows = sqlite.prepare("select p.business_id, p.parcha_no, p.load_id, coalesce(p.invoice_date, l.load_date) as day from parchas p join loads l on l.id = p.load_id").all() as { business_id: string; parcha_no: string; load_id: string; day: string }[];
   if (!rows.length) return;
   const p = pool(conn);
   try {
     for (const r of rows) {
+      // claimed one financial year at a time, as approval claims them ("196 (2026-27)")
       await p.query("insert into mm_claims (business_id, kind, value, load_id, device) values ($1, 'parcha', $2, $3, $4) on conflict do nothing",
-        [r.business_id, r.parcha_no, r.load_id, readCloudConfig().deviceId]);
+        [r.business_id, fyNumberLabel(r.day, r.parcha_no), r.load_id, readCloudConfig().deviceId]);
     }
   } catch (e) { throw explain(e); } finally { await p.end(); }
 }

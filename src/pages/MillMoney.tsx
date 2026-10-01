@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useFYRange } from "@/lib/fy.tsx";
 import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
 import { Link, useLocation } from "wouter";
@@ -40,17 +40,31 @@ export interface MillLedgerList {
 }
 interface MillEntry {
   kind: "parcha" | "shortage" | "receipt"; id: string; date: string; deductionGrams?: number;
-  parchaNo?: string; version?: number; truckNo?: string | null; netGrams?: number | null; loadId?: string | null;
+  parchaNo?: string; version?: number; revision?: number; truckNo?: string | null; netGrams?: number | null; loadId?: string | null;
   mode?: Mode; reference?: string | null; notes?: string | null; deductionNote?: string | null; voucherNo?: number | null;
   amountPaise?: number; deductionPaise?: number; voided?: boolean; voidReason?: string | null;
   debitPaise: number; creditPaise: number; balancePaise: number;
 }
-interface MillBill { loadId: string; parchaNo: string; date: string; truckNo: string | null; grandTotalPaise: number; shortagePaise: number; receivedPaise: number; duePaise: number }
+/** One parcha's due by the one rule (server settle()): money against its truck first, then money on account, oldest first. */
+interface MillBill {
+  loadId: string; parchaNo: string; date: string; truckNo: string | null; grandTotalPaise: number; shortagePaise: number;
+  /** grand total − mill cut */
+  billPaise: number;
+  /** marked against this truck (up to the bill) + set from money on account = paid on it */
+  againstPaise: number; fromAccountPaise: number; receivedPaise: number;
+  duePaise: number;
+}
 interface MillStatement {
   mill: { id: string; code: string; name: string; nameHi: string | null; openingBalancePaise: number };
   from: string | null; to: string | null; broughtForwardPaise: number; entries: MillEntry[];
   totals: { billedPaise: number; shortagePaise: number; receivedPaise: number; deductedPaise: number; closingPaise: number };
   bills: MillBill[];
+  /** The opening balance when the mill owed it, and what of it is still due. */
+  openingDue: { billPaise: number; fromAccountPaise: number; duePaise: number } | null;
+  /** Money with no parcha named (and money paid over one): all of it, set against the dues above, left over. */
+  onAccount: { totalPaise: number; appliedPaise: number; leftPaise: number };
+  /** Σ due − left on account = the closing balance. */
+  stillDuePaise: number;
 }
 export interface ReceiptRow {
   id: string; merchantId: string; loadId: string | null; receiptDate: string; amountPaise: number; deductionPaise: number; voucherNo?: number | null;
@@ -75,6 +89,8 @@ export const invalidateMillMoney = (qc: ReturnType<typeof useQueryClient>) => Pr
   qc.invalidateQueries({ queryKey: ["mill-ledger"] }),
   qc.invalidateQueries({ queryKey: ["mill-receipts"] }),
   qc.invalidateQueries({ queryKey: ["parchas"] }),
+  // the follow-up shows the same dues, by the same rule
+  qc.invalidateQueries({ queryKey: ["mill-followup"] }),
   qc.invalidateQueries({ queryKey: ["dashboard"] }),
 ]);
 
@@ -109,16 +125,15 @@ export function ReceiptDialog({ onClose, merchantId: presetMill, loadId: presetL
     loadId: editing?.loadId ?? presetLoad ?? "",
   }));
   const [err, setErr] = useState<string | null>(null);
+  // what is owed now, and on each parcha, as if the receipt being edited were not there
   const st = useQuery({
-    queryKey: ["mill-ledger", v.merchantId, "for-receipt"],
-    queryFn: () => api.get<MillStatement>(`/mill-ledger/${v.merchantId}`),
+    queryKey: ["mill-ledger", v.merchantId, "for-receipt", editing?.id ?? ""],
+    queryFn: () => api.get<MillStatement>(`/mill-ledger/${v.merchantId}${editing ? `?exceptReceipt=${editing.id}` : ""}`),
     enabled: Boolean(v.merchantId),
   });
   const amountPaise = v.amount == null ? 0 : Math.round(v.amount * 100);
   const heldPaise = v.held == null ? 0 : Math.round(v.held * 100);
-  // what is owed now, not counting this receipt if it is the one being edited
-  const back = editing && editing.merchantId === v.merchantId ? editing.amountPaise + editing.deductionPaise : 0;
-  const now = st.data ? st.data.totals.closingPaise + back : null;
+  const now = st.data ? st.data.totals.closingPaise : null;
   const bill = st.data?.bills.find((b) => b.loadId === v.loadId);
 
   const save = useMutation({
@@ -189,7 +204,7 @@ export function ReceiptDialog({ onClose, merchantId: presetMill, loadId: presetL
             <option value="">{t("mm.againstNone")}</option>
             {st.data?.bills.map((b) => (
               <option key={b.loadId} value={b.loadId}>
-                #{b.parchaNo} · {dmy(b.date)}{b.truckNo ? ` · ${b.truckNo}` : ""} · {t("mm.dueOn", { amt: f.money(b.duePaise + (editing?.loadId === b.loadId ? back : 0)) })}
+                #{b.parchaNo} · {dmy(b.date)}{b.truckNo ? ` · ${b.truckNo}` : ""} · {t("mm.dueOn", { amt: f.money(b.duePaise) })}
               </option>
             ))}
           </Select>
@@ -208,7 +223,9 @@ export function ReceiptDialog({ onClose, merchantId: presetMill, loadId: presetL
           <div><p className="text-[11px] text-faint">{t("mm.owesAfter")}</p><MillBalance paise={now - amountPaise - heldPaise} className="font-semibold" /></div>
           {bill && (
             <p className="col-span-3 text-[12px] text-muted">
-              {t("mm.billAfter", { no: bill.parchaNo, amt: f.money(bill.duePaise + (editing?.loadId === bill.loadId ? back : 0) - amountPaise - heldPaise) })}
+              {bill.duePaise - amountPaise - heldPaise >= 0
+                ? t("mm.billAfter", { no: bill.parchaNo, amt: f.money(bill.duePaise - amountPaise - heldPaise) })
+                : t("mm.billAfterOver", { no: bill.parchaNo, amt: f.money(amountPaise + heldPaise - bill.duePaise) })}
             </p>
           )}
         </div>
@@ -419,7 +436,6 @@ export function MillStatementPage({ id }: { id: string }) {
     no: (b) => b.parchaNo, date: (b) => b.date, truck: (b) => b.truckNo, total: (b) => b.grandTotalPaise,
     received: (b) => b.receivedPaise, due: (b) => b.duePaise,
   }, { storageKey: "mill-bills" });
-  const dueTotal = useMemo(() => (s?.bills ?? []).reduce((x, b) => x + Math.max(0, b.duePaise), 0), [s]);
 
   const asRow = (e: MillEntry): ReceiptRow => ({
     id: e.id, merchantId: id, loadId: e.loadId ?? null, receiptDate: e.date, amountPaise: e.amountPaise ?? 0,
@@ -521,7 +537,7 @@ export function MillStatementPage({ id }: { id: string }) {
                       <Td className="whitespace-nowrap">{dmy(e.date)}</Td>
                       {e.kind === "parcha" ? (
                         <Td><Link href="/parcha" className="font-medium text-ink hover:text-brand">{t("mm.parchaN", { no: e.parchaNo ?? "" })}</Link>
-                          {e.version && e.version > 1 ? <span className="text-faint"> v{e.version}</span> : null}
+                          {e.revision && e.revision > 1 ? <span className="text-faint"> · {t("parcha.revised", { n: e.revision })}</span> : null}
                           {e.truckNo ? <span className="text-muted"> · {e.truckNo}</span> : null}</Td>
                       ) : e.kind === "shortage" ? (
                         <Td className="text-warn"><Link href="/challan" className="hover:underline">{t("mm.cutOn", { no: e.parchaNo ?? "", q: f.weight(e.deductionGrams ?? 0) })}</Link>
@@ -567,20 +583,33 @@ export function MillStatementPage({ id }: { id: string }) {
             </div>
           </Card>
 
+          {/* What is due on each parcha, by the one rule every screen uses: money marked
+              against a truck pays its parcha; money on account pays the opening and then the
+              oldest parcha first. The dues less the money on account left over are the balance. */}
           <Card>
-            <CardHeader title={t("mm.billsTitle", { n: s.bills.length })} sub={t("mm.billsSub", { amt: f.money(dueTotal) })} />
-            {!s.bills.length ? <EmptyState title={t("mm.noBills")} /> : (
+            <CardHeader title={t("mm.billsTitle", { n: s.bills.length })} sub={t("mm.billsSubRule", { amt: f.money(s.stillDuePaise) })} />
+            {!s.bills.length && !s.openingDue && !s.onAccount.totalPaise ? <EmptyState title={t("mm.noBills")} /> : (
               <Table>
                 <thead>
                   <tr>
                     <Th {...bills.th("no")}>{t("load.parchaNo")}</Th><Th {...bills.th("date")}>{t("daily.date")}</Th>
                     <Th {...bills.th("truck")}>{t("load.truckNo")}</Th><Th numeric {...bills.th("total")}>{t("load.grandTotal")}</Th>
                     <Th numeric>{t("mm.cutShort")}</Th>
-                    <Th numeric {...bills.th("received")} title={t("mm.settledHint")}>{t("mm.settled")}</Th><Th numeric {...bills.th("due")}>{t("mm.due")}</Th>
+                    <Th numeric {...bills.th("received")} title={t("parcha.paidOnHint")}>{t("parcha.paidOn")}</Th><Th numeric {...bills.th("due")}>{t("mm.due")}</Th>
                     <Th className="w-28" />
                   </tr>
                 </thead>
                 <tbody>
+                  {s.openingDue && (
+                    <tr className="border-b border-line/70 text-[13px]">
+                      <td className="px-3 py-1.5 text-muted" colSpan={3}>{t("ledger.opening")}</td>
+                      <td className="num px-3 py-1.5 text-right">{f.money(s.openingDue.billPaise)}</td>
+                      <td className="px-3 py-1.5 text-right text-faint">—</td>
+                      <td className="num px-3 py-1.5 text-right text-ok">{s.openingDue.fromAccountPaise ? f.money(s.openingDue.fromAccountPaise) : "—"}</td>
+                      <td className="num px-3 py-1.5 text-right font-semibold">{s.openingDue.duePaise ? f.money(s.openingDue.duePaise) : <Badge tone="ok">{t("mm.paid")}</Badge>}</td>
+                      <td />
+                    </tr>
+                  )}
                   {bills.sorted.map((b) => (
                     <Tr key={b.loadId}>
                       <Td className="font-medium">#{b.parchaNo}</Td>
@@ -588,9 +617,12 @@ export function MillStatementPage({ id }: { id: string }) {
                       <Td className="text-muted">{b.truckNo ?? ""}</Td>
                       <Td numeric>{f.money(b.grandTotalPaise)}</Td>
                       <Td numeric className="whitespace-nowrap text-warn">{b.shortagePaise ? `− ${f.money(b.shortagePaise)}` : "—"}</Td>
-                      <Td numeric className="text-ok">{b.receivedPaise ? f.money(b.receivedPaise) : "—"}</Td>
+                      <Td numeric className="text-ok">
+                        {b.receivedPaise ? f.money(b.receivedPaise) : "—"}
+                        {b.fromAccountPaise ? <span className="block text-[10px] text-muted">{t("parcha.paidSplit", { a: f.money(b.againstPaise), b: f.money(b.fromAccountPaise) })}</span> : null}
+                      </Td>
                       <Td numeric className="font-semibold">
-                        {b.duePaise <= 0 ? <Badge tone="ok">{b.duePaise < 0 ? t("mm.overpaid", { amt: f.money(-b.duePaise) }) : t("mm.paid")}</Badge>
+                        {b.duePaise <= 0 ? <Badge tone="ok">{t("mm.paid")}</Badge>
                           : <span className={cn(b.receivedPaise > 0 && "text-warn")}>{f.money(b.duePaise)}</span>}
                       </Td>
                       <Td className="text-right">
@@ -600,7 +632,24 @@ export function MillStatementPage({ id }: { id: string }) {
                       </Td>
                     </Tr>
                   ))}
+                  {s.onAccount.totalPaise > 0 && (
+                    <tr className="border-b border-line/70 bg-raised/30 text-[13px]">
+                      <td className="px-3 py-1.5" colSpan={6}>
+                        {t("mm.onAccountRow")}
+                        <span className="block text-[11px] text-muted">{t("mm.onAccountRowSub", { total: f.money(s.onAccount.totalPaise), applied: f.money(s.onAccount.appliedPaise), left: f.money(s.onAccount.leftPaise) })}</span>
+                      </td>
+                      <td className="num px-3 py-1.5 text-right font-semibold text-warn">{s.onAccount.leftPaise ? `− ${f.money(s.onAccount.leftPaise)}` : "—"}</td>
+                      <td />
+                    </tr>
+                  )}
                 </tbody>
+                <tfoot>
+                  <tr className="bg-raised/50 text-[13px] font-semibold">
+                    <td className="px-3 py-2" colSpan={6}>{t("mm.stillDueLine")}</td>
+                    <td className="px-3 py-2 text-right"><MillBalance paise={s.stillDuePaise} /></td>
+                    <td />
+                  </tr>
+                </tfoot>
               </Table>
             )}
           </Card>

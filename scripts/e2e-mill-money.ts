@@ -86,10 +86,41 @@ let ok = true, run = st.broughtForwardPaise;
 for (const e of st.entries) { run += e.debitPaise - e.creditPaise; if (run !== e.balancePaise) ok = false; }
 check("every running balance = the one before + bill − money", ok);
 const b196 = st.bills.find((b: any) => b.parchaNo === "196");
-check("parcha 196: due = its total − 5,01,129.85 received against it", b196.duePaise === p196.grandTotalPaise - rs(501129.85), b196);
+check("196 was approved again after a void: the statement marks it revised 2",
+  st.entries.filter((e: any) => e.kind === "parcha" && e.parchaNo === "196").map((e: any) => e.revision).join() === "2", st.entries.filter((e: any) => e.kind === "parcha").map((e: any) => [e.parchaNo, e.revision]));
+/* What is due on each parcha, by hand, by the one rule every screen uses: money
+   against a truck pays its parcha (any extra goes on account); money on account
+   (the 2,00,000 cheque) pays the 10,000 opening first, then the oldest parcha. */
+const dueByHand = (onAccount: number, against196: number, cut = new Map<string, number>()) => {
+  let pool = onAccount;
+  const oldest = [...lbBills].sort((a: any, b: any) => a.invoiceDate.localeCompare(b.invoiceDate) || a.parchaNo.localeCompare(b.parchaNo, undefined, { numeric: true }));
+  const lines = [{ no: "opening", due: rs(10000) }, ...oldest.map((p: any) => {
+    const bill = p.grandTotalPaise - (cut.get(p.loadId) ?? 0);
+    const against = p.loadId === p196.loadId ? against196 : 0;
+    if (against > bill) pool += against - bill;
+    return { no: p.parchaNo, due: Math.max(0, bill - against) };
+  })];
+  for (const l of lines) { const take = Math.min(pool, l.due); l.due -= take; pool -= take; }
+  return { lines, left: pool };
+};
+const byHand = dueByHand(rs(200000), rs(501129.85));
+check("parcha 196's due: its total − 5,01,129.85 against it − whatever on-account money reached it (oldest first)",
+  b196.duePaise === byHand.lines.find((l) => l.no === "196")!.due, { got: b196.duePaise, want: byHand.lines.find((l) => l.no === "196")!.due });
+check("every L.B parcha's due on the statement is the hand-worked one",
+  lbBills.every((p: any) => st.bills.find((b: any) => b.loadId === p.loadId)?.duePaise === byHand.lines.find((l) => l.no === p.parchaNo)!.due),
+  st.bills.map((b: any) => [b.parchaNo, b.duePaise]));
+check("the opening is due first: the cheque on account pays it", st.openingDue?.duePaise === byHand.lines[0].due, st.openingDue);
+check("money on account is its own line: 2,00,000 in all", st.onAccount.totalPaise === rs(200000) && st.onAccount.leftPaise === byHand.left, st.onAccount);
+check("the dues less money on account left over = what L.B owes", st.stillDuePaise === st.totals.closingPaise, { still: st.stillDuePaise, owes: st.totals.closingPaise });
 const reg2 = await call("GET", "/parchas");
 const reg196 = reg2.find((p: any) => p.parchaNo === "196" && p.status === "approved");
 check("the register shows the same due on 196", reg196.duePaise === b196.duePaise, reg196.duePaise);
+check("…and on every L.B parcha", reg2.filter((p: any) => p.millCode === "LB" && p.status === "approved").every((p: any) => p.duePaise === st.bills.find((b: any) => b.loadId === p.loadId)?.duePaise));
+const fuLb = (await call("GET", "/mill-followup")).rows.find((r: any) => r.id === lb.id);
+check("the follow-up screen agrees, parcha by parcha", st.bills.every((b: any) => (fuLb.unpaid.find((u: any) => u.loadId === b.loadId)?.duePaise ?? 0) === b.duePaise)
+  && (fuLb.unpaid.find((u: any) => u.loadId === null)?.duePaise ?? 0) === (st.openingDue?.duePaise ?? 0), fuLb.unpaid.map((u: any) => [u.parchaNo, u.duePaise]));
+const editing = await call("GET", `/mill-ledger/${lb.id}?exceptReceipt=${r2.id}`);
+check("the receipt form, editing the cheque, sees L.B as if it were not there", editing.totals.closingPaise === st.totals.closingPaise + rs(200000) && editing.onAccount.totalPaise === 0, editing.totals);
 
 const later = await call("GET", `/mill-ledger/${lb.id}?from=2026-09-28`);
 const bfWant = st.entries.filter((e: any) => e.date < "2026-09-28").reduce((s: number, e: any) => s + e.debitPaise - e.creditPaise, rs(10000));
@@ -122,6 +153,12 @@ const c196 = ch.rows.find((r: any) => r.loadId === p196.loadId);
 check("the challan lists truck 196 with its parcha", Boolean(c196) && c196.parchaNo === "196" && c196.grandTotalPaise === p196.grandTotalPaise, c196 && { no: c196.parchaNo });
 check("every truck on it belongs to L.B", ch.rows.every((r: any) => r.millCode === "LB"));
 const owesBeforeCut = (await call("GET", "/mill-ledger")).rows.find((r: any) => r.id === lb.id).balancePaise;
+// the cut lands on 196's bill day: with that day closed it is refused, like any other change there
+await call("POST", "/days/close", { day: p196.invoiceDate });
+const cutClosed = await raw("PUT", `/challan/${p196.loadId}`, { deductionGrams: 250_000, note: "moisture" });
+check("a mill cut on a parcha whose bill day is closed is refused", cutClosed.status === 409 && (await cutClosed.json()).code === "day_closed", cutClosed.status);
+check("…and what L.B owes did not move", (await call("GET", "/mill-ledger")).rows.find((r: any) => r.id === lb.id).balancePaise === owesBeforeCut);
+await call("POST", "/days/reopen", { day: p196.invoiceDate, reason: "test: reopened to enter the mill's cut" });
 const tooBig = await raw("PUT", `/challan/${p196.loadId}`, { deductionGrams: c196.weightGrams + 1 });
 check("a cut bigger than the truck is refused", tooBig.status === 400, tooBig.status);
 const negCut = await raw("PUT", `/challan/${p196.loadId}`, { deductionGrams: -1 });
@@ -141,6 +178,13 @@ check("what L.B owes drops by the cut value", owesAfterCut === owesBeforeCut - c
 const stCut = await call("GET", `/mill-ledger/${lb.id}`);
 check("the statement shows the cut right under its parcha", stCut.entries.some((e: any) => e.kind === "shortage" && e.creditPaise === cutValue && e.parchaNo === "196"));
 check("parcha 196's due drops by it too", stCut.bills.find((b: any) => b.parchaNo === "196").shortagePaise === cutValue);
+// by now the cheque has bounced and 5,10,000 + 1,129.85 is against 196
+check("…still by the one rule, and the dues still add up to what L.B owes",
+  stCut.bills.find((b: any) => b.parchaNo === "196").duePaise === dueByHand(0, rs(511129.85), new Map([[p196.loadId, cutValue]])).lines.find((l) => l.no === "196")!.due
+  && stCut.stillDuePaise === owesAfterCut, { due: stCut.bills.find((b: any) => b.parchaNo === "196").duePaise, still: stCut.stillDuePaise, owes: owesAfterCut });
+const regCut = (await call("GET", "/parchas")).find((p: any) => p.id === p196.id);
+check("the register shows the cut, and its row re-adds: total − cut − paid = due",
+  regCut.shortagePaise === cutValue && regCut.grandTotalPaise - regCut.shortagePaise - regCut.receivedPaise === regCut.duePaise, regCut);
 let ok2 = true, run2 = stCut.broughtForwardPaise;
 for (const e of stCut.entries) { run2 += e.debitPaise - e.creditPaise; if (run2 !== e.balancePaise) ok2 = false; }
 check("running balance still adds up with the cut in it", ok2 && run2 === owesAfterCut);
@@ -165,6 +209,9 @@ const b = money.billed;
 const parts = b.goodsPaise + b.parts.reduce((s: number, p: any) => s + p.amountPaise, 0) + b.otherPaise;
 check("goods + every charge + rounding = the parchas' grand totals", parts === b.grandTotalPaise && b.grandTotalPaise === money.mills.billedPaise, { parts, grand: b.grandTotalPaise, billed: money.mills.billedPaise });
 check("adat is named on its own", b.adatPaise > 0 && b.parts.some((p: any) => p.key === "adat" && p.amountPaise === b.adatPaise), b.adatPaise);
+const stockList = await call("GET", "/stock");
+check("goods in hand counts every truck once: the money card's stock = the stock list (with the no-mill row)",
+  money.stock.leftGrams === stockList.reduce((s: number, r: any) => s + r.stockNet, 0), { money: money.stock.leftGrams, list: stockList.reduce((s: number, r: any) => s + r.stockNet, 0) });
 const dash = await call("GET", "/dashboard");
 check("dashboard's to-receive agrees", dash.kpis.toReceivePaise === mlist.totals.toReceivePaise);
 const dLb = dash.mills.find((m: any) => m.merchantId === lb.id);

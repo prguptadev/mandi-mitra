@@ -12,6 +12,8 @@ export class ApiError extends Error {
     public code?: string,
     public field?: string,
     public issues?: { field: string; message: string }[],
+    /** The whole reply, for errors that carry more than a message (e.g. which parchas share a number). */
+    public data?: unknown,
   ) {
     super(message);
   }
@@ -31,7 +33,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     const hi = typeof document !== "undefined" && document.documentElement.lang === "hi";
     const say = (m: string) => (hi ? translateServer(m) ?? m : m);
     const issues = Array.isArray(data?.issues) ? (data.issues as { field: string; message: string }[]).map((i) => ({ ...i, message: say(i.message) })) : data?.issues;
-    throw new ApiError(res.status, say(String(data?.error ?? res.statusText)), data?.code, data?.field, issues);
+    throw new ApiError(res.status, say(String(data?.error ?? res.statusText)), data?.code, data?.field, issues, data);
   }
   return data as T;
 }
@@ -306,7 +308,8 @@ export interface LoadListRow {
   /** Every commodity on the truck's rows, the truck's own first. */
   jinsCodes?: string[];
   stockDates: string[]; loadedGrams: number;
-  parcha: { id: string; parchaNo: string; version: number; grandTotalPaise: number } | null;
+  /** revision: 1 for the truck's first parcha, 2 and up when it was approved again after a void. */
+  parcha: { id: string; parchaNo: string; version: number; revision: number; grandTotalPaise: number } | null;
 }
 
 /** One purchase day of a mill's stock. */
@@ -318,8 +321,13 @@ export interface StockDay {
 export interface StockRow {
   millNameHi?: string | null;
   merchantId: string | null; millCode: string | null; millName: string | null;
+  /** In hand when the period starts (0 with no from date). */
+  openingNet: number;
   slips: number; boughtNet: number; boughtAmount: number; avgRatePaisePerQtl: number;
-  loadedNet: number; trucks: number; stockNet: number;
+  /** On trucks loaded in the period (by the truck's own date). */
+  loadedNet: number; trucks: number;
+  /** In hand at the period's end: opening + bought − loaded. */
+  stockNet: number;
 }
 
 export interface StockMillDay {
@@ -334,6 +342,12 @@ export interface ParchaRegisterRow {
   grandTotalPaise: number; status: "approved" | "void"; approvedAt: number | null;
   voidedAt: number | null; voidReason: string | null;
   truckNo: string | null; millCode: string; millName: string;
-  /** Approved only: money (and held back) the mill sent against this truck, and what is left. */
+  /** Which approval of its truck this is (2 and up: a revised paper), and the one it replaced. */
+  revision: number; previousId: string | null;
+  /** Another live parcha of the firm carries the same number in the same financial year. */
+  numberRepeated: boolean;
+  /** Approved only, by the mill statement's rule: the mill's weight cut; money marked against the truck;
+   *  money on account set against it (oldest parcha first); the two together; and what is still due. */
+  shortagePaise: number | null; againstPaise: number | null; fromAccountPaise: number | null;
   receivedPaise: number | null; duePaise: number | null;
 }

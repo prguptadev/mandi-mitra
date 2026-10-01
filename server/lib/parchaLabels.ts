@@ -36,6 +36,48 @@ export function roundOffPaise(
   return r.grandTotalPaise - (r.totalPaise + adv + (cfg.dara.includeInGrandTotal ? r.daraPaise : 0));
 }
 
+/**
+ * Whether the paper prints the dara amount. Every amount inside the grand
+ * total is printed, so a dara added to it shows even where the mill's layout
+ * hides the dara row; a dara kept out of the total shows only where the layout asks.
+ */
+export function paperShowsDara(
+  r: { daraPaise: number },
+  cfg: { dara: { mode: string; includeInGrandTotal?: boolean }; parcha: { showDaraRow?: boolean } },
+): boolean {
+  return r.daraPaise !== 0 && (Boolean(cfg.dara.includeInGrandTotal) || (Boolean(cfg.parcha.showDaraRow) && cfg.dara.mode !== "none"));
+}
+
+/** One line of a parcha as the screen lists it (the shape of charges.ts ParchaLine). */
+export interface ScreenLine {
+  key: string; label: string; labelHi?: string; detail?: string;
+  rate?: number; per?: "pct" | "bag" | "qtl" | "truck";
+  amountPaise: number; kind: "goods" | "charge" | "subtotal" | "total" | "info" | "adjust"; sign?: "add" | "subtract";
+}
+
+/**
+ * The parcha's lines as the truck screen lists them (goods aside), with what
+ * the paper also prints so the column re-adds to the grand total: a dara
+ * inside the total that the mill's layout hides, and the round-off.
+ */
+export function screenLines(
+  r: { lines: ScreenLine[]; totalPaise?: number; advancePaise: number; daraPaise: number; grandTotalPaise: number },
+  cfg: { advance: { treatment: string }; dara: { mode: string; label: string; labelHi?: string; includeInGrandTotal?: boolean }; parcha: { showDaraRow?: boolean } },
+  roundOffLabel: string,
+): ScreenLine[] {
+  const out = r.lines.filter((x) => x.kind !== "goods");
+  if (cfg.dara.includeInGrandTotal && paperShowsDara(r, cfg) && !out.some((x) => x.key === "dara")) {
+    out.splice(out.findIndex((x) => x.key === "total") + 1, 0,
+      { key: "dara", label: cfg.dara.label, labelHi: cfg.dara.labelHi, amountPaise: r.daraPaise, kind: "charge", sign: "add" });
+  }
+  const ro = roundOffPaise(r, cfg);
+  if (ro) {
+    const at = out.findIndex((x) => x.key === "grand");
+    out.splice(at < 0 ? out.length : at, 0, { key: "roundOff", label: roundOffLabel, amountPaise: Math.abs(ro), kind: "charge", sign: ro < 0 ? "subtract" : "add" });
+  }
+  return out;
+}
+
 /** 1060695.45 -> "10,60,695.45": Indian grouping, always two decimals. */
 export function indianMoney(paise: number): string {
   const neg = paise < 0;
@@ -52,6 +94,16 @@ export const qtl2 = (grams: number) => {
   // whole kg, half up, in integers; then "310.74"
   const kg = Math.round(Math.abs(grams) / 1000);
   return `${grams < 0 ? "-" : ""}${Math.floor(kg / 100)}.${String(kg % 100).padStart(2, "0")}`;
+};
+
+/**
+ * "196 (2026-27)": a parcha number with its financial year (1 April – 31
+ * March). Numbers belong to one live parcha a year, so this is how a number
+ * is claimed across computers.
+ */
+export const fyNumberLabel = (iso: string, no: string) => {
+  const y = Number(iso.slice(0, 4)) - (Number(iso.slice(5, 7)) >= 4 ? 0 : 1);
+  return `${no.trim()} (${y}-${String((y + 1) % 100).padStart(2, "0")})`;
 };
 
 /** "2026-09-20" -> "20-09-2026", as the parcha writes it. */

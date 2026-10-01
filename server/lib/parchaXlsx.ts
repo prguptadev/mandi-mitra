@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import type { ParchaDoc } from "./parcha.ts";
-import { printedLabel, partyHeading, dmy, roundOffPaise } from "./parchaLabels.ts";
+import { printedLabel, partyHeading, dmy, roundOffPaise, paperShowsDara } from "./parchaLabels.ts";
 
 /* The kaccha parcha as an Excel sheet, laid out like invoice 196: the same
    boxes in the same order, eight columns wide, Indian number grouping. Values
@@ -44,7 +44,10 @@ export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean; voided
   const q = (g: number) => Math.round(g / 1000) / 100; // grams -> quintals, 2 dp
   const rs = (p: number) => Math.round(p) / 100;
 
-  const mark = opts.voided ? `  (VOID — ${opts.voided})` : opts.draft ? "  (DRAFT — not approved)" : "";
+  // a truck approved again after a void: this paper replaces the one given before (older parchas carry only the version)
+  const revision = doc.revision ?? doc.version;
+  const revised = revision > 1 ? `REVISED (${revision})${doc.revisedOn ? ` ${dmy(doc.revisedOn)}` : ""}` : "";
+  const mark = opts.voided ? `  (VOID — ${opts.voided})` : opts.draft ? "  (DRAFT — not approved)" : revised ? `  (${revised})` : "";
   put(`A${row}:H${row}`, `${doc.title}${mark}`, { bold: true, size: 16, align: "center" });
   ws.getRow(row).height = 26;
   row++;
@@ -63,7 +66,7 @@ export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean; voided
   row++;
   put(`A${row}:B${row}`, "BARDANA WEIGHT", { bold: true });
   put(`C${row}:E${row}`, q(w.bardanaGrams), { align: "right", fmt: QTL });
-  put(`F${row}:H${row + 1}`, doc.invoiceNo ?? "", { size: 14, align: "center" });
+  put(`F${row}:H${row + 1}`, revised ? `${doc.invoiceNo ?? ""}\n${revised}` : doc.invoiceNo ?? "", { size: 14, align: "center" });
   row++;
   put(`A${row}:B${row}`, "NET WEIGHT", { bold: true });
   put(`C${row}:E${row}`, q(w.netGrams), { align: "right", fmt: QTL });
@@ -142,7 +145,9 @@ export async function parchaXlsx(doc: ParchaDoc, opts: { draft?: boolean; voided
   put(`F${row}`, advSubtract ? "LESS ADVANCE" : "ADVANCE", { bold: true });
   put(`G${row}:H${row}`, r.advancePaise && doc.config.advance.treatment !== "exclude" ? rs(r.advancePaise) * (advSubtract ? -1 : 1) : "-", { align: "right", fmt: INR });
   row++;
-  put(`A${row}:E${row}`, r.daraPaise && doc.config.parcha.showDaraRow && doc.config.dara.mode !== "none" ? rs(r.daraPaise) : "-", { align: "right", fmt: INR });
+  // every amount inside the grand total is printed: a dara added to it shows even where the mill's layout hides the row
+  const daraShown = paperShowsDara(r, doc.config);
+  put(`A${row}:E${row}`, daraShown ? rs(r.daraPaise) : "-", { align: "right", fmt: INR });
   put(`F${row}`, "GRAND TOTAL", { bold: true });
   put(`G${row}:H${row}`, rs(r.grandTotalPaise), { bold: true, align: "right", fmt: INR });
   row++;

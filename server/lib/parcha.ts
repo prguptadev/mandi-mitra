@@ -2,6 +2,8 @@ import { eq, and, ne, asc, desc, sql, gte, lte, inArray, type SQL } from "drizzl
 import { db, schema } from "../db/client.ts";
 import { ChargeConfigSchema, computeParcha, bardanaKg, type ChargeConfig, type ParchaResult } from "./charges.ts";
 import { amountPaise, roundHalfUp, avgFromSums } from "./money.ts";
+import { fyStartOf, fyRange } from "./vouchers.ts";
+export { fyNumberLabel } from "./parchaLabels.ts";
 
 /* Everything about one truck, worked out in one place. A truck is loaded by
    weight from its mill's stock: each row takes a weight from one purchase
@@ -20,8 +22,7 @@ export type Blocker =
   | { code: "no_mill_gross" }
   | { code: "no_bags" }
   | { code: "net_nonpositive" }
-  | { code: "no_invoice_no" }
-  | { code: "invoice_taken"; loadId: string; truckNo: string | null };
+  | { code: "no_invoice_no" };
 
 /** Worth a look; never stops anything. */
 export type Warning =
@@ -29,7 +30,11 @@ export type Warning =
   | { code: "po_over"; po: string; overGrams: number }
   | { code: "po_closed"; po: string }
   | { code: "po_expired"; po: string; validTill: string }
-  | { code: "bore_no_labour" };
+  | { code: "bore_no_labour" }
+  /** A row priced at the day's average while that day still has slips with no rate: the average leaves them out. */
+  | { code: "day_unpriced"; date: string; jinsCode: string; slips: number }
+  /** The parcha number is already on another live parcha of this firm in the same financial year. */
+  | { code: "invoice_repeated"; parchaNo: string; others: { loadId: string; truckNo: string | null; date: string | null }[] };
 
 export interface ParchaDocLine {
   po: string;
@@ -48,7 +53,12 @@ export interface ParchaDoc {
   mill: { code: string; name: string; nameHi: string | null; city: string | null; state: string | null; gstin: string | null };
   invoiceNo: string | null;
   invoiceDate: string;
+  /** Counts approvals of this number across the firm (it keeps the register's rows apart); not printed. */
   version: number;
+  /** The n-th parcha approved for this truck: 2 and up is a revised paper that replaces the one given before. Missing on parchas approved before it was kept: read `version` then. */
+  revision?: number;
+  /** The day a revised parcha was approved (YYYY-MM-DD), printed beside "REVISED". */
+  revisedOn?: string | null;
   truckNo: string | null;
   loadDate: string;
   ewayBillNo: string | null;
@@ -77,22 +87,79 @@ export async function nextVersion(businessId: string, parchaNo: string) {
 export const rateOf = (goodsPaise: number, netGrams: number) =>
   netGrams ? roundHalfUp((goodsPaise * 100_000) / netGrams) : 0;
 
-/** Invoice numbers are numeric on paper (196); suggest the next one. */
-export async function suggestInvoiceNo(businessId: string, exceptLoadId?: string): Promise<string | null> {
-  const fromParchas = await db.select({ n: schema.parchas.parchaNo }).from(schema.parchas)
+/* Parcha numbers. A number belongs to one live parcha of the firm within a
+   financial year (1 April – 31 March), so a paper series that starts again
+   at 1 each April is fine. The same number on two live parchas of one year
+   is shown as a warning, never refused: the owner decides. */
+
+/** "2026|196": a parcha number within its financial year. */
+export const fyKey = (iso: string, no: string) => `${fyStartOf(iso)}|${no.trim()}`;
+
+/** Live parchas of other trucks that carry this number in the financial year of `onDate`. */
+export async function sameNumberElsewhere(businessId: string, parchaNo: string, onDate: string, exceptLoadId: string) {
+  const { from, to } = fyRange(onDate);
+  return db.select({ loadId: schema.parchas.loadId, truckNo: schema.loads.truckNo, date: schema.parchas.invoiceDate })
+    .from(schema.parchas)
+    .innerJoin(schema.loads, eq(schema.loads.id, schema.parchas.loadId))
+    .where(and(
+      eq(schema.parchas.businessId, businessId),
+      eq(schema.parchas.parchaNo, parchaNo.trim()),
+      eq(schema.parchas.status, "approved"),
+      ne(schema.parchas.loadId, exceptLoadId),
+      gte(schema.parchas.invoiceDate, from), lte(schema.parchas.invoiceDate, to),
+    ));
+}
+
+/** How many live parchas carry each number, per financial year (fyKey). */
+export function sameNumberCount(all: { parchaNo: string; status: string; invoiceDate: string | null }[]) {
+  const n = new Map<string, number>();
+  for (const p of all) if (p.status === "approved" && p.invoiceDate) n.set(fyKey(p.invoiceDate, p.parchaNo), (n.get(fyKey(p.invoiceDate, p.parchaNo)) ?? 0) + 1);
+  return n;
+}
+
+/**
+ * Which approval of its truck a parcha is: 1 for the first paper, 2 and up
+ * for one approved again after a void (a revised paper). Ids are time-ordered
+ * (UUIDv7), so the order they were made in is the order of approval.
+ */
+export function revisions(all: { id: string; loadId: string }[]) {
+  const byLoad = new Map<string, string[]>();
+  for (const p of all) byLoad.set(p.loadId, [...(byLoad.get(p.loadId) ?? []), p.id]);
+  const out = new Map<string, { revision: number; previousId: string | null }>();
+  for (const ids of byLoad.values()) {
+    ids.sort();
+    ids.forEach((id, i) => out.set(id, { revision: i + 1, previousId: i > 0 ? ids[i - 1] : null }));
+  }
+  return out;
+}
+
+/**
+ * Invoice numbers are numeric on paper (196); suggest the next one: one past
+ * the highest of the financial year `onDate` falls in, or — the first parcha
+ * of a new year — one past the highest ever, as a series that runs on would
+ * be. Typing 1 instead starts the year's own series, and it follows from there.
+ */
+export async function suggestInvoiceNo(businessId: string, exceptLoadId?: string, onDate?: string): Promise<string | null> {
+  const fromParchas = await db.select({ n: schema.parchas.parchaNo, d: schema.parchas.invoiceDate }).from(schema.parchas)
     .where(eq(schema.parchas.businessId, businessId));
-  const fromLoads = await db.select({ n: schema.loads.invoiceNo }).from(schema.loads)
+  const fromLoads = await db.select({ n: schema.loads.invoiceNo, d: sql<string>`coalesce(${schema.loads.invoiceDate}, ${schema.loads.loadDate})` }).from(schema.loads)
     .where(and(
       eq(schema.loads.businessId, businessId),
       exceptLoadId ? ne(schema.loads.id, exceptLoadId) : sql`1 = 1`,
     ));
-  const nums = [...fromParchas, ...fromLoads]
-    .map((r) => Number(r.n)).filter((n) => Number.isInteger(n) && n > 0);
+  const all = [...fromParchas, ...fromLoads]
+    .map((r) => ({ n: Number(r.n), d: r.d })).filter((r) => Number.isInteger(r.n) && r.n > 0);
+  const fy = onDate ? fyRange(onDate) : null;
+  const year = fy ? all.filter((r) => r.d && r.d >= fy.from && r.d <= fy.to) : [];
+  const nums = (year.length ? year : all).map((r) => r.n);
   return nums.length ? String(Math.max(...nums) + 1) : null;
 }
 
 /** Bardana: typed weight if the operator gave one, else bags x kg per bag. */
 function weighment(l: LoadRow, cfg: ChargeConfig) {
+  /* A truck entered before bags were split into katte and bore has only the
+     total, read as katte. Emptying both boxes clears that total too (PUT
+     /loads), so an emptied box never bills the old bags, nor cleared bore as katte. */
   const katte = l.katteCount ?? (l.boreCount == null ? (l.bags ?? 0) : 0);
   const bore = l.boreCount ?? 0;
   const katteBardanaGrams = l.katteBardanaGrams ?? bardanaKg(katte, cfg.millBardanaKgPerBag);
@@ -299,9 +366,11 @@ export async function loadState(businessId: string, loadId: string) {
     });
   }
 
+  // newest first; ids are time-ordered, and the version counts the number's uses across the firm, not this truck's
   const history = await db.select().from(schema.parchas)
-    .where(eq(schema.parchas.loadId, l.id)).orderBy(desc(schema.parchas.version));
+    .where(eq(schema.parchas.loadId, l.id)).orderBy(desc(schema.parchas.id));
   const approved = history.find((p) => p.status === "approved") ?? null;
+  const revisionAt = (id: string) => history.length - history.findIndex((p) => p.id === id);
 
   /* ------------------------------------------------------------ checks */
   const blockers: Blocker[] = [];
@@ -323,16 +392,9 @@ export async function loadState(businessId: string, loadId: string) {
   }
   if (!l.invoiceNo?.trim()) blockers.push({ code: "no_invoice_no" });
   else if (!approved) {
-    const [taken] = await db.select({ loadId: schema.parchas.loadId, truckNo: schema.loads.truckNo })
-      .from(schema.parchas)
-      .innerJoin(schema.loads, eq(schema.loads.id, schema.parchas.loadId))
-      .where(and(
-        eq(schema.parchas.businessId, businessId),
-        eq(schema.parchas.parchaNo, l.invoiceNo.trim()),
-        eq(schema.parchas.status, "approved"),
-        ne(schema.parchas.loadId, l.id),
-      )).limit(1);
-    if (taken) blockers.push({ code: "invoice_taken", loadId: taken.loadId, truckNo: taken.truckNo });
+    // the same number on another live parcha this financial year: the owner may mean it, so it is only said
+    const others = await sameNumberElsewhere(businessId, l.invoiceNo, l.invoiceDate ?? l.loadDate, l.id);
+    if (others.length) warnings.push({ code: "invoice_repeated", parchaNo: l.invoiceNo.trim(), others });
   }
 
   const seenDay = new Set<string>();
@@ -340,6 +402,11 @@ export async function loadState(businessId: string, loadId: string) {
     if (seenDay.has(dk(x.jinsId, x.stockDate))) continue;
     seenDay.add(dk(x.jinsId, x.stockDate));
     if (x.day.leftGrams < 0) warnings.push({ code: "stock_negative", date: x.stockDate, grams: -x.day.leftGrams });
+    // the day's average leaves out slips with no rate yet: once they are priced, this truck's rate moves
+    const unpriced = bought.get(x.jinsId)?.get(x.stockDate)?.unpriced ?? 0;
+    if (unpriced > 0 && lines.some((y) => !y.rateTyped && y.jinsId === x.jinsId && y.stockDate === x.stockDate)) {
+      warnings.push({ code: "day_unpriced", date: x.stockDate, jinsCode: x.jinsCode, slips: unpriced });
+    }
   }
   for (const p of pos) {
     const name = p.poNo || p.poDate;
@@ -375,6 +442,9 @@ export async function loadState(businessId: string, loadId: string) {
       invoiceNo: l.invoiceNo?.trim() || null,
       invoiceDate: l.invoiceDate ?? l.loadDate,
       version: approved ? approved.version : (l.invoiceNo?.trim() ? await nextVersion(businessId, l.invoiceNo.trim()) : 1),
+      // a truck approved again after a void gets a revised paper (the day is set when it is approved)
+      revision: approved ? revisionAt(approved.id) : history.length + 1,
+      revisedOn: null,
       truckNo: l.truckNo, loadDate: l.loadDate, ewayBillNo: l.ewayBillNo,
       weights: {
         grossGrams: w.grossGrams!, bardanaGrams: w.bardanaGrams, netGrams: w.netGrams!,
@@ -413,7 +483,7 @@ export async function loadState(businessId: string, loadId: string) {
     blockers,
     warnings,
     doc,
-    approved: approved ? { ...approved, snapshot: undefined, doc: JSON.parse(approved.snapshot) as ParchaDoc } : null,
+    approved: approved ? { ...approved, snapshot: undefined, revision: revisionAt(approved.id), doc: JSON.parse(approved.snapshot) as ParchaDoc } : null,
     /* The approved parcha is frozen. When the figures behind it have moved
        since (a slip's rate on one of its days, the mill's charges), say what
        it would be now, so the owner can void and re-approve — or leave it. */
@@ -428,8 +498,8 @@ export async function loadState(businessId: string, loadId: string) {
           .map((x) => ({ date: x.date, wasRate: was.lines.find((y) => y.date === x.date && y.jinsCode === x.jinsCode)!.ratePaisePerQtl, nowRate: x.ratePaisePerQtl })),
       };
     })(),
-    history: history.map((p) => ({ ...p, snapshot: undefined })),
-    suggestedInvoiceNo: l.invoiceNo ? null : await suggestInvoiceNo(businessId, l.id),
+    history: history.map((p) => ({ ...p, snapshot: undefined, revision: revisionAt(p.id) })),
+    suggestedInvoiceNo: l.invoiceNo ? null : await suggestInvoiceNo(businessId, l.id, l.invoiceDate ?? l.loadDate),
   };
 }
 

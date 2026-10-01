@@ -469,6 +469,17 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
     if (!x.pricedNet) { unpricedLeft += left; continue; }
     stockValue += amountPaise(left, avgFromSums(x.pricedValue, x.pricedNet));
   }
+  /* A truck row taken from a day with no purchases (loaded before its slips
+     were entered, or while they sit under no mill) is stock gone out that was
+     never counted in: take it off too — at the row's own typed rate, else as
+     unpriced — or the same goods would count again among the unbilled trucks. */
+  const boughtDays = new Set(days.map((x) => dayKey(x.m, x.j, x.d)));
+  for (const l of loadedLines) {
+    if (boughtDays.has(dayKey(l.merchantId, l.jinsId, l.stockDate)) || !l.weightGrams) continue;
+    stockLeft -= l.weightGrams;
+    if (l.ratePaisePerQtl) stockValue -= amountPaise(l.weightGrams, l.ratePaisePerQtl);
+    else unpricedLeft -= l.weightGrams;
+  }
   const drafts = (await trucks(biz, { to: f.to })).filter((t) => t.status !== "billed");
 
   // what the supplier ledger is made of, all time up to `to` (the "we owe" figure is all time)

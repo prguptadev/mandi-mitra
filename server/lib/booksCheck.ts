@@ -3,6 +3,7 @@ import { amountPaise, divHalfUp } from "./money.ts";
 import { deriveKatauti, ChargeConfigSchema, type Katauti } from "./charges.ts";
 import type { ParchaDoc } from "./parcha.ts";
 import { rstKey, dayGap, RST_WINDOW_DAYS } from "./slipChecks.ts";
+import { fyNumberLabel } from "./parchaLabels.ts";
 
 /* An independent audit of every rupee and quintal, read-only. It does not
    use the app's routes or its stored totals: each figure is re-worked from
@@ -154,8 +155,8 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
 
     // 3. every approved parcha re-added from its frozen copy
     section("3. Kaccha parchas (what we billed)");
-    const parchas = all<{ id: string; load_id: string; parcha_no: string; version: number; status: string; grand_total_paise: number; snapshot: string }>(
-      "select id, load_id, parcha_no, version, status, grand_total_paise, snapshot from parchas where business_id = ?", biz.id);
+    const parchas = all<{ id: string; load_id: string; parcha_no: string; version: number; status: string; grand_total_paise: number; snapshot: string; invoice_date: string | null }>(
+      "select id, load_id, parcha_no, version, status, grand_total_paise, snapshot, invoice_date from parchas where business_id = ?", biz.id);
     const approved = parchas.filter((p) => p.status === "approved");
     let pBad = 0;
     const parts = new Map<string, number>();
@@ -179,13 +180,18 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
       goodsBilled += r.goodsAmountPaise;
       for (const l of r.lines.filter((x) => x.kind === "charge")) parts.set(l.label, (parts.get(l.label) ?? 0) + (l.sign === "subtract" ? -l.amountPaise : l.amountPaise));
     }
-    // one live parcha per truck, and one truck per number
+    // one live parcha per truck; a number on two live parchas of one financial year is allowed (the owner
+    // was warned when approving), so it is listed to look at, not counted as a fault
     const liveByLoad = new Map<string, number>();
     for (const p of approved) liveByLoad.set(p.load_id, (liveByLoad.get(p.load_id) ?? 0) + 1);
     for (const [loadId, n] of liveByLoad) if (n > 1) bad(`truck ${loadId.slice(-6)} has ${n} approved parchas at once`);
     const loadsByNo = new Map<string, Set<string>>();
-    for (const p of parchas) { if (!loadsByNo.has(p.parcha_no)) loadsByNo.set(p.parcha_no, new Set()); loadsByNo.get(p.parcha_no)!.add(p.load_id); }
-    for (const [no, set] of loadsByNo) if (set.size > 1) bad(`parcha number ${no} is on ${set.size} different trucks`);
+    for (const p of approved) {
+      const k = p.invoice_date ? fyNumberLabel(p.invoice_date, p.parcha_no) : p.parcha_no;
+      if (!loadsByNo.has(k)) loadsByNo.set(k, new Set());
+      loadsByNo.get(k)!.add(p.load_id);
+    }
+    for (const [no, set] of loadsByNo) if (set.size > 1) note(`parcha number ${no} is on ${set.size} live parchas of different trucks — allowed, check it is meant`);
     const billed = approved.reduce((s, p) => s + p.grand_total_paise, 0);
     if (!pBad) ok(`${approved.length} approved parcha(s): every row, charge, total and grand total re-adds exactly (${parchas.length - approved.length} voided kept aside)`);
     ok(`billed ₹${rs(billed)} = goods ₹${rs(goodsBilled)} + charges ₹${rs([...parts.values()].reduce((s, v) => s + v, 0))} + advance/rounding ₹${rs(billed - goodsBilled - [...parts.values()].reduce((s, v) => s + v, 0))}`);

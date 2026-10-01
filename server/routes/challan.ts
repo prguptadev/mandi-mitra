@@ -7,6 +7,7 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { trucks } from "../lib/tracking.ts";
 import { amountPaise } from "../lib/money.ts";
 import { can, actor, param, notFound, bad, LIMIT, type Env } from "../lib/http.ts";
+import { assertDaysOpen } from "../lib/dayClose.ts";
 
 /* The challan register: every truck sent to a mill with its full details,
    and the weight the mill cut when it arrived (shortage, moisture). The cut
@@ -86,7 +87,14 @@ challanRoutes.get("/", can("load.read"), async (c) => {
   });
 });
 
-/** The mill's weight cut on one truck. Allowed at any time, even after the parcha is approved. */
+/**
+ * The mill's weight cut on one truck, even after the parcha is approved —
+ * but not on a closed day. The mill account books the cut on the parcha's
+ * bill day, so a cut typed later would quietly change a closed day's (and a
+ * closed year's) balance; like any other change there, the owner reopens the
+ * day first. A truck with no parcha yet is checked like any change to it: its
+ * load and invoice days.
+ */
 challanRoutes.put("/:loadId", can("challan.write"), async (c) => {
   const biz = c.get("auth")!.businessId!;
   const loadId = param(c, "loadId");
@@ -97,6 +105,11 @@ challanRoutes.put("/:loadId", can("challan.write"), async (c) => {
   const [before] = await db.select().from(schema.loads)
     .where(and(eq(schema.loads.id, loadId), eq(schema.loads.businessId, biz))).limit(1);
   if (!before) throw notFound("Truck not found");
+  // the bill day the mill account books the cut on: the live parcha's invoice date
+  const [live] = await db.select({ invoiceDate: schema.parchas.invoiceDate }).from(schema.parchas)
+    .where(and(eq(schema.parchas.loadId, loadId), eq(schema.parchas.status, "approved"))).limit(1);
+  if (live) await assertDaysOpen(biz, live.invoiceDate ?? before.loadDate);
+  else await assertDaysOpen(biz, before.loadDate, before.invoiceDate);
   const [t] = await trucks(biz, { merchantId: before.merchantId, from: before.loadDate, to: before.loadDate }).then((l) => l.filter((x) => x.loadId === loadId));
   if (t && body.deductionGrams > t.weightGrams) throw bad("The cut is more than the truck carried", "cut_too_big");
   const patch = { millDeductionGrams: body.deductionGrams, millDeductionNote: body.note || null, updatedAt: nowSec() };

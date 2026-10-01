@@ -116,7 +116,15 @@ reportRoutes.get("/mill", can("export.data"), async (c) => {
 /* Stock is bought − loaded, per mill, per commodity, per purchase day.
    Bought is the sum of that mill's slips; loaded is the weight of every truck
    row taken from that day. Nothing is stored, so it always adds up, and each
-   figure opens to the slips and trucks behind it. It may go negative. */
+   figure opens to the slips and trucks behind it. It may go negative.
+
+   With dates, "left" means one thing everywhere — the stock in hand at the
+   end of the period, as the dashboard counts it: what was there at the start
+   + slips dated in the period − truck rows on trucks LOADED in the period
+   (by the truck's own date, not the purchase day it took from). A truck
+   loaded after the period has not taken anything yet on its last day. The
+   day-by-day table keeps the other view, labelled as such: what is left of
+   each purchase day, counting the trucks loaded up to the period's end. */
 
 async function stockFilter(c: { req: { query: (k: string) => string | undefined } }) {
   const jinsId = c.req.query("jinsId") || null;
@@ -146,30 +154,49 @@ stockRoutes.get("/", can("stock.read"), async (c) => {
     pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
   }).from(S).where(and(...where)).groupBy(S.merchantId);
 
+  // loaded in the period: rows on trucks whose own date is in it
   const L = schema.loadLines;
   const lw = [eq(L.businessId, biz)];
   if (f.jinsId) lw.push(eq(L.jinsId, f.jinsId));
-  if (f.from) lw.push(gte(L.stockDate, f.from));
-  if (f.to) lw.push(lte(L.stockDate, f.to));
+  if (f.from) lw.push(gte(schema.loads.loadDate, f.from));
+  if (f.to) lw.push(lte(schema.loads.loadDate, f.to));
   const lines = await linesWithWeights(and(...lw));
+
+  // what was in hand when the period starts: slips before it − trucks loaded before it
+  const atStart = new Map<string | null, number>();
+  if (f.from) {
+    const bw = [eq(S.businessId, biz), lt(S.slipDate, f.from)];
+    if (f.jinsId) bw.push(eq(S.jinsId, f.jinsId));
+    for (const r of await db.select({ m: S.merchantId, g: sql<number>`sum(${S.netGrams})` }).from(S).where(and(...bw)).groupBy(S.merchantId)) {
+      atStart.set(r.m, (atStart.get(r.m) ?? 0) + r.g);
+    }
+    const ow = [eq(L.businessId, biz), lt(schema.loads.loadDate, f.from)];
+    if (f.jinsId) ow.push(eq(L.jinsId, f.jinsId));
+    for (const x of await linesWithWeights(and(...ow))) atStart.set(x.merchantId, (atStart.get(x.merchantId) ?? 0) - x.weightGrams);
+  }
 
   const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code, name: schema.merchants.name, nameHi: schema.merchants.nameHi })
     .from(schema.merchants).where(eq(schema.merchants.businessId, biz));
-  const keys = new Set<string | null>([...bought.map((b) => b.merchantId), ...lines.map((x) => x.merchantId)]);
+  const keys = new Set<string | null>([...bought.map((b) => b.merchantId), ...lines.map((x) => x.merchantId),
+    ...[...atStart].filter(([, g]) => g !== 0).map(([m]) => m)]);
   const out = [...keys].map((mid) => {
     const b = bought.find((x) => x.merchantId === mid);
     const mine = lines.filter((x) => x.merchantId === mid);
     const loaded = mine.reduce((s, x) => s + x.weightGrams, 0);
+    const opening = atStart.get(mid) ?? 0;
     const m = mills.find((x) => x.id === mid);
     return {
       merchantId: mid, millCode: m?.code ?? null, millName: m?.name ?? null, millNameHi: m?.nameHi ?? null,
+      /** In hand when the period starts (0 with no from date). */
+      openingNet: opening,
       slips: b?.slips ?? 0,
       boughtNet: b?.netGrams ?? 0,
       boughtAmount: b?.amountPaise ?? 0,
       avgRatePaisePerQtl: b ? avgFromSums(b.pricedValue, b.pricedNet) : 0,
       loadedNet: loaded,
       trucks: new Set(mine.map((x) => x.loadId)).size,
-      stockNet: (b?.netGrams ?? 0) - loaded,
+      /** In hand at the period's end: at start + bought − loaded. */
+      stockNet: opening + (b?.netGrams ?? 0) - loaded,
     };
   });
   return c.json(out.sort((a, b) => (a.millCode ?? "~").localeCompare(b.millCode ?? "~")));
@@ -204,12 +231,13 @@ stockRoutes.get("/:merchantId", can("stock.read"), async (c) => {
     days = await boughtByDay(biz, mid, f.jinsId, { from: f.from, to: f.to });
   }
 
+  // what trucks loaded up to the period's end took from each of these purchase days
   const L = schema.loadLines;
   const lw = [eq(L.businessId, biz)];
   if (mid !== "none") lw.push(eq(schema.loads.merchantId, mid)); else lw.push(sql`0 = 1`);
   if (f.jinsId) lw.push(eq(L.jinsId, f.jinsId));
   if (f.from) lw.push(gte(L.stockDate, f.from));
-  if (f.to) lw.push(lte(L.stockDate, f.to));
+  if (f.to) lw.push(lte(L.stockDate, f.to), lte(schema.loads.loadDate, f.to));
   const lines = await linesWithWeights(and(...lw));
   const loadIds = [...new Set(lines.map((x) => x.loadId))];
   const parchas = loadIds.length ? await db.select({
@@ -236,26 +264,39 @@ stockRoutes.get("/:merchantId", can("stock.read"), async (c) => {
     };
   });
 
-  // running balance, oldest day first: what the godown held after each day,
-  // starting from what was already there before the period
-  let run = 0;
-  if (f.from && mid !== "none") {
-    const S = schema.purchaseSlips;
-    const bw = [eq(S.businessId, biz), eq(S.merchantId, mid), lt(S.slipDate, f.from)];
-    if (f.jinsId) bw.push(eq(S.jinsId, f.jinsId));
-    const [b] = await db.select({ g: sql<number>`coalesce(sum(${S.netGrams}), 0)` }).from(S).where(and(...bw));
-    const lw2 = [eq(schema.loadLines.businessId, biz), eq(schema.loads.merchantId, mid), lt(schema.loadLines.stockDate, f.from)];
-    if (f.jinsId) lw2.push(eq(schema.loadLines.jinsId, f.jinsId));
-    const before = await linesWithWeights(and(...lw2));
-    run = (b?.g ?? 0) - before.reduce((x, r) => x + r.weightGrams, 0);
+  /* Stock in hand at the period's end — the same figure as the list and the
+     dashboard: every slip up to `to` − every truck row on a truck loaded up
+     to `to`. The running column climbs day by day to exactly that: it starts
+     from whatever the days in the table do not hold (purchases before them,
+     less what trucks took from those). */
+  const S = schema.purchaseSlips;
+  const cw = [eq(S.businessId, biz), mid === "none" ? isNull(S.merchantId) : eq(S.merchantId, mid)];
+  if (f.jinsId) cw.push(eq(S.jinsId, f.jinsId));
+  if (f.to) cw.push(lte(S.slipDate, f.to));
+  const [allIn] = await db.select({ g: sql<number>`coalesce(sum(${S.netGrams}), 0)` }).from(S).where(and(...cw));
+  let allOut = 0;
+  if (mid !== "none") {
+    const ow = [eq(schema.loadLines.businessId, biz), eq(schema.loads.merchantId, mid)];
+    if (f.jinsId) ow.push(eq(schema.loadLines.jinsId, f.jinsId));
+    if (f.to) ow.push(lte(schema.loads.loadDate, f.to));
+    allOut = (await linesWithWeights(and(...ow))).reduce((x, r) => x + r.weightGrams, 0);
   }
+  const closingNet = (allIn?.g ?? 0) - allOut;
+  const daysLeft = dayList.reduce((s, d) => s + d.stockNet, 0);
+  let run = closingNet - daysLeft;
+  const openingNet = run;
   for (const d of [...dayList].reverse()) { run += d.stockNet; (d as typeof d & { runningNet: number }).runningNet = run; }
 
   const totals = {
     slips: dayList.reduce((s, d) => s + d.slips, 0),
     boughtNet: dayList.reduce((s, d) => s + d.boughtNet, 0),
     loadedNet: dayList.reduce((s, d) => s + d.loadedNet, 0),
-    stockNet: dayList.reduce((s, d) => s + d.stockNet, 0),
+    /** Left of these days' purchases. */
+    stockNet: daysLeft,
+    /** Before the first day in the table. */
+    openingNet,
+    /** In hand at the period's end: the list's and the dashboard's "left". */
+    closingNet,
   };
   return c.json({ days: dayList, totals });
 });

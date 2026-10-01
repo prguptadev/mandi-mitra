@@ -1,5 +1,8 @@
 import "./_guard.ts";
 import ExcelJS from "exceljs";
+import { sqlite } from "../server/db/client.ts";
+import { parchaXlsx } from "../server/lib/parchaXlsx.ts";
+import { screenLines, paperShowsDara, roundOffPaise } from "../server/lib/parchaLabels.ts";
 /* End-to-end: PO -> truck -> mill weighment -> kaccha parcha -> stock, through
  * the HTTP API, on the test database only. The real L.B sheet of 20-09-2026
  * goes into L.B's stock; truck UP25CT5038 takes the mill's 310.74 qtl from it
@@ -159,6 +162,27 @@ console.log("\nSafeguards");
   const ap3 = await status("POST", `/loads/${t3.id}/approve`);
   check("…and approval is refused", ap3.status === 409, ap3.status);
   void s3;
+  // a truck from before katte and bore were split has only a bag total: it keeps it until a box is emptied
+  sqlite.prepare("update loads set katte_count = null, bore_count = null, bags = 200 where id = ?").run(t3.id);
+  await call("PUT", `/loads/${t3.id}`, { notes: "an older truck" });
+  const legacy = (await call("GET", `/loads/${t3.id}`)).weighment;
+  check("an old truck with only a bag total still counts its 200 bags, as katte", legacy.katte === 200 && legacy.bags === 200, legacy);
+  // an emptied bags box is no bags of that kind: never the old count, and cleared bore never turn into katte
+  await call("PUT", `/loads/${t3.id}`, { katteCount: null, boreCount: 200 });
+  await call("PUT", `/loads/${t3.id}`, { boreCount: null });
+  const cleared = await call("GET", `/loads/${t3.id}`);
+  check("bore 200 then the box cleared: no bags at all (not 200 katte), and approval waits for bags",
+    cleared.weighment.katte === 0 && cleared.weighment.bore === 0 && cleared.blockers.some((b: any) => b.code === "no_bags"), cleared.weighment);
+  await call("PUT", `/loads/${t3.id}`, { katteCount: 800 });
+  await call("PUT", `/loads/${t3.id}`, { katteCount: null });
+  check("katte 800 then the box cleared: 0 katte, not the old 800", (await call("GET", `/loads/${t3.id}`)).weighment.bags === 0);
+  // its row from DAY2 is priced at that day's average; a slip of that day with no rate yet is left out of it
+  const noRate = await call("POST", "/slips", { slipDate: DAY2, rstNo: "996", adatiId: (byHi.get("अमित ट्रेडिंग") as any).id, jinsId: j1509.id, merchantId: lb.id, grossGrams: q(10), ratePaisePerQtl: 0 });
+  const s3u = await call("GET", `/loads/${t3.id}`);
+  check(`${DAY2} has a slip with no rate: a truck at that day's average is warned, not blocked`,
+    s3u.warnings.some((w: any) => w.code === "day_unpriced" && w.date === DAY2 && w.slips === 1) && !s3u.blockers.some((b: any) => /rate|unpriced/.test(b.code)), s3u.warnings);
+  await call("DELETE", `/slips/${noRate.id}`);
+  check("…and once that slip is gone (or priced), the warning goes", !(await call("GET", `/loads/${t3.id}`)).warnings.some((w: any) => w.code === "day_unpriced"));
   await call("DELETE", `/loads/${t3.id}`);
   const huge = await status("POST", "/slips", { slipDate: DAY1, rstNo: "999", adatiId: (byHi.get("अमित ट्रेडिंग") as any).id, jinsId: j1509.id, merchantId: lb.id, grossGrams: q(192000), ratePaisePerQtl: 350000 });
   check("an absurd gross (1,92,000 qtl) is refused", huge.status === 400, huge.json?.error);
@@ -209,11 +233,28 @@ check("Excel carries the grand total 1127851.22 as a number", values.includes(11
 check("Excel carries truck, invoice no and date", values.includes("UP25CT5038") && values.includes("196") && values.includes("25-09-2026"));
 
 await call("PUT", `/loads/${t2.id}`, { invoiceNo: "196" });
+const dupSt = await call("GET", `/loads/${t2.id}`);
+check("196 again this financial year: a warning naming the other truck, not a blocker",
+  dupSt.warnings.some((w: any) => w.code === "invoice_repeated" && w.parchaNo === "196" && w.others.some((o: any) => o.loadId === t1.id))
+  && !dupSt.blockers.some((b: any) => /invoice/.test(b.code)), { w: dupSt.warnings, b: dupSt.blockers });
 const dup = await status("POST", `/loads/${t2.id}/approve`);
-check("invoice 196 cannot be used twice", dup.status === 409 && dup.json.blockers.some((x: any) => x.code === "invoice_taken"), dup.json?.blockers);
+check("approving with 196 asks first (number_repeated), never silently", dup.status === 409 && dup.json.code === "number_repeated" && dup.json.others?.[0]?.truckNo === "UP25CT5038", dup.json);
+check("…and nothing was approved by asking", (await call("GET", `/loads/${t2.id}`)).load.status === "draft");
 await call("PUT", `/loads/${t2.id}`, { invoiceNo: null });
 const s2b = await call("GET", `/loads/${t2.id}`);
 check("the next number is suggested as 197", s2b.suggestedInvoiceNo === "197", s2b.suggestedInvoiceNo);
+// numbers are one per live parcha within a financial year: April may start a series of its own
+const ny1 = await call("POST", "/loads", { loadDate: "2027-04-02", merchantId: lb.id, jinsId: j1509.id, stockDate: DAY2, truckNo: "UP25CT5038" });
+await call("PUT", `/loads/${ny1.id}`, { invoiceNo: "196" });
+const nySt = await call("GET", `/loads/${ny1.id}`);
+check("196 again in the next financial year (2027-28) is no repeat: no warning", !nySt.warnings.some((w: any) => w.code === "invoice_repeated"), nySt.warnings);
+check("the same truck on another load is normal: nothing is said about it",
+  ![...nySt.warnings, ...nySt.blockers].some((x: any) => /truck/i.test(x.code)), { w: codes(nySt.warnings), b: codes(nySt.blockers) });
+await call("PUT", `/loads/${ny1.id}`, { invoiceNo: "1" });
+const ny2 = await call("POST", "/loads", { loadDate: "2027-04-03", merchantId: lb.id, jinsId: j1509.id, stockDate: DAY2 });
+const ny2St = await call("GET", `/loads/${ny2.id}`);
+check("…and after no. 1 that year the next suggested is 2: the year's own series", ny2St.suggestedInvoiceNo === "2", ny2St.suggestedInvoiceNo);
+for (const x of [ny1, ny2]) await call("DELETE", `/loads/${x.id}`);
 
 console.log("\nVoid and re-approve");
 const noReason = await status("POST", `/parchas/${ap.id}/void`, { reason: "" });
@@ -222,9 +263,22 @@ await call("POST", `/parchas/${ap.id}/void`, { reason: "advance was 12000, not 1
 await call("PUT", `/loads/${t1.id}`, { advancePaise: 1_200_000 });
 const ap2 = await call("POST", `/loads/${t1.id}/approve`);
 check("re-approved as 196 v2 with the new advance", ap2.parchaNo === "196" && ap2.version === 2 && ap2.grandTotalPaise === 112_785_122 + 200_000, ap2);
+const revSt = await call("GET", `/loads/${t1.id}`);
+check("the new paper is REVISED 2, dated the day it was approved again",
+  ap2.revision === 2 && revSt.approved.doc.revision === 2 && revSt.approved.doc.revisedOn === new Date().toLocaleDateString("en-CA"),
+  { revision: ap2.revision, on: revSt.approved.doc.revisedOn });
+const revX = await raw("GET", `/loads/${t1.id}/parcha.xlsx`);
+const revWb = new ExcelJS.Workbook();
+await revWb.xlsx.load(Buffer.from(await revX.arrayBuffer()) as any);
+const revCells: string[] = [];
+revWb.worksheets[0].eachRow((row) => row.eachCell((c) => revCells.push(String(c.value ?? ""))));
+check("…and its Excel says REVISED (2) beside the number", revCells.some((v) => /^196\nREVISED \(2\)/.test(v)), revCells.filter((v) => /REVISED/.test(v)));
 const reg = await call("GET", "/parchas");
 const mine = reg.filter((p: any) => p.parchaNo === "196");
 check("register keeps v1 (void) and v2 (approved)", mine.length === 2 && mine.some((p: any) => p.status === "void") && mine.some((p: any) => p.status === "approved"));
+check("the register marks the live one revised 2 and points back to the voided one",
+  mine.find((p: any) => p.status === "approved").revision === 2 && mine.find((p: any) => p.status === "approved").previousId === mine.find((p: any) => p.status === "void").id,
+  mine.map((p: any) => [p.status, p.revision, p.previousId]));
 const v1 = mine.find((p: any) => p.status === "void");
 const v1doc = await call("GET", `/parchas/${v1.id}`);
 check("the voided v1 can still be opened, as it was frozen", v1doc.status === "void" && v1doc.doc.result.grandTotalPaise === 112_785_122 && v1doc.voidReason === "advance was 12000, not 10000", { status: v1doc.status, why: v1doc.voidReason });
@@ -244,12 +298,26 @@ const bought = q(331.05) + q(19.80) + q(9.90);
 const loaded = q(310.74) + q(25) + q(24.73);
 check("L.B bought = the sum of its slips", lbStock.boughtNet === bought, lbStock.boughtNet);
 check("L.B loaded = the sum of the truck rows", lbStock.loadedNet === loaded, lbStock.loadedNet);
-check("left = bought − loaded (can be negative)", lbStock.stockNet === bought - loaded, lbStock.stockNet);
+check("left = at start + bought − loaded (can be negative)", lbStock.stockNet === lbStock.openingNet + bought - loaded, lbStock);
 const days = await call("GET", `/stock/${lb.id}?jinsId=${j1509.id}&from=${DAY1}&to=${DAY2}`);
 const d1 = days.days.find((d: any) => d.date === DAY1);
 check(`${DAY1}: 331.05 − 310.74 − 25.00 = −4.69`, d1.stockNet === -q(4.69), d1.stockNet);
 check(`${DAY1}: both trucks are named`, d1.trucks.length === 2, d1.trucks.map((x: any) => x.truckNo));
-check("days add up to the mill total", days.totals.stockNet === lbStock.stockNet, days.totals.stockNet);
+check("the day table ends at the list's stock in hand", days.totals.closingNet === lbStock.stockNet && days.days[0].runningNet === lbStock.stockNet, days.totals);
+// as at DAY1 the DAY2 truck has not loaded yet: its 25.00 qtl from DAY1 is not off the stock on any screen
+const asAt = (await call("GET", `/stock?jinsId=${j1509.id}&to=${DAY1}`)).find((s: any) => s.merchantId === lb.id);
+const asAtCard = (await call("GET", `/dashboard/mill/${lb.id}?jinsId=${j1509.id}&to=${DAY1}`)).summary;
+const asAtDays = await call("GET", `/stock/${lb.id}?jinsId=${j1509.id}&to=${DAY1}`);
+check(`as at ${DAY1}: the list, the mill's card and the day table say the same stock in hand`,
+  asAt.stockNet === asAtCard.leftGrams && asAtDays.totals.closingNet === asAt.stockNet, { list: asAt.stockNet, card: asAtCard.leftGrams, days: asAtDays.totals.closingNet });
+check(`as at ${DAY1}: ${DAY1}'s own line counts only the truck loaded by then (20.31 left)`,
+  asAtDays.days.find((d: any) => d.date === DAY1).stockNet === q(20.31), asAtDays.days.find((d: any) => d.date === DAY1));
+// every mill together: the stock list's total is the dashboard's "stock left", as at a day and for a period
+for (const qs of [`to=${DAY1}`, `from=${DAY2}&to=${DAY2}`]) {
+  const listed = (await call("GET", `/stock?${qs}`)).filter((s: any) => s.merchantId).reduce((t: number, s: any) => t + s.stockNet, 0);
+  const dashLeft = (await call("GET", `/dashboard?${qs}`)).kpis.leftGrams;
+  check(`${qs}: the stock list adds up to the dashboard's stock left`, listed === dashLeft, { list: listed, dashboard: dashLeft });
+}
 const orders = await call("GET", "/orders");
 const mypo = orders.find((o: any) => o.id === po.id);
 check("the PO counts the mill's 310.74 qtl", mypo.sentGrams === q(310.74), mypo.sentGrams);
@@ -302,6 +370,32 @@ check("no other charge on the parcha moved",
 check("  ...only the total and the grand total grew, by the same amount",
   withExtra.lines.find((l: any) => l.key === "total").amountPaise - plain.lines.find((l: any) => l.key === "total").amountPaise === 30_000
   && withExtra.grandTotalPaise - plain.grandTotalPaise === 30_000, true);
+
+console.log("\nEvery amount in the grand total is on the paper");
+{
+  // terms that add the dara to the grand total but hide the dara row, and round to the rupee
+  const live = (await call("GET", `/loads/${t1.id}`)).approved.doc;
+  const cfg = { ...live.config, dara: { ...live.config.dara, mode: "manual", includeInGrandTotal: true }, parcha: { ...live.config.parcha, showDaraRow: false }, grandTotalRounding: "nearest_rupee" };
+  const rr = await call("POST", "/merchants/preview", { chargeConfig: cfg, grossQtl: 315.3, bags: 800, rate: 3413.45, advanceRupees: 10000, manualDaraRupees: 3597.38 });
+  const adv = cfg.advance.treatment === "add" ? rr.advancePaise : cfg.advance.treatment === "subtract" ? -rr.advancePaise : 0;
+  const ro = roundOffPaise(rr, cfg);
+  check("the dara 3,597.38 is inside the grand total, and the rupee rounding moved it",
+    rr.grandTotalPaise === rr.totalPaise + adv + 359_738 + ro && ro !== 0 && Math.abs(ro) <= 50, { grand: rr.grandTotalPaise, total: rr.totalPaise, ro });
+  check("the paper prints that dara though the layout hides the dara row", paperShowsDara(rr, cfg));
+  const xb = new ExcelJS.Workbook();
+  await xb.xlsx.load(await parchaXlsx({ ...live, config: cfg, result: rr }, {}) as any);
+  const nums: number[] = [];
+  xb.worksheets[0].eachRow((row) => row.eachCell((c) => { if (typeof c.value === "number") nums.push(c.value); }));
+  check("…the Excel sheet carries it, and the round-off", nums.includes(3597.38) && nums.includes(ro / 100), { ro: ro / 100 });
+  // the truck screen lists the same lines, so its column re-adds to the grand total
+  const shown = screenLines(rr, cfg, "Round off");
+  const ti = shown.findIndex((x) => x.key === "total"), gi = shown.findIndex((x) => x.key === "grand");
+  const readd = shown[ti].amountPaise + shown.slice(ti + 1, gi)
+    .filter((x) => x.kind !== "info" || (x.key === "dara" && cfg.dara.includeInGrandTotal))
+    .reduce((t, x) => t + (x.sign === "subtract" ? -x.amountPaise : x.amountPaise), 0);
+  check("the screen lists the dara and the round-off, and re-adds to the grand total",
+    readd === rr.grandTotalPaise && shown.some((x) => x.key === "dara") && shown.some((x) => x.key === "roundOff"), { readd, grand: rr.grandTotalPaise, keys: shown.map((x) => x.key) });
+}
 
 console.log(bad === 0 ? "\nLoads, PO, parcha and stock work end to end." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);
