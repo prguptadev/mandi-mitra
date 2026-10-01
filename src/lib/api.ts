@@ -249,6 +249,8 @@ export interface ScanBatch {
   header?: { page: number; date: string | null; millName: string | null; jins: string | null; total: number | null; truncated: boolean }[];
   /** The version of the rows and header this screen has; sent back with every save. */
   rev?: string;
+  /** Pages that are the very same picture as a page of another sheet: the same paper uploaded twice. */
+  samePictures?: { page: number; scanId: string; otherPage: number; slipDate: string | null; status: string; createdAt: number }[];
 }
 
 export interface ScanListRow {

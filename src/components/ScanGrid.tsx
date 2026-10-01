@@ -97,6 +97,11 @@ function flagFor(r: ScanRow, f: Field, t: T): Flag {
       const low = p && (r.ratePaisePerQtl ?? 0) < Number(p.floor) * 100;
       return { level: "bad", why: p ? t((low ? "scan.why.rateLow" : "scan.why.rateHigh") as never, { floor: p.floor, ceil: p.ceil }) : t("issue.rate_range" as never), confirmable: true, key: "rate" };
     }
+    // unlike the day's other rates: a 1 read as a 7 looks like this
+    const day = issue("rate_day");
+    if (!done && day) {
+      return { level: "doubt", why: t((day.params?.low ? "scan.why.rateDayLow" : "scan.why.rateDayHigh") as never, { median: day.params?.median ?? "" }), confirmable: true, key: "rate" };
+    }
     if (!done && conf < LOW) return { level: "doubt", why: t("scan.why.unsure" as never), confirmable: true, key: "rate" };
   }
   return null;
@@ -264,6 +269,11 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
       const next = el.value.slice(0, el.selectionStart ?? el.value.length) + data + el.value.slice(el.selectionEnd ?? el.value.length);
       if (!NUMERIC.test(data) || points(next) > 1) { e.preventDefault(); refuse(key); }
     },
+    // text dragged in from elsewhere is held to the same rule as typing
+    onDrop: (e: React.DragEvent<HTMLInputElement>) => {
+      const data = e.dataTransfer.getData("text");
+      if (!NUMERIC.test(data) || points(e.currentTarget.value + data) > 1) { e.preventDefault(); refuse(key); }
+    },
   });
 
   /** Accepts every value on the line that may be accepted as read. */
@@ -355,8 +365,9 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
             <tr className="bg-raised/80">
               {([
                 [t("scan.srCol"), "w-10", false], [t("scan.slipCol"), "w-20", false], [t("daily.supplier"), "min-w-[180px]", false],
-                [t("daily.gross"), "w-20", true], [t("daily.bags"), "w-14", true], [t("daily.katautiWt"), "w-16", true],
-                [t("daily.net"), "w-20", true], [`${t("daily.rate")}${f.symbol ? " " + f.symbol : ""}`, "w-20", true],
+                [t("daily.gross"), "w-20", true], [t("daily.bags"), "w-14", true], [t("daily.katautiWt"), "w-14", true],
+                // room for a whole rate as typed, "3500.00", beside its ✓
+                [t("daily.net"), "w-20", true], [`${t("daily.rate")}${f.symbol ? " " + f.symbol : ""}`, "w-24", true],
                 [`${t("daily.amount")}${f.symbol ? " " + f.symbol : ""}`, "w-24", true], ["", "w-8", false],
               ] as const).map(([label, w, num], k) => (
                 <th key={k} className={cn(

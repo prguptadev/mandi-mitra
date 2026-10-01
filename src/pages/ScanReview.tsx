@@ -293,7 +293,14 @@ function PageCheckLine({ pc, busy, onConfirm, onUse, onReread, onOrder, onShow }
   );
 }
 
+/* One sheet per screen: going from one sheet straight to another (the "same
+   picture" warning links to it) starts afresh, never with the first sheet's
+   edits, version or line in hand. */
 export function ScanReviewPage({ scanId }: { scanId: string }) {
+  return <ScanReviewScreen key={scanId} scanId={scanId} />;
+}
+
+function ScanReviewScreen({ scanId }: { scanId: string }) {
   const { t, pick, lang } = useI18n();
   const ownCode = useOwnCode();
   const f = useFormat();
@@ -467,7 +474,10 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   const commit = useMutation({
     mutationFn: async () => {
       await flush();
-      return api.post<{ created: number; learnedAliases: number; slipDate: string; approvedParchas?: { parchaNo: string; truckNo: string | null }[] }>(`/scans/${scanId}/commit`);
+      /* The version the "are you sure" box was built from: a change made on
+         another screen since is shown first, never added unseen. */
+      return api.post<{ created: number; learnedAliases: number; slipDate: string; approvedParchas?: { parchaNo: string; truckNo: string | null }[] }>(
+        `/scans/${scanId}/commit`, { rev: rev.current });
     },
     onSuccess: async (r) => {
       setDone({ created: r.created, learned: r.learnedAliases, date: r.slipDate, parchas: r.approvedParchas ?? [] });
@@ -596,6 +606,8 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
     const count = (code: string) => live.filter((r) => r.issues.some((i) => i.code === code)).length;
     const noRate = live.filter((r) => !r.ratePaisePerQtl).length;
     const noRst = live.filter((r) => !r.rstNo).length;
+    // the same paper already added from another sheet: said once more, still only a warning
+    const addedTwice = (b0.samePictures ?? []).filter((s) => s.status === "committed");
     const ok = await ask({
       title: t("scan.confirmCommitTitle"),
       message: t("scan.confirmCommitSub"),
@@ -609,11 +621,14 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
         { label: t("daily.amount"), value: f.money(sum.totalAmountPaise), big: true },
       ],
       warnings: [
+        addedTwice.length ? t("scan.warnSamePicture", { dates: [...new Set(addedTwice.map((s) => (s.slipDate ? dmyIso(s.slipDate) : "—")))].join(", ") }) : "",
         (() => { const n = live.filter((r) => !(r.adatiId ?? r.match?.adatiId) && r.adatiRawText.trim()).length; return n ? t("scan.warnNewSuppliers", { n }) : ""; })(),
         count("rst_exists") ? t("scan.warnRstExists", { n: count("rst_exists") }) : "",
         count("rst_dupe") ? t("scan.warnRstDupe", { n: count("rst_dupe") }) : "",
+        count("rst_other_day") ? t("scan.warnRstOtherDay", { n: count("rst_other_day") }) : "",
         noRst ? t("scan.warnNoRst", { n: noRst }) : "",
         noRate ? t("scan.warnNoRate", { n: noRate }) : "",
+        count("rate_day") ? t("scan.warnRateDay", { n: count("rate_day") }) : "",
         left.length ? t("scan.warnLeftOut", { n: left.length, list: left.map((r) => r.rstNo ? `RST ${r.rstNo}` : `SR ${r.ocr.srNo ?? "?"}`).join(", ") }) : "",
         !mill ? t("scan.warnNoMill") : "",
       ],
@@ -687,10 +702,38 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
     );
   }
 
+  /** The same paper uploaded on another sheet: which page, where it already is, and a way to look. Only a warning. */
+  function samePictureAlert(same: NonNullable<ScanBatch["samePictures"]>) {
+    if (!same.length) return null;
+    // said in one running line, so the lines and the picture keep the room
+    return (
+      <Alert tone="warn">
+        <span className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">
+            {same.map((s) => (
+              <span key={`${s.page}-${s.scanId}-${s.otherPage}`}>
+                {t("scan.samePicture", {
+                  page: s.page, otherPage: s.otherPage, date: s.slipDate ? dmyIso(s.slipDate) : "—",
+                  status: t(`scan.status.${s.status}` as never) || s.status,
+                })}{" "}
+                <button type="button" className="font-medium underline underline-offset-2 hover:text-ink" onClick={() => navigate(`/scan/${s.scanId}`)}>
+                  {t("scan.openThatSheet")}
+                </button>{" · "}
+              </span>
+            ))}
+            <span className="text-[11.5px] opacity-90">{t("scan.samePictureOnly")}</span>
+          </span>
+        </span>
+      </Alert>
+    );
+  }
+
   if (b.status === "uploaded" && b.pages.length > 1) {
     return (
       <>
         <PageHeader title={t("scan.review")} sub={t("scan.reviewSub")} />
+        {b.samePictures?.length ? <div className="mb-3">{samePictureAlert(b.samePictures)}</div> : null}
         {b.warningText && <Alert tone="warn" className="mb-3">{sayServer(b.warningText, lang)}</Alert>}
         {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
         <GeminiUsageBar className="mb-3" />
@@ -704,6 +747,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
   const needDate = !b.slipDate;
   const needJins = !b.jinsId;
   const checks = b.pageChecks ?? [];
+  const twice = locked ? null : samePictureAlert(b.samePictures ?? []);
 
   /* What the reader saw at the head and foot of the pages, beside the three
      boxes it should agree with. */
@@ -851,6 +895,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
         {err && <Alert tone="bad">{err}</Alert>}
         {notice && <Alert tone="ok">{notice}</Alert>}
         {locked && <Alert tone="ok">{t("scan.status.committed")}</Alert>}
+        {twice}
         {b.warningText && !reading && (
           <Alert tone="warn">
             <span className="flex items-start gap-2"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -876,7 +921,7 @@ export function ScanReviewPage({ scanId }: { scanId: string }) {
               onClick={() => run.mutate(undefined)}>{t("scan.read")}</Button>} />
         </Card>
       ) : showScan ? (
-        <SplitPane storageKey="mandi.split.scanReview" title={t("scan.dragToResize")} initial={0.38} min={0.2} max={0.65}
+        <SplitPane storageKey="mandi.split.scanReview" title={t("scan.dragToResize")} initial={0.36} min={0.2} max={0.65}
           className="lg:min-h-0 lg:flex-1"
           left={<div className="h-[45vh] lg:h-full">
             <PageViewer scanId={scanId} pages={b.pages} focus={focus} />

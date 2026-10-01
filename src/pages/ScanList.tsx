@@ -93,15 +93,16 @@ export function ScanListPage() {
       const res = await fetch("/api/scans", { method: "POST", body: fd, credentials: "same-origin" });
       const json = await res.json().catch(() => null);
       if (!res.ok) throw new ApiError(res.status, json?.error ?? "Upload failed", json?.code);
-      return json as { id: string; pages: number };
+      return json as { id: string; pages: number; samePictures?: number };
     },
     onSuccess: async (r) => {
       setErr(null);
       await qc.invalidateQueries({ queryKey: ["scans"] });
       /* One page reads straight away. Several pages stop at the order step
-         first — the model reads them as one list, so the order has to be
-         right before it starts. */
-      if (gemini.data?.configured && r.pages === 1) {
+         first, so the order is seen before a read is spent. A picture already
+         held on another sheet is not read either until the warning about it
+         has been seen: it is only a warning, and "Read" is one tap. */
+      if (gemini.data?.configured && r.pages === 1 && !r.samePictures) {
         api.post(`/scans/${r.id}/run`, {}).catch(() => { /* the review screen reports it */ });
       }
       navigate(`/scan/${r.id}`);
@@ -264,8 +265,9 @@ export function ScanListPage() {
                 </span>
                 {s.status === "uploaded" && can("scan.create") && (
                   <Button size="sm" variant="secondary" icon={<Play className="h-3.5 w-3.5" />}
-                    loading={run.isPending}
-                    onClick={(e) => { e.stopPropagation(); run.mutate(s.id); }}>
+                    loading={run.isPending && run.variables === s.id}
+                    // several pages: the order step first, where the pages are seen side by side
+                    onClick={(e) => { e.stopPropagation(); if (s.pages > 1) navigate(`/scan/${s.id}`); else run.mutate(s.id); }}>
                     {t("scan.read")}
                   </Button>
                 )}
