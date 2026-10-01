@@ -141,18 +141,32 @@
     return { fields, picture, address };
   }
 
-  const esc = (v) => String(v).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  /* The rows are built as elements, never as HTML text: what is pasted is
+     somebody else's page, and a quote in it must stay a quote, not become an
+     attribute on this page (which runs with the app's own session). A link is
+     only ever an http(s) address. */
+  const cellFor = (v) => {
+    const td = document.createElement("td");
+    if (v === "") { td.className = "empty"; td.textContent = "empty"; return td; }
+    let url = null;
+    try { const u = new URL(v); if (u.protocol === "https:" || u.protocol === "http:") url = u.href; } catch { url = null; }
+    if (!url) { td.textContent = v; return td; }
+    const a = document.createElement("a");
+    a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = v;
+    td.appendChild(a);
+    return td;
+  };
 
   function paint(got) {
     const rows = Object.entries(got.fields);
-    $("rows").innerHTML = rows.map(([k, v]) => {
-      const isUrl = /^https?:\/\//i.test(v);
-      const cell = v === ""
-        ? '<td class="empty">empty</td>'
-        : isUrl ? `<td><a href="${esc(v)}" target="_blank" rel="noopener">${esc(v)}</a></td>`
-        : `<td>${esc(v)}</td>`;
-      return `<tr><th>${esc(k)}</th>${cell}</tr>`;
-    }).join("");
+    const body = $("rows");
+    body.replaceChildren(...rows.map(([k, v]) => {
+      const tr = document.createElement("tr");
+      const th = document.createElement("th");
+      th.textContent = k;
+      tr.append(th, cellFor(String(v)));
+      return tr;
+    }));
     $("board").classList.toggle("on", rows.length > 0);
 
     $("shot").classList.remove("on");

@@ -36,6 +36,7 @@ const ACTIONS: Record<string, [string, string]> = {
   "backup.run": ["Backup made", "बैकअप बना"], "backup.download": ["Backup downloaded", "बैकअप डाउनलोड"], "backup.restore": ["Backup restore ordered", "बैकअप वापस लाने का आदेश"], "backup.folder": ["Backup folder changed", "बैकअप फ़ोल्डर बदला"],
   "cloud.connect": ["Cloud sync started", "क्लाउड सिंक शुरू"], "cloud.disconnect": ["Cloud sync turned off", "क्लाउड सिंक बंद"], "cloud.join": ["Joined the cloud", "क्लाउड से जुड़े"], "cloud.restore": ["Data brought down from cloud", "क्लाउड से डेटा लाया"], "cloud.clashes_cleared": ["Sync clashes cleared", "सिंक टकराव साफ़"],
   "app.update": ["App updated", "ऐप अपडेट"], "app.update_folder": ["Update folder changed", "अपडेट फ़ोल्डर बदला"],
+  "emandi.account": ["e-Mandi user name changed", "e-Mandi यूज़र नाम बदला"], "emandi.password": ["e-Mandi password changed", "e-Mandi पासवर्ड बदला"], "emandi.watch": ["e-Mandi commodities chosen", "e-Mandi की जिंसें चुनीं"], "emandi.forget": ["e-Mandi login removed", "e-Mandi लॉगिन हटाया"], "emandi.signin": ["Signed in to e-Mandi", "e-Mandi में साइन इन"], "emandi.signout": ["Signed out of e-Mandi", "e-Mandi से साइन आउट"],
 };
 export const actionWords = (action: string, lang: string) => { const w = ACTIONS[action]; return w ? (lang === "hi" ? w[1] : w[0]) : action; };
 
