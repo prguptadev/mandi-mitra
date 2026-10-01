@@ -77,10 +77,19 @@ check("a relative folder is refused", (await raw("PUT", "/backup", { folder: "ba
 check("a folder that does not exist is refused", (await raw("PUT", "/backup", { folder: path.join(os.tmpdir(), "no-such-folder-mandi-e2e") })).status === 400);
 const second = fs.mkdtempSync(path.join(os.tmpdir(), "mandi-e2e-backup-"));
 await call("PUT", "/backup", { folder: second });
+// a scanned sheet: its picture is a file beside the database, not in it
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+const fdPic = new FormData();
+fdPic.append("files", new File([PNG], "sheet.png", { type: "image/png" }));
+fdPic.append("slipDate", "2026-09-24");
+const { id: picScan } = await (await fetch(`${BASE}/scans`, { method: "POST", body: fdPic, headers: { cookie } })).json() as { id: string };
 const r2 = await call("POST", "/backup/run");
 // into a folder named after this computer: two computers sharing a Drive folder never prune each other's copies
 const hostDir = os.hostname().replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40) || "this-computer";
 check("with a second folder set, each backup is copied there too", fs.existsSync(path.join(second, "MandiMitra-backups", hostDir, r2.name)), r2.name);
+check("…and so are the scan pictures, sheet by sheet", fs.existsSync(path.join(second, "MandiMitra-backups", hostDir, "scans", picScan, "00.png")), picScan);
+check("…every one of them, as the backup card says", r2.pictures?.here >= 1 && r2.pictures.inFolder === r2.pictures.here, r2.pictures);
+await call("DELETE", `/scans/${picScan}`);
 await call("PUT", "/backup", { folder: null });
 fs.rmSync(second, { recursive: true, force: true });
 

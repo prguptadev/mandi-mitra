@@ -143,9 +143,17 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
   const { me, can, logout } = useSession();
   const [location] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(() => {
+  const [savedCollapsed, setCollapsed] = useState(() => {
     try { return localStorage.getItem(SIDEBAR_KEY) === "1"; } catch { return false; }
   });
+  /* Checking a scanned sheet needs the whole screen: the picture and the
+     lines side by side. On that page the menu tucks itself away (the menu
+     button or the left edge brings it back) without changing the choice
+     kept for every other page. */
+  const wide = /^\/scan\/[^/]+/.test(location);
+  const [navOnWide, setNavOnWide] = useState(false);
+  useEffect(() => { setNavOnWide(false); }, [wide]);
+  const collapsed = wide ? !navOnWide : savedCollapsed;
 
   /* Collapsed, the menu is still one flick of the mouse away: pointing at the
      left edge slides it over the page without pushing the grid around, and
@@ -187,6 +195,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
   useEffect(() => { setPeek(false); }, [location]);
 
   const toggleSidebar = () => {
+    if (wide) { setNavOnWide((v) => !v); return; }
     setCollapsed((v) => {
       const next = !v;
       try { localStorage.setItem(SIDEBAR_KEY, next ? "1" : "0"); } catch { /* ignore */ }
@@ -339,7 +348,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
         </header>
 
         <main className="min-w-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-[1400px] px-3 py-5 sm:px-6 sm:py-6">{children}</div>
+          <div className={wide ? "px-2 py-2 sm:px-3" : "mx-auto max-w-[1400px] px-3 py-5 sm:px-6 sm:py-6"}>{children}</div>
         </main>
       </div>
     </div>

@@ -38,6 +38,8 @@ export function ScanListPage() {
   // the chosen financial year, until other dates are picked
   const { from, setFrom, to, setTo } = useFYRange();
   const [merchantId, setMerchantId] = useState("");
+  // sheets already added come 40 at a time; sheets still waiting always show, all of them
+  const [limit, setLimit] = useState(40);
   const [upDate, setUpDate] = useState(todayISO);
   const [upMill, setUpMill] = useState("");
   const [upJins, setUpJins] = useState("");
@@ -60,12 +62,14 @@ export function ScanListPage() {
     // poll while any scan is still being read, so the list never looks stuck
     refetchInterval: (q) =>
       (q?.state?.data ?? []).some((r) => r.status === "reading") ? 3000 : false,
-    queryKey: ["scans", { status, from, to, merchantId }],
+    queryKey: ["scans", { status, from, to, merchantId, limit }],
     queryFn: () => api.get<ScanListRow[]>(`/scans?${new URLSearchParams({
       ...(status !== "all" ? { status } : {}),
       ...(from ? { from } : {}), ...(to ? { to } : {}),
       ...(merchantId ? { merchantId } : {}),
+      limit: String(limit),
     })}`),
+    placeholderData: (prev) => prev,
   });
 
   const upload = useMutation({
@@ -76,28 +80,35 @@ export function ScanListPage() {
      */
     mutationFn: async (files: File[]) => {
       if (!files.length) throw new ApiError(400, t("scan.noFilesPicked"), "no_file");
+      /* Pages by their names, as numbers count: page-2 before page-10, and a
+         phone's IMG_…_101500 before IMG_…_101530. A file dialog or a drag can
+         hand the pages over in the order they were clicked, which put page 2
+         in page 1's place before anyone looked. The order step still follows. */
+      const inOrder = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
       const fd = new FormData();
-      for (const f of await Promise.all(files.map(prepareImage))) fd.append("files", f);
+      for (const f of await Promise.all(inOrder.map(prepareImage))) fd.append("files", f);
       if (upDate) fd.append("slipDate", upDate);
       if (upMill) fd.append("merchantId", upMill);
       if (upJins) fd.append("jinsId", upJins);
       const res = await fetch("/api/scans", { method: "POST", body: fd, credentials: "same-origin" });
       const json = await res.json().catch(() => null);
       if (!res.ok) throw new ApiError(res.status, json?.error ?? "Upload failed", json?.code);
-      return json as { id: string; pages: number };
+      return json as { id: string; pages: number; samePictures?: number };
     },
     onSuccess: async (r) => {
       setErr(null);
       await qc.invalidateQueries({ queryKey: ["scans"] });
       /* One page reads straight away. Several pages stop at the order step
-         first — the model reads them as one list, so the order has to be
-         right before it starts. */
-      if (gemini.data?.configured && r.pages === 1) {
+         first, so the order is seen before a read is spent. A picture already
+         held on another sheet is not read either until the warning about it
+         has been seen: it is only a warning, and "Read" is one tap. */
+      if (gemini.data?.configured && r.pages === 1 && !r.samePictures) {
         api.post(`/scans/${r.id}/run`, {}).catch(() => { /* the review screen reports it */ });
       }
       navigate(`/scan/${r.id}`);
     },
-    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+    onError: (e) => setErr(e instanceof ApiError && e.code === "heic" ? t("scan.heicRefused")
+      : e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
   const run = useMutation({
@@ -128,7 +139,7 @@ export function ScanListPage() {
 
       {can("scan.create") && (
         <Card className="mb-4">
-          <CardHeader title={t("scan.upload")} sub={t("scan.uploadSub")} />
+          <CardHeader title={t("scan.upload")} sub={t("scan.uploadSubJpg")} />
           <div className="space-y-3 p-3">
             <div className="grid gap-3 sm:grid-cols-3">
               <Field label={t("daily.date")}>
@@ -168,9 +179,9 @@ export function ScanListPage() {
               <p className="text-[13px] font-medium text-ink">
                 {upload.isPending ? t("scan.uploadingNow") : run.isPending ? t("scan.reading") : t("scan.dropHere")}
               </p>
-              <p className="text-[11px] text-faint">{t("scan.uploadSub")}</p>
+              <p className="text-[11px] text-faint">{t("scan.uploadSubJpg")}</p>
               <input ref={fileRef} type="file" multiple hidden
-                accept="image/*,application/pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,.tif,.tiff,.bmp,.pdf"
+                accept="image/jpeg,image/png,image/webp,application/pdf,.jpg,.jpeg,.png,.webp,.pdf"
                 onChange={(e) => {
                   // copy first: clearing the input empties the FileList
                   const picked = Array.from(e.target.files ?? []);
@@ -254,8 +265,9 @@ export function ScanListPage() {
                 </span>
                 {s.status === "uploaded" && can("scan.create") && (
                   <Button size="sm" variant="secondary" icon={<Play className="h-3.5 w-3.5" />}
-                    loading={run.isPending}
-                    onClick={(e) => { e.stopPropagation(); run.mutate(s.id); }}>
+                    loading={run.isPending && run.variables === s.id}
+                    // several pages: the order step first, where the pages are seen side by side
+                    onClick={(e) => { e.stopPropagation(); if (s.pages > 1) navigate(`/scan/${s.id}`); else run.mutate(s.id); }}>
                     {t("scan.read")}
                   </Button>
                 )}
@@ -267,6 +279,12 @@ export function ScanListPage() {
                 )}
               </div>
             ))}
+            {/* more of the sheets already added; the waiting ones are all above already */}
+            {list.data.filter((s) => s.status === "committed").length >= limit && (
+              <div className="p-3 text-center">
+                <Button size="sm" variant="secondary" loading={list.isFetching} onClick={() => setLimit((n) => n + 40)}>{t("scan.showMore")}</Button>
+              </div>
+            )}
           </div>
         )}
       </Card>

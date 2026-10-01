@@ -110,7 +110,7 @@ const OCR = [
   // duplicate RST inside the batch -> both must block
   { rstNo: "640", adatiName: "अरविन्द ट्रेडिंग",   grossQtl: 14.85, katauti: 15, netQtl: 14.70, rate: 3470, confidence: 0.9 },
   { rstNo: "640", adatiName: "अमित ट्रेडिंग",      grossQtl: 26.40, katauti: 26, netQtl: 26.14, rate: 3521, confidence: 0.88 },
-  // rate not read -> warn only, weight still usable
+  // rate not read -> red until typed or ✓ "fill it in later": never a silent ₹0
   { rstNo: "644", adatiName: "सहदेव सिंह ट्रेडिंग", grossQtl: 40.40, katauti: 40, netQtl: 40.00, rate: null, confidence: 0.8 },
   // struck through on the paper -> excluded automatically
   { rstNo: "634", adatiName: "शिवम ट्रेडिंग",      grossQtl: 41.25, katauti: 41, netQtl: 40.84, rate: 3550, confidence: 0.86, struckThrough: true },
@@ -157,7 +157,7 @@ check("sheet net disagreeing blocks until the operator confirms it", byRst("638"
 check("a model pick unlike the handwriting is not taken as the match", byRst("650")[0].match, null);
 check("  ...but offered first among the suggestions", byRst("650")[0].suggestions[0]?.nameHinglish, "PHOOLSINGH VERMA");
 check("  ...and is flagged", byRst("638")[0].issues.some((i: any) => i.code === "net_mismatch"), true);
-check("missing rate warns, not blocks", byRst("644")[0].blocking, false);
+check("a missing rate blocks: never a silent ₹0", byRst("644")[0].blocking, true);
 check("net cross-check counted", `${v1.summary.netAgreeing}/${v1.summary.netChecked}`, "9/10");
 
 console.log("\nCommit is refused while a page is unread");
@@ -193,8 +193,11 @@ try {
   if (!ok) bad++;
   console.log(` ${ok ? "PASS" : "FAIL"}  refused: ${ok ? "has_blocking" : m.slice(0, 80)}`);
 }
+// a sheet that is not added leaves nothing behind: no supplier made from its unknown names
+check("the refused sheet made no new supplier", (sqlite.prepare("select count(*) as n from adati where name_hi in (?, ?)").get("अज्ञात व्यापारी", "रामू लाल") as { n: number }).n, 0);
+check("  ...and its rows still say who is new", (await call("GET", `/scans/${scanId}`)).rows.filter((r: any) => r.issues.some((i: any) => i.code === "name_unresolved")).length > 0, true);
 
-console.log("\nOperator fixes the three blocking rows");
+console.log("\nOperator fixes the blocking rows");
 const suppliers = await call("GET", "/adati");
 const ramveer = suppliers.find((s: any) => s.nameHinglish.toUpperCase().startsWith("RAMVEER"));
 const fixed = v1.rows.map((r: any) => {
@@ -203,8 +206,9 @@ const fixed = v1.rows.map((r: any) => {
     grossGrams: r.grossGrams, katautiOverride: r.katautiOverride,
     ratePaisePerQtl: r.ratePaisePerQtl, excluded: r.excluded, nameCorrected: r.nameCorrected,
     modelPick: r.modelPick ?? null,
-    // the operator checked RST 638 against the paper: the gross is right as read
-    confirmed: r.rstNo === "638" ? ["gross"] : [],
+    // the operator checked RST 638 against the paper: the gross is right as read;
+    // RST 644 has no rate on the paper yet: it is priced later on the daily list
+    confirmed: r.rstNo === "638" ? ["gross"] : r.rstNo === "644" ? ["rate"] : [],
   };
   // not one of ours: the operator leaves it out
   if (r.rstNo === "650") return { ...base, excluded: true };
@@ -383,6 +387,236 @@ console.log("\nWhole-page checks and decimal points");
   const afterType = await call("PUT", `/scans/${id2}/rows`, { rows: typedRate });
   check("a rate typed far out of range still blocks until ✓", afterType.rows[0].blocking && afterType.rows[0].issues.some((i: any) => i.code === "rate_range" && i.level === "error"), true);
   await call("DELETE", `/scans/${id2}`);
+}
+
+/* A two-page sheet read through the stand-in for Google: page 1 whole, with
+   a rate written "3450/-" and a gross with a letter in it; page 2 carries on
+   at line 4, and Google's answer stops in the middle of line 6. */
+console.log("\nA two-page sheet, read page by page");
+{
+  const LB = mills.find((m: any) => m.code === "LB");
+  await call("PUT", "/settings/gemini", {
+    apiKey: "AIzaFAKE-KEY-ONLY-FOR-THE-LOCAL-STAND-IN",
+    model: "gemini-test-pages", fallbackModel: "gemini-test-pages", backupModels: [],
+  });
+  const fd3 = new FormData();
+  fd3.append("files", new File([PNG], "page-1.png", { type: "image/png" }));
+  fd3.append("files", new File([JPG], "page-2.jpg", { type: "image/jpeg" }));
+  fd3.append("slipDate", DATE);
+  fd3.append("merchantId", LB.id); // filed under L.B; the header will say G.R.M
+  fd3.append("jinsId", j1509.id);
+  const { id: id3 } = await (await fetch(`${BASE}/scans`, { method: "POST", body: fd3, headers: { cookie } })).json() as { id: string };
+  await call("POST", `/scans/${id3}/run`, {});
+  let s: any = null;
+  for (let i = 0; i < 120; i++) {
+    s = await call("GET", `/scans/${id3}`);
+    if (s.status !== "reading" && !s.running) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  check("both pages read", [s.status, s.pagesDone], ["review", 2]);
+  check("rows in page order, page 2 after page 1", s.rows.map((r: any) => `${r.page}:${r.ocr.srNo}`), ["1:1", "1:2", "1:3", "2:4", "2:5"]);
+  check("  ...each row numbered on its own", s.rows.map((r: any) => r.id), ["r0", "r1", "r2", "r3", "r4"]);
+  check("where each line sits on its page comes through", s.rows.map((r: any) => r.ocr.lineY), [210, 240, 270, 120, 150]);
+  check("a rate written 3450/- is read as 3450", s.rows[1].ratePaisePerQtl, 345_000);
+  const odd = s.rows[2];
+  check("a gross with a letter in it keeps the rest of its line", [odd.rstNo, odd.ratePaisePerQtl, odd.ocr.netQtl], ["933", 350_000, 4.95]);
+  check("  ...the box is empty and red, showing what was written", [odd.grossGrams, odd.ocr.unreadable?.grossQtl, odd.blocking], [null, "5.0O", true]);
+  check("the header the reader saw is returned", s.header.map((h: any) => `${h.page}:${h.millName ?? "-"}:${h.truncated}`), ["1:G.R.M:false", "2:-:true"]);
+  const codes = s.pageChecks.map((p: any) => `${p.page}:${p.code}`).sort();
+  check("page 2's answer was cut short: it is a page question", codes.includes("2:page_cut"), true);
+  check("page 1 has no total: its lines are counted once", codes.includes("1:page_count"), true);
+  check("page 2 carries on at line 4: no lines missing at its top", s.rows.some((r: any) => r.issues.some((i: any) => i.code === "sr_top")), false);
+  const mill = s.pageChecks.find((p: any) => p.code === "page_mill");
+  check("the header's mill (G.R.M) differs from the one filed (LB): asked", [mill?.params.label, mill?.params.filed], ["GRM", "LB"]);
+
+  console.log("\nTwo screens on one sheet");
+  const a = await call("PUT", `/scans/${id3}/rows`, { rows: s.rows, rev: s.rev, merchantId: grm.id });
+  check("taking the header's mill clears that question", a.pageChecks.some((p: any) => p.code === "page_mill"), false);
+  const stale = await fetch(`${BASE}/scans/${id3}/rows`, { method: "PUT", headers: { "Content-Type": "application/json", cookie }, body: JSON.stringify({ rows: s.rows, rev: s.rev }) });
+  check("a save built on the older version is refused, not applied", [stale.status, ((await stale.json()) as { code?: string }).code], [409, "stale_rows"]);
+  const trail = sqlite.prepare("select entity_label as l from audit_log where entity_id = ? and action = 'scan.header'").all(id3) as { l: string }[];
+  check("moving the sheet to another mill is in the audit trail", trail.map((x) => x.l), ["mill LB → GRM"]);
+
+  console.log("\nA tick lasts while what it was given for does");
+  let pc = await call("PUT", `/scans/${id3}/page-confirm`, { page: 1, what: "count", on: true });
+  check("page 1's line count ticked", pc.pageChecks.find((p: any) => p.code === "page_count")?.confirmed, true);
+  const fixed = a.rows.map((r: any) => r.id === "r2" ? { ...r, grossGrams: 500_000 } : r);
+  const b2 = await call("PUT", `/scans/${id3}/rows`, { rows: fixed, rev: a.rev });
+  check("typing the gross clears the red box", b2.rows.find((r: any) => r.id === "r2").blocking, false);
+  await call("PUT", `/scans/${id3}/rows`, { rows: b2.rows, rev: b2.rev, slipDate: "2026-09-22" });
+  pc = await call("PUT", `/scans/${id3}/page-confirm`, { page: 1, what: "date", on: true });
+  check("the header's date (21-09) against the scan's (22-09): ticked", pc.pageChecks.find((p: any) => p.code === "page_date")?.confirmed, true);
+  const back = await call("GET", `/scans/${id3}`);
+  await call("PUT", `/scans/${id3}/rows`, { rows: back.rows, rev: back.rev, slipDate: "2026-09-23" });
+  const moved = await call("GET", `/scans/${id3}`);
+  check("the scan moved to 23-09: the date is asked again", moved.pageChecks.find((p: any) => p.code === "page_date")?.confirmed, false);
+  await call("PUT", `/scans/${id3}/rows`, { rows: moved.rows, rev: moved.rev, slipDate: DATE });
+
+  console.log("\nA blank RST and a missing rate are never quietly saved");
+  const cur = await call("GET", `/scans/${id3}`);
+  const blank = await call("PUT", `/scans/${id3}/rows`, { rows: cur.rows.map((r: any) => r.id === "r4" ? { ...r, rstNo: "", ratePaisePerQtl: null } : r), rev: cur.rev });
+  const r4 = blank.rows.find((r: any) => r.id === "r4");
+  check("a blank RST is red", r4.issues.find((i: any) => i.code === "rst_missing")?.level, "error");
+  check("a missing rate on a page with rates is red", r4.issues.find((i: any) => i.code === "rate_missing")?.level, "error");
+  const ok = await call("PUT", `/scans/${id3}/rows`, { rows: blank.rows.map((r: any) => r.id === "r4" ? { ...r, confirmed: ["rst", "rate"] } : r), rev: blank.rev });
+  check("  ...✓ 'none on the paper' and 'rate later' clear them", ok.rows.find((r: any) => r.id === "r4").blocking, false);
+
+  /* The answer for page 2 was cut short: that one page is read again, and
+     page 1 — with the gross typed on it — is left as it is. */
+  console.log("\nReading one page again");
+  const before = await call("GET", `/scans/${id3}`);
+  await call("POST", `/scans/${id3}/run`, { page: 2, model: "gemini-test-pages-whole" });
+  let again: any = null;
+  for (let i = 0; i < 120; i++) {
+    again = await call("GET", `/scans/${id3}`);
+    if (again.status !== "reading" && !again.running) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  check("page 2 read again: its lines now run 4 to 6", again.rows.filter((r: any) => r.page === 2).map((r: any) => r.ocr.srNo), [4, 5, 6]);
+  check("  ...page 1's lines and the change on them are kept", again.rows.filter((r: any) => r.page === 1).map((r: any) => `${r.id}:${r.grossGrams}`),
+    before.rows.filter((r: any) => r.page === 1).map((r: any) => `${r.id}:${r.grossGrams}`));
+  check("  ...no line number is used twice", new Set(again.rows.map((r: any) => r.id)).size, again.rows.length);
+  check("  ...the question about the cut answer is gone", again.pageChecks.some((p: any) => p.code === "page_cut"), false);
+  check("  ...the total at its foot proves its lines", again.pageChecks.some((p: any) => p.page === 2 && ["page_count", "page_total"].includes(p.code)), false);
+  check("  ...and a screen holding the sheet from before must load it again", again.rev !== before.rev, true);
+  const z = again.rows.find((r: any) => r.ocr.srNo === 6);
+  check("a rate written so it reads 35Z1 is red, showing what was written", [z.ratePaisePerQtl, z.ocr.unreadable?.rate, z.blocking], [null, "35Z1", true]);
+  const putOff = await call("PUT", `/scans/${id3}/rows`, { rows: again.rows.map((r: any) => r.id === z.id ? { ...r, confirmed: ["rate"] } : r), rev: again.rev });
+  check("  ...a ✓ cannot put it off to later: it is on the paper, so it is typed", putOff.rows.find((r: any) => r.id === z.id).blocking, true);
+  const typedRate = await call("PUT", `/scans/${id3}/rows`, { rows: putOff.rows.map((r: any) => r.id === z.id ? { ...r, ratePaisePerQtl: 352_100 } : r), rev: putOff.rev });
+  check("  ...typed as 3521, the line is clear", typedRate.rows.find((r: any) => r.id === z.id).blocking, false);
+
+  console.log("\nAdding the sheet");
+  const ready = await call("GET", `/scans/${id3}`);
+  check("nothing left to answer", [ready.summary.blocking, ready.summary.pagesBlocking], [0, 0]);
+  // the "are you sure" box was built from an older version: what it showed is not what would be written
+  const staleAdd = await fetch(`${BASE}/scans/${id3}/commit`, { method: "POST", headers: { "Content-Type": "application/json", cookie }, body: JSON.stringify({ rev: "0000000000000000" }) });
+  check("adding from an older copy of the sheet is refused", [staleAdd.status, ((await staleAdd.json()) as { code?: string }).code], [409, "stale_rows"]);
+  const res3 = await call("POST", `/scans/${id3}/commit`, { rev: ready.rev });
+  check("six slips added", res3.created, 6);
+  check("the answer says which approved parchas no longer match (none)", res3.approvedParchas, []);
+  const slips3 = sqlite.prepare("select id, gross_grams as g, rst_no as rst from purchase_slips where scan_batch_id = ?").all(id3) as { id: string; g: number; rst: string }[];
+  check("every slip is in whole kilograms", slips3.every((x) => x.g % 1000 === 0), true);
+  const audited = sqlite.prepare(`select count(*) as n from audit_log where action = 'slip.create' and entity_id in (${slips3.map(() => "?").join(",")})`).get(...slips3.map((x) => x.id)) as { n: number };
+  check("each slip has its own entry in the audit trail", audited.n, 6);
+  const late = await fetch(`${BASE}/scans/${id3}/rows`, { method: "PUT", headers: { "Content-Type": "application/json", cookie }, body: JSON.stringify({ rows: ready.rows }) });
+  check("a save that arrives after the sheet is added is refused", late.status, 409);
+
+  sqlite.prepare("delete from purchase_slips where scan_batch_id = ?").run(id3);
+  sqlite.prepare("delete from scan_batches where id = ?").run(id3);
+  fs.rmSync(path.resolve(process.env.MANDI_DATA_DIR!, "scans", id3), { recursive: true, force: true });
+}
+
+/* The same two pages uploaded the wrong way round: the sheet's later lines
+   are read as page 1. Their line numbers say so; one tap puts the pages in
+   order, each with its own lines and picture, and nothing is read again. */
+console.log("\nPages in the wrong order, put right after reading");
+{
+  const fd4 = new FormData();
+  fd4.append("files", new File([JPG], "later-lines.jpg", { type: "image/jpeg" }));
+  fd4.append("files", new File([PNG], "first-lines.png", { type: "image/png" }));
+  fd4.append("slipDate", DATE);
+  fd4.append("merchantId", grm.id);
+  fd4.append("jinsId", j1509.id);
+  const { id: id4 } = await (await fetch(`${BASE}/scans`, { method: "POST", body: fd4, headers: { cookie } })).json() as { id: string };
+  await call("POST", `/scans/${id4}/run`, { model: "gemini-test-pages-whole" });
+  let s4: any = null;
+  for (let i = 0; i < 120; i++) {
+    s4 = await call("GET", `/scans/${id4}`);
+    if (s4.status !== "reading" && !s4.running) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  check("read in the order given: lines 4–6 on page 1", s4.rows.map((r: any) => `${r.page}:${r.ocr.srNo}`), ["1:4", "1:5", "1:6", "2:1", "2:2", "2:3"]);
+  const po = s4.pageChecks.find((p: any) => p.code === "page_order");
+  check("the line numbers say page 2 comes first: asked", po?.params.order, "2, 1");
+  check("  ...not taken for lines missing at the top of page 1", s4.pageChecks.some((p: any) => p.code === "page_rows"), false);
+  check("  ...and the sheet waits for the answer", s4.summary.pagesBlocking > 0, true);
+  const stale4 = await fetch(`${BASE}/scans/${id4}/order`, { method: "PUT", headers: { "Content-Type": "application/json", cookie }, body: JSON.stringify({ order: [1, 0], rev: "0000000000000000" }) });
+  check("  ...an order sent from an older copy of the sheet is refused", [stale4.status, ((await stale4.json()) as { code?: string }).code], [409, "stale_rows"]);
+  const o = await call("PUT", `/scans/${id4}/order`, { order: [1, 0], rev: s4.rev });
+  check("put in order: page 1 runs 1–3, page 2 runs 4–6", o.rows.map((r: any) => `${r.page}:${r.ocr.srNo}`), ["1:1", "1:2", "1:3", "2:4", "2:5", "2:6"]);
+  check("  ...the question is gone", o.pageChecks.some((p: any) => p.code === "page_order"), false);
+  const s5 = await call("GET", `/scans/${id4}`);
+  check("  ...each page's header went with it", s5.header.map((h: any) => `${h.page}:${h.millName ?? "-"}:${h.total ?? "-"}`), ["1:G.R.M:-", "2:-:73.75"]);
+  const pic = await fetch(`${BASE}/scans/${id4}/page/0?f=${encodeURIComponent(s5.pages[0].name)}`, { headers: { cookie } });
+  check("  ...and page 1's picture is the one its lines were read from", pic.headers.get("content-type"), "image/png");
+  const trail4 = sqlite.prepare("select entity_label as l from audit_log where entity_id = ? and action = 'scan.reorder'").all(id4) as { l: string }[];
+  check("  ...which is in the audit trail", trail4.map((x) => x.l), ["pages put in order after reading: 2, 1"]);
+  await call("DELETE", `/scans/${id4}`);
+}
+
+console.log("\nWhat is refused at upload, and what is never lost from the list");
+{
+  const heic = new FormData();
+  heic.append("files", new File([Buffer.from("not really a heic")], "IMG_0001.HEIC", { type: "image/heic" }));
+  const h = await fetch(`${BASE}/scans`, { method: "POST", body: heic, headers: { cookie } });
+  check("an iPhone HEIC photo is refused, saying how to send it", [h.status, ((await h.json()) as { code?: string }).code], [400, "heic"]);
+  // two pages packed into a compressed object stream, as PDF 1.5 writers do
+  const zlib = await import("node:zlib");
+  const packed = zlib.deflateSync(Buffer.from("1 0 2 30 << /Type /Page >> << /Type /Page >> << /Type /Pages /Count 2 >>"));
+  const pdf = Buffer.concat([Buffer.from("%PDF-1.5\n5 0 obj << /Type /ObjStm /N 3 /First 10 /Filter /FlateDecode >>\nstream\n", "latin1"), packed, Buffer.from("\nendstream\nendobj\n", "latin1")]);
+  const pf = new FormData();
+  pf.append("files", new File([pdf], "two.pdf", { type: "application/pdf" }));
+  const p = await fetch(`${BASE}/scans`, { method: "POST", body: pf, headers: { cookie } });
+  check("a two-page PDF with packed pages is refused", [p.status, ((await p.json()) as { code?: string }).code], [400, "multi_page_pdf"]);
+
+  const nd = new FormData();
+  nd.append("files", new File([PNG], "undated.png", { type: "image/png" }));
+  const { id: undated } = await (await fetch(`${BASE}/scans`, { method: "POST", body: nd, headers: { cookie } })).json() as { id: string };
+  const listed = await call("GET", "/scans?from=2026-04-01&to=2027-03-31&limit=1");
+  check("a sheet with no date still shows in the year's list", listed.some((r: any) => r.id === undated), true);
+  await call("DELETE", `/scans/${undated}`);
+
+  /* The same paper uploaded twice: said beside the sheet, never refused. A
+     picture of exactly the same size but other content is not the same paper. */
+  const tag = `same-paper-${Date.now()}`;
+  const paper = Buffer.concat([PNG, Buffer.from(tag)]);
+  const lookalike = Buffer.concat([PNG, Buffer.from(tag.replace(/\d/g, "x"))]);
+  const upOne = async (bytes: Buffer, name: string) => {
+    const f = new FormData();
+    f.append("files", new File([bytes], name, { type: "image/png" }));
+    f.append("slipDate", "2026-09-25");
+    return await (await fetch(`${BASE}/scans`, { method: "POST", body: f, headers: { cookie } })).json() as { id: string; samePictures?: number };
+  };
+  const first = await upOne(paper, "first.png");
+  const second = await upOne(paper, "again.png");
+  const other = await upOne(lookalike, "other.png");
+  check("the same picture uploaded again: the upload says so", [first.samePictures, second.samePictures], [0, 1]);
+  const s2 = await call("GET", `/scans/${second.id}`);
+  check("  ...the sheet names the one it repeats, page by page", s2.samePictures.map((x: any) => `${x.page}:${x.scanId === first.id}:${x.otherPage}`), ["1:true:1"]);
+  check("  ...and it is only a warning: the sheet waits to be read as usual", s2.status, "uploaded");
+  check("  ...the first sheet is told about the second too", (await call("GET", `/scans/${first.id}`)).samePictures.some((x: any) => x.scanId === second.id), true);
+  check("a picture of the same size but other content is not taken for it", (await call("GET", `/scans/${other.id}`)).samePictures.length, 0);
+  for (const x of [first, second, other]) await call("DELETE", `/scans/${x.id}`);
+}
+
+/* A rate inside the season's usual range but unlike the day's: a 1 read as a
+   7 (3150 as 3750). Amber, in words, one ✓ — never a stop. */
+console.log("\nA rate unlike the day's other rates");
+{
+  const fd5 = new FormData();
+  fd5.append("files", new File([PNG], "rates.png", { type: "image/png" }));
+  fd5.append("slipDate", "2026-09-26");
+  fd5.append("merchantId", grm.id);
+  fd5.append("jinsId", j1509.id);
+  const { id: id5 } = await (await fetch(`${BASE}/scans`, { method: "POST", body: fd5, headers: { cookie } })).json() as { id: string };
+  const rates = [3400, 3500, 3500, 3500, 3450, 3750];
+  const lines = rates.map((rate, i) => ({
+    id: `r${i}`, page: 1,
+    ocr: { rstNo: String(951 + i), adatiName: "फूलसिंह वर्मा", grossQtl: 20, katauti: 20, netQtl: 19.8, rate, confidence: 0.95, struckThrough: false, srNo: i + 1 },
+    rstNo: String(951 + i), adatiId: null, adatiRawText: "फूलसिंह वर्मा", grossGrams: 2_000_000,
+    katautiOverride: null, ratePaisePerQtl: rate * 100, excluded: false, nameCorrected: false, modelPick: null, confirmed: [],
+  }));
+  sqlite.prepare("update scan_batches set parsed_rows = ?, page_meta = ?, status = 'review', model = 'simulated', pages_done = 1 where id = ?")
+    .run(JSON.stringify(lines), JSON.stringify([{ page: 1, date: "26-09-2026", millName: null, jins: null, total: 118.8 }]), id5);
+  const s5 = await call("GET", `/scans/${id5}`);
+  const odd = s5.rows.find((r: any) => r.ratePaisePerQtl === 375_000);
+  check("3750 among 3400–3500 is flagged, saying what the day's rate is", odd.issues.find((i: any) => i.code === "rate_day")?.params, { median: 3500, low: 0 });
+  check("  ...as a look, not a stop", [odd.issues.find((i: any) => i.code === "rate_day")?.level, odd.blocking], ["warn", false]);
+  check("  ...the day's ordinary rates are not", s5.rows.filter((r: any) => r.issues.some((i: any) => i.code === "rate_day")).length, 1);
+  const seen = await call("PUT", `/scans/${id5}/rows`, { rows: s5.rows.map((r: any) => r.id === odd.id ? { ...r, confirmed: ["rate"] } : r), rev: s5.rev });
+  check("  ...✓ 'right as read' clears it", seen.rows.find((r: any) => r.id === odd.id).issues.some((i: any) => i.code === "rate_day"), false);
+  await call("DELETE", `/scans/${id5}`);
 }
 
 console.log(bad === 0 ? "\nOCR review pipeline works end to end." : `\n${bad} FAILED`);

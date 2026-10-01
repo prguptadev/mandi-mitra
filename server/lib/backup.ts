@@ -10,6 +10,8 @@ import { sqlite, DB_PATH, RESTORE_PENDING } from "../db/client.ts";
                       one a week for half a year)
      before-update-…  just before a database update is applied (20 kept)
      manual-…         "Back up now" (20 kept)
+   The scan pictures are files beside the database (data/scans), not in it:
+   they go into the second folder only, below, next to the database copies.
    Each is written under a temporary name, checked, then renamed: a file with
    a backup's name is always a whole, readable database.
    With a second folder set — a pen drive, or a Google Drive / OneDrive folder
@@ -26,14 +28,18 @@ const KEEP = { auto: 30, "before-update": 20, manual: 20, "before-restore": 10 }
 export type BackupKind = keyof typeof KEEP;
 export const BACKUP_NAME = /^(auto|before-update|manual|before-restore)-\d{8}-\d{6}\.db$/;
 
-export interface BackupConfig { folder: string | null; lastAt: string | null; lastError: string | null; copiedAt: string | null }
+export interface BackupConfig {
+  folder: string | null; lastAt: string | null; lastError: string | null; copiedAt: string | null;
+  /** Scan pictures in the second folder after the last copy: how many there are, of how many on this computer. */
+  pictures: { inFolder: number; here: number; at: string } | null;
+}
 
 export function readBackupConfig(): BackupConfig {
   try {
     const c = JSON.parse(fs.readFileSync(CFG_PATH, "utf8"));
-    return { folder: c.folder ?? null, lastAt: c.lastAt ?? null, lastError: c.lastError ?? null, copiedAt: c.copiedAt ?? null };
+    return { folder: c.folder ?? null, lastAt: c.lastAt ?? null, lastError: c.lastError ?? null, copiedAt: c.copiedAt ?? null, pictures: c.pictures ?? null };
   } catch {
-    return { folder: null, lastAt: null, lastError: null, copiedAt: null };
+    return { folder: null, lastAt: null, lastError: null, copiedAt: null, pictures: null };
   }
 }
 function writeBackupConfig(c: BackupConfig) {
@@ -93,6 +99,40 @@ export function setBackupFolder(folder: string | null) {
   writeBackupConfig({ ...c, folder });
 }
 
+/** Where the scan pictures live: beside the database, on this computer only. */
+export const SCAN_PICTURES_DIR = path.join(DATA_DIR, "scans");
+
+/**
+ * The scan pictures, copied into the second folder beside the database
+ * backups (in scans/<sheet>/). A picture is the paper behind every scanned
+ * slip, and the database backup does not hold it. Only what is new or
+ * changed is copied, and nothing in the folder is ever deleted, so a sheet
+ * deleted here by mistake can still be found there.
+ */
+export function copyScanPictures(out: string) {
+  let inFolder = 0, here = 0;
+  if (!fs.existsSync(SCAN_PICTURES_DIR)) return { inFolder, here };
+  for (const id of fs.readdirSync(SCAN_PICTURES_DIR)) {
+    const dir = path.join(SCAN_PICTURES_DIR, id);
+    if (!/^[A-Za-z0-9-]{8,64}$/.test(id) || !fs.statSync(dir).isDirectory()) continue;
+    for (const f of fs.readdirSync(dir)) {
+      const from = path.join(dir, f);
+      const st = fs.statSync(from);
+      if (!st.isFile() || f.endsWith(".tmp")) continue;
+      const picture = f !== "meta.json";
+      if (picture) here++;
+      const to = path.join(out, "scans", id, f);
+      // pictures never change once saved; the small meta.json beside them does
+      if (picture && fs.existsSync(to) && fs.statSync(to).size === st.size) { inFolder++; continue; }
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(from, `${to}.tmp`);
+      fs.renameSync(`${to}.tmp`, to);
+      if (picture) inFolder++;
+    }
+  }
+  return { inFolder, here };
+}
+
 export async function backupNow(kind: BackupKind) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
   const name = `${kind}-${stamp()}.db`;
@@ -109,13 +149,14 @@ export async function backupNow(kind: BackupKind) {
   prune(BACKUP_DIR, kind, name);
   const c = readBackupConfig();
   let copiedAt = c.copiedAt;
+  let pictures = c.pictures;
   let lastError: string | null = null;
   if (c.folder) {
     const problem = checkFolder(c.folder);
     if (problem) lastError = `Could not copy to ${c.folder}: ${problem}`;
     else {
+      const out = path.join(c.folder, "MandiMitra-backups", hostDir());
       try {
-        const out = path.join(c.folder, "MandiMitra-backups", hostDir());
         fs.mkdirSync(out, { recursive: true });
         fs.copyFileSync(file, path.join(out, `${name}.tmp`));
         fs.renameSync(path.join(out, `${name}.tmp`), path.join(out, name));
@@ -124,9 +165,15 @@ export async function backupNow(kind: BackupKind) {
       } catch (e) {
         lastError = `Could not copy to ${c.folder}: ${e instanceof Error ? e.message : "failed"}`;
       }
+      // the pictures go after the database, and a failure with them never costs the backup itself
+      try {
+        pictures = { ...copyScanPictures(out), at: new Date().toISOString() };
+      } catch (e) {
+        lastError = lastError ?? `The scan pictures could not all be copied to ${c.folder}: ${e instanceof Error ? e.message : "failed"}`;
+      }
     }
   }
-  writeBackupConfig({ ...c, lastAt: new Date().toISOString(), lastError, copiedAt });
+  writeBackupConfig({ ...c, lastAt: new Date().toISOString(), lastError, copiedAt, pictures });
   return { name, bytes: fs.statSync(file).size };
 }
 

@@ -5,6 +5,11 @@
  *   gemini-2.5-pro         not free on this key (429, limit 0)
  *   gemini-3.5-flash-lite  rejects our thinking setting (400), then reads the page
  *   gemini-3.8-flash       reads the page, but one gross wrong
+ *   gemini-test-pages      a two-page sheet: the PNG page reads whole (with
+ *                          an odd cell or two), the JPEG page's answer is cut
+ *                          short mid-line, as Google's is at its length limit
+ *   gemini-test-pages-whole  the same sheet, the JPEG page read whole: what
+ *                          reading that one page again brings back
  * GET /__calls lists every request, so tests can count them.
  */
 import http from "node:http";
@@ -32,6 +37,33 @@ const page = (rows: unknown[]) => ({
   candidates: [{ content: { parts: [{ text: JSON.stringify({ date: "21-09-2026", rows }) }] }, finishReason: "STOP" }],
   usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 400 },
 });
+
+/* Page 1 of a two-page sheet: where each line sits, a rate written "3450/-"
+   and a gross with a letter O in it; page 2 carries on at line 4 and is cut. */
+const PAGE_ONE = {
+  date: "21-09-2026", millName: "G.R.M", jins: "1509",
+  rows: [
+    { page: 1, srNo: 1, rstNo: "931", adatiName: "फूलसिंह वर्मा", grossQtl: 20.00, katauti: 20, netQtl: 19.80, rate: 3400, struckThrough: false, lineY: 210, confidence: 0.95 },
+    { page: 1, srNo: 2, rstNo: "932", adatiName: "शिवम ट्रेडिंग", grossQtl: 10.50, katauti: 11, netQtl: 10.39, rate: "3450/-", struckThrough: false, lineY: 240, confidence: 0.92 },
+    { page: 1, srNo: 3, rstNo: "933", adatiName: "पुष्पेन्द्र यादव", grossQtl: "5.0O", katauti: 5, netQtl: 4.95, rate: 3500, struckThrough: false, lineY: 270, confidence: 0.9 },
+  ],
+  totalWeightWritten: null,
+};
+const PAGE_TWO_CUT = '{"date": null, "millName": null, "jins": null, "rows": ['
+  + '{"page": 1, "srNo": 4, "rstNo": "934", "adatiName": "वीरेन्द्र जोशी", "grossQtl": 32.50, "katauti": 33, "netQtl": 32.17, "rate": 3500, "struckThrough": false, "lineY": 120, "confidence": 0.9}, '
+  + '{"page": 1, "srNo": 5, "rstNo": "935", "adatiName": "अरविन्द ट्रेडिंग", "grossQtl": 14.85, "katauti": 15, "netQtl": 14.70, "rate": 3470, "struckThrough": false, "lineY": 150, "confidence": 0.9}, '
+  + '{"page": 1, "srNo": 6, "rstNo": "9';
+// page 2 read whole: line 6, with its rate written so it reads "35Z1", and the
+// total at the bottom (32.50 + 14.85 + 26.40 gross)
+const PAGE_TWO_WHOLE = {
+  date: null, millName: null, jins: null,
+  rows: [
+    { page: 2, srNo: 4, rstNo: "934", adatiName: "वीरेन्द्र जोशी", grossQtl: 32.50, katauti: 33, netQtl: 32.17, rate: 3500, struckThrough: false, lineY: 120, confidence: 0.9 },
+    { page: 2, srNo: 5, rstNo: "935", adatiName: "अरविन्द ट्रेडिंग", grossQtl: 14.85, katauti: 15, netQtl: 14.70, rate: 3470, struckThrough: false, lineY: 150, confidence: 0.9 },
+    { page: 2, srNo: 6, rstNo: "936", adatiName: "अमित ट्रेडिंग", grossQtl: 26.40, katauti: 26, netQtl: 26.14, rate: "35Z1", struckThrough: false, lineY: 180, confidence: 0.9 },
+  ],
+  totalWeightWritten: 73.75,
+};
 
 export function startFakeGemini(port: number) {
   const calls: { model: string; thinking: boolean; at: number }[] = [];
@@ -66,6 +98,14 @@ export function startFakeGemini(port: number) {
         return send(200, page(SHEET_ROWS));
       }
       if (model === "gemini-3.8-flash") return send(200, page(SHEET_ROWS.map((r) => r.rstNo === "902" ? { ...r, grossQtl: 16.50, netQtl: 16.33 } : r)));
+      if (model === "gemini-test-pages" || model === "gemini-test-pages-whole") {
+        const parts = (JSON.parse(body || "{}").contents?.[0]?.parts ?? []) as { inlineData?: { mimeType?: string } }[];
+        const png = parts.find((x) => x.inlineData)?.inlineData?.mimeType === "image/png";
+        const whole = (o: unknown) => send(200, { candidates: [{ content: { parts: [{ text: JSON.stringify(o) }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 400 } });
+        if (png) return whole(PAGE_ONE);
+        if (model === "gemini-test-pages-whole") return whole(PAGE_TWO_WHOLE);
+        return send(200, { candidates: [{ content: { parts: [{ text: PAGE_TWO_CUT }] }, finishReason: "MAX_TOKENS" }], usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 32768 } });
+      }
       return send(404, { error: { code: 404, message: `models/${model} is not found` } });
     });
   });
