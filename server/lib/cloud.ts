@@ -70,11 +70,45 @@ export interface CloudConfig {
   changeCounter: number;
   /** Set up by v0.2's one-way cloud copy: the first sync takes the cloud as already seen. */
   fromCopy?: boolean;
+  /** Neither cloud.json nor its earlier copy could be read: sync waits, and nothing is written over them. Never saved. */
+  unreadable?: boolean;
+}
+
+/*
+ * cloud.json is saved several times a sync round. Each save is written whole
+ * to cloud.json.tmp, flushed to disk, then renamed over cloud.json, so the
+ * power going mid-save leaves the old file or the new one, never half of one.
+ * The copy before each save is kept as cloud.json.bak. If cloud.json still
+ * cannot be read (damaged, or cut short by v0.3.17's plain write), the earlier
+ * copy is used: at worst one batch is pulled again, which changes nothing. If
+ * neither can be read, sync waits and says so. A blank config with a new
+ * device id is never written over them: that would turn sync off and leave
+ * only JOIN, which drops the work not yet sent.
+ */
+const CFG_BAK = `${CFG_PATH}.bak`;
+export const CLOUD_CFG_UNREADABLE = "Sync is paused: this computer's sync settings file (cloud.json) could not be read, and nothing here is lost.";
+
+function readCfgFile(file: string): { c?: Partial<CloudConfig>; missing: boolean } {
+  let text: string;
+  try { text = fs.readFileSync(file, "utf8"); } catch (e) { return { missing: (e as NodeJS.ErrnoException).code === "ENOENT" }; }
+  try {
+    const c = JSON.parse(text);
+    if (c && typeof c === "object" && !Array.isArray(c)) return { c, missing: false };
+  } catch { /* cut short or damaged */ }
+  return { missing: false };
 }
 
 export function readCloudConfig(): CloudConfig {
-  let c: Partial<CloudConfig> = {};
-  try { c = JSON.parse(fs.readFileSync(CFG_PATH, "utf8")); } catch { /* first run */ }
+  const main = readCfgFile(CFG_PATH);
+  let c = main.c;
+  let unreadable = false;
+  if (!c) {
+    const bak = readCfgFile(CFG_BAK);
+    c = bak.c;
+    // neither file there at all is a first run; anything else is a file that cannot be read
+    if (!c) unreadable = !main.missing || !bak.missing;
+  }
+  c ??= {};
   const out: CloudConfig = {
     enc: c.enc ?? null, host: c.host ?? null,
     deviceId: c.deviceId ?? newId(), deviceName: c.deviceName ?? os.hostname(),
@@ -85,11 +119,35 @@ export function readCloudConfig(): CloudConfig {
     // v0.2 wrote no "live": its cloud holds only this computer's own copy
     fromCopy: c.fromCopy ?? (Boolean(c.enc) && c.live === undefined),
   };
+  if (unreadable) return { ...out, live: false, pausedReason: CLOUD_CFG_UNREADABLE, unreadable: true };
   if (!c.deviceId) writeCloudConfig(out);
   return out;
 }
-function writeCloudConfig(c: CloudConfig) { fs.writeFileSync(CFG_PATH, JSON.stringify(c, null, 2)); }
-function patchConfig(p: Partial<CloudConfig>) { const c = { ...readCloudConfig(), ...p }; writeCloudConfig(c); return c; }
+function writeCloudConfig(c: CloudConfig) {
+  const { unreadable: _never, ...keep } = c;
+  const tmp = `${CFG_PATH}.tmp`;
+  const fd = fs.openSync(tmp, "w");
+  try { fs.writeSync(fd, JSON.stringify(keep, null, 2)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  // the copy before this save, only ever a readable one; a damaged file is set aside, not lost
+  const before = readCfgFile(CFG_PATH);
+  if (before.c) fs.copyFileSync(CFG_PATH, CFG_BAK);
+  else if (!before.missing) fs.copyFileSync(CFG_PATH, `${CFG_PATH}.damaged`);
+  try {
+    fs.renameSync(tmp, CFG_PATH);
+  } catch {
+    // Windows: a virus scanner can hold the file a moment; the earlier copy is beside it meanwhile
+    fs.copyFileSync(tmp, CFG_PATH);
+    fs.rmSync(tmp, { force: true });
+  }
+}
+function patchConfig(p: Partial<CloudConfig>) {
+  const now = readCloudConfig();
+  // an unreadable file is replaced only by connecting again or turning sync off (both set the connection)
+  if (now.unreadable && !("enc" in p)) throw new CloudError(CLOUD_CFG_UNREADABLE);
+  const c = { ...now, ...p, unreadable: false };
+  writeCloudConfig(c);
+  return c;
+}
 
 /** "db.abcd.supabase.co:6543/postgres" — never the password. */
 export function describeConnection(conn: string): string {
@@ -344,6 +402,8 @@ export const measureCloudNext = () => { measureNext = true; };
 export interface SyncResult { pushed: number; pulled: number; clashes: number; paused?: string }
 export const cloudBusy = () => running !== null;
 export const syncEnabled = () => { const c = readCloudConfig(); return Boolean(c.enc && c.live); };
+/** Connected to a cloud, whether sync is running or only held (and, to be safe, when that cannot be read). */
+export const cloudConnected = () => { const c = readCloudConfig(); return Boolean(c.enc || c.unreadable); };
 
 /** One pull + push. One at a time; a second call waits for the running one. */
 export function syncNow(): Promise<SyncResult> {
@@ -372,8 +432,10 @@ async function doSync(): Promise<SyncResult> {
       const meta = await client.query("select value from mm_meta where key = 'schema'");
       const cloudSchema = meta.rows[0] ? Number(meta.rows[0].value.migrations) : 0;
       if (cloudSchema > mine) {
-        const v = meta.rows[0].value.version ?? "the newest";
-        const reason = `Another computer runs a newer Mandi Mitra (${v}). Update this computer to keep syncing — its work is kept here meanwhile.`;
+        // a build whose database changed without a new version number: name no version rather than this one's own
+        const v = meta.rows[0].value.version;
+        const named = v && v !== appVersion() ? ` (${v})` : "";
+        const reason = `Another computer runs a newer Mandi Mitra${named}. Update this computer to keep syncing — its work is kept here meanwhile.`;
         patchConfig({ pausedReason: reason, lastError: null });
         return { pushed: 0, pulled: 0, clashes: 0, paused: reason };
       }
@@ -700,7 +762,8 @@ export async function restoreFromCloud() {
   } catch (e) { throw explain(e); } finally { await p.end(); }
   if (!byTable.size) throw new CloudError("The cloud is empty — there is nothing to bring down.");
 
-  const backup = await backupNow("manual");
+  // kept apart from "Back up now" copies, so twenty of those never push out this computer's own data from before
+  const backup = await backupNow("before-cloud");
   installTriggers();
   const tables = syncedTables();
   const counts: Record<string, number> = {};
@@ -872,6 +935,12 @@ export const pendingCount = () => {
 
 export function syncStatus() {
   const c = readCloudConfig();
+  if (c.unreadable) {
+    return {
+      enabled: true as const, state: "paused" as SyncState, lastSyncAt: null, changeCounter: c.changeCounter,
+      pausedReason: c.pausedReason, lastError: null, pending: pendingCount(), clashes: clashCount(),
+    };
+  }
   if (!c.enc || !c.live) return { enabled: false as const, state: "off" as SyncState };
   // a quiet round (nothing of ours to send) is not shown: the badge stays still every 10 seconds
   const pending = pendingCount();

@@ -6,6 +6,7 @@ import { api } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { cn } from "@/lib/utils.ts";
+import { sayServer } from "@/lib/serverHi.ts";
 
 /* The top bar's sync icon: in step, syncing, offline (work goes on), or
    paused. When changes from another computer arrive, every screen refreshes
@@ -18,7 +19,7 @@ interface Status {
 }
 
 export function SyncIndicator() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { can } = useSession();
   const qc = useQueryClient();
   const [, navigate] = useLocation();
@@ -39,9 +40,9 @@ export function SyncIndicator() {
 
   if (!s?.enabled) return null;
   const ago = s.lastSyncAt ? Math.max(0, Math.round((Date.now() - new Date(s.lastSyncAt).getTime()) / 1000)) : null;
-  const title = s.state === "paused" ? s.pausedReason ?? ""
+  const title = s.state === "paused" ? sayServer(s.pausedReason ?? "", lang)
     : s.state === "offline" ? t("sync.tipOffline", { n: s.pending ?? 0 })
-    : s.state === "error" ? s.lastError ?? ""
+    : s.state === "error" ? sayServer(s.lastError ?? "", lang)
     : ago == null ? t("sync.notYet") : ago < 60 ? t("sync.tipSecs", { n: ago }) : t("sync.tipMins", { n: Math.round(ago / 60) });
   /* Nothing here alarms: no internet or a cloud hiccup is shown as a quiet grey
      cloud with the reason in its tooltip (work goes on and catches up by itself);

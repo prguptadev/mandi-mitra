@@ -145,11 +145,13 @@ check("a cloud with data asks to join, naming the computer already on it", bJoin
 check("…and does not start syncing on its own", (await B.call("GET", "/cloud/status")).enabled === false);
 check("joining needs JOIN typed", (await B.raw("POST", "/cloud/join", { connection: PG, confirm: "yes" })).status === 400);
 const joined = await B.call("POST", "/cloud/join", { connection: PG, confirm: "JOIN" });
-check("a backup of what was there is taken first", /^manual-/.test(joined.backup), joined.backup);
+check("a backup of what was there is taken first", /^before-cloud-/.test(joined.backup), joined.backup);
 check("no broken links after joining", joined.brokenLinks === 0, joined.brokenLinks);
 check("everyone signs in again after joining", (await B.raw("GET", "/auth/me")).status === 401);
 check("the office's people are now here (Admin was replaced)", (await B.call("GET", "/auth/users")).some((u: any) => u.name === "Test Owner"));
 await B.login();
+check("the backup taken before joining is listed apart from the ones made by hand",
+  (await B.call("GET", "/backup")).backups.some((b: any) => b.name === joined.backup && b.kind === "before-cloud"));
 check("the new install's own firm is gone", !(await B.call("GET", "/auth/me")).businesses.some((b: any) => b.shortCode === "SF"));
 
 console.log("\nAn empty install joins from the first screen");
@@ -365,7 +367,15 @@ const meta = (await cloud("select value from mm_meta where key = 'schema'"))[0].
 await cloud("update mm_meta set value = $1::jsonb where key = 'schema'", [JSON.stringify({ migrations: meta.migrations + 1, version: "9.9.9" })]);
 const paused = await C.sync();
 check("a computer on an older version pauses", Boolean(paused.paused) && paused.pushed === 0 && paused.pulled === 0, paused);
-check("…and says to update", (await C.call("GET", "/cloud/status")).state === "paused");
+const pausedSays = (await C.call("GET", "/cloud/status")) as { state: string; pausedReason: string };
+check("…and says to update", pausedSays.state === "paused");
+check("  ...naming the newer version", /\(9\.9\.9\)/.test(pausedSays.pausedReason), pausedSays.pausedReason);
+// a build whose database changed before its version number did: never "newer (the same version as here)"
+const ownVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version as string;
+await cloud("update mm_meta set value = $1::jsonb where key = 'schema'", [JSON.stringify({ migrations: meta.migrations + 1, version: ownVersion })]);
+await C.sync();
+const sameNo = (await C.call("GET", "/cloud/status")).pausedReason as string;
+check("  ...and not this computer's own version number", sameNo.includes("newer Mandi Mitra") && !sameNo.includes(`(${ownVersion})`), sameNo);
 await cloud("update mm_meta set value = $1::jsonb where key = 'schema'", [JSON.stringify(meta)]);
 check("once the versions match it carries on", !(await C.sync()).paused);
 
@@ -375,11 +385,22 @@ await B.sync();
 const devs = (await A.call("GET", "/cloud")).devices;
 check("every computer is listed, with its name", devs.length === 3 && devs.some((d: any) => d.name === "Munshi laptop"), devs.map((d: any) => d.name));
 
+console.log("\nA backup is not put back on a computer that syncs");
+const kept = await A.call("POST", "/backup/run");
+const restoreLive = await A.raw("POST", "/backup/restore", { name: kept.name, confirm: "RESTORE" });
+check("refused while sync is on", restoreLive.status === 400 && restoreLive.json.code === "sync_on", restoreLive.json);
+await A.call("POST", "/cloud/live", { on: false });
+const restoreHeld = await A.raw("POST", "/backup/restore", { name: kept.name, confirm: "RESTORE" });
+check("  ...and while sync is only held", restoreHeld.status === 400 && restoreHeld.json.code === "sync_on", restoreHeld.json);
+check("  ...pointing to Bring all data down", /Bring all data down/.test(restoreHeld.json.error), restoreHeld.json);
+check("  ...so nothing waits for the next start", !fs.existsSync(path.join(process.env.MANDI_DATA_DIR!, "restore-pending.json")));
+await A.call("POST", "/cloud/live", { on: true });
+
 console.log("\nBring everything down again (a computer's data replaced by the cloud's)");
 check("needs RESTORE typed", (await A.raw("POST", "/cloud/restore", { confirm: "yes" })).status === 400);
 const before = fingerprint(A);
 const r = await A.call("POST", "/cloud/restore", { confirm: "RESTORE" });
-check("a backup is taken first", /^manual-/.test(r.backup), r.backup);
+check("a backup is taken first", /^before-cloud-/.test(r.backup), r.backup);
 check("no broken links", r.brokenLinks === 0, r.brokenLinks);
 const after = fingerprint(A);
 check("every record comes back the same", Object.keys(before).every((t) => before[t] === after[t]), Object.keys(before).filter((t) => before[t] !== after[t]));
@@ -460,6 +481,31 @@ await C.call("POST", "/cloud/live", { on: true });
 await settle();
 check("switching it back on sends what was done meanwhile", A.q("select 1 from purchase_slips where id = ?", heldSlip.id).length === 1);
 await C.call("DELETE", `/slips/${heldSlip.id}`);
+await settle();
+
+console.log("\nA cut-short cloud.json (the power going while it was saved)");
+const cfgC = path.join(process.env.MANDI_DATA_DIR_C!, "cloud.json");
+const cId = C.cfg().deviceId as string;
+await C.sync(); // one more save, so the copy before it is there too
+const cutSlip = await C.call("POST", "/slips", { slipDate: "2026-09-26", rstNo: "CUT1", adatiId: sup.id, jinsId: j.id, merchantId: lb.id, grossGrams: 400_000, ratePaisePerQtl: 300000 });
+fs.writeFileSync(cfgC, fs.readFileSync(cfgC, "utf8").slice(0, 40));
+const cut = await C.call("GET", "/cloud/status");
+check("sync stays on", cut.enabled === true && cut.state !== "off", cut);
+const cutSync = await C.raw("POST", "/cloud/sync");
+const cutRow = (await cloud<{ device: string }>("select device from mm_rows where tbl = 'purchase_slips' and row_id = $1", [cutSlip.id]))[0];
+check("  ...the unsent slip goes up from this same computer", cutSync.status === 200 && cutRow?.device === cId, { sync: cutSync.json, row: cutRow });
+check("  ...which keeps its device id and connection", C.cfg().deviceId === cId && Boolean(C.cfg().enc));
+const goodCfgC = fs.readFileSync(cfgC, "utf8");
+fs.writeFileSync(cfgC, goodCfgC.slice(0, 40));
+fs.writeFileSync(`${cfgC}.bak`, "{");
+const lost = await C.call("GET", "/cloud/status");
+check("both copies unreadable: sync pauses and says so", lost.enabled === true && lost.state === "paused" && /could not be read/.test(lost.pausedReason ?? ""), lost);
+check("  ...nothing is written over the file", fs.readFileSync(cfgC, "utf8") === goodCfgC.slice(0, 40));
+const lostRestore = await C.raw("POST", "/backup/restore", { name: "manual-20260101-000000.db", confirm: "RESTORE" });
+check("  ...and no backup can be put back meanwhile", lostRestore.json?.code === "sync_on", lostRestore.json);
+fs.writeFileSync(cfgC, goodCfgC);
+check("with the file back, sync carries on", (await C.call("GET", "/cloud/status")).state === "ok" && (await C.raw("POST", "/cloud/sync")).status === 200);
+await C.call("DELETE", `/slips/${cutSlip.id}`);
 await settle();
 
 const off = await C.call("PUT", "/cloud", { connection: null });

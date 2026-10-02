@@ -6,6 +6,7 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { cn } from "@/lib/utils.ts";
 import { Alert, Badge, Button, Card, CardHeader, Dialog, Field, Input } from "@/components/ui/index.tsx";
+import { sayServer } from "@/lib/serverHi.ts";
 
 /* Backups of the whole database: automatic (every 12 hours), before every
    update, and on demand — optionally copied to a second folder such as a
@@ -16,7 +17,7 @@ interface BackupState {
   /** Scan pictures in the second folder after the last backup, of how many on this computer. */
   pictures?: { inFolder: number; here: number; at: string } | null;
   folders?: { data: string; db: string; scans: string; backups: string };
-  backups: { name: string; kind: "auto" | "before-update" | "manual" | "before-restore"; bytes: number; at: string }[];
+  backups: { name: string; kind: "auto" | "before-update" | "manual" | "before-restore" | "before-cloud"; bytes: number; at: string }[];
 }
 
 export function BackupCard() {
@@ -56,7 +57,7 @@ export function BackupCard() {
         action={<Button size="sm" variant="primary" loading={run.isPending} icon={<DatabaseBackup className="h-3.5 w-3.5" />} onClick={() => run.mutate()}>{t("backup.now")}</Button>} />
       <div className="space-y-3 p-4 text-[13px]">
         {err && <Alert tone="bad">{err}</Alert>}
-        {b?.lastError && <Alert tone="warn">{b.lastError}</Alert>}
+        {b?.lastError && <Alert tone="warn">{sayServer(b.lastError, lang)}</Alert>}
         <p className="text-muted">{b?.lastAt ? t("backup.last", { when: when(b.lastAt) }) : t("backup.never")}</p>
         <Field label={t("backup.folder")} hint={t("backup.folderHint")}>
           <div className="flex gap-2">
