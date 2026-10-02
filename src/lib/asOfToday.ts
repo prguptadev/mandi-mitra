@@ -40,18 +40,27 @@ export function millStatementRange(from: string, to: string, _today = todayISO()
   return qs.toString();
 }
 
-/** The stock page's (and a mill's stock page's) commodity and dates. */
-export function stockRange(f: { jinsId?: string; from?: string; to?: string }, _today = todayISO()) {
+/**
+ * The stock page's (and a mill's stock page's) commodity and dates. With no
+ * To date it stops at today, as the dashboard and the money card do: a slip or
+ * truck dated after today is not in stock until its day comes, or until later
+ * dates are picked.
+ */
+export function stockRange(f: { jinsId?: string; from?: string; to?: string }, today = todayISO()) {
   const qs = new URLSearchParams();
   if (f.jinsId) qs.set("jinsId", f.jinsId);
   if (f.from) qs.set("from", f.from);
-  if (f.to) qs.set("to", f.to);
+  qs.set("to", f.to || (f.from && f.from > today ? f.from : today));
   return qs;
 }
 
 export type DashPeriod = "fy" | "all" | "today" | "week" | "month" | "custom";
 
-/** The dashboard's period: the dates its figures are asked for. */
+/**
+ * The dashboard's period: the dates its figures are asked for. A period with
+ * no end ("All time", or From – to with the To box empty) stops at today, as
+ * "This year" and the money card do; dates picked past today are kept.
+ */
 export function dashboardPeriod(p: DashPeriod, from: string, to: string, fy: { from: string; to: string }, today = todayISO()): { from?: string; to?: string } {
   // the year so far (a year already over: to its 31 March), as the ledger page counts it
   if (p === "fy") return { from: fy.from, to: notAfterToday(fy.to, today) };
@@ -59,8 +68,8 @@ export function dashboardPeriod(p: DashPeriod, from: string, to: string, fy: { f
   if (p === "today") return { from: today, to: today };
   if (p === "week") { d.setUTCDate(d.getUTCDate() - 6); return { from: d.toISOString().slice(0, 10), to: today }; }
   if (p === "month") return { from: today.slice(0, 8) + "01", to: today };
-  if (p === "custom") return { from: from || undefined, to: to || undefined };
-  return {};
+  if (p === "custom") return { from: from || undefined, to: to || (from && from > today ? from : today) };
+  return { to: today };
 }
 
 /** What each mill owes today, and how old it is: the follow-up screen. */
