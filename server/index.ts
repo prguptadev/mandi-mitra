@@ -5,6 +5,7 @@ import { recoverInterruptedScans, fingerprintOldPagesLater } from "./routes/scan
 import { DB_PATH, sqlite } from "./db/client.ts";
 import { startAutoBackups } from "./lib/backup.ts";
 import { startCloudSync } from "./lib/cloud.ts";
+import { emptyOldSyncListLater } from "./lib/audit.ts";
 import { syncNewPermissions } from "./lib/rbacSync.ts";
 import { seedFirstRun } from "./lib/businessSetup.ts";
 
@@ -24,6 +25,8 @@ fingerprintOldPagesLater();
 serve({ fetch: createApp().fetch, port, hostname: process.env.MANDI_HOST ?? "127.0.0.1" });
 startAutoBackups();
 startCloudSync();
+// the old sync list nothing reads: emptied in the background, after the first screen
+emptyOldSyncListLater();
 console.log(`  api   http://localhost:${port}`);
 console.log(`  db    ${DB_PATH}`);
 

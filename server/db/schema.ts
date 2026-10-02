@@ -585,7 +585,7 @@ export const geminiCalls = sqliteTable(
   (t) => ({ idx: index("gemini_calls_key_idx").on(t.keyHash, t.at) }),
 );
 
-/** Every local write queues here for the cloud push. */
+/** No longer written or read (lib/audit.ts enqueueSync); emptied after start-up. Cloud sync uses _sync_dirty. */
 export const syncOutbox = sqliteTable(
   "sync_outbox",
   {
