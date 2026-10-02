@@ -149,6 +149,7 @@ export function CloudCard() {
           </>
         ) : (
           <>
+            {c?.pausedReason && <Alert tone="warn">{c.pausedReason}</Alert>}
             <ol className="list-decimal space-y-1 pl-5 text-[12px] leading-snug text-muted">
               <li>{t("cloud.step1")} <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-brand hover:underline">supabase.com <ExternalLink className="h-3 w-3" /></a></li>
               <li>{t("cloud.step2")}</li>

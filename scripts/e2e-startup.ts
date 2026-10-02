@@ -66,14 +66,15 @@ check("books with nothing dangling are not told about links", !/no longer there/
    only held, or just before connecting) must not land on a computer that
    syncs: its old records would be sent up over the other computers' newer work. */
 console.log("\nA backup waiting to be put back, on a computer that syncs");
-function startWithPendingRestore(sub: string, cloud: Record<string, unknown> | null) {
+function startWithPendingRestore(sub: string, cloud: Record<string, unknown> | string | null, bak?: Record<string, unknown>) {
   const d = path.join(dir, sub);
   fs.mkdirSync(d, { recursive: true });
   execFileSync("sqlite3", [source, `.backup ${path.join(d, "mandi.db")}`]);
   const old = path.join(d, "old.db");
   execFileSync("sqlite3", [source, `.backup ${old}`]);
   execFileSync("sqlite3", [old, "create table _from_the_backup (x)"]);
-  if (cloud) fs.writeFileSync(path.join(d, "cloud.json"), JSON.stringify(cloud));
+  if (cloud) fs.writeFileSync(path.join(d, "cloud.json"), typeof cloud === "string" ? cloud : JSON.stringify(cloud));
+  if (bak) fs.writeFileSync(path.join(d, "cloud.json.bak"), JSON.stringify(bak));
   fs.writeFileSync(path.join(d, "restore-pending.json"), JSON.stringify({ file: old, at: new Date().toISOString() }));
   execFileSync("npx", ["tsx", "server/db/migrate.ts"], {
     env: { ...process.env, MANDI_DATA_DIR: d, MANDI_NO_AUTO_BACKUP: "1" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
@@ -94,6 +95,10 @@ const off = startWithPendingRestore("off", { enc: null, live: false, cursor: 0 }
 check("sync turned off: the backup is put back", off.restored && !off.stillWaiting && off.note === null, off);
 const never = startWithPendingRestore("never", null);
 check("never connected: the backup is put back", never.restored && !never.stillWaiting, never);
+const cutShort = startWithPendingRestore("cut", '{\n  "enc": "connec', { enc: "connected", live: false, cursor: 120 });
+check("cloud.json cut short, its earlier copy connected: not put back", !cutShort.restored && !cutShort.stillWaiting, cutShort);
+const unreadable = startWithPendingRestore("unreadable", '{\n  "enc": "connec');
+check("cloud.json cut short with no earlier copy: not put back, to be safe", !unreadable.restored && !unreadable.stillWaiting, unreadable);
 
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(bad === 0 ? "\nStart-up survives an old dangling link." : `\n${bad} FAILED`);

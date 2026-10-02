@@ -16,9 +16,23 @@ export const RESTORE_PENDING = path.join(DATA_DIR, "restore-pending.json");
 export const RESTORE_WHILE_CONNECTED =
   "This computer syncs with the cloud, so going back to a backup here would undo the other computers' newer work. Use Cloud sync › Bring all data down instead.";
 
-/** Connected to cloud sync, held or not (cloud.json, read before anything else is open). */
+/**
+ * Connected to cloud sync, held or not (cloud.json, read before anything else
+ * is open, as lib/cloud.ts reads it: its earlier copy if it is damaged, and
+ * "connected" when neither can be read, to be safe).
+ */
 function cloudConnectedOnDisk() {
-  try { return Boolean(JSON.parse(fs.readFileSync(path.join(DATA_DIR, "cloud.json"), "utf8")).enc); } catch { return false; }
+  let unreadable = false;
+  for (const file of ["cloud.json", "cloud.json.bak"]) {
+    try {
+      const c = JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), "utf8"));
+      if (c && typeof c === "object") return Boolean(c.enc);
+      unreadable = true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") unreadable = true;
+    }
+  }
+  return unreadable;
 }
 
 /*

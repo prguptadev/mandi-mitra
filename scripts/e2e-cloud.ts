@@ -483,6 +483,31 @@ check("switching it back on sends what was done meanwhile", A.q("select 1 from p
 await C.call("DELETE", `/slips/${heldSlip.id}`);
 await settle();
 
+console.log("\nA cut-short cloud.json (the power going while it was saved)");
+const cfgC = path.join(process.env.MANDI_DATA_DIR_C!, "cloud.json");
+const cId = C.cfg().deviceId as string;
+await C.sync(); // one more save, so the copy before it is there too
+const cutSlip = await C.call("POST", "/slips", { slipDate: "2026-09-26", rstNo: "CUT1", adatiId: sup.id, jinsId: j.id, merchantId: lb.id, grossGrams: 400_000, ratePaisePerQtl: 300000 });
+fs.writeFileSync(cfgC, fs.readFileSync(cfgC, "utf8").slice(0, 40));
+const cut = await C.call("GET", "/cloud/status");
+check("sync stays on", cut.enabled === true && cut.state !== "off", cut);
+const cutSync = await C.raw("POST", "/cloud/sync");
+const cutRow = (await cloud<{ device: string }>("select device from mm_rows where tbl = 'purchase_slips' and row_id = $1", [cutSlip.id]))[0];
+check("  ...the unsent slip goes up from this same computer", cutSync.status === 200 && cutRow?.device === cId, { sync: cutSync.json, row: cutRow });
+check("  ...which keeps its device id and connection", C.cfg().deviceId === cId && Boolean(C.cfg().enc));
+const goodCfgC = fs.readFileSync(cfgC, "utf8");
+fs.writeFileSync(cfgC, goodCfgC.slice(0, 40));
+fs.writeFileSync(`${cfgC}.bak`, "{");
+const lost = await C.call("GET", "/cloud/status");
+check("both copies unreadable: sync pauses and says so", lost.enabled === true && lost.state === "paused" && /could not be read/.test(lost.pausedReason ?? ""), lost);
+check("  ...nothing is written over the file", fs.readFileSync(cfgC, "utf8") === goodCfgC.slice(0, 40));
+const lostRestore = await C.raw("POST", "/backup/restore", { name: "manual-20260101-000000.db", confirm: "RESTORE" });
+check("  ...and no backup can be put back meanwhile", lostRestore.json?.code === "sync_on", lostRestore.json);
+fs.writeFileSync(cfgC, goodCfgC);
+check("with the file back, sync carries on", (await C.call("GET", "/cloud/status")).state === "ok" && (await C.raw("POST", "/cloud/sync")).status === 200);
+await C.call("DELETE", `/slips/${cutSlip.id}`);
+await settle();
+
 const off = await C.call("PUT", "/cloud", { connection: null });
 check("sync can be turned off on one computer", off.configured === false && (await C.call("GET", "/cloud/status")).enabled === false);
 check("…keeping its data", C.q("select 1 from purchase_slips where id = ?", slip.id).length === 1);
