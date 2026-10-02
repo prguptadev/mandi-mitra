@@ -3,7 +3,7 @@
  * start-up switches that attach a debugger. Plain functions with no Electron in
  * them, so scripts/e2e-desk-desk.ts checks them without starting the app.
  *
- * Kept on purpose: typing (including AltGr and Alt-codes for Hindi), copy,
+ * Kept on purpose: typing (including AltGr, AltGr+Shift and Alt-codes for Hindi), copy,
  * cut, paste, undo, select-all, Ctrl+F, Ctrl+Enter (the scan grid uses it),
  * Esc, Alt+F4 and page zoom (Ctrl + = / - / 0, done by main.cjs because the app
  * has no menu that would do it).
@@ -42,10 +42,11 @@ function blockedKey(input) {
   if (!ctrl) return false;
   const letter = letterOf(input);
   if (!letter) return false;
+  // AltGr (Ctrl+Alt), with or without Shift, is typing on many keyboards (Hindi and other Indian layouts too)
+  if (input.alt && !input.meta) return false;
   if (input.shift) return CTRL_SHIFT.has(letter);
   // Cmd+Alt+I/J/C open developer tools on a Mac
-  if (input.alt && input.meta) return ["i", "j", "c"].includes(letter);
-  if (input.alt) return false; // AltGr (Ctrl+Alt) is typing on many keyboards
+  if (input.alt) return ["i", "j", "c"].includes(letter);
   return CTRL.has(letter);
 }
 

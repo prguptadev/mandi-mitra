@@ -42,7 +42,9 @@ const refused: [string, ReturnType<typeof key>][] = [
   ["Ctrl+T", key("KeyT", { control: true })], ["Ctrl+L", key("KeyL", { control: true })], ["Ctrl+O", key("KeyO", { control: true })],
   // a Hindi keyboard layout: the letter typed is Devanagari, the physical key is still I
   ["Ctrl+Shift+I on a Hindi layout", key("KeyI", { control: true, shift: true }, "ि")],
-  ["Cmd+Alt+I (Mac)", key("KeyI", { meta: true, alt: true }, "ˆ")],
+  ["Cmd+Alt+I (Mac)", key("KeyI", { meta: true, alt: true }, "ˆ")], ["Cmd+Alt+J (Mac)", key("KeyJ", { meta: true, alt: true }, "∆")],
+  ["Cmd+Alt+C (Mac)", key("KeyC", { meta: true, alt: true }, "ç")], ["Cmd+Shift+C (Mac)", key("KeyC", { meta: true, shift: true }, "C")],
+  ["Cmd+Alt+Shift+I (Mac)", key("KeyI", { meta: true, alt: true, shift: true }, "ˆ")],
 ];
 for (const [name, input] of refused) check(`refused: ${name}`, lockdown.blockedKey(input) === true, input);
 const kept: [string, ReturnType<typeof key>][] = [
@@ -51,6 +53,9 @@ const kept: [string, ReturnType<typeof key>][] = [
   ["Ctrl+F", key("KeyF", { control: true })], ["Ctrl+Enter", key("Enter", { control: true }, "Enter")], ["Escape", key("Escape", {}, "Escape")],
   ["AltGr+R (Ctrl+Alt, typing)", key("KeyR", { control: true, alt: true }, "₹")], ["Alt alone", key("AltLeft", { alt: true }, "Alt")],
   ["Alt+F4", key("F4", { alt: true }, "F4")], ["Ctrl+=", key("Equal", { control: true }, "=")],
+  // AltGr+Shift (Ctrl+Alt+Shift) is the second layer of AltGr letters on some Hindi and Indian layouts: every letter types
+  ...[..."ijckmrnt"].map((l): [string, ReturnType<typeof key>] => [`AltGr+Shift+${l.toUpperCase()} (Ctrl+Alt+Shift, typing)`, key(`Key${l.toUpperCase()}`, { control: true, alt: true, shift: true }, "ॐ")]),
+  ...[..."ruplnto"].map((l): [string, ReturnType<typeof key>] => [`AltGr+${l.toUpperCase()} (Ctrl+Alt, typing)`, key(`Key${l.toUpperCase()}`, { control: true, alt: true }, "ऋ")]),
 ];
 for (const [name, input] of kept) check(`kept: ${name}`, lockdown.blockedKey(input) === false, input);
 check("Ctrl + = / - / 0 zoom the page", lockdown.zoomKey(key("Equal", { control: true }, "=")) === "in" && lockdown.zoomKey(key("Minus", { control: true }, "-")) === "out"
