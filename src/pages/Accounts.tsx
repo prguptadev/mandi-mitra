@@ -1,5 +1,8 @@
 import { useMemo, useState } from "react";
 import { useFYRange } from "@/lib/fy.tsx";
+import { useFYRangeToToday } from "@/lib/fyToday.ts";
+import { findSuppliers, searchKeys, sortSuppliers, nextLedgerSort, ledgerSortOf, type LedgerSort } from "@/lib/ledgerList.ts";
+import { SheetViewer, type ScannedSheet } from "@/components/SheetViewer.tsx";
 import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
 import { useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -211,11 +214,19 @@ export function LedgerPage() {
   const search = new URLSearchParams(useSearch());
   const [selected, setSelected] = useState<string | null>(search.get("adati"));
   const [q, setQ] = useState("");
-  // the chosen financial year, until other dates are picked
-  const { from, setFrom, to, setTo, fy } = useFYRange();
+  // the chosen financial year from 1 April up to today, until other dates are picked
+  const { from, setFrom, to, setTo, fy } = useFYRangeToToday();
   const [paying, setPaying] = useState<null | { editing?: PaymentRow | null }>(null);
   const [err, setErr] = useState<string | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // a purchase line's paper: the scanned sheet it came from, or that mill's sheet of the day
+  const seesSheets = can("scan.review") || can("scan.create");
+  const [paperOf, setPaperOf] = useState<string | null>(null);
+  const paper = useQuery({
+    queryKey: ["scans", "for-slip", paperOf],
+    queryFn: () => api.get<{ how: "slip" | "day"; sheets: ScannedSheet[] }>(`/scans/for-slip/${paperOf}`),
+    enabled: Boolean(paperOf),
+  });
 
   // a past financial year: every balance as it stood on its 31 March
   const list = useQuery({
@@ -232,19 +243,17 @@ export function LedgerPage() {
   });
 
   const nameOf = (r: { nameHi: string; nameHinglish: string }) => (lang === "hi" ? r.nameHi : r.nameHinglish || r.nameHi);
-  const [order, setOrder] = useState<"owed" | "name" | "recent" | "slips">(() => {
-    try { return (localStorage.getItem("mandi.sort.ledger-list") as "owed" | "name" | "recent" | "slips") || "owed"; } catch { return "owed"; }
+  // the list: a name and what is to pay, found by name in Hindi or Hinglish, sorted by either column
+  const [order, setOrderNow] = useState<LedgerSort>(() => {
+    try { return ledgerSortOf(localStorage.getItem("mandi.sort.ledger-names")); } catch { return ledgerSortOf(null); }
   });
-  const rows = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    const all = list.data?.rows ?? [];
-    const found = needle ? all.filter((r) => r.nameHi.includes(q.trim()) || r.nameHinglish.toLowerCase().includes(needle) || (r.village ?? "").toLowerCase().includes(needle)) : all;
-    const coll = new Intl.Collator(["hi", "en"], { sensitivity: "base", numeric: true });
-    return [...found].sort((a, b) => order === "name" ? coll.compare(nameOf(a), nameOf(b))
-      : order === "recent" ? (b.lastActivity ?? "").localeCompare(a.lastActivity ?? "")
-      : order === "slips" ? b.slips - a.slips
-      : b.balancePaise - a.balancePaise);
-  }, [list.data, q, order, lang]);
+  const sortBy = (key: LedgerSort["key"]) => {
+    const next = nextLedgerSort(order, key);
+    setOrderNow(next);
+    try { localStorage.setItem("mandi.sort.ledger-names", JSON.stringify(next)); } catch { /* this sitting only */ }
+  };
+  const keys = useMemo(() => searchKeys(list.data?.rows ?? []), [list.data]);
+  const rows = useMemo(() => sortSuppliers(findSuppliers(list.data?.rows ?? [], q, keys), order, lang), [list.data, keys, q, order, lang]);
 
   const [voiding, setVoiding] = useState<{ id: string; amountPaise: number } | null>(null);
   const del = useMutation({
@@ -321,35 +330,38 @@ export function LedgerPage() {
         </div>
       )}
 
-      <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
+      <div className="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
         <Card className="self-start">
           <div className="border-b border-line p-3">
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
-              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("ledger.search")} className="h-8 pl-8 text-[13px]" />
+              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("ledger.searchName")} className="h-8 pl-8 text-[13px]" />
             </div>
-            <Select value={order} className="mt-2 h-8 text-[12px]"
-              onChange={(e) => { const v = e.target.value as typeof order; setOrder(v); try { localStorage.setItem("mandi.sort.ledger-list", v); } catch { /* ignore */ } }}>
-              <option value="owed">{t("ledger.sortOwed")}</option>
-              <option value="name">{t("ledger.sortName")}</option>
-              <option value="recent">{t("ledger.sortRecent")}</option>
-              <option value="slips">{t("ledger.sortSlips")}</option>
-            </Select>
           </div>
           {list.isPending ? <SkeletonTable rows={8} /> : list.isError ? <LoadError error={list.error} onRetry={() => void list.refetch()} /> : !rows.length ? (
-            <EmptyState icon={<BookOpen className="h-5 w-5" />} title={t("ledger.empty")} />
+            <EmptyState icon={<BookOpen className="h-5 w-5" />} title={q.trim() ? t("common.noResults") : t("ledger.empty")} />
           ) : (
-            <div className="max-h-[40vh] divide-y divide-line overflow-y-auto xl:max-h-[70vh]">
-              {rows.map((r) => (
-                <button key={r.id} type="button" onClick={() => setSelected(r.id)}
-                  className={cn("flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-raised/60", selected === r.id && "bg-brand/5")}>
-                  <span className="min-w-0">
-                    <span lang={lang === "hi" ? "hi" : undefined} className="block truncate text-[14px] text-ink">{nameOf(r)}</span>
-                    <span className="block text-[11px] text-faint">{r.slips} {t("ledger.slips")}{r.village ? ` · ${r.village}` : ""}</span>
-                  </span>
-                  <Balance paise={r.balancePaise} className="text-[13px]" />
-                </button>
-              ))}
+            <div className="max-h-[40vh] overflow-y-auto xl:max-h-[70vh]">
+              <table className="w-full border-collapse text-[13px]">
+                <thead>
+                  <tr>
+                    <Th sortDir={order.key === "name" ? order.dir : null} onSort={() => sortBy("name")}>{t("daily.supplier")}</Th>
+                    <Th numeric sortDir={order.key === "amount" ? order.dir : null} onSort={() => sortBy("amount")}>{t("ledger.colToPay")}</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.id} tabIndex={0} onClick={() => setSelected(r.id)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelected(r.id); } }}
+                      className={cn("cursor-pointer border-b border-line/70 transition-colors hover:bg-raised/60 focus-visible:bg-raised/60 focus-visible:outline-none", selected === r.id && "bg-brand/5")}>
+                      <td className="px-3 py-2"><span lang={lang === "hi" ? "hi" : undefined} className="block break-words text-[14px] leading-snug text-ink">{nameOf(r)}</span></td>
+                      {/* paid ahead shows as a minus, in orange */}
+                      <td className={cn("num whitespace-nowrap px-3 py-2 text-right", r.balancePaise < 0 ? "text-warn" : r.balancePaise === 0 && "text-muted")}
+                        title={r.balancePaise < 0 ? t("ledger.paidAhead") : undefined}>{f.money(r.balancePaise)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </Card>
@@ -426,7 +438,12 @@ export function LedgerPage() {
                     </tr>
                     {s.entries.map((e) => (
                       <Tr key={`${e.kind}-${e.id}`} className={cn(e.voided && "opacity-60")}>
-                        <Td className="whitespace-nowrap">{dmy(e.date)}</Td>
+                        <Td className="whitespace-nowrap">
+                          {e.kind === "purchase" && seesSheets ? (
+                            <button type="button" title={t("viewer.open")} onClick={() => setPaperOf(e.id)}
+                              className="text-brand underline decoration-dotted underline-offset-2 hover:decoration-solid print:text-ink print:no-underline">{dmy(e.date)}</button>
+                          ) : dmy(e.date)}
+                        </Td>
                         {e.kind === "purchase" ? (
                           <>
                             <Td className="whitespace-nowrap font-mono">{e.rstNo}{!e.ratePaisePerQtl && <Badge tone="warn" className="ml-1.5 font-sans">{t("daily.ratePending")}</Badge>}</Td>
@@ -499,6 +516,10 @@ export function LedgerPage() {
       )}
       {/* a past financial year: the sheet as it stood on its 31 March */}
       {sheetOpen && <PaySheetDialog onClose={() => setSheetOpen(false)} date={fy.current ? todayISO() : fy.to} />}
+      {paperOf && (
+        <SheetViewer sheets={paper.data?.sheets} loading={paper.isPending} error={paper.error ?? undefined} onRetry={() => void paper.refetch()}
+          note={paper.data?.how === "day" && paper.data.sheets.length ? t("viewer.sameDay") : undefined} onClose={() => setPaperOf(null)} />
+      )}
       {paying && (
         <PaymentDialog onClose={() => setPaying(null)} editing={paying.editing ?? null}
           adatiId={selected ?? undefined}

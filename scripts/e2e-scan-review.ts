@@ -248,6 +248,30 @@ try {
   console.log(` ${ok ? "PASS" : "FAIL"}  refused: already_committed`);
 }
 
+/* Every sheet stays findable by its day and mill, and a slip in the supplier
+   ledger opens the paper it came from: its own sheet, or — typed by hand —
+   the mill's sheet of that day. */
+console.log("\nScanned sheets, and a slip's paper");
+{
+  const listed = await call("GET", `/scans/sheets?from=${DATE}&to=${DATE}&merchantId=${grm.id}`);
+  const mine = listed.rows.find((s: any) => s.id === scanId);
+  check("the added sheet is listed under its day and mill", mine ? [mine.slipDate, mine.millCode, mine.jinsCode, mine.status] : null, [DATE, "GRM", "1509", "committed"]);
+  check("  ...with its pages and the slips it added", mine ? [mine.pages.length, mine.slipsAdded] : null, [1, 9]);
+  const own = await call("GET", `/scans/sheets?from=${DATE}&to=${DATE}&merchantId=own`);
+  check("  ...and not among the firm's own sheets", own.rows.some((s: any) => s.id === scanId), false);
+  const pic = await fetch(`${BASE}/scans/${scanId}/page/0?f=${encodeURIComponent(mine?.pages[0]?.name ?? "")}`, { headers: { cookie } });
+  check("its picture opens", [pic.status, pic.headers.get("content-type")], [200, "image/png"]);
+  const fromSheet = day.rows.find((r: any) => r.rstNo === "645");
+  const paper = await call("GET", `/scans/for-slip/${fromSheet.id}`);
+  check("a slip from the sheet opens that sheet", [paper.how, paper.sheets.map((s: any) => s.id)], ["slip", [scanId]]);
+  const typed = await call("POST", "/slips", { slipDate: DATE, rstNo: "9901", adatiId: ramveer.id, jinsId: j1509.id, merchantId: grm.id, grossGrams: 1_000_000, ratePaisePerQtl: 0 });
+  const paper2 = await call("GET", `/scans/for-slip/${typed.id}`);
+  check("a slip typed by hand opens the mill's sheet of its day", [paper2.how, paper2.sheets.map((s: any) => s.id)], ["day", [scanId]]);
+  const lone = await call("POST", "/slips", { slipDate: "2026-08-14", rstNo: "9902", adatiId: ramveer.id, jinsId: j1509.id, merchantId: grm.id, grossGrams: 1_000_000, ratePaisePerQtl: 0 });
+  check("a day with no sheet has none to show", (await call("GET", `/scans/for-slip/${lone.id}`)).sheets.length, 0);
+  sqlite.prepare("delete from purchase_slips where id in (?, ?)").run(typed.id, lone.id);
+}
+
 /* The same sheet uploaded again under another date: the rows already on the
    books (same RST, same weight, within 30 days) are flagged with the date they
    are on. A flag for the operator — it never blocks the sheet. */
@@ -659,6 +683,9 @@ console.log("\nA crossed-out line put back in");
   check("the line asks first whether it really belongs", keys.includes("struck"), true);
   const ticked = await call("PUT", `/scans/${id6}/rows`, { rows: s6.rows.map((r: any) => ({ ...r, confirmed: keys })), rev: s6.rev });
   check("  ...'All right as read' lets it be added", ticked.rows[0].blocking, false);
+  // filed under no mill: the tag next to the pictures names the firm, never a blank
+  const meta = JSON.parse(fs.readFileSync(path.resolve(process.env.MANDI_DATA_DIR!, "scans", id6, "meta.json"), "utf8"));
+  check("a sheet of the firm's own is tagged with the firm", [meta.slipDate, meta.mill?.ownFirm, Boolean(meta.mill?.code)], ["2026-09-27", true, true]);
   await call("DELETE", `/scans/${id6}`);
 }
 

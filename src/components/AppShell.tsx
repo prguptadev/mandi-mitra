@@ -5,7 +5,7 @@ import {
   Factory, Wheat, BookOpen, Wallet, UserCog, ShieldCheck, ScrollText, Settings,
   Menu, X, Sun, Moon, Languages, ChevronDown, LogOut, Building2, Check, Plus,
   PanelLeftOpen,
-  ClipboardList, Landmark, ClipboardCheck, KeyRound, FileSpreadsheet, CalendarCheck } from "lucide-react";
+  ClipboardList, Landmark, ClipboardCheck, KeyRound, FileSpreadsheet, CalendarCheck, Images } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import { ApiError } from "@/lib/api.ts";
 import { SyncIndicator } from "@/components/SyncIndicator.tsx";
@@ -29,6 +29,7 @@ const NAV: NavGroup[] = [
   { labelKey: "nav.operations", items: [
     { href: "/daily", labelKey: "nav.dailyList", icon: ListOrdered, perm: "slip.read" },
     { href: "/scan", labelKey: "nav.scan", icon: ScanLine, perm: "scan.create" },
+    { href: "/sheets", labelKey: "nav.scanSheets", icon: Images, perm: "scan.create" },
     { href: "/orders", labelKey: "nav.orders", icon: ClipboardList, perm: "po.read" },
     { href: "/loads", labelKey: "nav.loads", icon: Truck, perm: "load.read" },
     { href: "/challan", labelKey: "nav.challan", icon: ClipboardCheck, perm: "load.read" },
