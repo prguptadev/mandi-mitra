@@ -9,6 +9,8 @@
  *   recover     damaged, then missing books: the newest good backup is put back and the first screen says so
  *   badupdate   an update that cannot open the books: one sentence, "Go back to version …" and Close on the splash;
  *               Go back starts the kept installer and the app leaves
+ *   servergone  the books' server killed twice: "Mandi Mitra stopped working.", and Close still ends the app
+ *               (it used to stay running with no window, holding the single-instance lock)
  *   second      a second start only brings the first one forward
  *   freeze      (SCEN_BIG=<copy of a big mandi.db>) the window's process stays free while the server works
  *
@@ -17,7 +19,7 @@
  *        SCEN_ELECTRON=<the Electron binary> when it is not in node_modules/electron/dist.
  * Ports SCEN_PORT (default 13040) to +12. Test PINs only (a fresh first-run seed: Admin / 7747).
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -89,6 +91,11 @@ const signIn = (pg) => pg.evaluate(`(async () => {
 const fresh = (name) => { const d = path.join(DIR, name); fs.rmSync(d, { recursive: true, force: true }); fs.mkdirSync(d, { recursive: true }); return d; };
 const pidOf = (log, nth) => [...log.matchAll(/\[app\] start v\S+ pid (\d+)/g)].map((m) => Number(m[1]))[nth];
 const kill = (pid) => { try { process.kill(pid); } catch { /* gone */ } };
+/** The app's books server: its utility process running Node (macOS and Linux; ps). */
+const serverPids = (mainPid) => execFileSync("ps", ["-A", "-o", "pid=,ppid=,command="], { encoding: "utf8" }).split("\n")
+  .map((l) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l)).filter(Boolean)
+  .filter((m) => Number(m[2]) === mainPid && /--type=utility/.test(m[3]) && /node\.mojom\.NodeService/.test(m[3])).map((m) => Number(m[1]));
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 const scenarios = {
   async quit() {
@@ -285,6 +292,40 @@ const scenarios = {
     let upd = null;
     try { upd = JSON.parse(fs.readFileSync(path.join(ud, "data", "update.json"), "utf8")); } catch { /* none */ }
     check("  ...and this version is not offered again", Array.isArray(upd?.skip) && upd.skip.length === 1, upd);
+  },
+
+  async servergone() {
+    const ud = fresh("servergone");
+    const p = launch(ud);
+    await until(() => /window shown/.test(logOf(ud)), 20_000);
+    const main = pidOf(logOf(ud), 0);
+    const first = serverPids(main);
+    check("the books' server runs in its own process", first.length === 1, { main, first });
+    kill(first[0]);
+    const back = await until(() => /the server is running again/.test(logOf(ud)), 30_000, 200);
+    const second = back ? serverPids(main).filter((x) => x !== first[0]) : [];
+    check("  ...killed once, it is started again", Boolean(back) && second.length === 1, logOf(ud).slice(-500));
+    if (second[0]) kill(second[0]);
+    const t = await cdpTarget((u) => u.startsWith("data:text/html"));
+    const sp = t ? await connect(t.webSocketDebuggerUrl) : null;
+    const said = await until(async () => {
+      const x = await sp?.evaluate('document.body.classList.contains("err") && document.getElementById("status").textContent').catch(() => null);
+      return x || null;
+    }, 30_000, 200);
+    check("  ...killed again, the splash says so in one sentence", said === "Mandi Mitra stopped working.", said);
+    await sp?.evaluate('document.getElementById("close").click(), true').catch(() => undefined);
+    sp?.close();
+    const code = await Promise.race([p.exited, sleep(15_000).then(() => "still running")]);
+    check("  ...and Close ends the app (no process left running without a window)", code === 0 && !alive(main), { code, alive: alive(main) });
+    check("  ...the log says it closed", /\[app\] closed/.test(logOf(ud).split("[app] start v").pop() ?? ""), logOf(ud).slice(-300));
+    if (p.exitCode === null) p.kill();
+    const again = launch(ud);
+    const opened = await until(() => (logOf(ud).match(/window shown/g) ?? []).length >= 2, 30_000, 200);
+    check("  ...so the next double-click opens it again", Boolean(opened), logOf(ud).slice(-400));
+    const pg = await page();
+    await pg?.evaluate("window.close(), true").catch(() => undefined);
+    await Promise.race([again.exited, sleep(10_000)]);
+    if (again.exitCode === null) again.kill();
   },
 
   async second() {
