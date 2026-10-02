@@ -9,6 +9,7 @@ import {
 import { cn } from "@/lib/utils.ts";
 import { ApiError } from "@/lib/api.ts";
 import { SyncIndicator } from "@/components/SyncIndicator.tsx";
+import { DataNotice } from "@/components/DataNotice.tsx";
 import { OnAnotherComputer } from "@/components/OnAnotherComputer.tsx";
 import { useFY, useFYYears } from "@/lib/fy.tsx";
 import { MyPinDialog } from "@/components/MyPinDialog.tsx";
@@ -348,7 +349,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
         </header>
 
         <main className="min-w-0 flex-1 overflow-y-auto">
-          <div className={wide ? "px-2 py-2 sm:px-3" : "mx-auto max-w-[1400px] px-3 py-5 sm:px-6 sm:py-6"}>{children}</div>
+          <div className={wide ? "px-2 py-2 sm:px-3" : "mx-auto max-w-[1400px] px-3 py-5 sm:px-6 sm:py-6"}><DataNotice />{children}</div>
         </main>
       </div>
     </div>

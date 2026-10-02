@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { audit } from "../lib/audit.ts";
 import { can, actor, bad, requireAuth, type Env } from "../lib/http.ts";
-import { appVersion, checkForUpdate, installUpdate, isDesktop, setUpdateFolder, updateFolder } from "../lib/updater.ts";
+import { appVersion, checkForUpdate, goBack, installUpdate, isDesktop, setUpdateFolder, updateFolder } from "../lib/updater.ts";
 
 export const appRoutes = new Hono<Env>();
 
@@ -25,5 +25,15 @@ appRoutes.post("/update/install", can("app.update"), async (c) => {
     return c.json(await installUpdate(name));
   } catch (e) {
     throw bad(e instanceof Error ? e.message : "The update could not start", "update_failed");
+  }
+});
+
+/** Back to the kept earlier version (offered only while it can open these books). */
+appRoutes.post("/update/go-back", can("app.update"), async (c) => {
+  await audit({ actor: actor(c), action: "app.update", entity: "settings", entityId: "update", entityLabel: `Going back from ${appVersion()} to the kept earlier version` });
+  try {
+    return c.json(await goBack());
+  } catch (e) {
+    throw bad(e instanceof Error ? e.message : "The earlier version could not start", "update_failed");
   }
 });

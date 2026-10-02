@@ -14,6 +14,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const net = require("node:net");
 const { pathToFileURL } = require("node:url");
+const { spawn } = require("node:child_process");
 
 const smoke = process.argv.includes("--smoke-test");
 // a second copy only brings the first one forward; it never opens the database
@@ -33,6 +34,7 @@ function createSplash() {
     webPreferences: { contextIsolation: true, sandbox: true },
   });
   s.loadFile(path.join(__dirname, "splash.html"), { query: { v: app.getVersion() } });
+  s.on("session-end", closeBooks);
   const shown = new Promise((resolve) => { s.once("ready-to-show", () => { s.show(); resolve(); }); setTimeout(resolve, 2500); });
   return { s, shown };
 }
@@ -82,14 +84,54 @@ async function waitFor(url, ms) {
 let win = null;
 app.on("second-instance", () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.on("window-all-closed", () => app.quit());
-// write everything into the database file and close it, so no change waits in the side (-wal) file
-app.on("will-quit", () => { try { globalThis.__mandiShutdown?.(); } catch { /* closed already */ } });
+/** Write everything into the database file and close it, so no change waits in the side (-wal) file. */
+function closeBooks() { try { globalThis.__mandiShutdown?.(); } catch { /* closed already */ } }
+// a normal close: the day's work into a backup first (quick, this computer only), then the books closed
+app.on("will-quit", () => {
+  try { globalThis.__mandiBackupOnQuit?.(); } catch { /* the Backups card says it */ }
+  closeBooks();
+});
 // "Restore a backup" finishes on a fresh start, before the database is opened
 globalThis.__mandiRelaunch = () => {
-  try { globalThis.__mandiShutdown?.(); } catch { /* closed already */ }
+  closeBooks();
   app.relaunch();
   app.exit(0);
 };
+// the updater closes the books itself, then leaves for the installer
+globalThis.__mandiExit = () => app.exit(0);
+
+/** Starts an installer quietly; resolves once Windows has started it. */
+function runInstaller(file, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { detached: true, stdio: "ignore", windowsHide: false });
+    child.once("error", reject);
+    child.once("spawn", () => { child.unref(); resolve(); });
+  });
+}
+
+/*
+ * The app could not start. One plain sentence (the details go to the log).
+ * An update that could not open the books leaves them exactly as they were
+ * (it is rolled back), so going back to the version kept from before is safe
+ * and offered.
+ */
+async function startFailed(e) {
+  console.error("[start] Mandi Mitra could not start:", e);
+  const update = Boolean(e && e.mandiUpdateFailed);
+  const back = update && !e.diskFull ? e.goBack : null;
+  const message = !update ? `Mandi Mitra could not start: ${(e && e.message) || String(e)}`
+    : e.diskFull ? "The disk is full, so this version could not open your books; they are as they were. Free some space and open the app again."
+    : "This version could not open your books; they are as they were.";
+  const buttons = back ? [`Go back to version ${back.version}`, "Close"] : ["Close"];
+  const { response } = await dialog.showMessageBox({ type: "error", title: "Mandi Mitra", message, buttons, defaultId: 0, cancelId: buttons.length - 1, noLink: true });
+  if (!back || response !== 0) return;
+  try {
+    await runInstaller(back.file, ["/S", "--force-run", "--updated"]);
+  } catch (err) {
+    console.error("[start] the earlier version's installer did not start:", err);
+    await dialog.showMessageBox({ type: "error", title: "Mandi Mitra", message: "Windows did not start the earlier version. Open Mandi Mitra again to try once more.", buttons: ["Close"], noLink: true });
+  }
+}
 
 app.whenReady().then(async () => {
   // the splash first, and painted, before the database work holds up this process
@@ -104,10 +146,15 @@ app.whenReady().then(async () => {
   try {
     port = await startServer();
   } catch (e) {
-    if (smoke) { console.error("SMOKE FAIL start", e); app.exit(1); return; }
+    if (smoke) {
+      // what the start-up message would offer, for the build pipeline and tests
+      console.error(`SMOKE FAIL start ${JSON.stringify({ message: e && e.message, updateFailed: Boolean(e && e.mandiUpdateFailed), diskFull: Boolean(e && e.diskFull), goBack: (e && e.goBack && e.goBack.version) || null })}`, e);
+      app.exit(1);
+      return;
+    }
     await status(splash && splash.s, "Mandi Mitra could not start.", true);
-    dialog.showErrorBox("Mandi Mitra could not start", (e && e.message) ? `${e.message}\n\n${e.stack || ""}` : String(e));
-    app.quit();
+    await startFailed(e);
+    app.exit(0);
     return;
   }
   const base = `http://127.0.0.1:${port}`;
@@ -141,6 +188,8 @@ app.whenReady().then(async () => {
     icon: ICON, backgroundColor: BG(),
     webPreferences: { contextIsolation: true, sandbox: true },
   });
+  // Windows shutting down, restarting or logging off never sends will-quit: the books are closed here instead
+  win.on("session-end", closeBooks);
   // swap the splash for the main window only once it is drawn: no white flash
   win.once("ready-to-show", async () => {
     await sleep(Math.max(0, 900 - (Date.now() - openedAt)));

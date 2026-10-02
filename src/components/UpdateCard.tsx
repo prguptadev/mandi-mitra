@@ -14,6 +14,8 @@ interface UpdateState {
   version: string; desktop: boolean; folder: string;
   found: { name: string; version: string; verified: boolean | null } | null;
   latest: { version: string; url: string } | null; releasesUrl: string;
+  /** A kept earlier version this computer can safely go back to. */
+  previous?: { version: string } | null;
 }
 
 export function UpdateCard() {
@@ -34,6 +36,11 @@ export function UpdateCard() {
   });
   const install = useMutation({
     mutationFn: (name: string) => api.post<{ installing: string }>("/app/update/install", { name }),
+    onSuccess: (r) => setInstalling(r.installing),
+    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+  });
+  const back = useMutation({
+    mutationFn: () => api.post<{ installing: string }>("/app/update/go-back", {}),
     onSuccess: (r) => setInstalling(r.installing),
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
@@ -70,6 +77,15 @@ export function UpdateCard() {
               ) : <p className="text-[12px] text-muted">{t("upd.desktopOnly")}</p>}
             </div>
           ) : u && <p className="text-muted">{t("upd.none")}</p>}
+          {u?.desktop && u.previous && (
+            <p className="flex flex-wrap items-center gap-2 text-[12px] text-muted">
+              {t("upd.previous", { v: u.previous.version })}
+              <Button size="sm" variant="ghost" loading={back.isPending} disabled={Boolean(installing)}
+                onClick={async () => { const v = u.previous!.version; if (await ask({ title: t("upd.goBack", { v }), message: t("upd.goBackConfirm", { v }), confirmLabel: t("upd.goBack", { v }) })) back.mutate(); }}>
+                {t("upd.goBack", { v: u.previous.version })}
+              </Button>
+            </p>
+          )}
           <Field label={t("upd.folder")} hint={t("upd.folderHint")}>
             <div className="flex gap-2">
               <Input value={folder ?? u?.folder ?? ""} className="num text-[13px]" onChange={(e) => setFolder(e.target.value)} />

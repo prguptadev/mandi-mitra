@@ -2,7 +2,7 @@ import { serve } from "@hono/node-server";
 import { createApp } from "./app.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { recoverInterruptedScans, fingerprintOldPagesLater } from "./routes/scans.ts";
-import { DB_PATH, sqlite } from "./db/client.ts";
+import { DB_PATH, closeBooks, sqlite } from "./db/client.ts";
 import { startAutoBackups } from "./lib/backup.ts";
 import { startCloudSync } from "./lib/cloud.ts";
 import { syncNewPermissions } from "./lib/rbacSync.ts";
@@ -29,7 +29,7 @@ console.log(`  db    ${DB_PATH}`);
 
 /** Everything into the main database file, then closed: nothing is left only in the -wal file. */
 function shutdown() {
-  try { sqlite.pragma("wal_checkpoint(TRUNCATE)"); sqlite.close(); } catch { /* closed already */ }
+  closeBooks();
 }
 (globalThis as { __mandiShutdown?: () => void }).__mandiShutdown = shutdown;
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => { shutdown(); process.exit(0); });

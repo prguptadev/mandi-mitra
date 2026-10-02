@@ -3,20 +3,26 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { sqlite, DB_PATH, RESTORE_PENDING } from "../db/client.ts";
+import { sqlite, DB_PATH, RESTORE_PENDING, BACKUP_DIR, BACKUP_NAME, BOOKS_UNAVAILABLE, booksMode } from "../db/client.ts";
+import { plainError, readJsonFile, renameDurable, writeJsonFile } from "../db/durable.ts";
+
+export { BACKUP_DIR, BACKUP_NAME };
 
 /* Backups of the whole database (every business in it), taken with SQLite's
    own online backup, so a copy is consistent even while the app is in use.
-     auto-…           every 12 hours while the app runs (the last 30, plus
-                      one a week for half a year)
+     auto-…           every 12 hours while the app runs, once each evening,
+                      and on closing the app when the last one is 2 hours old
+                      (the last 30, plus one a week for half a year)
      before-update-…  just before a database update is applied (20 kept)
      manual-…         "Back up now" (20 kept)
      before-cloud-…   this computer's own data, just before the cloud's
                       replaced it (joining, or "Bring all data down"; 10 kept)
+   All of them together are also kept under a size limit (the oldest go
+   first, never the newest of a kind), so they cannot fill the disk.
    The scan pictures are files beside the database (data/scans), not in it:
    they go into the second folder only, below, next to the database copies.
-   Each is written under a temporary name, checked, then renamed: a file with
-   a backup's name is always a whole, readable database.
+   Each is written under a temporary name, checked, flushed to the disk, then
+   renamed: a file with a backup's name is always a whole, readable database.
    With a second folder set — a pen drive, or a Google Drive / OneDrive folder
    that syncs itself — every backup is copied there too, into a sub-folder
    named after this computer (two computers sharing one Drive folder never
@@ -25,33 +31,43 @@ import { sqlite, DB_PATH, RESTORE_PENDING } from "../db/client.ts";
    restoring an old backup must not change where backups go. */
 
 const DATA_DIR = path.dirname(DB_PATH);
-export const BACKUP_DIR = path.join(DATA_DIR, "backups");
 const CFG_PATH = path.join(DATA_DIR, "backup.json");
 const KEEP = { auto: 30, "before-update": 20, manual: 20, "before-restore": 10, "before-cloud": 10 } as const;
 export type BackupKind = keyof typeof KEEP;
-export const BACKUP_NAME = /^(auto|before-update|manual|before-restore|before-cloud)-\d{8}-\d{6}\.db$/;
 
 export interface BackupConfig {
   folder: string | null; lastAt: string | null; lastError: string | null; copiedAt: string | null;
+  /** The backup on this computer itself failed (not the second folder): said on every screen until one succeeds. */
+  localError: string | null;
   /** Scan pictures in the second folder after the last copy: how many there are, of how many on this computer. */
   pictures: { inFolder: number; here: number; at: string } | null;
 }
 
+/* backup.json is written whole (tmp, flushed, renamed) with its earlier copy
+   kept as backup.json.bak, which is read if the main file is ever cut short:
+   a power cut must not quietly forget the second folder. */
 export function readBackupConfig(): BackupConfig {
-  try {
-    const c = JSON.parse(fs.readFileSync(CFG_PATH, "utf8"));
-    return { folder: c.folder ?? null, lastAt: c.lastAt ?? null, lastError: c.lastError ?? null, copiedAt: c.copiedAt ?? null, pictures: c.pictures ?? null };
-  } catch {
-    return { folder: null, lastAt: null, lastError: null, copiedAt: null, pictures: null };
-  }
+  const c = readJsonFile<Partial<BackupConfig>>(CFG_PATH).value ?? {};
+  return {
+    folder: c.folder ?? null, lastAt: c.lastAt ?? null, lastError: c.lastError ?? null, copiedAt: c.copiedAt ?? null,
+    localError: c.localError ?? null, pictures: c.pictures ?? null,
+  };
 }
 function writeBackupConfig(c: BackupConfig) {
-  fs.writeFileSync(CFG_PATH, JSON.stringify(c, null, 2));
+  writeJsonFile(CFG_PATH, c);
+}
+function patchBackupConfig(p: Partial<BackupConfig>) {
+  try { writeBackupConfig({ ...readBackupConfig(), ...p }); } catch { /* the disk is full: the log says it */ }
 }
 
 const stamp = (d = new Date()) => {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
+/** Files in the order they were made (the time in the name). */
+const byStamp = (a: string, b: string) => a.replace(/^\D+/, "").localeCompare(b.replace(/^\D+/, ""));
+const removeBackup = (dir: string, f: string) => {
+  for (const s of ["", "-wal", "-shm"]) fs.rmSync(path.join(dir, f + s), { force: true });
 };
 
 const WEEKS_KEPT = 26;
@@ -74,7 +90,60 @@ function prune(dir: string, kind: BackupKind, keepAlso?: string) {
       if (!seen.has(String(week)) && seen.size < WEEKS_KEPT) { seen.add(String(week)); weekly.add(f); }
     }
   }
-  for (const f of old) if (!weekly.has(f)) fs.rmSync(path.join(dir, f), { force: true });
+  for (const f of old) if (!weekly.has(f)) removeBackup(dir, f);
+}
+
+/** At least this much may always be kept, however small the books. */
+const MIN_CAP = 1024 ** 3;
+/** All backups in a folder together: a dozen copies of the books, or 1 GB, whichever is more. */
+export const sizeCap = (dbBytes: number) => Math.max(MIN_CAP, 12 * dbBytes);
+/**
+ * Keeps the backups in a folder under `cap` bytes together: the oldest go
+ * first, of any kind, but never `keep` (the one just made) nor the newest of
+ * each kind. Returns the names removed.
+ */
+export function pruneBySize(dir: string, cap: number, keep: string[] = []): string[] {
+  const files = fs.readdirSync(dir).filter((f) => BACKUP_NAME.test(f)).sort(byStamp);
+  const sizes = new Map(files.map((f) => {
+    try { return [f, fs.statSync(path.join(dir, f)).size] as const; } catch { return [f, 0] as const; }
+  }));
+  let total = [...sizes.values()].reduce((s, n) => s + n, 0);
+  const newestOfKind = new Set<string>();
+  for (const f of [...files].reverse()) {
+    const kind = f.replace(/-\d{8}-\d{6}\.db$/, "");
+    if (![...newestOfKind].some((x) => x.startsWith(`${kind}-`))) newestOfKind.add(f);
+  }
+  const removed: string[] = [];
+  for (const f of files) {
+    if (total <= cap) break;
+    if (keep.includes(f) || newestOfKind.has(f)) continue;
+    removeBackup(dir, f);
+    total -= sizes.get(f) ?? 0;
+    removed.push(f);
+  }
+  return removed;
+}
+const dbBytes = () => { try { return fs.statSync(DB_PATH).size; } catch { return 0; } };
+
+/**
+ * Half-written copies left by a backup cut short (the app closed, killed, or
+ * the power going): the size of the books each, and nothing ever removed them.
+ * Only ones older than ten minutes: a backup running now is never touched.
+ */
+export function sweepStaleTemps(dir = BACKUP_DIR) {
+  let n = 0;
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!/\.tmp(-wal|-shm|-journal)?$/.test(f)) continue;
+      const file = path.join(dir, f);
+      try {
+        if (Date.now() - fs.statSync(file).mtimeMs < 10 * 60_000) continue;
+        fs.rmSync(file, { force: true });
+        n++;
+      } catch { /* gone already */ }
+    }
+  } catch { /* no folder yet */ }
+  return n;
 }
 
 /** A copy is only kept if SQLite can read it through. */
@@ -169,7 +238,29 @@ export function copyScanPictures(out: string, folder: string): Promise<void> {
 /** How long "Back up now" waits for the pictures before it answers; the rest carry on behind it. */
 const PICTURES_WAIT_MS = 2_000;
 
+/** A copy in the second folder, flushed off the app's only thread (a pen drive is slow). */
+async function copyToFolder(folder: string, name: string, kind: BackupKind) {
+  const out = path.join(folder, "MandiMitra-backups", hostDir());
+  fs.mkdirSync(out, { recursive: true });
+  const tmp = path.join(out, `${name}.tmp`);
+  await fsp.copyFile(path.join(BACKUP_DIR, name), tmp);
+  const h = await fsp.open(tmp, "r+");
+  try { await h.sync(); } finally { await h.close(); }
+  await fsp.rename(tmp, path.join(out, name));
+  prune(out, kind, name);
+  pruneBySize(out, sizeCap(dbBytes()), [name]);
+  return out;
+}
+
+/** The backup on this computer failed: one plain line, on every screen, until one succeeds. */
+function localFailed(e: unknown, what = "The backup could not be made") {
+  const text = `${what}: ${plainError(e)}`;
+  patchBackupConfig({ localError: text });
+  return text;
+}
+
 export async function backupNow(kind: BackupKind) {
+  if (booksMode() === "unavailable") throw new Error(BOOKS_UNAVAILABLE);
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
   const name = `${kind}-${stamp()}.db`;
   const file = path.join(BACKUP_DIR, name);
@@ -177,12 +268,13 @@ export async function backupNow(kind: BackupKind) {
   try {
     await sqlite.backup(tmp);
     verify(tmp);
-    fs.renameSync(tmp, file);
+    renameDurable(tmp, file);
   } catch (e) {
     fs.rmSync(tmp, { force: true });
-    throw e;
+    throw new Error(localFailed(e));
   }
   prune(BACKUP_DIR, kind, name);
+  pruneBySize(BACKUP_DIR, sizeCap(dbBytes()), [name]);
   const c = readBackupConfig();
   let copiedAt = c.copiedAt;
   let lastError: string | null = null;
@@ -191,20 +283,16 @@ export async function backupNow(kind: BackupKind) {
     const problem = checkFolder(c.folder);
     if (problem) lastError = `Could not copy to ${c.folder}: ${problem}`;
     else {
-      out = path.join(c.folder, "MandiMitra-backups", hostDir());
       try {
-        fs.mkdirSync(out, { recursive: true });
-        // a pen drive is slow: the copy runs off the app's only thread
-        await fsp.copyFile(file, path.join(out, `${name}.tmp`));
-        fs.renameSync(path.join(out, `${name}.tmp`), path.join(out, name));
-        prune(out, kind, name);
+        out = await copyToFolder(c.folder, name, kind);
         copiedAt = new Date().toISOString();
       } catch (e) {
-        lastError = `Could not copy to ${c.folder}: ${e instanceof Error ? e.message : "failed"}`;
+        out = null;
+        lastError = `Could not copy to ${c.folder}: ${plainError(e)}`;
       }
     }
   }
-  writeBackupConfig({ ...c, lastAt: new Date().toISOString(), lastError, copiedAt });
+  patchBackupConfig({ lastAt: new Date().toISOString(), lastError, copiedAt, localError: null });
   // the pictures go after the database, and a failure with them never costs the backup itself
   if (c.folder && out) {
     const job = copyScanPictures(out, c.folder);
@@ -223,43 +311,131 @@ export function listBackups() {
   }).sort((a, b) => b.at.localeCompare(a.at));
 }
 
-/**
- * A copy of the database just before an update changes its tables. Runs at
- * start-up, before anything else touches the database. VACUUM INTO writes a
- * whole, consistent copy (WAL included); it is checked before it counts.
- * Throws if no good copy could be made: the update must not go ahead then.
- */
-export function backupBeforeUpdate() {
+/** VACUUM INTO a checked copy, synchronously (start-up and closing, when nothing else runs). */
+function vacuumCopy(kind: BackupKind) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
-  const name = `before-update-${stamp()}.db`;
+  const name = `${kind}-${stamp()}.db`;
   const file = path.join(BACKUP_DIR, name);
   const tmp = `${file}.tmp`;
   fs.rmSync(tmp, { force: true });
   try {
     sqlite.prepare("vacuum into ?").run(tmp);
     verify(tmp);
-    fs.renameSync(tmp, file);
+    renameDurable(tmp, file);
   } catch (e) {
     fs.rmSync(tmp, { force: true });
     throw e;
   }
-  prune(BACKUP_DIR, "before-update", name);
+  prune(BACKUP_DIR, kind, name);
+  pruneBySize(BACKUP_DIR, sizeCap(dbBytes()), [name]);
   return file;
 }
 
+/**
+ * A copy of the database just before an update changes its tables. Runs at
+ * start-up, before anything else touches the database. VACUUM INTO writes a
+ * whole, consistent copy (WAL included); it is checked before it counts.
+ * When it cannot be made (a damaged page, or not enough room for VACUUM's own
+ * work), the file is copied as it is instead. When even that fails (the disk
+ * is full), the update still goes ahead — it is all one transaction, checked
+ * before it is kept, so the books are never left half-updated — and every
+ * screen says the backup failed. A backup must never stop the app opening.
+ */
+export function backupBeforeUpdate(): { file: string | null; plain?: boolean; problem?: string } {
+  try {
+    return { file: vacuumCopy("before-update") };
+  } catch (e) {
+    console.warn(`[db] could not VACUUM INTO a copy before the update (${plainError(e)}); copying the file as it is`);
+  }
+  const name = `before-update-${stamp()}.db`;
+  const file = path.join(BACKUP_DIR, name);
+  const tmp = `${file}.tmp`;
+  try {
+    try { sqlite.pragma("wal_checkpoint(TRUNCATE)"); } catch (e) { console.warn("[db] could not fold the -wal in before copying; the plain copy may miss the latest changes", e); }
+    fs.copyFileSync(DB_PATH, tmp);
+    renameDurable(tmp, file);
+    prune(BACKUP_DIR, "before-update", name);
+    pruneBySize(BACKUP_DIR, sizeCap(dbBytes()), [name]);
+    return { file, plain: true };
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    return { file: null, problem: localFailed(e, "No copy could be made before the update") };
+  }
+}
+
+/** The last automatic or by-hand backup on this computer, by the time in its name. */
+function lastLocalAt(): number | null {
+  try {
+    const f = fs.readdirSync(BACKUP_DIR).filter((n) => /^(auto|manual)-\d{8}-\d{6}\.db$/.test(n)).sort(byStamp).pop();
+    const m = f?.match(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+    return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime() : null;
+  } catch { return null; }
+}
+
+/**
+ * An automatic backup is due when the last one is 12 hours old, from "the
+ * future" (the PC clock went back), or the day's work has not been backed up
+ * yet after 6 in the evening.
+ */
+export function autoBackupDue(lastAt: number | null, now = new Date()) {
+  if (lastAt === null) return true;
+  const age = now.getTime() - lastAt;
+  if (age < 0 || age > 12 * 3600_000) return true;
+  const evening = new Date(now);
+  evening.setHours(18, 0, 0, 0);
+  return now >= evening && lastAt < evening.getTime();
+}
+
+/** Books larger than this are not copied while closing (closing must stay quick). */
+const QUIT_MAX_BYTES = 500 * 1024 * 1024;
+/**
+ * On closing the app normally: the day's work into a backup, if the last one
+ * is more than 2 hours old. Local only (a pen drive could hold the closing
+ * app for minutes); the next start copies it to the second folder.
+ * Never on a Windows shut-down, which must not be held up.
+ */
+export function backupOnQuit(): string | null {
+  if (booksMode() !== "ok" || !sqlite.open) return null;
+  const last = lastLocalAt();
+  if (last !== null && Date.now() - last >= 0 && Date.now() - last < 2 * 3600_000) return null;
+  if (dbBytes() > QUIT_MAX_BYTES) return null;
+  try {
+    const file = vacuumCopy("auto");
+    patchBackupConfig({ lastAt: new Date().toISOString(), localError: null });
+    return path.basename(file);
+  } catch (e) {
+    localFailed(e);
+    return null;
+  }
+}
+
+/** The newest local backup not yet in the second folder (one made while closing): copied at the next start. */
+async function copyLatestToFolder() {
+  const c = readBackupConfig();
+  if (!c.folder || checkFolder(c.folder)) return;
+  const f = fs.readdirSync(BACKUP_DIR).filter((n) => BACKUP_NAME.test(n)).sort(byStamp).pop();
+  if (!f || fs.existsSync(path.join(c.folder, "MandiMitra-backups", hostDir(), f))) return;
+  try {
+    await copyToFolder(c.folder, f, f.replace(/-\d{8}-\d{6}\.db$/, "") as BackupKind);
+    patchBackupConfig({ copiedAt: new Date().toISOString() });
+  } catch (e) {
+    patchBackupConfig({ lastError: `Could not copy to ${c.folder}: ${plainError(e)}` });
+  }
+}
+
 let timer: NodeJS.Timeout | null = null;
-/** Every hour, take an automatic backup if the last one is 12 hours old or more. */
+/** Every hour, take an automatic backup when one is due (see autoBackupDue). */
 export function startAutoBackups() {
-  if (timer || process.env.MANDI_NO_AUTO_BACKUP === "1") return;
+  sweepStaleTemps();
+  if (timer || process.env.MANDI_NO_AUTO_BACKUP === "1" || booksMode() === "unavailable") return;
+  (globalThis as { __mandiBackupOnQuit?: () => string | null }).__mandiBackupOnQuit = backupOnQuit;
   const tick = async () => {
     try {
       const last = listBackups().find((b) => b.kind === "auto");
-      const age = last ? Date.now() - new Date(last.at).getTime() : Infinity;
-      // a "future" backup means the PC clock went back: take one anyway
-      if (age > 12 * 3600_000 || age < 0) await backupNow("auto");
+      if (autoBackupDue(last ? new Date(last.at).getTime() : null)) await backupNow("auto");
+      else await copyLatestToFolder();
     } catch (e) {
-      const c = readBackupConfig();
-      writeBackupConfig({ ...c, lastError: e instanceof Error ? e.message : "Backup failed" });
+      if (!readBackupConfig().localError) localFailed(e);
     }
   };
   setTimeout(() => void tick(), 60_000).unref();
@@ -280,6 +456,6 @@ export function scheduleRestore(name: string, migrationsHere: number) {
   let theirs = 0;
   try { theirs = (d.prepare("select count(*) as n from __drizzle_migrations").get() as { n: number }).n; } catch { /* very old */ } finally { d.close(); }
   if (theirs > migrationsHere) throw new Error("That backup was made by a newer Mandi Mitra. Install that version first.");
-  fs.writeFileSync(RESTORE_PENDING, JSON.stringify({ file, at: new Date().toISOString() }));
+  writeJsonFile(RESTORE_PENDING, { file, at: new Date().toISOString() });
   return { name };
 }

@@ -3,9 +3,10 @@ import { z } from "zod";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { DB_PATH, RESTORE_WHILE_CONNECTED } from "../db/client.ts";
+import { DB_PATH, RESTORE_WHILE_CONNECTED, dismissStartNotice, readStartNotice } from "../db/client.ts";
+import { plainError } from "../db/durable.ts";
 import { audit } from "../lib/audit.ts";
-import { can, actor, bad, param, notFound, attachment, type Env } from "../lib/http.ts";
+import { can, actor, bad, param, notFound, attachment, requireAuth, type Env } from "../lib/http.ts";
 import { BACKUP_DIR, BACKUP_NAME, backupNow, checkFolder, listBackups, readBackupConfig, scheduleRestore, setBackupFolder } from "../lib/backup.ts";
 import { sqlite } from "../db/client.ts";
 import { cloudConnected } from "../lib/cloud.ts";
@@ -45,8 +46,23 @@ backupRoutes.put("/", can("backup.manage"), async (c) => {
   return c.json({ ok: true });
 });
 
+/*
+ * One line on every screen, for everyone signed in: what start-up did to the
+ * books (a backup put back, damaged books), else a backup on this computer
+ * that is failing. Second-folder problems stay on the Backups card.
+ */
+backupRoutes.get("/notice", requireAuth, (c) => {
+  const cfg = readBackupConfig();
+  return c.json({ start: readStartNotice(), backupFailing: cfg.localError });
+});
+backupRoutes.post("/notice/dismiss", requireAuth, (c) => {
+  dismissStartNotice();
+  return c.json({ ok: true });
+});
+
 backupRoutes.post("/run", can("backup.manage"), async (c) => {
-  const r = await backupNow("manual");
+  let r: Awaited<ReturnType<typeof backupNow>>;
+  try { r = await backupNow("manual"); } catch (e) { throw bad(plainError(e), "backup_failed"); }
   await audit({ actor: actor(c), action: "backup.run", entity: "settings", entityId: "backup", entityLabel: `Backup ${r.name} (${Math.round(r.bytes / 1024)} KB)` });
   return c.json({ ...r, ...readBackupConfig() });
 });

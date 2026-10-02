@@ -28,6 +28,8 @@ import { tallyRoutes } from "./routes/tally.ts";
 import { emandiRoutes } from "./routes/emandi.ts";
 import { dayRoutes } from "./routes/days.ts";
 import { millFollowupRoutes } from "./routes/millFollowup.ts";
+import { BOOKS_READ_ONLY, BOOKS_UNAVAILABLE, booksMode } from "./db/client.ts";
+import { COULD_NOT_WRITE, isDiskFull } from "./db/durable.ts";
 
 /** The whole API. Electron imports this same object — no second implementation. */
 export function createApp() {
@@ -49,6 +51,18 @@ export function createApp() {
       }
     }
     await next();
+  });
+  /* Damaged books with no good backup: they can be read, not saved to (a save
+     onto a damaged file can spread the damage). No books at all: nothing but
+     the reason. Signing in, backups and going back to one stay open. */
+  app.use("/api/*", async (c, next) => {
+    const mode = booksMode();
+    if (mode === "ok") return next();
+    const p = new URL(c.req.url).pathname;
+    if (p === "/api/health") return next();
+    if (mode === "unavailable") return c.json({ error: BOOKS_UNAVAILABLE, code: "books_unavailable" }, 503);
+    if (c.req.method === "GET" || /^\/api\/(auth|backup|app)\//.test(p) || p === "/api/backup" || p === "/api/cloud/restore") return next();
+    return c.json({ error: BOOKS_READ_ONLY, code: "books_read_only" }, 503);
   });
   app.use("/api/*", withSession);
   // with sync on, a change made here goes up within a couple of seconds
@@ -104,6 +118,9 @@ export function createApp() {
       }, 400);
     }
     console.error("[api]", err);
+    // said plainly: nothing was saved, and why
+    if (isDiskFull(err)) return c.json({ error: "The disk is full, so this was not saved. Free some space on this computer and try again.", code: "disk_full" }, 507);
+    if (/^SQLITE_IOERR/.test((err as { code?: string }).code ?? "")) return c.json({ error: COULD_NOT_WRITE, code: "io_error" }, 500);
     return c.json({ error: "Something went wrong on the server", code: "internal" }, 500);
   });
 
