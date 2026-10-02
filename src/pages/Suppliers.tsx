@@ -6,6 +6,7 @@ import { Link } from "wouter";
 import { api, ApiError, type Adati, type AdatiAlias } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSort } from "@/lib/useSort.ts";
+import { useRowWindow, RowSpacer } from "@/lib/useRowWindow.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
@@ -330,10 +331,17 @@ export function SuppliersPage() {
   }, [notice]);
   /** Which spelling the table and CSV use. */
   const [nameMode, setNameMode] = useState<"hi" | "hinglish" | "both">("both");
+  // the list is asked for once typing pauses, not once per letter
+  const [qAsked, setQAsked] = useState("");
+  useEffect(() => {
+    if (q === qAsked) return;
+    const id = setTimeout(() => setQAsked(q), q ? 250 : 0);
+    return () => clearTimeout(id);
+  }, [q]);
 
   const list = useQuery({
-    queryKey: ["adati", { q, showInactive }],
-    queryFn: () => api.get<Adati[]>(`/adati?${new URLSearchParams({ ...(q ? { q } : {}), ...(showInactive ? { all: "1" } : {}) })}`),
+    queryKey: ["adati", { q: qAsked, showInactive }],
+    queryFn: () => api.get<Adati[]>(`/adati?${new URLSearchParams({ ...(qAsked ? { q: qAsked } : {}), ...(showInactive ? { all: "1" } : {}) })}`),
   });
 
   const del = useMutation({
@@ -357,6 +365,8 @@ export function SuppliersPage() {
     nameHi: (r) => r.nameHi, nameHinglish: (r) => r.nameHinglish, village: (r) => r.village || r.villageHi,
     phone: (r) => r.phone, opening: (r) => r.openingBalancePaise, aliases: (r) => r.aliasCount,
   }, { storageKey: "suppliers" });
+  const win = useRowWindow(sort.sorted);
+  const cols = 6 + (nameMode === "both" ? 2 : 1);
 
   const csv = useMemo(() => {
     const header = ["Sr", ...(nameMode === "hi" ? ["Name (Hindi)"] : nameMode === "hinglish" ? ["Name"] : ["Name (Hindi)", "Name (Hinglish)"]),
@@ -459,10 +469,11 @@ export function SuppliersPage() {
                 <Th className="w-20" />
               </tr>
             </thead>
-            <tbody>
-              {sort.sorted.map((r, i) => (
+            <tbody ref={win.bodyRef}>
+              <RowSpacer at="top" height={win.topHeight} cols={cols} />
+              {win.rows.map((r, j) => (
                 <Tr key={r.id} className={cn(!r.active && "opacity-55")}>
-                  <Td className="num text-[12px] text-faint">{i + 1}</Td>
+                  <Td className="num text-[12px] text-faint">{win.start + j + 1}</Td>
                   {nameMode !== "hinglish" && (
                     <Td><span lang="hi" className="font-medium text-[15px]">{r.nameHi}</span></Td>
                   )}
@@ -516,6 +527,7 @@ export function SuppliersPage() {
                   </Td>
                 </Tr>
               ))}
+              <RowSpacer at="bottom" height={win.bottomHeight} cols={cols} />
             </tbody>
           </Table>
         )}

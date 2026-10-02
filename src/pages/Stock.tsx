@@ -3,6 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Boxes, Truck, FileSpreadsheet, ChevronRight, ArrowLeft, PackageOpen, Warehouse, Landmark } from "lucide-react";
 import { useSort } from "@/lib/useSort.ts";
+import { useRowWindow, RowSpacer } from "@/lib/useRowWindow.tsx";
 import { ReceiptDialog, type MillLedgerList } from "@/pages/MillMoney.tsx";
 import { api, ApiError, type Jins, type StockRow, type StockMillDay } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -255,6 +256,8 @@ export function MillAccountPage({ id }: { id: string }) {
     date: (d) => d.date, slips: (d) => d.slips, bought: (d) => d.boughtNet, avg: (d) => d.avgRatePaisePerQtl,
     loaded: (d) => d.loadedNet, left: (d) => d.stockNet, running: (d) => d.runningNet,
   }, { storageKey: "mill-days" });
+  const truckWin = useRowWindow(truckSort.sorted);
+  const dayWin = useRowWindow(daySort.sorted);
   const trucksTotal = a ? {
     weight: a.trucks.reduce((x, r) => x + r.weightGrams, 0),
     goods: a.trucks.reduce((x, r) => x + r.goodsPaise, 0),
@@ -343,8 +346,9 @@ export function MillAccountPage({ id }: { id: string }) {
                     <Th {...truckSort.th("parcha")}>{t("load.parchaNo")}</Th><Th numeric {...truckSort.th("total")}>{t("load.grandTotal")}</Th>
                   </tr>
                 </thead>
-                <tbody>
-                  {truckSort.sorted.map((x) => (
+                <tbody ref={truckWin.bodyRef}>
+                  <RowSpacer at="top" height={truckWin.topHeight} cols={8} />
+                  {truckWin.rows.map((x) => (
                     <Tr key={x.loadId} className={cn(x.mismatch && "bg-bad-soft/40")}>
                       <Td className="whitespace-nowrap">{dmy(x.loadDate)}</Td>
                       <Td className="font-mono"><Link href={`/loads/${x.loadId}`} className="text-brand hover:underline">{x.truckNo ?? "—"}</Link></Td>
@@ -359,6 +363,7 @@ export function MillAccountPage({ id }: { id: string }) {
                       <Td numeric className="font-medium">{x.grandTotalPaise != null ? f.money(x.grandTotalPaise) : <span className="text-faint">—</span>}</Td>
                     </Tr>
                   ))}
+                  <RowSpacer at="bottom" height={truckWin.bottomHeight} cols={8} />
                 </tbody>
                 <tfoot>
                   <tr className="bg-raised/50 text-[13px] font-semibold">
@@ -395,8 +400,9 @@ export function MillAccountPage({ id }: { id: string }) {
                 <Th numeric {...daySort.th("left")} title={t("stock.leftOfDayHint")}>{t("stock.leftOfDay")}</Th><Th numeric {...daySort.th("running")} title={t("stock.runningHint")}>{t("stock.running")}</Th><Th />
               </tr>
             </thead>
-            <tbody>
-              {daySort.sorted.map((d) => (
+            <tbody ref={dayWin.bodyRef}>
+              <RowSpacer at="top" height={dayWin.topHeight} cols={9} />
+              {dayWin.rows.map((d) => (
                 <tr key={d.date} className="border-b border-line/70 align-top">
                   <td className="whitespace-nowrap px-3 py-2"><Link href={`/daily?date=${d.date}`} className="hover:text-brand">{dmy(d.date)}</Link></td>
                   <td className="num px-3 py-2 text-right">{d.slips}</td>
@@ -432,6 +438,7 @@ export function MillAccountPage({ id }: { id: string }) {
                   </td>
                 </tr>
               ))}
+              <RowSpacer at="bottom" height={dayWin.bottomHeight} cols={9} />
             </tbody>
             <tfoot>
               <tr className="bg-raised/50 text-[13px] font-semibold">

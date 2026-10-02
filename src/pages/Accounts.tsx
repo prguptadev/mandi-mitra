@@ -18,6 +18,7 @@ import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { ReasonDialog } from "@/components/ReasonDialog.tsx";
 import { PaySheetDialog } from "@/components/PaySheetDialog.tsx";
 import { useSort } from "@/lib/useSort.ts";
+import { useRowWindow, RowSpacer } from "@/lib/useRowWindow.tsx";
 import {
   Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Textarea, Checkbox,
 } from "@/components/ui/index.tsx";
@@ -260,6 +261,7 @@ export function LedgerPage() {
   };
   const keys = useMemo(() => searchKeys(list.data?.rows ?? []), [list.data]);
   const rows = useMemo(() => sortSuppliers(findSuppliers(list.data?.rows ?? [], q, keys), order, lang), [list.data, keys, q, order, lang]);
+  const win = useRowWindow(rows);
 
   const [voiding, setVoiding] = useState<{ id: string; amountPaise: number } | null>(null);
   const del = useMutation({
@@ -355,8 +357,9 @@ export function LedgerPage() {
                     <Th numeric sortDir={order.key === "amount" ? order.dir : null} onSort={() => sortBy("amount")}>{t("ledger.colToPay")}</Th>
                   </tr>
                 </thead>
-                <tbody>
-                  {rows.map((r) => (
+                <tbody ref={win.bodyRef}>
+                  <RowSpacer at="top" height={win.topHeight} cols={2} />
+                  {win.rows.map((r) => (
                     <tr key={r.id} tabIndex={0} onClick={() => setSelected(r.id)}
                       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelected(r.id); } }}
                       className={cn("cursor-pointer border-b border-line/70 transition-colors hover:bg-raised/60 focus-visible:bg-raised/60 focus-visible:outline-none", selected === r.id && "bg-brand/5")}>
@@ -366,6 +369,7 @@ export function LedgerPage() {
                         title={r.balancePaise < 0 ? t("ledger.paidAhead") : undefined}>{f.money(r.balancePaise)}</td>
                     </tr>
                   ))}
+                  <RowSpacer at="bottom" height={win.bottomHeight} cols={2} />
                 </tbody>
               </table>
             </div>
@@ -572,6 +576,7 @@ export function PaymentsPage() {
     date: (p) => p.payDate, supplier: (p) => (lang === "hi" ? p.adatiNameHi : p.adatiNameHinglish || p.adatiNameHi),
     mode: (p) => p.mode, reference: (p) => p.reference, amount: (p) => p.amountPaise, by: (p) => p.createdByName,
   }, { storageKey: "payments" });
+  const win = useRowWindow(sort.sorted);
 
   return (
     <div>
@@ -611,8 +616,9 @@ export function PaymentsPage() {
                 <Th numeric {...sort.th("amount")}>{t("pay.amount")}</Th><Th {...sort.th("by")}>{t("pay.by")}</Th><Th className="w-20" />
               </tr>
             </thead>
-            <tbody>
-              {sort.sorted.map((p) => (
+            <tbody ref={win.bodyRef}>
+              <RowSpacer at="top" height={win.topHeight} cols={8} />
+              {win.rows.map((p) => (
                 <Tr key={p.id} className={cn(p.voidedAt && "opacity-60")}>
                   <Td className={cn("whitespace-nowrap", p.voidedAt && "line-through")}>{dmy(p.payDate)} <TallyMark flag={payFlags[p.id]} /></Td>
                   <Td className="num whitespace-nowrap text-muted">{p.voucherNo ? `PV-${p.voucherNo}` : "—"}</Td>
@@ -635,6 +641,7 @@ export function PaymentsPage() {
                   </Td>
                 </Tr>
               ))}
+              <RowSpacer at="bottom" height={win.bottomHeight} cols={8} />
             </tbody>
             <tfoot>
               <tr className="bg-raised/50 text-[13px] font-semibold">

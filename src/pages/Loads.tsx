@@ -14,6 +14,7 @@ import {
 } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSort } from "@/lib/useSort.ts";
+import { useRowWindow, RowSpacer } from "@/lib/useRowWindow.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
@@ -177,6 +178,7 @@ export function LoadsPage() {
     from: (r) => r.stockDates[0], loaded: (r) => r.loadedGrams, net: (r) => r.millNetGrams,
     parcha: (r) => r.parcha?.parchaNo, total: (r) => r.parcha?.grandTotalPaise,
   }, { storageKey: "loads" });
+  const win = useRowWindow(sort.sorted);
   const billed = rows.filter((r) => r.parcha);
   // hidden from roles that may not read parchas (the server sends no totals then): a dash, not ₹0
   const totalBilled = can("parcha.read") ? billed.reduce((s, r) => s + (r.parcha?.grandTotalPaise ?? 0), 0) : null;
@@ -233,8 +235,9 @@ export function LoadsPage() {
                 <Th {...sort.th("parcha")}>{t("load.parchaNo")}</Th><Th numeric {...sort.th("total")}>{t("load.grandTotal")}</Th>
               </tr>
             </thead>
-            <tbody>
-              {sort.sorted.map((r) => (
+            <tbody ref={win.bodyRef}>
+              <RowSpacer at="top" height={win.topHeight} cols={9} />
+              {win.rows.map((r) => (
                 <Tr key={r.id} onClick={() => navigate(`/loads/${r.id}`)}>
                   <Td className="whitespace-nowrap">{dmy(r.loadDate)}</Td>
                   <Td className="font-mono font-medium">{r.truckNo ?? <span className="text-faint">—</span>}</Td>
@@ -251,6 +254,7 @@ export function LoadsPage() {
                   <Td numeric className="font-medium">{r.parcha ? f.money(r.parcha.grandTotalPaise) : <span className="text-faint">—</span>}</Td>
                 </Tr>
               ))}
+              <RowSpacer at="bottom" height={win.bottomHeight} cols={9} />
             </tbody>
             {billed.length > 0 && (
               <tfoot>
@@ -1018,6 +1022,8 @@ export function ParchaRegisterPage() {
     no: (r) => r.parchaNo, date: (r) => r.invoiceDate, mill: (r) => r.millCode, truck: (r) => r.truckNo,
     status: (r) => r.status, total: (r) => r.grandTotalPaise, cut: (r) => r.shortagePaise, received: (r) => r.receivedPaise, due: (r) => r.duePaise,
   }, { storageKey: "parcha-register" });
+  const win = useRowWindow(sort.sorted);
+  const cols = money ? 10 : 7;
 
   return (
     <div>
@@ -1050,8 +1056,9 @@ export function ParchaRegisterPage() {
                 <Th className="w-10" />
               </tr>
             </thead>
-            <tbody>
-              {sort.sorted.map((r) => (
+            <tbody ref={win.bodyRef}>
+              <RowSpacer at="top" height={win.topHeight} cols={cols} />
+              {win.rows.map((r) => (
                 <Tr key={r.id} onClick={() => navigate(`/loads/${r.loadId}`)} className={cn(r.status === "void" && "opacity-60")}>
                   <Td className="font-medium">
                     <span className="font-mono">{r.parchaNo}</span> <TallyMark flag={parchaFlags[r.id]} />
@@ -1086,6 +1093,7 @@ export function ParchaRegisterPage() {
                   </Td>
                 </Tr>
               ))}
+              <RowSpacer at="bottom" height={win.bottomHeight} cols={cols} />
             </tbody>
             <tfoot>
               <tr className="bg-raised/50 text-[13px] font-semibold">
