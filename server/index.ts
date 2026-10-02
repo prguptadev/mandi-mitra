@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.ts";
-import { runMigrations } from "./db/migrate.ts";
+import { runMigrations, reportBrokenLinks } from "./db/migrate.ts";
 import { recoverInterruptedScans, fingerprintOldPagesLater } from "./routes/scans.ts";
 import { DB_PATH, sqlite } from "./db/client.ts";
 import { startAutoBackups } from "./lib/backup.ts";
@@ -9,9 +9,22 @@ import { syncNewPermissions } from "./lib/rbacSync.ts";
 import { seedFirstRun } from "./lib/businessSetup.ts";
 
 const port = Number(process.env.PORT ?? 8787);
-runMigrations();
-// fresh statistics for the query planner (cheap; only re-analyses what changed)
-sqlite.pragma("optimize=0x10002");
+const upToDate = runMigrations();
+/* Fresh statistics for the query planner (only re-analyses what changed).
+   They only ever change which index a query reads, never what it returns.
+   Right after an update (new indexes) it runs now; otherwise once the first
+   screen is up, the statistics kept from the last run serving until then.
+   Never sampled (analysis_limit): a sample of the first few hundred rows of
+   an index sees one business, and the planner would then think a business
+   has a few hundred slips. */
+if (!upToDate) sqlite.pragma("optimize=0x10002");
+setTimeout(() => {
+  if (upToDate) {
+    try { sqlite.pragma("optimize=0x10002"); } catch { /* closing */ }
+    // the note about records pointing at something long gone (see runMigrations)
+    reportBrokenLinks();
+  }
+}, 8_000).unref();
 setInterval(() => { try { sqlite.pragma("optimize"); } catch { /* closing */ } }, 6 * 3600_000).unref();
 if (await seedFirstRun()) console.log("[setup] first run: Vijay Laxmi Dal Mill and V C Enterprises, Admin + 2 Managers (PIN 7747)");
 const granted = syncNewPermissions();

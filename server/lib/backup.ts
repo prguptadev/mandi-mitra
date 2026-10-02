@@ -2,6 +2,8 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
 import { sqlite, DB_PATH, RESTORE_PENDING } from "../db/client.ts";
 
@@ -84,6 +86,43 @@ function verify(file: string) {
     const r = d.pragma("quick_check", { simple: true });
     if (r !== "ok") throw new Error(`the copy is damaged (${String(r).slice(0, 80)})`);
   } finally { d.close(); }
+}
+
+/* The same check on a thread of its own. Reading a big book's copy through
+   takes seconds on a slow laptop, and the app's one thread would answer no
+   screen meanwhile. If no thread can be started, it is checked here as before:
+   either way a copy is kept only once the check has passed. */
+const VERIFY_ASIDE = `
+const { parentPort, workerData } = require("node:worker_threads");
+(() => {
+  let Database;
+  try { Database = require(workerData.lib); } catch { parentPort.postMessage({ here: true }); return; }
+  let d;
+  try {
+    d = new Database(workerData.file, { readonly: true, fileMustExist: true });
+    const r = d.pragma("quick_check", { simple: true });
+    parentPort.postMessage(r === "ok" ? { ok: true } : { error: "the copy is damaged (" + String(r).slice(0, 80) + ")" });
+  } catch (e) {
+    parentPort.postMessage({ error: e && e.message ? e.message : String(e) });
+  } finally {
+    try { if (d) d.close(); } catch { /* closed */ }
+  }
+})();`;
+export function verifyAside(file: string): Promise<void> {
+  const here = () => new Promise<void>((resolve) => { verify(file); resolve(); });
+  let lib: string;
+  try { lib = createRequire(import.meta.url).resolve("better-sqlite3"); } catch { return here(); }
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (p: () => Promise<void>) => { if (!settled) { settled = true; p().then(resolve, reject); } };
+    let w: Worker;
+    try { w = new Worker(VERIFY_ASIDE, { eval: true, workerData: { lib, file } }); } catch { finish(here); return; }
+    w.once("message", (m: { ok?: boolean; here?: boolean; error?: string }) =>
+      finish(m.ok ? () => Promise.resolve() : m.here ? here : () => Promise.reject(new Error(m.error))));
+    // the thread itself failed (not the copy): check here
+    w.once("error", () => finish(here));
+    w.once("exit", () => finish(here));
+  });
 }
 const hostDir = () => os.hostname().replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40) || "this-computer";
 
@@ -176,7 +215,7 @@ export async function backupNow(kind: BackupKind) {
   const tmp = `${file}.tmp`;
   try {
     await sqlite.backup(tmp);
-    verify(tmp);
+    await verifyAside(tmp);
     fs.renameSync(tmp, file);
   } catch (e) {
     fs.rmSync(tmp, { force: true });

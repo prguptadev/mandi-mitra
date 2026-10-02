@@ -32,15 +32,41 @@ const describe = (links: BrokenLink[]) => {
 /** Set when the database was already carrying broken links before this start. */
 export let brokenLinksOnStart: BrokenLink[] = [];
 
-export function runMigrations() {
+/* Said plainly in the log, once, and again on the Audit screen's "Check the
+   books". Not an alarm: no figure depends on these, and an update must never
+   be blamed for what it did not do. */
+function sayBrokenLinks(links: BrokenLink[]) {
+  brokenLinksOnStart = links;
+  if (links.length) {
+    console.log(`[db] ${links.length} record(s) point at something that is no longer there (${describe(links)}). Nothing is blocked; the books check lists them.`);
+  }
+}
+
+/**
+ * With no update to apply, nothing at start-up can break a link, so the check
+ * (a pass over every table) is only for the log: runMigrations leaves it to
+ * this, which the server calls once it is answering. Never throws.
+ */
+export function reportBrokenLinks() {
+  try { sayBrokenLinks(brokenLinks()); } catch { /* closing, or the books check says it */ }
+}
+
+/**
+ * Brings the database up to date. Returns true when nothing needed applying,
+ * in which case the dangling-link note is left to reportBrokenLinks().
+ */
+export function runMigrations(): boolean {
   if (!fs.existsSync(path.join(FOLDER, "meta", "_journal.json"))) {
     console.warn("[db] no migrations found — run: npx drizzle-kit generate");
-    return;
+    return false;
   }
-  const journal = JSON.parse(fs.readFileSync(path.join(FOLDER, "meta", "_journal.json"), "utf8")) as { entries: unknown[] };
+  const journal = JSON.parse(fs.readFileSync(path.join(FOLDER, "meta", "_journal.json"), "utf8")) as { entries: { when: number }[] };
   const has = sqlite.prepare("select count(*) as n from sqlite_master where type = 'table' and name = '__drizzle_migrations'").get() as { n: number };
   const applied = has.n ? (sqlite.prepare("select count(*) as n from __drizzle_migrations").get() as { n: number }).n : 0;
   const updating = applied > 0 && applied < journal.entries.length;
+  // what drizzle itself applies: every entry newer than the newest one recorded here
+  const last = has.n ? sqlite.prepare("select created_at from __drizzle_migrations order by created_at desc limit 1").get() as { created_at: number | string } | undefined : undefined;
+  const pending = journal.entries.some((e) => !last || Number(last.created_at) < e.when);
   // an update about to change the tables: a checked copy first, or no update at all
   const backup = updating ? backupBeforeUpdate() : null;
   if (backup) console.log(`[db] backed up before update: ${path.basename(backup)}`);
@@ -52,13 +78,15 @@ export function runMigrations() {
   // table. Keys are off for the update and checked right after it instead.
   /* Links that were already broken before today — a row whose user was deleted,
      a mill removed years ago. They are not this update's doing, so they must
-     never stop the app: they are reported and the books check names them. */
-  const wasBroken = brokenLinks();
+     never stop the app: they are reported and the books check names them.
+     With nothing to apply nothing can break one, so the check (a pass over
+     every table) waits for reportBrokenLinks() instead of holding up the start. */
+  const wasBroken = pending ? brokenLinks() : [];
   sqlite.pragma("foreign_keys = OFF");
   let problem: string | null = null;
   try {
     migrate(db, { migrationsFolder: FOLDER });
-    const broken = brokenLinks();
+    const broken = pending ? brokenLinks() : [];
     const newly = broken.length - wasBroken.length;
     if (newly > 0) problem = `the update left ${newly} broken link(s) between records (${describe(broken)})`;
     if (!problem && before) {
@@ -80,18 +108,13 @@ export function runMigrations() {
       backup ? `Your data was put back from ${path.basename(backup)}; nothing was lost.` : "Your data is as it was; nothing was changed."
     } Please send this message to support.`);
   }
-  brokenLinksOnStart = wasBroken;
-  if (wasBroken.length) {
-    /* Said plainly in the log, once, and again on the Audit screen's "Check
-       the books". Not an alarm: no figure depends on these, and an update
-       must never be blamed for what it did not do. */
-    console.log(`[db] ${wasBroken.length} record(s) point at something that is no longer there (${describe(wasBroken)}). Nothing is blocked; the books check lists them.`);
-  }
+  if (pending) sayBrokenLinks(wasBroken);
   console.log("[db] migrations up to date");
+  return !pending;
 }
 
 // pathToFileURL, not string concat — the data dir can contain spaces
 // run directly (npm run db:push), not when bundled into the desktop server
 if (process.argv[1]?.endsWith("migrate.ts") && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  runMigrations();
+  if (runMigrations()) reportBrokenLinks();
 }
