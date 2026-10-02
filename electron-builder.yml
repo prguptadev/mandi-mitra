@@ -11,22 +11,53 @@ files:
   - desktop-build/**
   - dist/**
   - package.json
+  # Only the database module runs from node_modules: everything else the server
+  # and the screens use is already bundled into desktop-build/ and dist/.
+  - "!node_modules/!(better-sqlite3)/**"
+  # ...and of it only its JavaScript and the ready-made compiled file, not its C sources
+  - "!node_modules/better-sqlite3/{deps,src,build}/**"
+  - "!node_modules/better-sqlite3/binding.gyp"
 asarUnpack:
   # served and read from disk by the server; the native database module must be real files
   - dist/**
   - desktop-build/**
   - node_modules/better-sqlite3/**
-npmRebuild: true
+  # the server's own process starts from a real file
+  - electron/server-host.cjs
+# better-sqlite3 brings a ready-made Windows build that works in any Electron (Node-API): nothing to compile
+npmRebuild: false
+# Chromium's built-in words (date pickers, form messages) in English and Hindi; other languages fall back to English
+electronLanguages: [en-US, en-GB, hi]
+# Switched off inside MandiMitra.exe itself, so no setting or switch can turn them back on:
+electronFuses:
+  # ELECTRON_RUN_AS_NODE does nothing (the exe cannot be used as a plain Node.js)
+  runAsNode: false
+  # NODE_OPTIONS does nothing
+  enableNodeOptionsEnvironmentVariable: false
+  # --inspect and friends do nothing (Chromium's --remote-debugging-port is refused by electron/lockdown.cjs)
+  enableNodeCliInspectArguments: false
+  # the app's own code is only ever loaded from app.asar, and app.asar is checked against the exe
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  # pages from file:// (the splash) get no more than any web page
+  grantFileProtocolExtraPrivileges: false
+  # Left off: switching it on is one-way (back off, every sign-in is lost) and it is not proven here
+  # on Windows; the books themselves sit unencrypted beside the cookies anyway.
+  enableCookieEncryption: false
 win:
   icon: build/icon.ico
   target:
     - target: nsis
       arch: [x64]
   artifactName: MandiMitra-Setup-${version}.${ext}
+  files:
+    # the database module's ready-made builds for other systems (Mac, Linux, ARM) are not needed
+    - "!node_modules/better-sqlite3/prebuilds/!(win32-x64.node)"
 nsis:
+  # Kept as an assisted installer: a PC once installed "for all users" would get a second copy
+  # beside the old one with a one-click installer. Updates from the app run it silently either way.
   oneClick: false
   perMachine: false
-  allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
   shortcutName: Mandi Mitra

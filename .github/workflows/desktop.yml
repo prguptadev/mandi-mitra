@@ -1,23 +1,37 @@
 # Builds the Windows installer (MandiMitra-Setup-x.y.z.exe) on a Windows
-# machine, checks the packaged app starts and answers, and keeps the
-# installer as a download on the run's page.
+# machine, after the same checks as CI. Then proves the packaged app starts,
+# is locked down, and updates the version the shops have without losing its
+# books, and keeps the installer as a download on the run's page.
 name: Windows app
 
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+  # a change to Electron, its packaging or this file is tried on Windows before it reaches a release
+  pull_request:
+    paths:
+      - package.json
+      - package-lock.json
+      - "electron/**"
+      - electron-builder.yml
+      - .github/workflows/desktop.yml
 
 permissions:
   contents: write   # to publish the Release on a version tag
 
 jobs:
+  # typecheck, money checks and every end-to-end script: nothing is published if one fails
+  tests:
+    uses: ./.github/workflows/ci.yml
+
   windows:
+    needs: tests
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -47,13 +61,91 @@ jobs:
       - run: npm run build:desktop-server
       - name: Build the installer
         run: npx electron-builder --win --publish never
-      - name: The packaged app starts and answers
+
+      - name: The packaged app starts, answers and is locked down
         shell: pwsh
         run: |
-          $exe = Get-ChildItem release/win-unpacked -Filter MandiMitra.exe | Select-Object -First 1
-          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -PassThru -Wait -NoNewWindow
+          # server in its own process, screens, splash, the per-launch key, no devtools, refused keys,
+          # permissions, the server coming back after it dies, Windows shutdown closing the books
+          $exe = (Get-ChildItem release/win-unpacked -Filter MandiMitra.exe | Select-Object -First 1).FullName
+          $p = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -Wait -NoNewWindow
           if ($p.ExitCode -ne 0) { throw "smoke test failed with exit code $($p.ExitCode)" }
-      - uses: actions/upload-artifact@v4
+
+      - name: Tricks to get into the app do nothing (fuses and refused switches)
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem release/win-unpacked -Filter MandiMitra.exe | Select-Object -First 1).FullName
+          function Run-App([string]$argLine) { (Start-Process -FilePath $exe -ArgumentList $argLine -PassThru -Wait -NoNewWindow).ExitCode }
+          # the exe cannot be used as plain Node.js, and NODE_OPTIONS is ignored: it just runs as the app
+          $env:ELECTRON_RUN_AS_NODE = "1"
+          $c = Run-App "--smoke-test"
+          Remove-Item Env:ELECTRON_RUN_AS_NODE
+          if ($c -ne 0) { throw "ELECTRON_RUN_AS_NODE changed how the app runs (exit $c)" }
+          $env:NODE_OPTIONS = "--require ./no-such-file-test.js"
+          $c = Run-App "--smoke-test"
+          Remove-Item Env:NODE_OPTIONS
+          if ($c -ne 0) { throw "NODE_OPTIONS changed how the app runs (exit $c)" }
+          # debugging switches: the app refuses to start (exit code 3)
+          foreach ($s in @("--remote-debugging-port=9222", "/remote-debugging-port=9222", "-Remote-Debugging-Pipe", "--inspect=9229", "--js-flags=--expose-gc", "--user-data-dir=$env:RUNNER_TEMP\elsewhere-test")) {
+            $c = Run-App "$s --smoke-test"
+            if ($c -ne 3) { throw "the app started with $s (exit $c)" }
+            Write-Host "refused: $s"
+          }
+          $fuses = npx "@electron/fuses" read --app $exe
+          $fuses | Write-Host
+          foreach ($f in @("RunAsNode is Disabled", "EnableNodeOptionsEnvironmentVariable is Disabled", "EnableNodeCliInspectArguments is Disabled",
+                           "EnableEmbeddedAsarIntegrityValidation is Enabled", "OnlyLoadAppFromAsar is Enabled", "GrantFileProtocolExtraPrivileges is Disabled")) {
+            if (-not ($fuses -match [regex]::Escape($f))) { throw "fuse not set: $f" }
+          }
+
+      - name: Only what runs is packed
+        shell: pwsh
+        run: |
+          $list = npx asar list release/win-unpacked/resources/app.asar
+          $mods = @($list | Select-String -Pattern '^[\\/]node_modules[\\/]([^\\/]+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+          if (($mods -join ",") -ne "better-sqlite3") { throw "unexpected modules in the app: $($mods -join ', ')" }
+          $pre = @(Get-ChildItem release/win-unpacked/resources/app.asar.unpacked/node_modules/better-sqlite3/prebuilds)
+          if (($pre.Name -join ",") -ne "win32-x64.node") { throw "unexpected database builds: $($pre.Name -join ', ')" }
+          $setup = (Get-ChildItem release -Filter "MandiMitra-Setup-*.exe" | Select-Object -First 1).Length / 1MB
+          $folder = (Get-ChildItem release/win-unpacked -Recurse -File | Measure-Object Length -Sum).Sum / 1MB
+          Write-Host ("installer {0:N1} MB, installed folder {1:N1} MB" -f $setup, $folder)
+
+      - name: An update installs over the version the shops have, and opens its books
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = $env:GITHUB_REPOSITORY
+          $prev = gh release list --repo $repo --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName'
+          if (-not $prev) { Write-Host "No earlier release to update from."; exit 0 }
+          Write-Host "Updating from $prev"
+          gh release download $prev --repo $repo --pattern "MandiMitra-Setup-*.exe" --dir prev
+          $old = (Get-ChildItem prev -Filter "MandiMitra-Setup-*.exe" | Select-Object -First 1).FullName
+          # the older version, installed quietly for this user, as on the shop PCs
+          Start-Process -FilePath $old -ArgumentList "/S" -Wait
+          $installed = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Depth 1 -Filter MandiMitra.exe | Select-Object -First 1
+          if (-not $installed) { throw "$prev did not install" }
+          # it makes its books (made-up first-run data; versions before v0.3.19 use the real data folder in a smoke test)
+          Start-Process -FilePath $installed.FullName -ArgumentList "--smoke-test" -Wait -NoNewWindow
+          $books = Join-Path $env:APPDATA "mandi-mitra\data\mandi.db"
+          if (-not (Test-Path $books)) { throw "$prev made no books" }
+          New-Item -ItemType Directory -Force older | Out-Null
+          Copy-Item "$books*" older/
+          # this build's installer over it, quietly, as the app's own update runs it
+          $new = (Get-ChildItem release -Filter "MandiMitra-Setup-*.exe" | Select-Object -First 1).FullName
+          Start-Process -FilePath $new -ArgumentList "/S" -Wait
+          $after = @(Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Depth 1 -Filter MandiMitra.exe)
+          if ($after.Count -ne 1) { throw "expected one installed copy, found: $($after.FullName -join ', ')" }
+          $want = node -p "require('./package.json').version"
+          $got = (Get-Item $after[0].FullName).VersionInfo.ProductVersion
+          if (-not "$got".StartsWith($want)) { throw "installed version $got, expected $want" }
+          if (-not (Test-Path $books)) { throw "the update removed the books" }
+          # the new version opens a copy of the older books (updated, a copy kept first, nothing lost)
+          $env:MANDI_SMOKE_FROM = (Resolve-Path older/mandi.db).Path
+          $p = Start-Process -FilePath $after[0].FullName -ArgumentList "--smoke-test" -PassThru -Wait -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "this version did not open the books of $prev (exit $($p.ExitCode))" }
+
+      - uses: actions/upload-artifact@v6
         with:
           name: MandiMitra-Windows-installer
           path: release/*.exe
@@ -66,4 +158,4 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" release/MandiMitra-Setup-*.exe \
             --title "Mandi Mitra ${GITHUB_REF_NAME}" \
-            --notes "Windows installer. Download MandiMitra-Setup-*.exe, then in the app open Settings › App version and updates › Check for update. Your data is not touched by an update; a backup is taken first."
+            --notes "Windows installer. Download MandiMitra-Setup-*.exe, then in the app open Settings › App version and updates › Check for update. Your data is not touched by an update; a backup is taken first. If Edge says the file is not commonly downloaded: … › Keep › Show more › Keep anyway (the installer is not signed yet)."
