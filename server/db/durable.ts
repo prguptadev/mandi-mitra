@@ -111,9 +111,18 @@ export function isDamage(e: unknown) {
 export const DISK_FULL = "The disk is full. Free some space on this computer and try again.";
 export const COULD_NOT_WRITE = "This computer could not write the books file. Try again; if it keeps happening, restart the computer.";
 
-/** One plain sentence for an error from the disk or SQLite; others keep their own words. */
-export function plainError(e: unknown): string {
-  if (isDiskFull(e)) return DISK_FULL;
+/** Free bytes on the disk holding `dir` (Infinity when it cannot be told). */
+export function freeBytes(dir: string) {
+  try { const s = fs.statfsSync(dir); return s.bavail * s.bsize; } catch { return Infinity; }
+}
+
+/**
+ * One plain sentence for an error from the disk or SQLite; others keep their
+ * own words. With `dir`, a disk with (almost) nothing left is named as the
+ * cause even when SQLite only says it could not open or write a file.
+ */
+export function plainError(e: unknown, dir?: string): string {
+  if (isDiskFull(e) || (dir !== undefined && freeBytes(dir) < 1024 * 1024)) return DISK_FULL;
   const code = (e as { code?: string } | null)?.code ?? "";
   if (/^SQLITE_IOERR/.test(code) || code === "EIO") return COULD_NOT_WRITE;
   if (isDamage(e)) return "The file is damaged";

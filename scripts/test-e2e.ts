@@ -90,6 +90,7 @@ try {
   run("scripts/e2e-ca.ts");
   run("scripts/e2e-multi.ts");
   run("scripts/e2e-cloud.ts");
+  run("scripts/e2e-desk-safe.ts");
   run("scripts/e2e-sync-scans.ts");
   run("scripts/e2e-sync-single.ts");
   run("scripts/e2e-sync-restore.ts");

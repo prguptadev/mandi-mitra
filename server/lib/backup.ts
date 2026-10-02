@@ -66,6 +66,8 @@ const stamp = (d = new Date()) => {
 };
 /** Files in the order they were made (the time in the name). */
 const byStamp = (a: string, b: string) => a.replace(/^\D+/, "").localeCompare(b.replace(/^\D+/, ""));
+/** A half-written copy removed; a folder that is not there (or not a folder) is no matter. */
+const rmQuiet = (f: string) => { try { fs.rmSync(f, { force: true }); } catch { /* nothing to remove */ } };
 const removeBackup = (dir: string, f: string) => {
   for (const s of ["", "-wal", "-shm"]) fs.rmSync(path.join(dir, f + s), { force: true });
 };
@@ -254,23 +256,23 @@ async function copyToFolder(folder: string, name: string, kind: BackupKind) {
 
 /** The backup on this computer failed: one plain line, on every screen, until one succeeds. */
 function localFailed(e: unknown, what = "The backup could not be made") {
-  const text = `${what}: ${plainError(e)}`;
+  const text = `${what}: ${plainError(e, DATA_DIR)}`;
   patchBackupConfig({ localError: text });
   return text;
 }
 
 export async function backupNow(kind: BackupKind) {
   if (booksMode() === "unavailable") throw new Error(BOOKS_UNAVAILABLE);
-  fs.mkdirSync(BACKUP_DIR, { recursive: true });
   const name = `${kind}-${stamp()}.db`;
   const file = path.join(BACKUP_DIR, name);
   const tmp = `${file}.tmp`;
   try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
     await sqlite.backup(tmp);
     verify(tmp);
     renameDurable(tmp, file);
   } catch (e) {
-    fs.rmSync(tmp, { force: true });
+    rmQuiet(tmp);
     throw new Error(localFailed(e));
   }
   prune(BACKUP_DIR, kind, name);
@@ -288,7 +290,7 @@ export async function backupNow(kind: BackupKind) {
         copiedAt = new Date().toISOString();
       } catch (e) {
         out = null;
-        lastError = `Could not copy to ${c.folder}: ${plainError(e)}`;
+        lastError = `Could not copy to ${c.folder}: ${plainError(e, c.folder)}`;
       }
     }
   }
@@ -313,17 +315,17 @@ export function listBackups() {
 
 /** VACUUM INTO a checked copy, synchronously (start-up and closing, when nothing else runs). */
 function vacuumCopy(kind: BackupKind) {
-  fs.mkdirSync(BACKUP_DIR, { recursive: true });
   const name = `${kind}-${stamp()}.db`;
   const file = path.join(BACKUP_DIR, name);
   const tmp = `${file}.tmp`;
-  fs.rmSync(tmp, { force: true });
   try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    rmQuiet(tmp);
     sqlite.prepare("vacuum into ?").run(tmp);
     verify(tmp);
     renameDurable(tmp, file);
   } catch (e) {
-    fs.rmSync(tmp, { force: true });
+    rmQuiet(tmp);
     throw e;
   }
   prune(BACKUP_DIR, kind, name);
@@ -358,7 +360,7 @@ export function backupBeforeUpdate(): { file: string | null; plain?: boolean; pr
     pruneBySize(BACKUP_DIR, sizeCap(dbBytes()), [name]);
     return { file, plain: true };
   } catch (e) {
-    fs.rmSync(tmp, { force: true });
+    rmQuiet(tmp);
     return { file: null, problem: localFailed(e, "No copy could be made before the update") };
   }
 }
