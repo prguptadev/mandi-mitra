@@ -1,7 +1,7 @@
 import { eq, and, inArray } from "drizzle-orm";
 import { db, schema, sqlite } from "../db/client.ts";
 import { ChargeConfigSchema, type ChargeConfig } from "./charges.ts";
-import { billedFigures, storedWeighment, type LoadRow } from "./parcha.ts";
+import { billedFigures, storedWeighment, termsOfTruck, type LoadRow } from "./parcha.ts";
 import { newId } from "./ids.ts";
 
 /* Truck and parcha repairs after a cloud pull, and the rule for a truck
@@ -16,7 +16,8 @@ import { newId } from "./ids.ts";
  * is what the mill was billed, so the truck follows it:
  *   - a truck with a live parcha is billed, and holds the figures the parcha froze;
  *   - a truck with no live parcha is a draft, its stored net worked out from
- *     its mill's terms as they stand now (as every draft's is).
+ *     its terms (as every draft's is): those of its latest voided parcha when
+ *     it was billed before, else its mill's as they stand now.
  * The truck's own updated_at is left alone: a repair is not a new edit, so a
  * real change made later on another computer still wins, and two computers
  * repairing the same truck write the same record. */
@@ -96,9 +97,9 @@ export function repairTrucks(only?: string[], opts: { audit?: boolean } = {}): n
         const p = live.get(l.id);
         const want: Partial<LoadRow> = p ? billedFigures(l, p) : { status: "draft" };
         if (!p) {
-          const cfg = termsOf(l.merchantId);
-          const s = cfg ? storedWeighment(l, cfg) : null;
-          // a truck not weighed yet keeps its blanks; anything else follows the mill's terms
+          const mill = termsOf(l.merchantId);
+          const s = mill ? storedWeighment(l, termsOfTruck(l.id, mill)) : null;
+          // a truck not weighed yet keeps its blanks; anything else follows its terms
           if (s && (s.millNetGrams !== l.millNetGrams || s.bags !== (l.bags ?? 0) || s.millBardanaGrams !== (l.millBardanaGrams ?? 0))) Object.assign(want, s);
         }
         const patch = Object.fromEntries(Object.entries(want).filter(([k, v]) => l[k as keyof LoadRow] !== v)) as Partial<LoadRow>;
@@ -107,7 +108,7 @@ export function repairTrucks(only?: string[], opts: { audit?: boolean } = {}): n
         db.update(L).set(patch).where(eq(L.id, l.id)).run();
         changed++;
         if (opts.audit === false) continue;
-        const why = p ? `put in step with parcha #${p.parchaNo}` : l.status === "billed" ? "back to draft: it has no live parcha" : "stored weight worked out again from the mill's terms";
+        const why = p ? `put in step with parcha #${p.parchaNo}` : l.status === "billed" ? "back to draft: it has no live parcha" : "stored weight worked out again from the truck's terms";
         auditSync(l.businessId, "load.resync", "load", l.id, `${l.truckNo ?? "truck"} ${l.loadDate}: ${why}`,
           Object.fromEntries(keys.map((k) => [k, l[k as keyof LoadRow]])), patch as Record<string, unknown>);
       } catch { /* leave this truck as it is */ }

@@ -177,7 +177,31 @@ function weighment(l: LoadRow, cfg: ChargeConfig) {
   return { katte, bore, bags: katte + bore, katteBardanaGrams, boreBardanaGrams, bardanaGrams, grossGrams, netGrams };
 }
 
-/** Recompute the stored mill figures from gross, bags and the mill's terms. */
+/**
+ * The terms a truck is billed on. Once a truck has had a parcha it keeps the
+ * terms that parcha froze — the live one, else the latest voided one — so
+ * voiding it to put something right and approving again never re-prices it
+ * on terms the mill was given since. A truck never billed takes its mill's
+ * terms as they stand. Ids are UUIDv7, so the largest is the latest, and
+ * every computer picks the same parcha.
+ */
+export function truckTerms(millCfg: ChargeConfig, parchas: { id: string; status: string; snapshot: string }[]): ChargeConfig {
+  const last = parchas.find((p) => p.status === "approved")
+    ?? parchas.reduce<(typeof parchas)[number] | null>((a, p) => (!a || p.id > a.id ? p : a), null);
+  if (!last) return millCfg;
+  try {
+    const r = ChargeConfigSchema.safeParse((JSON.parse(last.snapshot) as Partial<ParchaDoc>).config);
+    return r.success ? r.data : millCfg;
+  } catch { return millCfg; }
+}
+
+/** The same rule, read from the books for one truck (synchronous: the sync repair calls it inside its transaction). */
+export function termsOfTruck(loadId: string, millCfg: ChargeConfig): ChargeConfig {
+  const P = schema.parchas;
+  return truckTerms(millCfg, db.select({ id: P.id, status: P.status, snapshot: P.snapshot }).from(P).where(eq(P.loadId, loadId)).all());
+}
+
+/** Recompute the stored mill figures from gross, bags and the truck's terms (termsOfTruck). */
 export function storedWeighment(l: LoadRow, cfg: ChargeConfig) {
   const w = weighment(l, cfg);
   return { bags: w.bags, millBardanaGrams: w.bardanaGrams, millNetGrams: w.netGrams };
@@ -226,14 +250,15 @@ export function billedFigures(l: LoadRow, p: { parchaNo: string; invoiceDate: st
 /**
  * Stock, PO balances and the dashboard read the stored mill net, so it is
  * recomputed whenever a mill's terms change (e.g. bardana 0.57 → 0.60 kg) —
- * for draft trucks only; an approved truck keeps what was billed.
+ * for draft trucks only; an approved truck keeps what was billed, and a draft
+ * that was billed before (its parcha voided) keeps the terms it was billed on.
  */
 export async function refreshDraftWeighments(merchantId: string) {
   const [m] = await db.select({ cfg: schema.merchants.chargeConfig }).from(schema.merchants).where(eq(schema.merchants.id, merchantId)).limit(1);
   if (!m) return 0;
   const cfg = ChargeConfigSchema.parse(JSON.parse(m.cfg));
   const drafts = await db.select().from(schema.loads).where(and(eq(schema.loads.merchantId, merchantId), eq(schema.loads.status, "draft")));
-  for (const l of drafts) await db.update(schema.loads).set(storedWeighment(l, cfg)).where(eq(schema.loads.id, l.id));
+  for (const l of drafts) await db.update(schema.loads).set(storedWeighment(l, termsOfTruck(l.id, cfg))).where(eq(schema.loads.id, l.id));
   return drafts.length;
 }
 
@@ -322,7 +347,11 @@ export async function loadState(businessId: string, loadId: string) {
   const [biz] = await db.select().from(schema.businesses).where(eq(schema.businesses.id, businessId)).limit(1);
   const [mill] = await db.select().from(schema.merchants).where(eq(schema.merchants.id, l.merchantId)).limit(1);
   const [jins] = await db.select().from(schema.jins).where(eq(schema.jins.id, l.jinsId)).limit(1);
-  const cfg = ChargeConfigSchema.parse(JSON.parse(mill.chargeConfig));
+  // newest first; ids are time-ordered, and the version counts the number's uses across the firm, not this truck's
+  const history = await db.select().from(schema.parchas)
+    .where(eq(schema.parchas.loadId, l.id)).orderBy(desc(schema.parchas.id));
+  // a truck billed before keeps the terms it was billed on; one never billed takes its mill's of today
+  const cfg = truckTerms(ChargeConfigSchema.parse(JSON.parse(mill.chargeConfig)), history);
   const w = weighment(l, cfg);
 
   const rawLines = await db.select({
@@ -413,9 +442,6 @@ export async function loadState(businessId: string, loadId: string) {
     });
   }
 
-  // newest first; ids are time-ordered, and the version counts the number's uses across the firm, not this truck's
-  const history = await db.select().from(schema.parchas)
-    .where(eq(schema.parchas.loadId, l.id)).orderBy(desc(schema.parchas.id));
   const approved = history.find((p) => p.status === "approved") ?? null;
   const revisionAt = (id: string) => history.length - history.findIndex((p) => p.id === id);
 
@@ -532,8 +558,9 @@ export async function loadState(businessId: string, loadId: string) {
     doc,
     approved: approved ? { ...approved, snapshot: undefined, revision: revisionAt(approved.id), doc: withRevision(JSON.parse(approved.snapshot) as ParchaDoc, revisionAt(approved.id)) } : null,
     /* The approved parcha is frozen. When the figures behind it have moved
-       since (a slip's rate on one of its days, the mill's charges), say what
-       it would be now, so the owner can void and re-approve — or leave it. */
+       since (a slip's rate on one of its days), say what it would be now, so
+       the owner can void and re-approve — or leave it. The mill's terms are
+       not among them: the truck keeps the terms it was billed on. */
     stale: (() => {
       if (!approved || !doc) return null;
       const was = JSON.parse(approved.snapshot) as ParchaDoc;

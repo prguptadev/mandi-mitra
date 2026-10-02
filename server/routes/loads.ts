@@ -6,7 +6,7 @@ import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { ChargeConfigSchema } from "../lib/charges.ts";
 import {
-  loadState, storedWeighment, stockDays, linesWithWeights, sameNumberElsewhere, sameNumberCount, revisions, withRevision, fyKey,
+  loadState, storedWeighment, termsOfTruck, stockDays, linesWithWeights, sameNumberElsewhere, sameNumberCount, revisions, withRevision, fyKey,
   type ParchaDoc,
 } from "../lib/parcha.ts";
 import { billed, receipts, settle, type DueLine } from "./millAccounts.ts";
@@ -127,7 +127,8 @@ async function refreshWeighment(loadId: string) {
   const [l] = await db.select().from(schema.loads).where(eq(schema.loads.id, loadId)).limit(1);
   const [m] = await db.select({ cfg: schema.merchants.chargeConfig }).from(schema.merchants)
     .where(eq(schema.merchants.id, l.merchantId)).limit(1);
-  const w = storedWeighment(l, ChargeConfigSchema.parse(JSON.parse(m.cfg)));
+  // a truck billed before (its parcha voided) keeps the terms it was billed on
+  const w = storedWeighment(l, termsOfTruck(loadId, ChargeConfigSchema.parse(JSON.parse(m.cfg))));
   await db.update(schema.loads).set(w).where(eq(schema.loads.id, loadId));
 }
 
@@ -651,7 +652,7 @@ parchaRoutes.post("/:id/void", can("parcha.void"), async (c) => {
       .where(eq(schema.parchas.id, id)).run();
     tx.update(schema.loads).set({ status: "draft", updatedAt: at }).where(eq(schema.loads.id, p.loadId)).run();
   });
-  // back to a draft: its stored mill figures follow today's terms again, as any draft's do (the same rule sync uses)
+  // back to a draft: its stored mill figures are worked out again (the same rule sync uses), on the terms it was billed on
   repairTrucks([p.loadId], { audit: false });
   const rev = revisions(await db.select({ id: schema.parchas.id, loadId: schema.parchas.loadId }).from(schema.parchas).where(eq(schema.parchas.loadId, p.loadId))).get(id)?.revision ?? 1;
   await audit({ actor: actor(c), action: "parcha.void", entity: "parcha", entityId: id,
