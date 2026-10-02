@@ -279,6 +279,9 @@ export function LedgerPage() {
   });
 
   const s = st.data;
+  // a big supplier's year is 600+ lines: only those near the screen are drawn (the opening line is item 0)
+  const stLines = useMemo(() => (s ? [null, ...s.entries] : []), [s]);
+  const stWin = useRowWindow(stLines);
   const downloadCsv = () => {
     if (!s) return;
     const lines: (string | number)[][] = [
@@ -450,8 +453,10 @@ export function LedgerPage() {
                       <Th numeric>{pick(L.commission, L.commissionHi)}<RupeeMark /></Th><Th numeric>{pick(L.gaushala, L.gaushalaHi)}<RupeeMark /></Th>
                     </tr>
                   </thead>
-                  <tbody>
-                    <tr className="border-b border-line/70 bg-raised/30 text-[13px]">
+                  <tbody ref={stWin.bodyRef}>
+                    <RowSpacer at="top" height={stWin.topHeight} cols={15} />
+                    {stWin.rows.map((e) => e === null ? (
+                    <tr key="opening" className="border-b border-line/70 bg-raised/30 text-[13px]">
                       <td className="px-2 py-1.5" />
                       <td className="px-2 py-1.5 text-muted" colSpan={3}>{s.from ? t("ledger.broughtForward") : t("ledger.opening")}</td>
                       <td colSpan={4} />
@@ -459,7 +464,7 @@ export function LedgerPage() {
                       <td className="no-print" />
                       <td colSpan={5} />
                     </tr>
-                    {s.entries.map((e) => (
+                    ) : (
                       <Tr key={`${e.kind}-${e.id}`} className={cn(e.voided && "opacity-60")}>
                         <Td className="whitespace-nowrap">
                           {e.kind === "purchase" && seesSheets ? (
@@ -512,6 +517,7 @@ export function LedgerPage() {
                         ) : <Td colSpan={5} />}
                       </Tr>
                     ))}
+                    <RowSpacer at="bottom" height={stWin.bottomHeight} cols={15} />
                   </tbody>
                   <tfoot>
                     <tr className="bg-raised/50 text-[13px] font-semibold">
