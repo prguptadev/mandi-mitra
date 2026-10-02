@@ -22,7 +22,13 @@ const SCREENS = [
 const MAX_KEPT = 12;
 const kept = new Map<string, { stamp: string; body: string; type: string }>();
 const written = sqlite.prepare("select total_changes()").pluck();
-const stampNow = () => `${written.get() as number}|${sqlite.pragma("data_version", { simple: true }) as number}`;
+/* Rows written that are not the books: sync's own marks of what is still to
+   send, cleared once it has gone up. Leaving them out keeps every kept answer
+   good after a push (the change itself was counted when it was made). */
+let notBooks = 0;
+/** `n` rows just written were sync's marks only (no slip, payment, truck or other record). */
+export function notBooksWritten(n: number) { notBooks += n; }
+const stampNow = () => `${(written.get() as number) - notBooks}|${sqlite.pragma("data_version", { simple: true }) as number}`;
 
 export async function unchangedBooks(c: Context<Env>, next: Next) {
   const auth = c.get("auth");

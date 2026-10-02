@@ -14,7 +14,8 @@ import { fyRange } from "./vouchers.ts";
 import { repairSuppliersAfterPull } from "./repairSuppliers.ts";
 import { repairTrucksAfterPull, parchaUniqueClash, APPROVED_TWICE } from "./repairTrucks.ts";
 import { settleRecentAddedSheets } from "./sheetSlips.ts";
-import { forgetParchaFigures } from "./parchaFigures.ts";
+import { forgetParchaFigures, forgetAllParchaFigures } from "./parchaFigures.ts";
+import { notBooksWritten } from "./unchangedBooks.ts";
 
 /* Two-way sync of several computers through one cloud Postgres (Supabase).
  *
@@ -581,10 +582,13 @@ async function push(client: pg.PoolClient, cfg: CloudConfig): Promise<{ sent: nu
   // clear only marks that did not move while we were away (an edit meanwhile keeps its mark)
   const clear = sqlite.prepare("delete from _sync_dirty where tbl = ? and row_id = ? and n = ?");
   const putHash = st.prepare("insert or replace into pushed (tbl, row_id, hash) values (?, ?, ?)");
+  let cleared = 0;
   sqlite.transaction(() => {
-    for (const r of sent) clear.run(r.tbl, r.id, r.n);
-    for (const r of clearOnly) clear.run(r.tbl, r.id, r.n);
+    for (const r of sent) cleared += clear.run(r.tbl, r.id, r.n).changes;
+    for (const r of clearOnly) cleared += clear.run(r.tbl, r.id, r.n).changes;
   })();
+  // only marks were cleared: the screens' kept answers stay good
+  notBooksWritten(cleared);
   st.transaction(() => { for (const r of sent) putHash.run(r.tbl, r.id, r.deleted ? DELETED : r.hash); })();
   return { sent: sent.length, waiting };
 }
@@ -797,6 +801,8 @@ export async function restoreFromCloud() {
       // what is here is exactly the cloud: nothing to push
       sqlite.prepare("delete from _sync_dirty").run();
     })();
+    // every parcha came in afresh
+    forgetAllParchaFigures();
   } finally {
     sqlite.pragma("foreign_keys = ON");
   }

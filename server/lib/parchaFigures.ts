@@ -55,3 +55,8 @@ export function figuresOf(rows: { id: string; bytes: number }[]): Map<string, Pa
 export function forgetParchaFigures(id: string) {
   kept.delete(id);
 }
+
+/** Every parcha written again (the books replaced by the cloud's copy): all read afresh. */
+export function forgetAllParchaFigures() {
+  kept.clear();
+}
