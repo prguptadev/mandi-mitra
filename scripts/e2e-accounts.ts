@@ -314,7 +314,9 @@ const csvRows = (text: string) => {
   return out;
 };
 const totalRow = (rows: unknown[][]) => rows.find((r) => typeof r?.[0] === "string" && (r[0] as string).startsWith("Total ("))!;
-const header = (rows: unknown[][]) => rows.find((r) => r?.includes("To pay") || r?.some((v) => String(v ?? "").startsWith("Adati name")))!;
+// the to-pay column carries the day it is counted to
+const TO_PAY = "To pay on 30-09-2026";
+const header = (rows: unknown[][]) => rows.find((r) => r?.includes(TO_PAY) || r?.some((v) => String(v ?? "").startsWith("Adati name")))!;
 
 const hiX = await fileOf(`mode=till&date=${PD}&names=hi&cols=${ALL}&format=xlsx`);
 check("the till-date sheet downloads as Excel", hiX.res.headers.get("content-type")?.includes("spreadsheetml") === true && hiX.buf.subarray(0, 2).toString() === "PK"
@@ -333,9 +335,9 @@ check("…no 'Made on', no opening balance, no brought forward",
   !hiRows.some((r) => r?.some((v) => /Made on|Opening balance|Brought forward/.test(String(v ?? "")))), hiRows.slice(0, 3));
 const hiHead = header(hiRows);
 check("Hindi names: one name column, in Hindi, then the columns asked for in order",
-  JSON.stringify(hiHead) === JSON.stringify(["Adati name", "Net weight (qtl)", "Amount", L.commission, L.gaushala, L.payable, "Paid", "To pay"]) && hiRows.some((r) => r?.[0] === spL.nameHi), hiHead);
+  JSON.stringify(hiHead) === JSON.stringify(["Adati name", "Net weight (qtl)", "Amount", L.commission, L.gaushala, L.payable, "Paid", TO_PAY]) && hiRows.some((r) => r?.[0] === spL.nameHi), hiHead);
 const hiTotal = totalRow(hiRows);
-check("…its total row: to pay = the ledger's to-pay total", hiTotal[0] === `Total (${till.totals.count})` && hiTotal[hiHead.indexOf("To pay")] === ledgerOn.totals.toPayPaise / 100,
+check("…its total row: to pay = the ledger's to-pay total", hiTotal[0] === `Total (${till.totals.count})` && hiTotal[hiHead.indexOf(TO_PAY)] === ledgerOn.totals.toPayPaise / 100,
   { total: hiTotal, ledger: ledgerOn.totals.toPayPaise / 100 });
 check("…net amount = the ledger's purchases for the period", Math.round(Number(hiTotal[hiHead.indexOf(L.payable)]) * 100) === fyOn.totals.purchasesPaise, hiTotal);
 check("…net weight in quintals, the unpriced slip's weight counted in it", hiTotal[hiHead.indexOf("Net weight (qtl)")] === Math.round(till.totals.netGrams / 1000) / 100);
@@ -343,7 +345,7 @@ check("…and a line under it says how many slips have no rate yet",
   hiRows.some((r) => typeof r?.[0] === "string" && (r[0] as string).startsWith(`${till.totals.unpriced} slip`) && (r[0] as string).includes("no rate yet")), till.totals.unpriced);
 const defX = await xlsxRows((await fileOf(`mode=till&date=${PD}&names=hi&format=xlsx`)).buf);
 check("by default: name, amount, commission, gaushala, net amount, to pay",
-  JSON.stringify(header(defX)) === JSON.stringify(["Adati name", "Amount", L.commission, L.gaushala, L.payable, "To pay"]), header(defX));
+  JSON.stringify(header(defX)) === JSON.stringify(["Adati name", "Amount", L.commission, L.gaushala, L.payable, TO_PAY]), header(defX));
 
 const enX = await xlsxRows((await fileOf(`mode=till&date=${PD}&names=hinglish&cols=${ALL}&format=xlsx`)).buf);
 check("Hinglish names: one name column, in Hinglish",
@@ -354,7 +356,7 @@ const bothHead = header(bothRows);
 check("both: two name columns, Hindi then Hinglish",
   bothHead[0] === "Adati name (Hindi)" && bothHead[1] === "Adati name (Hinglish)" && bothRows.some((r) => r?.[0] === spL.nameHi && r[1] === spL.nameHinglish), bothHead.slice(0, 2));
 const onlyFew = await xlsxRows((await fileOf(`mode=till&date=${PD}&names=hi&cols=net,toPay&format=xlsx`)).buf);
-check("only the columns asked for, and the name always", JSON.stringify(header(onlyFew)) === JSON.stringify(["Adati name", "Net weight (qtl)", "To pay"]), header(onlyFew));
+check("only the columns asked for, and the name always", JSON.stringify(header(onlyFew)) === JSON.stringify(["Adati name", "Net weight (qtl)", TO_PAY]), header(onlyFew));
 
 const csvF = await fileOf(`mode=till&date=${PD}&names=both&cols=${ALL}&format=csv`);
 const csv = csvRows(csvF.buf.toString("utf8"));
@@ -368,7 +370,7 @@ const xlTotal = totalRow(bothRows);
 check("…its totals are the Excel's, column by column",
   csvTotal[0] === xlTotal[0] && bothHead.every((_, i) => i < 2 || (csvTotal[i] === "" ? xlTotal[i] == null : Number(csvTotal[i]) === xlTotal[i])),
   { csv: csvTotal, xlsx: xlTotal });
-check("…to pay to the paisa: the ledger's total", csvTotal[bothHead.indexOf("To pay")] === (ledgerOn.totals.toPayPaise / 100).toFixed(2), csvTotal[bothHead.indexOf("To pay")]);
+check("…to pay to the paisa: the ledger's total", csvTotal[bothHead.indexOf(TO_PAY)] === (ledgerOn.totals.toPayPaise / 100).toFixed(2), csvTotal[bothHead.indexOf(TO_PAY)]);
 check("…net amount to the paisa: the ledger's purchases for the period", csvTotal[bothHead.indexOf(L.payable)] === (fyOn.totals.purchasesPaise / 100).toFixed(2), csvTotal[bothHead.indexOf(L.payable)]);
 
 const dayX = await xlsxRows((await fileOf(`mode=day&date=${PD}&names=hi&cols=${ALL}&format=xlsx`)).buf);
@@ -386,7 +388,7 @@ check("a date is needed", (await raw("GET", "/ledger/sheet?mode=day&format=json"
 check("…and it must be a real day", (await raw("GET", "/ledger/sheet?mode=till&date=2026-02-31&format=json")).status === 400);
 check("the CSV starts with the mark that tells Excel it is UTF-8 (Hindi stays Hindi)", csvF.buf[0] === 0xef && csvF.buf[1] === 0xbb && csvF.buf[2] === 0xbf);
 
-/* Paid ahead on the day: money to recover, never a minus inside "To pay". */
+/* Paid ahead on the day: money to recover, never a minus inside TO_PAY. */
 const ahead = await call("POST", "/adati", { nameHi: "अग्रिम जाँच भंडार", nameHinglish: "Agrim Jaanch Bhandar" });
 const a821 = await slipOf(ahead.id, "821", 3.00, 3000);
 await call("POST", "/payments", { adatiId: ahead.id, payDate: PD, amountPaise: a821.payablePaise + rs(1000), mode: "cash" });
@@ -420,7 +422,7 @@ const opRow = opX.find((r) => r?.[0] === "पुराना जाँच भं
 const at = (label: string) => Number(opRow[opHead.indexOf(label)] ?? NaN);
 check("an opening balance: no column of its own", !opHead.some((h) => /Opening|Brought/.test(String(h))), opHead);
 check("…net amount 3,000.94 = 2,970.00 + 29.70 + 1.24, and to pay 8,000.94 with the opening in it",
-  at("Amount") === 2970 && at(L.commission) === 29.7 && at(L.gaushala) === 1.24 && at(L.payable) === 3000.94 && at("To pay") === 8000.94, opRow);
+  at("Amount") === 2970 && at(L.commission) === 29.7 && at(L.gaushala) === 1.24 && at(L.payable) === 3000.94 && at(TO_PAY) === 8000.94, opRow);
 
 /* The supplier list beside the statement: a name and what is to pay, found
    by name in either script and spelt loosely, sorted by either column. */

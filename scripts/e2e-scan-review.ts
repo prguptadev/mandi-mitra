@@ -267,6 +267,17 @@ console.log("\nScanned sheets, and a slip's paper");
   const typed = await call("POST", "/slips", { slipDate: DATE, rstNo: "9901", adatiId: ramveer.id, jinsId: j1509.id, merchantId: grm.id, grossGrams: 1_000_000, ratePaisePerQtl: 0 });
   const paper2 = await call("GET", `/scans/for-slip/${typed.id}`);
   check("a slip typed by hand opens the mill's sheet of its day", [paper2.how, paper2.sheets.map((s: any) => s.id)], ["day", [scanId]]);
+  // filed under GRM, but the paper's header names the firm itself: said on the row, found under both
+  const metaWas = (sqlite.prepare("select page_meta as m from scan_batches where id = ?").get(scanId) as { m: string | null }).m;
+  const firmCode = (sqlite.prepare("select b.short_code as c from businesses b join scan_batches s on s.business_id = b.id where s.id = ?").get(scanId) as { c: string }).c;
+  sqlite.prepare("update scan_batches set page_meta = ? where id = ?").run(JSON.stringify([{ page: 1, date: DATE, millName: firmCode, jins: null, total: null }]), scanId);
+  const misfiled = await call("GET", `/scans/sheets?from=${DATE}&to=${DATE}&merchantId=${grm.id}`);
+  check("a sheet whose paper names another mill says which", misfiled.rows.find((s: any) => s.id === scanId)?.paperMillCode, firmCode);
+  const ownNow = await call("GET", `/scans/sheets?from=${DATE}&to=${DATE}&merchantId=own`);
+  check("  ...and is found under that mill as well", ownNow.rows.some((s: any) => s.id === scanId), true);
+  check("  ...but a slip typed for GRM does not open it", (await call("GET", `/scans/for-slip/${typed.id}`)).sheets.length, 0);
+  sqlite.prepare("update scan_batches set page_meta = ? where id = ?").run(metaWas, scanId);
+  check("  ...and does again once the header names GRM", (await call("GET", `/scans/for-slip/${typed.id}`)).sheets.map((s: any) => s.id), [scanId]);
   const lone = await call("POST", "/slips", { slipDate: "2026-08-14", rstNo: "9902", adatiId: ramveer.id, jinsId: j1509.id, merchantId: grm.id, grossGrams: 1_000_000, ratePaisePerQtl: 0 });
   check("a day with no sheet has none to show", (await call("GET", `/scans/for-slip/${lone.id}`)).sheets.length, 0);
   sqlite.prepare("delete from purchase_slips where id in (?, ?)").run(typed.id, lone.id);

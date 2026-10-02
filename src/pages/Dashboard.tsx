@@ -307,7 +307,8 @@ export function DashboardPage() {
   if (r.to) qs.set("to", r.to);
   if (jinsId) qs.set("jinsId", jinsId);
   const dash = useQuery({ queryKey: ["dashboard", qs.toString()], queryFn: () => api.get<DashboardData>(`/dashboard?${qs}`) });
-  const ledger = useQuery({ queryKey: ["ledger", "all"], queryFn: () => api.get<LedgerTop>("/ledger"), enabled: can("ledger.read") });
+  // owed as of today, as the ledger page shows it: an entry dated ahead is not owed yet
+  const ledger = useQuery({ queryKey: ["ledger", "asOf", todayISO()], queryFn: () => api.get<LedgerTop>(`/ledger?asOf=${todayISO()}`), enabled: can("ledger.read") });
   const d = dash.data;
   const k = d?.kpis;
   const top = (ledger.data?.rows ?? []).filter((x) => x.balancePaise > 0).slice(0, 8);

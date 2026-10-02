@@ -96,7 +96,8 @@ async function ledgerList(biz: string, opts: { from?: string; asOf?: string } = 
       balancePaise: balance,
       lastActivity: [all.bought.get(s.id)?.last, all.paid.get(s.id)?.last].filter(Boolean).sort().pop() ?? null,
     };
-  }).filter((r) => r.active || r.balancePaise !== 0 || r.slips > 0);
+  // a supplier settled and made inactive is still on the list for a period in which he was paid
+  }).filter((r) => r.active || r.balancePaise !== 0 || r.slips > 0 || r.paymentsPaise !== 0);
   rows.sort((a, b) => b.balancePaise - a.balancePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
   const total = (k: "openingBalancePaise" | "broughtForwardPaise" | "goodsPaise" | "commissionPaise" | "gaushalaPaise" | "purchasesPaise" | "paymentsPaise" | "balancePaise") =>
     rows.reduce((s, r) => s + r[k], 0);
@@ -119,7 +120,7 @@ async function ledgerList(biz: string, opts: { from?: string; asOf?: string } = 
 ledgerRoutes.get("/", can("ledger.read"), async (c) => {
   const asOf = c.req.query("asOf") || undefined;
   const from = c.req.query("from") || undefined;
-  if ((asOf && !ISO_DATE.test(asOf)) || (from && !ISO_DATE.test(from))) throw bad("Date must be YYYY-MM-DD");
+  if ((asOf && !isoDay().safeParse(asOf).success) || (from && !isoDay().safeParse(from).success)) throw bad("Date must be YYYY-MM-DD", "bad_date");
   if (from && asOf && from > asOf) throw bad("The from date is after the to date", "bad_range");
   return c.json(await ledgerList(c.get("auth")!.businessId!, { from, asOf }));
 });

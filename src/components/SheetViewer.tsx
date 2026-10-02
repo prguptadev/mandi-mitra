@@ -10,7 +10,7 @@ import { cn, dmy } from "@/lib/utils.ts";
 /** A scanned sheet as /scans/sheets and /scans/for-slip give it. No mill is the firm's own sheet. */
 export interface ScannedSheet {
   id: string; status: string; slipDate: string | null; day: string;
-  merchantId: string | null; millCode: string | null; jinsId: string | null; jinsCode: string | null;
+  merchantId: string | null; millCode: string | null; paperMillCode?: string | null; jinsId: string | null; jinsCode: string | null;
   lines: number; slipsAdded: number; createdAt: number;
   pages: { index: number; name: string; mimeType: string }[];
 }
@@ -101,7 +101,8 @@ export function SheetViewer({ sheets, loading, error, onRetry, note, onClose }: 
   const drag = useRef<{ x: number; y: number; l: number; t: number } | null>(null);
 
   const s = cur?.s;
-  const title = s ? [dmy(s.slipDate ?? s.day), s.millCode ?? ownCode, s.jinsCode].filter(Boolean).join(" · ") : t("viewer.title");
+  const title = s ? [dmy(s.slipDate ?? s.day), s.millCode ?? ownCode,
+    s.paperMillCode && t("scanSheets.paperSays", { m: s.paperMillCode }), s.jinsCode].filter(Boolean).join(" · ") : t("viewer.title");
   const pageNo = cur ? cur.p.index + 1 : 0;
   const line = s ? [
     t(`scan.status.${s.status}` as never),

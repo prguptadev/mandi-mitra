@@ -91,7 +91,8 @@ function sheetColumns(d: SupplierSheetData): Col[] {
       case "gaushala": out.push({ label: d.labels.gaushala, kind: "money", width: 12, cell: (r) => r.gaushalaPaise, total: (t) => t.gaushalaPaise }); break;
       case "payable": out.push({ label: d.labels.payable, kind: "money", width: 16, cell: (r) => r.payablePaise, total: (t) => t.payablePaise }); break;
       case "paid": out.push({ label: en(k), kind: "money", width: 14, cell: (r) => r.paidPaise, total: (t) => t.paidPaise }); break;
-      case "toPay": out.push({ label: en(k), kind: "money", width: 16, cell: (r) => r.toPayPaise, total: (t) => t.toPayPaise }); break;
+      // what remains to be paid as at the sheet's last day — said with its date, so a past day's sheet is not read as today's
+      case "toPay": out.push({ label: `${en(k)} on ${dmy(d.to)}`, kind: "money", width: 18, cell: (r) => r.toPayPaise, total: (t) => t.toPayPaise }); break;
     }
   }
   return out;

@@ -44,7 +44,8 @@ export function PaySheetDialog({ onClose, date }: { onClose: () => void; date: s
   const end = mode === "range" ? to : day;
   const reversed = Boolean(start && end && start > end);
   const bad = !start || !end || reversed;
-  const period = bad ? "" : start === end ? dmy(end) : `${dmy(start)} – ${dmy(end)}`;
+  // the same words as the file's second line (sheetPeriod in supplierSheet.ts)
+  const period = bad ? "" : start === end ? dmy(end) : `${dmy(start)} to ${dmy(end)}`;
 
   const go = async () => {
     setErr(null);

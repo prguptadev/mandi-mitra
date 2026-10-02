@@ -42,7 +42,7 @@ interface LedgerRow {
 }
 interface LedgerList {
   rows: LedgerRow[];
-  totals: { openingPaise: number; goodsPaise: number; commissionPaise: number; gaushalaPaise: number; purchasesPaise: number; paymentsPaise: number; balancePaise: number; toPayPaise: number; paidAheadPaise: number };
+  totals: { openingPaise: number; broughtForwardPaise: number; goodsPaise: number; commissionPaise: number; gaushalaPaise: number; purchasesPaise: number; paymentsPaise: number; balancePaise: number; toPayPaise: number; paidAheadPaise: number };
 }
 interface Entry {
   kind: "purchase" | "payment"; id: string; date: string;
@@ -228,10 +228,13 @@ export function LedgerPage() {
     enabled: Boolean(paperOf),
   });
 
-  // a past financial year: every balance as it stood on its 31 March
+  /* The year's figures from 1 April up to today (or a past year's 31 March) —
+     the same period the pay sheet's "Till date" uses, so the two agree, and an
+     entry dated after today is not counted as owed yet. */
+  const asOf = fy.current ? todayISO() : fy.to;
   const list = useQuery({
-    queryKey: fy.current ? ["ledger", "all"] : ["ledger", "asOf", fy.to],
-    queryFn: () => api.get<LedgerList>(fy.current ? "/ledger" : `/ledger?asOf=${fy.to}`),
+    queryKey: ["ledger", "list", fy.from, asOf],
+    queryFn: () => api.get<LedgerList>(`/ledger?from=${fy.from}&asOf=${asOf}`),
   });
   const qs = new URLSearchParams();
   if (from) qs.set("from", from);
@@ -319,8 +322,8 @@ export function LedgerPage() {
           <Card className="p-3 sm:col-span-2 xl:col-span-1">
             <p className="mb-1 text-[12px] text-muted">{t("ledger.proof")}</p>
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[13px]">
-              <dt className="text-muted">{t("ledger.opening")}</dt><dd className="num break-all text-right">{f.money(list.data.totals.openingPaise)}</dd>
-              <dt className="text-muted">+ {t("ledger.purchaseTotal")}</dt><dd className="num break-all text-right">{f.money(list.data.totals.purchasesPaise)}</dd>
+              <dt className="text-muted">{t("ledger.broughtForward")}</dt><dd className="num break-all text-right">{f.money(list.data.totals.broughtForwardPaise)}</dd>
+              <dt className="text-muted">+ {pick(L.payable, L.payableHi)}</dt><dd className="num break-all text-right">{f.money(list.data.totals.purchasesPaise)}</dd>
               <dt className="text-muted">− {t("ledger.payments")}</dt><dd className="num break-all text-right">{f.money(list.data.totals.paymentsPaise)}</dd>
               <dt className="border-t border-line pt-0.5 font-semibold text-ink">= {t("ledger.closing")}</dt>
               <dd className="num break-all border-t border-line pt-0.5 text-right font-semibold">{f.money(list.data.totals.balancePaise)}</dd>
@@ -330,7 +333,7 @@ export function LedgerPage() {
         </div>
       )}
 
-      <div className="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
+      <div className="grid gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
         <Card className="self-start">
           <div className="border-b border-line p-3">
             <div className="relative">
@@ -515,7 +518,7 @@ export function LedgerPage() {
           onClose={() => setVoiding(null)} onConfirm={(reason) => del.mutate({ id: voiding.id, reason })} />
       )}
       {/* a past financial year: the sheet as it stood on its 31 March */}
-      {sheetOpen && <PaySheetDialog onClose={() => setSheetOpen(false)} date={fy.current ? todayISO() : fy.to} />}
+      {sheetOpen && <PaySheetDialog onClose={() => setSheetOpen(false)} date={asOf} />}
       {paperOf && (
         <SheetViewer sheets={paper.data?.sheets} loading={paper.isPending} error={paper.error ?? undefined} onRetry={() => void paper.refetch()}
           note={paper.data?.how === "day" && paper.data.sheets.length ? t("viewer.sameDay") : undefined} onClose={() => setPaperOf(null)} />

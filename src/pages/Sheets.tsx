@@ -109,7 +109,10 @@ export function SheetsPage() {
                   <Td className="num whitespace-nowrap">
                     {s.slipDate ? dmy(s.slipDate) : <span className="text-muted" title={t("scanSheets.uploadedOn")}>{dmy(s.day)} *</span>}
                   </Td>
-                  <Td><Badge className="num">{millOf(s)}</Badge></Td>
+                  <Td className="whitespace-nowrap">
+                    <Badge className="num">{millOf(s)}</Badge>
+                    {s.paperMillCode && <span className="ml-1.5 text-[12px] text-warn">{t("scanSheets.paperSays", { m: s.paperMillCode })}</span>}
+                  </Td>
                   <Td className="text-muted">{s.jinsCode ?? "—"}</Td>
                   <Td numeric>{s.pages.length}</Td>
                   <Td numeric className="text-muted">{s.lines || "—"}</Td>

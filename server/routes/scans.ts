@@ -1028,13 +1028,32 @@ scanRoutes.get("/counts", can("scan.review", "scan.create"), async (c) => {
  * listed under the day it was uploaded.
  */
 const sheetDay = sql<string>`coalesce(${schema.scanBatches.slipDate}, date(${schema.scanBatches.createdAt}, 'unixepoch', 'localtime'))`;
+
+/** Every name a mill (or the firm itself, as "own") is known by, to tell which one a sheet's header names. */
+async function millNames(businessId: string) {
+  const byKey = new Map<string, string>();
+  const code = new Map<string, string>();
+  const [biz] = await db.select({ a: schema.businesses.shortCode, b: schema.businesses.name, c: schema.businesses.nameHi })
+    .from(schema.businesses).where(eq(schema.businesses.id, businessId)).limit(1);
+  const mills = await db.select({ id: schema.merchants.id, a: schema.merchants.code, b: schema.merchants.name, c: schema.merchants.nameHi })
+    .from(schema.merchants).where(eq(schema.merchants.businessId, businessId));
+  for (const m of [...(biz ? [{ id: "own", ...biz }] : []), ...mills]) {
+    code.set(m.id, m.a ?? "");
+    for (const k of [m.a, m.b, m.c].map(codeKey)) if (k && !byKey.has(k)) byKey.set(k, m.id);
+  }
+  /** The known mills (or "own") the sheet's headers name, first page first; an unreadable or unknown name names none. */
+  const named = (pageMeta: string | null) => [...new Set((JSON.parse(pageMeta ?? "[]") as PageMeta[])
+    .sort((x, y) => x.page - y.page).map((m) => byKey.get(codeKey(m.millName))).filter((x): x is string => Boolean(x)))];
+  return { named, code };
+}
+
 async function sheetRows(businessId: string, where: ReturnType<typeof eq>[], limit: number) {
   const S = schema.scanBatches;
   const rows = await db.select({
     id: S.id, status: S.status, slipDate: S.slipDate, day: sheetDay,
     merchantId: S.merchantId, millCode: schema.merchants.code,
     jinsId: S.jinsId, jinsCode: schema.jins.code,
-    filePaths: S.filePaths,
+    filePaths: S.filePaths, pageMeta: S.pageMeta,
     lines: sql<number>`coalesce(json_array_length(${S.parsedRows}), 0)`,
     createdAt: S.createdAt,
   }).from(S)
@@ -1050,11 +1069,18 @@ async function sheetRows(businessId: string, where: ReturnType<typeof eq>[], lim
       .where(and(eq(P.businessId, businessId), inArray(P.scanBatchId, ids))).groupBy(P.scanBatchId)
     : [];
   const addedBy = new Map(added.map((a) => [a.id, a.n]));
-  return rows.map(({ filePaths, ...r }) => ({
+  const names = await millNames(businessId);
+  return rows.map(({ filePaths, pageMeta, ...r }) => {
+    // the paper names another mill than the one it is filed under: say which
+    const named = names.named(pageMeta);
+    const paper = named.length && !named.includes(r.merchantId ?? "own") ? named[0] : null;
+    return {
     ...r,
+    paperMillCode: paper ? names.code.get(paper) || null : null,
     pages: (JSON.parse(filePaths) as PageFile[]).map((f, index) => ({ index, name: f.name, mimeType: f.mimeType })),
     slipsAdded: addedBy.get(r.id) ?? 0,
-  }));
+    };
+  });
 }
 
 /** Every sheet uploaded, newest day first: ?from&to (the sheet's day), &merchantId (or "own"), &jinsId, &status. */
@@ -1065,10 +1091,18 @@ scanRoutes.get("/sheets", can("scan.review", "scan.create"), async (c) => {
   const where: ReturnType<typeof eq>[] = [];
   if (ISO_DATE.test(q("from"))) where.push(gte(sheetDay, q("from")));
   if (ISO_DATE.test(q("to"))) where.push(lte(sheetDay, q("to")));
-  if (q("merchantId") === "own") where.push(isNull(S.merchantId));
-  else if (q("merchantId")) where.push(eq(S.merchantId, q("merchantId")));
   if (q("jinsId")) where.push(eq(S.jinsId, q("jinsId")));
   if (q("status") && q("status") !== "all") where.push(eq(S.status, q("status")));
+  if (q("merchantId")) {
+    // a mill's sheets: those filed under it, and those whose header names it
+    const want = q("merchantId");
+    const names = await millNames(biz);
+    const all = await db.select({ id: S.id, merchantId: S.merchantId, pageMeta: S.pageMeta }).from(S)
+      .where(and(eq(S.businessId, biz), ...where));
+    const ids = all.filter((s) => (s.merchantId ?? "own") === want || names.named(s.pageMeta).includes(want)).map((s) => s.id);
+    if (!ids.length) return c.json({ rows: [], truncated: false });
+    where.push(inArray(S.id, ids));
+  }
   const LIMIT_ROWS = 500;
   const rows = await sheetRows(biz, where, LIMIT_ROWS + 1);
   return c.json({ rows: rows.slice(0, LIMIT_ROWS), truncated: rows.length > LIMIT_ROWS });
@@ -1089,16 +1123,17 @@ scanRoutes.get("/for-slip/:slipId", can("scan.review", "scan.create"), async (c)
     const own = await sheetRows(biz, [eq(S.id, slip.scanBatchId)], 1);
     if (own.length) return c.json({ how: "slip", sheets: own });
   }
-  /* The day's sheets filed under the slip's mill, and those filed elsewhere
-     whose header names it: the paper says which mill it is for. */
-  const [mill] = slip.merchantId
-    ? await db.select({ a: schema.merchants.code, b: schema.merchants.name, c: schema.merchants.nameHi }).from(schema.merchants).where(eq(schema.merchants.id, slip.merchantId)).limit(1)
-    : await db.select({ a: schema.businesses.shortCode, b: schema.businesses.name, c: schema.businesses.nameHi }).from(schema.businesses).where(eq(schema.businesses.id, biz)).limit(1);
-  const names = new Set([mill?.a, mill?.b, mill?.c].map(codeKey).filter(Boolean));
+  /* The day's sheets for the slip's mill. The paper says which mill it is
+     for: one filed elsewhere whose header names this mill counts, and one
+     filed under this mill whose header names only another does not. */
+  const want = slip.merchantId ?? "own";
+  const names = await millNames(biz);
   const ofDay = await db.select({ id: S.id, merchantId: S.merchantId, pageMeta: S.pageMeta }).from(S)
     .where(and(eq(S.businessId, biz), eq(S.slipDate, slip.slipDate)));
-  const ids = ofDay.filter((s) => s.merchantId === slip.merchantId
-    || (JSON.parse(s.pageMeta ?? "[]") as PageMeta[]).some((m) => names.has(codeKey(m.millName)))).map((s) => s.id);
+  const ids = ofDay.filter((s) => {
+    const named = names.named(s.pageMeta);
+    return (s.merchantId ?? "own") === want ? !named.length || named.includes(want) : named.includes(want);
+  }).map((s) => s.id);
   const sameDay = ids.length ? await sheetRows(biz, [inArray(S.id, ids)], 20) : [];
   const rank = (s: (typeof sameDay)[number]) => (s.merchantId === slip.merchantId ? 0 : 4) + (s.jinsId === slip.jinsId ? 0 : 2) + (s.status === "committed" ? 0 : 1);
   return c.json({ how: "day", sheets: sameDay.sort((a, b) => rank(a) - rank(b) || b.createdAt - a.createdAt) });
