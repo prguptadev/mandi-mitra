@@ -401,8 +401,11 @@ sqlite.pragma("journal_mode = WAL");
 sqlite.pragma("synchronous = FULL");
 sqlite.pragma("foreign_keys = ON");
 sqlite.pragma("busy_timeout = 5000");
-// a year of a mandi's data is a few tens of MB: keep the busy part of it in memory
-sqlite.pragma("cache_size = -32000");
+/* Two busy years are a few hundred MB, most of it the audit trail; the parts
+   the screens add up (slips, trucks, parchas and their indexes) stay in
+   memory with 64 MB, so a screen opened again does not read them from a slow
+   disk. Writing is unchanged: WAL, at the same synchronous level as always. */
+sqlite.pragma("cache_size = -65536");
 sqlite.pragma("temp_store = MEMORY");
 
 export const db = drizzle(sqlite, { schema });

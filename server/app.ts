@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ZodError } from "zod";
 import { withSession, requestGuard, bodyLimits, HttpError, type Env } from "./lib/http.ts";
+import { unchangedBooks } from "./lib/unchangedBooks.ts";
 import { authRoutes } from "./routes/auth.ts";
 import { adatiRoutes } from "./routes/adati.ts";
 import { merchantRoutes } from "./routes/merchants.ts";
@@ -61,6 +62,11 @@ export function createApp() {
   });
   app.use("/api/*", withSession);
   app.use("/api/*", bodyLimits);
+  /* a screen that adds up the whole book, asked again with nothing changed: the
+     same answer at once. Last of the guards: a kept answer is only ever given to
+     a request that has passed every check above (this computer's own windows and
+     pages, the books' state, a signed-in session and its permissions). */
+  app.use("/api/*", unchangedBooks);
   // with sync on, a change made here goes up within a couple of seconds
   app.use("/api/*", async (c, next) => {
     await next();

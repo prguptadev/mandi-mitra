@@ -2,6 +2,8 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { Worker } from "node:worker_threads";
 import Database from "better-sqlite3";
 import { sqlite, DB_PATH, RESTORE_PENDING, BACKUP_DIR, BACKUP_NAME, BOOKS_UNAVAILABLE, booksMode } from "../db/client.ts";
 import { plainError, readJsonFile, renameDurable, writeJsonFile } from "../db/durable.ts";
@@ -181,6 +183,54 @@ function verify(file: string) {
     if (r !== "ok") throw new Error(`the copy is damaged (${String(r).slice(0, 80)})`);
   } finally { d.close(); }
 }
+
+/* The same work on a thread of its own: writing a big book's copy (`from`
+   given: VACUUM INTO, through the thread's own connection) and reading it
+   through take seconds on a slow laptop, and the app's one thread would
+   answer no screen, nor keep its window alive, meanwhile. If no thread can be
+   started it is done here as before: either way a copy is kept only once the
+   check has passed. */
+const ASIDE = `
+const { parentPort, workerData } = require("node:worker_threads");
+(() => {
+  let Database;
+  try { Database = require(workerData.lib); } catch { parentPort.postMessage({ here: true }); return; }
+  let src, d;
+  try {
+    if (workerData.from) {
+      src = new Database(workerData.from, { fileMustExist: true });
+      src.prepare("vacuum into ?").run(workerData.file);
+      src.close();
+      src = undefined;
+    }
+    d = new Database(workerData.file, { readonly: true, fileMustExist: true });
+    const r = d.pragma("quick_check", { simple: true });
+    parentPort.postMessage(r === "ok" ? { ok: true } : { error: "the copy is damaged (" + String(r).slice(0, 80) + ")" });
+  } catch (e) {
+    parentPort.postMessage({ error: e && e.message ? e.message : String(e) });
+  } finally {
+    try { if (src) src.close(); } catch { /* closed */ }
+    try { if (d) d.close(); } catch { /* closed */ }
+  }
+})();`;
+function aside(file: string, from: string | null, here: () => void): Promise<void> {
+  const inline = () => new Promise<void>((resolve) => { here(); resolve(); });
+  let lib: string;
+  try { lib = createRequire(import.meta.url).resolve("better-sqlite3"); } catch { return inline(); }
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (p: () => Promise<void>) => { if (!settled) { settled = true; p().then(resolve, reject); } };
+    let w: Worker;
+    try { w = new Worker(ASIDE, { eval: true, workerData: { lib, file, from } }); } catch { finish(inline); return; }
+    w.once("message", (m: { ok?: boolean; here?: boolean; error?: string }) =>
+      finish(m.ok ? () => Promise.resolve() : m.here ? inline : () => Promise.reject(new Error(m.error))));
+    // the thread itself failed (not the copy): do it here
+    w.once("error", () => finish(inline));
+    w.once("exit", () => finish(inline));
+  });
+}
+/** verify(), on a thread of its own. */
+export const verifyAside = (file: string) => aside(file, null, () => verify(file));
 const hostDir = () => os.hostname().replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40) || "this-computer";
 
 /** A second folder must exist and take a file; says why not in plain words. */
@@ -296,7 +346,7 @@ export async function backupNow(kind: BackupKind) {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     makeRoom(BACKUP_DIR);
     await sqlite.backup(tmp);
-    verify(tmp);
+    await verifyAside(tmp);
     renameDurable(tmp, file);
   } catch (e) {
     rmQuiet(tmp);
@@ -369,12 +419,20 @@ function vacuumCopy(kind: BackupKind) {
  * before it is kept, so the books are never left half-updated — and every
  * screen says the backup failed. A backup must never stop the app opening.
  */
-export function backupBeforeUpdate(): { file: string | null; plain?: boolean; problem?: string } {
+export function backupBeforeUpdate(): CopyBeforeUpdate {
   try {
     return { file: vacuumCopy("before-update") };
   } catch (e) {
     console.warn(`[db] could not VACUUM INTO a copy before the update (${plainError(e)}); copying the file as it is`);
   }
+  return plainCopyBeforeUpdate();
+}
+
+/** What became of the copy before an update: the file kept (a plain copy when VACUUM INTO could not make one), or why there is none. */
+export type CopyBeforeUpdate = { file: string | null; plain?: boolean; problem?: string };
+
+/** The books file copied as it is (the -wal folded in first): the fallback when VACUUM INTO cannot make a copy. Never throws. */
+function plainCopyBeforeUpdate(): CopyBeforeUpdate {
   const name = `before-update-${stamp()}.db`;
   const file = path.join(BACKUP_DIR, name);
   const tmp = `${file}.tmp`;
@@ -450,6 +508,40 @@ async function copyLatestToFolder() {
   } catch (e) {
     patchBackupConfig({ lastError: `Could not copy to ${c.folder}: ${plainError(e)}` });
   }
+}
+
+/**
+ * backupBeforeUpdate() with the copy written and checked on a thread of its
+ * own, for the app's own start: a big book takes long enough on a slow laptop
+ * for the window to be taken as hung. Nothing else touches the database
+ * meanwhile (the caller waits for it before the update). The same fallbacks as
+ * backupBeforeUpdate(): when VACUUM INTO cannot make a checked copy, the file
+ * is copied as it is; when even that fails (the disk is full), the update
+ * still goes ahead and every screen says so. Never throws, never retries:
+ * a backup must never stop the app opening.
+ */
+export async function backupBeforeUpdateAside(): Promise<CopyBeforeUpdate> {
+  const name = `before-update-${stamp()}.db`;
+  const file = path.join(BACKUP_DIR, name);
+  const tmp = `${file}.tmp`;
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    rmQuiet(tmp);
+    makeRoom(BACKUP_DIR);
+    await aside(tmp, DB_PATH, () => {
+      // a thread that stopped part-way may have left a piece of the copy
+      rmQuiet(tmp);
+      sqlite.prepare("vacuum into ?").run(tmp);
+      verify(tmp);
+    });
+    renameDurable(tmp, file);
+    prune(BACKUP_DIR, "before-update", name);
+    return { file };
+  } catch (e) {
+    rmQuiet(tmp);
+    console.warn(`[db] could not VACUUM INTO a copy before the update (${plainError(e)}); copying the file as it is`);
+  }
+  return plainCopyBeforeUpdate();
 }
 
 let timer: NodeJS.Timeout | null = null;

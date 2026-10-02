@@ -155,6 +155,20 @@
       "when": 1790872135638,
       "tag": "0021_parcha_no_repeats",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1790939164336,
+      "tag": "0022_slip_sums",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1790961151461,
+      "tag": "0023_audit_facets",
+      "breakpoints": true
     }
   ]
 }

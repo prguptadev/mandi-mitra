@@ -1,6 +1,7 @@
 import { eq, and, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { normKey, similarity } from "./translit.ts";
+import { sharedPart } from "./unchangedBooks.ts";
 
 export interface AdatiSuggestion {
   adatiId: string; nameHi: string; nameHinglish: string;
@@ -18,8 +19,15 @@ const SUGGEST_FLOOR = 0.6;
 /** The reader's pick from the list counts only if it looks this much like what it wrote. */
 const PICK_CLOSE = 0.75;
 
-/** Loaded once per batch so a 30-row sheet does not hit the DB 30 times. */
-export async function loadResolver(businessId: string) {
+/** Hindi name order: what localeCompare(b, "hi") gives, without building a collator for every comparison. */
+const hindiOrder = new Intl.Collator("hi").compare;
+
+/** Loaded once per batch so a 30-row sheet does not hit the DB 30 times; and
+ *  once for every sheet opened while the suppliers, their names and slips are
+ *  unchanged (it only answers questions: nothing in it is ever changed). */
+export const loadResolver = (businessId: string) => sharedPart(`resolver|${businessId}`, () => buildResolver(businessId));
+
+async function buildResolver(businessId: string) {
   const all = await db.select().from(schema.adati)
     .where(and(eq(schema.adati.businessId, businessId), eq(schema.adati.active, true)));
   const usage = await db.select({ id: schema.purchaseSlips.adatiId, n: sql<number>`count(*)`.as("n") })
@@ -28,7 +36,7 @@ export async function loadResolver(businessId: string) {
     .groupBy(schema.purchaseSlips.adatiId);
   const used = new Map(usage.map((u) => [u.id, u.n]));
   const suppliers = all.sort((a, b) => (used.get(b.id) ?? 0) - (used.get(a.id) ?? 0)
-    || a.nameHi.localeCompare(b.nameHi, "hi"));
+    || hindiOrder(a.nameHi, b.nameHi));
   const aliases = await db.select().from(schema.adatiAliases)
     .where(eq(schema.adatiAliases.businessId, businessId));
 

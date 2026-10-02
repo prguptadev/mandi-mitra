@@ -282,6 +282,14 @@ export const purchaseSlips = sqliteTable(
     loadIdx: index("slip_load_idx").on(t.loadId),
     adatiIdx: index("slip_adati_idx").on(t.adatiId, t.slipDate),
     millIdx: index("slip_mill_date_idx").on(t.merchantId, t.slipDate),
+    /* The sums the screens add up over a whole business — each purchase day of
+       each mill (stock, day rates, the dashboard) and each supplier (the
+       ledger, the pay sheet) — read from these alone, never from the slips'
+       wide rows: a big book's totals come from a few MB instead of the table. */
+    daySumsIdx: index("slip_day_sums_idx").on(t.businessId, t.merchantId, t.jinsId, t.slipDate, t.ratePaisePerQtl, t.netGrams, t.grossGrams, t.amountPaise),
+    supplierSumsIdx: index("slip_supplier_sums_idx").on(t.businessId, t.adatiId, t.slipDate, t.ratePaisePerQtl, t.netGrams, t.amountPaise, t.commissionPaise, t.gaushalaPaise, t.payablePaise),
+    // the slips a scanned sheet put on the list (only those slips are in it)
+    scanIdx: index("slip_scan_idx").on(t.scanBatchId).where(sql`${t.scanBatchId} is not null`),
   }),
 );
 
@@ -550,6 +558,11 @@ export const auditLog = sqliteTable(
     bizIdx: index("audit_biz_idx").on(t.businessId, t.at),
     entIdx: index("audit_entity_idx").on(t.entity, t.entityId),
     userIdx: index("audit_user_idx").on(t.userId, t.at),
+    /* The Audit screen's filter lists (which records, which actions, who) read
+       from this alone, not from the trail's wide rows: on a big book the trail
+       is the largest table. Action comes second so the list of entries, which
+       never asks for an exact action, keeps reading in time order as before. */
+    facetsIdx: index("audit_facets_idx").on(t.businessId, t.action, t.entity, t.userId, t.userName),
   }),
 );
 

@@ -14,6 +14,7 @@ import { parchaXlsx } from "../lib/parchaXlsx.ts";
 import { poLabel } from "./orders.ts";
 import { claimParchaNumber, releaseParchaNumber, CloudError } from "../lib/cloud.ts";
 import { repairTrucks } from "../lib/repairTrucks.ts";
+import { bookLines, bookLinesInHand } from "../lib/tracking.ts";
 import { can, actor, param, notFound, bad, HttpError, attachment, isoDay, LIMIT, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 import { officeToday } from "../lib/parchaLabels.ts";
@@ -168,7 +169,13 @@ loadRoutes.get("/", can("load.read"), async (c) => {
     .limit(20_000);
 
   const ids = rows.map((r) => r.l.id);
-  const lines = ids.length ? await linesWithWeights(inArray(schema.loadLines.loadId, ids)) : [];
+  /* Each truck's rows, in their order: from the business's rows when they are
+     in hand or the list is long (the same rows and weights), else read for
+     these trucks alone. */
+  const these = new Set(ids);
+  const lines = !ids.length ? []
+    : bookLinesInHand(biz) || ids.length > 1000 ? (await bookLines(biz)).filter((x) => these.has(x.loadId))
+      : await linesWithWeights(inArray(schema.loadLines.loadId, ids), { wholeTrucks: true });
   const jinsCodes = new Map((await db.select({ id: schema.jins.id, code: schema.jins.code }).from(schema.jins).where(eq(schema.jins.businessId, biz))).map((j) => [j.id, j.code]));
   const parchas = ids.length ? await db.select({
     loadId: schema.parchas.loadId, id: schema.parchas.id, parchaNo: schema.parchas.parchaNo,
@@ -180,8 +187,10 @@ loadRoutes.get("/", can("load.read"), async (c) => {
 
   // parcha money (grand total, advance, dara) is for those who may read parchas
   const bills = c.get("auth")!.permissions.has("parcha.read");
+  const linesOf = new Map<string, typeof lines>();
+  for (const x of lines) { const a = linesOf.get(x.loadId); if (a) a.push(x); else linesOf.set(x.loadId, [x]); }
   return c.json(rows.map((r) => {
-    const mine = lines.filter((x) => x.loadId === r.l.id);
+    const mine = linesOf.get(r.l.id) ?? [];
     const p = parchaByLoad.get(r.l.id) ?? null;
     return {
       ...r.l,

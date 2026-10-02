@@ -100,21 +100,37 @@ auditRoutes.get("/", can("audit.read"), async (c) => {
   });
 });
 
-/** Distinct entities/actions/users, for the filter dropdowns. */
+/** SQLite's own text order (BINARY: by code point), nothing first. */
+const binaryOrder = (a: string | null, b: string | null) => {
+  if (a === b) return 0;
+  if (a === null) return -1;
+  if (b === null) return 1;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n;) {
+    const x = a.codePointAt(i)!, y = b.codePointAt(i)!;
+    if (x !== y) return x < y ? -1 : 1;
+    i += x > 0xffff ? 2 : 1;
+  }
+  return a.length - b.length;
+};
+
+/** Distinct entities/actions/users, for the filter dropdowns. One pass over the trail, not one per list. */
 auditRoutes.get("/facets", can("audit.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
-  const entities = await db.selectDistinct({ entity: schema.auditLog.entity })
-    .from(schema.auditLog).where(eq(schema.auditLog.businessId, biz));
-  const actions = await db.selectDistinct({ action: schema.auditLog.action })
-    .from(schema.auditLog).where(eq(schema.auditLog.businessId, biz));
-  const users = await db.select({
-    userId: schema.auditLog.userId, userName: schema.auditLog.userName,
-    n: sql<number>`count(*)`.as("n"),
-  }).from(schema.auditLog).where(eq(schema.auditLog.businessId, biz))
-    .groupBy(schema.auditLog.userId, schema.auditLog.userName);
+  const A = schema.auditLog;
+  const kinds = await db.select({ entity: A.entity, action: A.action, userId: A.userId, userName: A.userName, n: sql<number>`count(*)` })
+    .from(A).where(eq(A.businessId, biz)).groupBy(A.entity, A.action, A.userId, A.userName);
+  // each user (and the name written with it) with how many entries, in the order a group by user gives
+  const byUser = new Map<string, { userId: string | null; userName: string | null; n: number }>();
+  for (const k of kinds) {
+    const key = JSON.stringify([k.userId, k.userName]);
+    const u = byUser.get(key);
+    if (u) u.n += k.n; else byUser.set(key, { userId: k.userId, userName: k.userName, n: k.n });
+  }
+  const users = [...byUser.values()].sort((a, b) => binaryOrder(a.userId, b.userId) || binaryOrder(a.userName, b.userName));
   return c.json({
-    entities: entities.map((e) => e.entity).sort(),
-    actions: actions.map((a) => a.action).sort(),
+    entities: [...new Set(kinds.map((k) => k.entity))].sort(),
+    actions: [...new Set(kinds.map((k) => k.action))].sort(),
     users: users.filter((u) => u.userId),
   });
 });

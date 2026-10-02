@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { and, eq, gte, lte, isNull, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
+import { rowsOf } from "../db/rows.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
 import { amountPaise } from "../lib/money.ts";
@@ -9,6 +10,7 @@ import { can, canAll, actor, bad, isoDay, type Env } from "../lib/http.ts";
 import { readSetting, writeSetting } from "./settings.ts";
 import { TallySettingsSchema, defaultTallySettings, vouchersFile, ledgersFile, type TallySettings, type TallyVoucher, type TallyLedger, oneFile } from "../lib/tally.ts";
 import { revisions, type ParchaDoc } from "../lib/parcha.ts";
+import { figuresOf } from "../lib/parchaFigures.ts";
 
 /* Sending the books to Tally Prime: purchases, payments to suppliers, kaccha
    parchas (sales to mills), money from mills and the mills' weight cuts, as
@@ -85,18 +87,26 @@ export async function build(biz: string, from: string, to: string, kinds0: Kind[
 
   if (kinds.includes("slip")) {
     const S = schema.purchaseSlips;
-    const slips = await db.select({ s: S, jins: schema.jins.code, millCode: schema.merchants.code }).from(S)
+    // only what a voucher and its fingerprint read (the same rows, by the same index, in the same order)
+    const slipFields = {
+      id: S.id, slipDate: S.slipDate, rstNo: S.rstNo, adatiId: S.adatiId, netGrams: S.netGrams, ratePaisePerQtl: S.ratePaisePerQtl,
+      amountPaise: S.amountPaise, commissionPaise: S.commissionPaise, gaushalaPaise: S.gaushalaPaise, payablePaise: S.payablePaise,
+      jins: schema.jins.code, millCode: schema.merchants.code,
+    };
+    const slips = (await rowsOf(db.select(slipFields).from(S)
       .innerJoin(schema.jins, eq(schema.jins.id, S.jinsId))
       .leftJoin(schema.merchants, eq(schema.merchants.id, S.merchantId))
       .where(and(eq(S.businessId, biz), gte(S.slipDate, from), lte(S.slipDate, to),
-        party.adatiId ? eq(S.adatiId, party.adatiId) : undefined, party.merchantId ? eq(S.merchantId, party.merchantId) : undefined));
+        party.adatiId ? eq(S.adatiId, party.adatiId) : undefined, party.merchantId ? eq(S.merchantId, party.merchantId) : undefined)), slipFields))
+      .map(({ jins, millCode, ...s }) => ({ s, jins, millCode }));
     const pricedAll = slips.filter((x) => x.s.ratePaisePerQtl > 0);
     unpriced = slips.length - pricedAll.length;
     const priced = fresh("slip", pricedAll, (x) => x.s.id);
     const groups = new Map<string, typeof priced>();
     for (const x of priced) {
       const k = cfg.purchasePer === "slip" ? x.s.id : `${x.s.adatiId}|${x.s.slipDate}`;
-      groups.set(k, [...(groups.get(k) ?? []), x]);
+      const a = groups.get(k);
+      if (a) a.push(x); else groups.set(k, [x]);
     }
     for (const g of groups.values()) {
       const s0 = g[0].s;
@@ -211,10 +221,10 @@ export async function build(biz: string, from: string, to: string, kinds0: Kind[
   return { vouchers, entries, ledgers: [...ledgers].map(([name, parent]): TallyLedger => ({ name, parent, openingPaise: openings.get(name) })), unpriced, alreadySent, charges: [...charges].map(([key, label]) => ({ key, label })) };
 }
 
-const fpSlip = (s: typeof schema.purchaseSlips.$inferSelect) => [s.slipDate, s.adatiId, s.amountPaise, s.commissionPaise, s.gaushalaPaise, s.payablePaise].join("|");
-const fpPayment = (p: typeof schema.payments.$inferSelect) => [p.payDate, p.adatiId, p.amountPaise, p.mode].join("|");
-const fpParcha = (p: typeof schema.parchas.$inferSelect) => [p.invoiceDate, p.parchaNo, p.version, p.grandTotalPaise, p.status].join("|");
-const fpReceipt = (x: typeof schema.millReceipts.$inferSelect) => [x.receiptDate, x.merchantId, x.amountPaise, x.deductionPaise, x.mode].join("|");
+const fpSlip = (s: Pick<typeof schema.purchaseSlips.$inferSelect, "slipDate" | "adatiId" | "amountPaise" | "commissionPaise" | "gaushalaPaise" | "payablePaise">) => [s.slipDate, s.adatiId, s.amountPaise, s.commissionPaise, s.gaushalaPaise, s.payablePaise].join("|");
+const fpPayment = (p: Pick<typeof schema.payments.$inferSelect, "payDate" | "adatiId" | "amountPaise" | "mode">) => [p.payDate, p.adatiId, p.amountPaise, p.mode].join("|");
+const fpParcha = (p: Pick<typeof schema.parchas.$inferSelect, "invoiceDate" | "parchaNo" | "version" | "grandTotalPaise" | "status">) => [p.invoiceDate, p.parchaNo, p.version, p.grandTotalPaise, p.status].join("|");
+const fpReceipt = (x: Pick<typeof schema.millReceipts.$inferSelect, "receiptDate" | "merchantId" | "amountPaise" | "deductionPaise" | "mode">) => [x.receiptDate, x.merchantId, x.amountPaise, x.deductionPaise, x.mode].join("|");
 const fpCut = (grams: number, value: number) => [grams, value].join("|");
 
 /** Entries sent to Tally that have since changed here, or been cancelled or deleted. */
@@ -224,13 +234,25 @@ async function changedSince(biz: string) {
   const ids = (k: Kind) => marks.filter((m) => m.kind === k).map((m) => m.entityId);
   const now = new Map<string, string | null>();
   const chunk = async <T,>(list: string[], q: (part: string[]) => Promise<T[]>) => { const out: T[] = []; for (let i = 0; i < list.length; i += 500) out.push(...await q(list.slice(i, i + 500))); return out; };
-  for (const s of await chunk(ids("slip"), (x) => db.select().from(schema.purchaseSlips).where(inArray(schema.purchaseSlips.id, x)))) now.set(`slip|${s.id}`, fpSlip(s));
-  for (const p of await chunk(ids("payment"), (x) => db.select().from(schema.payments).where(inArray(schema.payments.id, x)))) now.set(`payment|${p.id}`, p.voidedAt ? null : fpPayment(p));
-  for (const p of await chunk(ids("parcha"), (x) => db.select().from(schema.parchas).where(inArray(schema.parchas.id, x)))) now.set(`parcha|${p.id}`, p.status === "approved" ? fpParcha(p) : null);
-  for (const r of await chunk(ids("receipt"), (x) => db.select().from(schema.millReceipts).where(inArray(schema.millReceipts.id, x)))) now.set(`receipt|${r.id}`, r.voidedAt ? null : fpReceipt(r));
-  for (const l of await chunk(ids("cut"), (x) => db.select().from(schema.loads).where(inArray(schema.loads.id, x)))) {
-    const [p] = await db.select().from(schema.parchas).where(and(eq(schema.parchas.loadId, l.id), eq(schema.parchas.status, "approved"))).limit(1);
-    now.set(`cut|${l.id}`, p && l.millDeductionGrams ? fpCut(l.millDeductionGrams, amountPaise(l.millDeductionGrams, (JSON.parse(p.snapshot) as ParchaDoc).totals.ratePaisePerQtl)) : null);
+  // only what each fingerprint reads (a parcha's frozen copy is not read for its number and total)
+  const S = schema.purchaseSlips, P = schema.payments, PA = schema.parchas, R = schema.millReceipts, LD = schema.loads;
+  for (const s of await chunk(ids("slip"), (x) => db.select({ id: S.id, slipDate: S.slipDate, adatiId: S.adatiId, amountPaise: S.amountPaise, commissionPaise: S.commissionPaise, gaushalaPaise: S.gaushalaPaise, payablePaise: S.payablePaise })
+    .from(S).where(inArray(S.id, x)))) now.set(`slip|${s.id}`, fpSlip(s));
+  for (const p of await chunk(ids("payment"), (x) => db.select({ id: P.id, payDate: P.payDate, adatiId: P.adatiId, amountPaise: P.amountPaise, mode: P.mode, voidedAt: P.voidedAt })
+    .from(P).where(inArray(P.id, x)))) now.set(`payment|${p.id}`, p.voidedAt ? null : fpPayment(p));
+  for (const p of await chunk(ids("parcha"), (x) => db.select({ id: PA.id, invoiceDate: PA.invoiceDate, parchaNo: PA.parchaNo, version: PA.version, grandTotalPaise: PA.grandTotalPaise, status: PA.status })
+    .from(PA).where(inArray(PA.id, x)))) now.set(`parcha|${p.id}`, p.status === "approved" ? fpParcha(p) : null);
+  for (const r of await chunk(ids("receipt"), (x) => db.select({ id: R.id, receiptDate: R.receiptDate, merchantId: R.merchantId, amountPaise: R.amountPaise, deductionPaise: R.deductionPaise, mode: R.mode, voidedAt: R.voidedAt })
+    .from(R).where(inArray(R.id, x)))) now.set(`receipt|${r.id}`, r.voidedAt ? null : fpReceipt(r));
+  // a cut: its truck's weight cut at the rate its live parcha billed (one live parcha a truck at most)
+  const cutLoads = await chunk(ids("cut"), (x) => db.select({ id: LD.id, millDeductionGrams: LD.millDeductionGrams }).from(LD).where(inArray(LD.id, x)));
+  const live = await chunk(cutLoads.map((l) => l.id), (x) => db.select({ id: PA.id, loadId: PA.loadId, bytes: sql<number>`octet_length(${PA.snapshot})` })
+    .from(PA).where(and(inArray(PA.loadId, x), eq(PA.status, "approved"))));
+  const liveOf = new Map(live.map((p) => [p.loadId, p]));
+  const frozen = figuresOf(live);
+  for (const l of cutLoads) {
+    const p = liveOf.get(l.id);
+    now.set(`cut|${l.id}`, p && l.millDeductionGrams ? fpCut(l.millDeductionGrams, amountPaise(l.millDeductionGrams, frozen.get(p.id)!.totals.ratePaisePerQtl)) : null);
   }
   return marks.filter((m) => now.get(`${m.kind}|${m.entityId}`) !== m.fingerprint).map((m) => ({
     kind: m.kind as Kind, id: m.entityId, sent: m.fingerprint, now: now.get(`${m.kind}|${m.entityId}`) ?? null, exportedAt: m.exportedAt,
@@ -265,11 +287,13 @@ export async function tallyStatus(biz: string, from: string, to: string, kinds: 
 
   if (kinds.includes("slip")) {
     const S = schema.purchaseSlips;
-    const rows = await db.select({ s: { id: S.id, slipDate: S.slipDate, adatiId: S.adatiId, amountPaise: S.amountPaise, commissionPaise: S.commissionPaise, gaushalaPaise: S.gaushalaPaise, payablePaise: S.payablePaise, ratePaisePerQtl: S.ratePaisePerQtl }, m: M })
+    // read straight into rows (a whole season of slips); no mark comes back as a mark of nothing, which put() reads alike
+    const fields = { id: S.id, slipDate: S.slipDate, adatiId: S.adatiId, amountPaise: S.amountPaise, commissionPaise: S.commissionPaise, gaushalaPaise: S.gaushalaPaise, payablePaise: S.payablePaise, ratePaisePerQtl: S.ratePaisePerQtl, ...M };
+    const rows = await rowsOf(db.select(fields)
       .from(S).leftJoin(TE, mark("slip", S.id))
       .where(and(eq(S.businessId, biz), gte(S.slipDate, from), lte(S.slipDate, to),
-        party.adatiId ? eq(S.adatiId, party.adatiId) : undefined, party.merchantId ? eq(S.merchantId, party.merchantId) : undefined));
-    for (const r of rows) put("slip", r.s.id, r.s.slipDate, r.s.ratePaisePerQtl > 0 ? fpSlip(r.s as typeof S.$inferSelect) : null, r.m);
+        party.adatiId ? eq(S.adatiId, party.adatiId) : undefined, party.merchantId ? eq(S.merchantId, party.merchantId) : undefined)), fields);
+    for (const r of rows) put("slip", r.id, r.slipDate, r.ratePaisePerQtl > 0 ? fpSlip(r) : null, r);
   }
   if (kinds.includes("payment") && !party.merchantId) {
     const P = schema.payments;

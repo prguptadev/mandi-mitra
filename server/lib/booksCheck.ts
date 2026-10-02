@@ -56,8 +56,17 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
         return { mode: d.katautiMode ?? DEFAULT_K.mode, kgPerUnit: d.katautiKgPerUnit ?? DEFAULT_K.kgPerUnit, rounding: d.katautiRounding ?? DEFAULT_K.rounding } as Katauti;
       } catch { return DEFAULT_K; }
     })();
+    // a day's slips mostly carry the very same terms text: each different text is read once (null: unreadable)
+    const termsRead = new Map<string, Katauti | null>();
     const termsOf = (s: { merchant_id: string | null; katauti_terms?: string | null }): Katauti => {
-      if (s.katauti_terms) { try { return { ...DEFAULT_K, ...JSON.parse(s.katauti_terms) } as Katauti; } catch { /* fall through */ } }
+      if (s.katauti_terms) {
+        let k = termsRead.get(s.katauti_terms);
+        if (k === undefined) {
+          try { k = { ...DEFAULT_K, ...JSON.parse(s.katauti_terms) } as Katauti; } catch { k = null; }
+          termsRead.set(s.katauti_terms, k);
+        }
+        if (k) return k;
+      }
       return s.merchant_id ? kOf.get(s.merchant_id) ?? DEFAULT_K : bizK;
     };
     let slipBad = 0;
@@ -73,9 +82,16 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     if (!slipBad) ok(`${slips.length} slips: every katauti, net weight and amount re-works exactly`);
     // 1b. what each supplier adds — worked out here on its own, not with the app's code
     let chBad = 0;
+    const supplierTermsRead = new Map<string, { commissionPct: number; gaushalaPerQtl: number }>();
     for (const s of slips) {
-      let t = { commissionPct: 0, gaushalaPerQtl: 0 };
-      try { t = { ...t, ...JSON.parse(s.supplier_terms ?? "{}") }; } catch { /* none */ }
+      const raw = s.supplier_terms ?? "{}";
+      let t = supplierTermsRead.get(raw);
+      if (!t) {
+        let read = { commissionPct: 0, gaushalaPerQtl: 0 };
+        try { read = { ...read, ...JSON.parse(raw) }; } catch { /* none */ }
+        supplierTermsRead.set(raw, read);
+        t = read;
+      }
       const priced = s.rate_paise_per_qtl > 0;
       // the terms to 4 decimals, as Settings keeps them (0.6667 %, ₹0.0625 a quintal)
       const commission = priced ? Number((BigInt(s.amount_paise) * BigInt(Math.round(t.commissionPct * 10_000)) + 500_000n) / 1_000_000n) : 0;
@@ -133,8 +149,12 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     const purchases = slips.reduce((s, x) => s + owedFor(x), 0);
     const paid = pays.filter((p) => p.voided_at == null).reduce((s, p) => s + p.amount_paise, 0);
     const cancelled = pays.filter((p) => p.voided_at != null);
-    const bal = sup.map((a) => a.opening_balance_paise + slips.filter((x) => x.adati_id === a.id).reduce((s, x) => s + owedFor(x), 0)
-      - pays.filter((p) => p.adati_id === a.id && p.voided_at == null).reduce((s, p) => s + p.amount_paise, 0));
+    // each supplier's purchases and payments, added up in one pass each (not once per supplier)
+    const owedBy = new Map<string, number>();
+    for (const x of slips) owedBy.set(x.adati_id, (owedBy.get(x.adati_id) ?? 0) + owedFor(x));
+    const paidBy = new Map<string, number>();
+    for (const p of pays) if (p.voided_at == null) paidBy.set(p.adati_id, (paidBy.get(p.adati_id) ?? 0) + p.amount_paise);
+    const bal = sup.map((a) => a.opening_balance_paise + (owedBy.get(a.id) ?? 0) - (paidBy.get(a.id) ?? 0));
     const toPay = bal.filter((b) => b > 0).reduce((s, b) => s + b, 0);
     const ahead = bal.filter((b) => b < 0).reduce((s, b) => s - b, 0);
     ok(`opening ₹${rs(opening)} + purchases ₹${rs(purchases)} − paid ₹${rs(paid)} = ₹${rs(opening + purchases - paid)}`);
@@ -150,7 +170,8 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     } else {
       ok("every supplier name belongs to one supplier");
     }
-    const orphanPays = pays.filter((p) => !sup.some((a) => a.id === p.adati_id));
+    const supIds = new Set(sup.map((a) => a.id));
+    const orphanPays = pays.filter((p) => !supIds.has(p.adati_id));
     if (orphanPays.length) bad(`${orphanPays.length} payment(s) point at a supplier that is not in this business`);
     if (cancelled.length) note(`${cancelled.length} cancelled payment(s) of ₹${rs(cancelled.reduce((s, p) => s + p.amount_paise, 0))} kept on record, counted as nothing`);
 
@@ -162,8 +183,11 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     let pBad = 0;
     const parts = new Map<string, number>();
     let goodsBilled = 0;
+    // the two figures 3b and 4 need from each frozen copy, read here so each copy is read once
+    const frozen = new Map<string, { net: unknown; rate: number }>();
     for (const p of approved) {
       const d = JSON.parse(p.snapshot) as ParchaDoc;
+      frozen.set(p.id, { net: d.weights?.netGrams, rate: d.totals.ratePaisePerQtl });
       const lineSum = d.lines.reduce((s, l) => s + l.amountPaise, 0);
       const linesOk = d.lines.every((l) => amountPaise(l.netGrams, l.ratePaisePerQtl) === l.amountPaise);
       const charges = d.result.lines.filter((l) => l.kind === "charge").reduce((s, l) => s + (l.sign === "subtract" ? -l.amountPaise : l.amountPaise), 0);
@@ -212,7 +236,7 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
       const netOff: string[] = [];
       for (const l of trucks) {
         const p = liveOf.get(l.id);
-        const billedNet = p ? (JSON.parse(p.snapshot) as ParchaDoc).weights?.netGrams : undefined;
+        const billedNet = p ? frozen.get(p.id)!.net : undefined;
         if (typeof billedNet === "number" && l.mill_net_grams !== billedNet) {
           netOff.push(`${named(l)}: stored ${l.mill_net_grams == null ? "none" : qt(l.mill_net_grams)}, parcha #${p!.parcha_no} billed ${qt(billedNet)} qtl`);
         }
@@ -228,13 +252,14 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     const loads = all<{ id: string; merchant_id: string; truck_no: string | null; mill_net_grams: number | null; mill_deduction_grams: number; status: string; load_date: string }>(
       "select id, merchant_id, truck_no, mill_net_grams, mill_deduction_grams, status, load_date from loads where business_id = ?", biz.id);
     const recs = all<{ id: string; merchant_id: string; receipt_date: string; amount_paise: number; deduction_paise: number; voided_at: number | null; voucher_no: number | null }>("select id, merchant_id, receipt_date, amount_paise, deduction_paise, voided_at, voucher_no from mill_receipts where business_id = ?", biz.id);
+    const loadOf = new Map(loads.map((l) => [l.id, l]));
     let owedTotal = 0;
     for (const m of mills) {
-      const mine = approved.filter((p) => loads.find((l) => l.id === p.load_id)?.merchant_id === m.id);
+      const mine = approved.filter((p) => loadOf.get(p.load_id)?.merchant_id === m.id);
       const b = mine.reduce((s, p) => s + p.grand_total_paise, 0);
       const cut = mine.reduce((s, p) => {
-        const l = loads.find((x) => x.id === p.load_id)!;
-        return s + (l.mill_deduction_grams ? amountPaise(l.mill_deduction_grams, (JSON.parse(p.snapshot) as ParchaDoc).totals.ratePaisePerQtl) : 0);
+        const l = loadOf.get(p.load_id)!;
+        return s + (l.mill_deduction_grams ? amountPaise(l.mill_deduction_grams, frozen.get(p.id)!.rate) : 0);
       }, 0);
       const r = recs.filter((x) => x.merchant_id === m.id && x.voided_at == null);
       const got = r.reduce((s, x) => s + x.amount_paise + x.deduction_paise, 0);
@@ -265,10 +290,14 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
         else weightOf.set(x.id, 0);
       }
     }
-    const loadOf = new Map(loads.map((l) => [l.id, l]));
+    // bought and loaded per mill, each added up in one pass
+    const boughtBy = new Map<string | null, number>();
+    for (const s of slips) boughtBy.set(s.merchant_id, (boughtBy.get(s.merchant_id) ?? 0) + s.net_grams);
+    const loadedBy = new Map<string | undefined, number>();
+    for (const x of lines) { const mid = loadOf.get(x.load_id)?.merchant_id; loadedBy.set(mid, (loadedBy.get(mid) ?? 0) + (weightOf.get(x.id) ?? 0)); }
     for (const m of mills) {
-      const bought = slips.filter((s) => s.merchant_id === m.id).reduce((s, x) => s + x.net_grams, 0);
-      const loaded = lines.filter((x) => loadOf.get(x.load_id)?.merchant_id === m.id).reduce((s, x) => s + (weightOf.get(x.id) ?? 0), 0);
+      const bought = boughtBy.get(m.id) ?? 0;
+      const loaded = loadedBy.get(m.id) ?? 0;
       if (!bought && !loaded) continue;
       const left = bought - loaded;
       if (left < 0) look(`${m.code}: bought ${qt(bought)} − loaded ${qt(loaded)} = ${qt(left)} qtl — more loaded than bought: a slip is missing from the daily list, or a truck took another mill's goods`);

@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { eq, and, gte, lte, lt, desc, sql, isNull } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
+import { rowsOf } from "../db/rows.ts";
+import { sharedPart } from "../lib/unchangedBooks.ts";
 import { newId } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, canAll, actor, param, notFound, bad, isoDay, attachment, LIMIT, HttpError, type Env } from "../lib/http.ts";
@@ -24,6 +26,8 @@ export const paymentRoutes = new Hono<Env>();
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 export const PAY_MODES = ["cash", "bank", "upi", "cheque"] as const;
+/** Hindi name order: what localeCompare(b, "hi") gives, without building a collator for every comparison. */
+const hindiOrder = new Intl.Collator("hi").compare;
 
 /** Purchases and payments per supplier, optionally before a day, from a day, or up to (and including) one. */
 async function sums(businessId: string, opts: { before?: string; from?: string; upTo?: string; adatiId?: string } = {}) {
@@ -36,7 +40,7 @@ async function sums(businessId: string, opts: { before?: string; from?: string; 
   if (opts.before) { sw.push(lt(S.slipDate, opts.before)); pw.push(lt(P.payDate, opts.before)); }
   if (opts.from) { sw.push(gte(S.slipDate, opts.from)); pw.push(gte(P.payDate, opts.from)); }
   if (opts.upTo) { sw.push(lte(S.slipDate, opts.upTo)); pw.push(lte(P.payDate, opts.upTo)); }
-  const bought = await db.select({
+  const slipFields = {
     adatiId: S.adatiId,
     slips: sql<number>`count(*)`,
     netGrams: sql<number>`sum(${S.netGrams})`,
@@ -48,15 +52,22 @@ async function sums(businessId: string, opts: { before?: string; from?: string; 
     amountPaise: sql<number>`sum(${S.payablePaise})`,
     unpriced: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then 0 else 1 end)`,
     last: sql<string>`max(${S.slipDate})`,
-  }).from(S).where(and(...sw)).groupBy(S.adatiId);
-  const paid = await db.select({
+  };
+  const bought = await rowsOf(db.select(slipFields).from(S).where(and(...sw)).groupBy(S.adatiId), slipFields);
+  const payFields = {
     adatiId: P.adatiId,
     n: sql<number>`count(*)`,
     amountPaise: sql<number>`sum(${P.amountPaise})`,
     last: sql<string>`max(${P.payDate})`,
-  }).from(P).where(and(...pw)).groupBy(P.adatiId);
+  };
+  const paid = await rowsOf(db.select(payFields).from(P).where(and(...pw)).groupBy(P.adatiId), payFields);
   return { bought: new Map(bought.map((b) => [b.adatiId, b])), paid: new Map(paid.map((p) => [p.adatiId, p])) };
 }
+
+/** sums(businessId, { upTo }): every supplier's purchases and payments up to a day (all of them with
+ *  none), shared by the screens asked for while the books are unchanged (read, never changed). */
+export const supplierSumsUpTo = (businessId: string, upTo?: string) =>
+  sharedPart(`supplierSums|${businessId}|${upTo ?? ""}`, () => sums(businessId, { upTo }));
 
 /**
  * Every supplier with what is owed at a day, and what a period put on and took
@@ -72,7 +83,7 @@ async function ledgerList(biz: string, opts: { from?: string; asOf?: string } = 
     village: schema.adati.village, villageHi: schema.adati.villageHi, phone: schema.adati.phone, active: schema.adati.active,
     openingBalancePaise: schema.adati.openingBalancePaise,
   }).from(schema.adati).where(eq(schema.adati.businessId, biz));
-  const all = await sums(biz, { upTo: opts.asOf });
+  const all = await supplierSumsUpTo(biz, opts.asOf);
   const period = opts.from ? await sums(biz, { from: opts.from, upTo: opts.asOf }) : all;
   const rows = suppliers.map((s) => {
     const b = period.bought.get(s.id);
@@ -98,7 +109,7 @@ async function ledgerList(biz: string, opts: { from?: string; asOf?: string } = 
     };
   // a supplier settled and made inactive is still on the list for a period in which he was paid
   }).filter((r) => r.active || r.balancePaise !== 0 || r.slips > 0 || r.paymentsPaise !== 0);
-  rows.sort((a, b) => b.balancePaise - a.balancePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
+  rows.sort((a, b) => b.balancePaise - a.balancePaise || hindiOrder(a.nameHi, b.nameHi));
   const total = (k: "openingBalancePaise" | "broughtForwardPaise" | "goodsPaise" | "commissionPaise" | "gaushalaPaise" | "purchasesPaise" | "paymentsPaise" | "balancePaise") =>
     rows.reduce((s, r) => s + r[k], 0);
   const totals = {
@@ -184,7 +195,7 @@ ledgerRoutes.get("/sheet", canAll("export.data", "ledger.read"), async (c) => {
     payablePaise: r.purchasesPaise, paidPaise: r.paymentsPaise,
     // paid ahead is money to recover, not money to pay: it never lowers the total
     toPayPaise: Math.max(0, r.balancePaise),
-  })).sort((a, b) => b.toPayPaise - a.toPayPaise || b.payablePaise - a.payablePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
+  })).sort((a, b) => b.toPayPaise - a.toPayPaise || b.payablePaise - a.payablePaise || hindiOrder(a.nameHi, b.nameHi));
 
   const money = (p: number) => `₹${(p / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const notes: string[] = [];

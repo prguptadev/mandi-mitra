@@ -3,6 +3,7 @@ import { slipCharges, supplierChargesOf, supplierTermsOf, termsOnly } from "../l
 import { z } from "zod";
 import { eq, and, asc, desc, sql, inArray, gte, lte } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
+import { rowsOf } from "../db/rows.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { ChargeConfigSchema, KatautiSchema, deriveKatauti, type Katauti } from "../lib/charges.ts";
@@ -136,7 +137,7 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
   if (jinsId) where.push(eq(schema.purchaseSlips.jinsId, jinsId));
   if (adatiId) where.push(eq(schema.purchaseSlips.adatiId, adatiId));
 
-  const rows = await db.select({
+  const listFields = {
     id: schema.purchaseSlips.id,
     slipDate: schema.purchaseSlips.slipDate,
     rstNo: schema.purchaseSlips.rstNo,
@@ -170,7 +171,9 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     scanPages: schema.scanBatches.filePaths,
     createdAt: schema.purchaseSlips.createdAt,
     updatedAt: schema.purchaseSlips.updatedAt,
-  })
+  };
+  // read straight into rows, each value as drizzle reads it (a season's slips for a download)
+  const rows = await rowsOf(db.select(listFields)
     .from(schema.purchaseSlips)
     .innerJoin(schema.adati, eq(schema.adati.id, schema.purchaseSlips.adatiId))
     .innerJoin(schema.jins, eq(schema.jins.id, schema.purchaseSlips.jinsId))
@@ -178,20 +181,37 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     .leftJoin(schema.scanBatches, eq(schema.scanBatches.id, schema.purchaseSlips.scanBatchId))
     .where(and(...where))
     // the id last: slips entered in the same second (on two computers, or one sheet's lines) list the same everywhere
-    .orderBy(asc(schema.purchaseSlips.slipDate), asc(schema.purchaseSlips.createdAt), asc(schema.purchaseSlips.id));
+    .orderBy(asc(schema.purchaseSlips.slipDate), asc(schema.purchaseSlips.createdAt), asc(schema.purchaseSlips.id)), listFields);
 
   // recompute every row server-side and report any that no longer reconcile
   const cfgCache = new Map<string, Katauti>();
   const bizTerms = termsOnly(await supplierChargesOf(biz));
+  /* termsOf() and supplierTermsOf(), each different text read once: most of a
+     list's slips carry the very same terms (a text that cannot be read takes
+     the slip's own fallback, as there) */
+  const katautiRead = new Map<string, Katauti | null>();
+  const termsRead = (r: { katautiTerms: string | null }, fallback: Katauti) => {
+    if (!r.katautiTerms) return fallback;
+    let k = katautiRead.get(r.katautiTerms);
+    if (k === undefined) { k = termsOf(r, null as unknown as Katauti); katautiRead.set(r.katautiTerms, k); }
+    return k ?? fallback;
+  };
+  const supplierRead = new Map<string, ReturnType<typeof supplierTermsOf> | null>();
+  const supplierTermsRead = (r: { supplierTerms: string | null }, fallback: ReturnType<typeof supplierTermsOf>) => {
+    if (!r.supplierTerms) return fallback;
+    let t = supplierRead.get(r.supplierTerms);
+    if (t === undefined) { t = supplierTermsOf(r, null as unknown as ReturnType<typeof supplierTermsOf>); supplierRead.set(r.supplierTerms, t); }
+    return t ?? fallback;
+  };
   const checked = [];
   for (const r of rows) {
     const cacheKey = r.merchantId ?? "-";
     if (!cfgCache.has(cacheKey)) cfgCache.set(cacheKey, await katautiCfg(biz, r.merchantId));
-    const cfg = termsOf(r, cfgCache.get(cacheKey)!);
+    const cfg = termsRead(r, cfgCache.get(cacheKey)!);
     const d = deriveSlip(r.grossGrams, cfg, r.ratePaisePerQtl, r.katautiOverride ? r.katautiUnits : null);
     const suggested = deriveSlip(r.grossGrams, cfg, r.ratePaisePerQtl, null);
     // what the supplier adds, on the slip's own terms
-    const ch = slipCharges(d.amountPaise, d.netGrams, r.ratePaisePerQtl, supplierTermsOf(r, bizTerms));
+    const ch = slipCharges(d.amountPaise, d.netGrams, r.ratePaisePerQtl, supplierTermsRead(r, bizTerms));
     // kg per physical bag, only when a bag count was actually recorded
     const avgBagKg = r.bagsCount && r.bagsCount > 0 ? (r.netGrams / 1000) / r.bagsCount : null;
     checked.push({
