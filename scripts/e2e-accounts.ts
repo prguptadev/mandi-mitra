@@ -364,5 +364,40 @@ check("an opening balance gets its own column on the till-date sheet", opHead.in
 check("…and the row adds up: opening + amount + commission + gaushala − paid = to pay",
   Math.round((at("Opening balance") + at("Amount") + comm + gau - at("Paid")) * 100) === Math.round(at("To pay") * 100), opRow);
 
+/* The supplier list beside the statement: a name and what is to pay, found
+   by name in either script and spelt loosely, sorted by either column. */
+console.log("\nThe supplier list: search and sort");
+{
+  const { findSuppliers, sortSuppliers, nextLedgerSort, ledgerSortOf, DEFAULT_LEDGER_SORT } = await import("../src/lib/ledgerList.ts");
+  const all = (await call("GET", "/ledger")).rows as { id: string; nameHi: string; nameHinglish: string; balancePaise: number }[];
+  const names = (q: string) => findSuppliers(all, q).map((r) => r.nameHi);
+  const twins = ["राम लाल जाँच", "रामलाल जाँच"];
+  check("Hindi finds both RAM LAL JAANCHs", twins.every((n) => names("राम लाल").includes(n)), names("राम लाल"));
+  check("…and so does Hinglish written together", twins.every((n) => names("ramlal").includes(n)), names("ramlal"));
+  check("…and a loose spelling (\"raam laal janch\")", twins.every((n) => names("raam laal janch").includes(n)), names("raam laal janch"));
+  check("Hinglish finds a supplier typed in Hindi only", names("khata").includes("खाता जाँच ट्रेडर्स"), names("khata"));
+  check("a village is not a name: \"Nagla\" finds no one", names("Nagla").length === 0, names("Nagla"));
+  check("nothing typed shows everyone", findSuppliers(all, "  ").length === all.length);
+  const ordered = (sort: { key: "name" | "amount"; dir: "asc" | "desc" }, lang: string) => sortSuppliers(all, sort, lang);
+  const amounts = (rows: typeof all) => rows.map((r) => r.balancePaise);
+  const nonIncreasing = (xs: number[]) => xs.every((x, i) => i === 0 || xs[i - 1] >= x);
+  check("most owed first until a heading is clicked", nonIncreasing(amounts(ordered(DEFAULT_LEDGER_SORT, "en"))) && DEFAULT_LEDGER_SORT.key === "amount");
+  check("To pay, clicked again: least first", nonIncreasing(amounts(ordered({ key: "amount", dir: "asc" }, "en")).reverse()));
+  const coll = new Intl.Collator("en", { sensitivity: "base", numeric: true });
+  const enNames = ordered({ key: "name", dir: "asc" }, "en").map((r) => r.nameHinglish || r.nameHi);
+  check("Name: A to Z by the Hinglish name on an English screen", enNames.every((n, i) => i === 0 || coll.compare(enNames[i - 1], n) <= 0), enNames.slice(0, 5));
+  const hiColl = new Intl.Collator("hi", { sensitivity: "base", numeric: true });
+  const hiNames = ordered({ key: "name", dir: "desc" }, "hi").map((r) => r.nameHi);
+  check("…Z to A by the Hindi name on a Hindi screen", hiNames.every((n, i) => i === 0 || hiColl.compare(hiNames[i - 1], n) >= 0), hiNames.slice(0, 5));
+  check("a heading clicked: Name starts A to Z, the same heading turns it round",
+    JSON.stringify(nextLedgerSort(DEFAULT_LEDGER_SORT, "name")) === JSON.stringify({ key: "name", dir: "asc" })
+    && JSON.stringify(nextLedgerSort({ key: "name", dir: "asc" }, "name")) === JSON.stringify({ key: "name", dir: "desc" })
+    && JSON.stringify(nextLedgerSort({ key: "name", dir: "desc" }, "amount")) === JSON.stringify({ key: "amount", dir: "desc" }));
+  check("an older saved choice (\"slips\") falls back to most owed", JSON.stringify(ledgerSortOf("slips")) === JSON.stringify(DEFAULT_LEDGER_SORT));
+  check("search and sort together keep only the matches, in order",
+    JSON.stringify(sortSuppliers(findSuppliers(all, "jaanch"), DEFAULT_LEDGER_SORT, "en").map((r) => r.id))
+    === JSON.stringify(ordered(DEFAULT_LEDGER_SORT, "en").filter((r) => findSuppliers([r], "jaanch").length).map((r) => r.id)));
+}
+
 console.log(bad === 0 ? "\nLedger and payments add up." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

@@ -726,6 +726,7 @@ export const STRINGS = {
     "scan.warnRateDay": "{n} line(s) have a rate unlike the day's other rates, not yet checked against the paper.",
     "sheet.title": "Supplier pay sheet", "sheet.sub": "What is to be paid to each adati, as Excel or CSV", "sheet.till": "Till date", "sheet.tillHelp": "Every adati with something to pay on this date, the largest first.", "sheet.dayHelp": "Every adati with slips on this day: that day's purchases, and what is to pay at the end of the day.", "sheet.names": "Adati name in", "sheet.both": "Both", "sheet.columns": "Columns in the sheet (kept for next time)",
     "mm.dueAsOf": "Dues as of {d}.",
+    "nav.scanSheets": "Scanned sheets", "scanSheets.title": "Scanned sheets", "scanSheets.sub": "Every sheet uploaded, by day and mill. Click one to see it.", "scanSheets.pages": "Pages", "scanSheets.lines": "Lines", "scanSheets.added": "Slips added", "scanSheets.empty": "No sheets for these filters", "scanSheets.uploadedOn": "No date on the sheet yet: the day it was uploaded", "scanSheets.truncated": "The newest {n} are listed. Narrow the dates to see older ones.", "viewer.title": "Scanned sheet", "viewer.none": "No scanned sheet for this day", "viewer.pageOf": "Page {n} of {of}", "viewer.sheetOf": "Sheet {n} of {of}", "viewer.sameDay": "Typed by hand: the mill's sheet of that day", "viewer.prev": "Previous page", "viewer.next": "Next page", "viewer.open": "Open the scanned sheet", "ledger.searchName": "Search name", "ledger.colToPay": "To pay",
   },
 
   hi: {
@@ -1456,6 +1457,7 @@ export const STRINGS = {
     "scan.warnRateDay": "{n} पंक्तियों की दर इस दिन की बाक़ी दरों जैसी नहीं, और अभी कागज़ से नहीं मिलाई गई।",
     "sheet.title": "आढ़ती भुगतान शीट", "sheet.sub": "हर आढ़ती का कितना देना है — Excel या CSV में", "sheet.till": "तारीख तक", "sheet.tillHelp": "इस तारीख तक जिन आढ़तियों का देना बाकी है, सबसे ज़्यादा वाले पहले।", "sheet.dayHelp": "इस दिन जिन आढ़तियों की पर्चियाँ हैं: उस दिन की खरीद, और दिन के आखिर में कितना देना है।", "sheet.names": "आढ़ती का नाम किसमें", "sheet.both": "दोनों", "sheet.columns": "शीट के कॉलम (अगली बार के लिए याद रहेंगे)",
     "mm.dueAsOf": "{d} तक का बाकी।",
+    "nav.scanSheets": "स्कैन शीट", "scanSheets.title": "स्कैन शीट", "scanSheets.sub": "हर अपलोड की गई शीट, दिन और मिल के हिसाब से। देखने के लिए क्लिक करें।", "scanSheets.pages": "पन्ने", "scanSheets.lines": "लाइनें", "scanSheets.added": "जुड़ी पर्चियाँ", "scanSheets.empty": "इन फ़िल्टर में कोई शीट नहीं", "scanSheets.uploadedOn": "शीट पर अभी तारीख़ नहीं: अपलोड का दिन", "scanSheets.truncated": "सबसे नई {n} दिखाई हैं। पुरानी देखने के लिए तारीख़ें छोटी करें।", "viewer.title": "स्कैन शीट", "viewer.none": "इस दिन की कोई स्कैन शीट नहीं", "viewer.pageOf": "पन्ना {n} / {of}", "viewer.sheetOf": "शीट {n} / {of}", "viewer.sameDay": "हाथ से लिखी पर्ची: उस दिन की मिल की शीट", "viewer.prev": "पिछला पन्ना", "viewer.next": "अगला पन्ना", "viewer.open": "स्कैन शीट खोलें", "ledger.searchName": "नाम खोजें", "ledger.colToPay": "देना",
   },
 } as const;
 

@@ -16,6 +16,7 @@ import { SuppliersPage } from "@/pages/Suppliers.tsx";
 import { DailyListPage } from "@/pages/DailyList.tsx";
 import { ScanListPage } from "@/pages/ScanList.tsx";
 import { ScanReviewPage } from "@/pages/ScanReview.tsx";
+import { SheetsPage } from "@/pages/Sheets.tsx";
 import { MillsPage } from "@/pages/Mills.tsx";
 import { OrdersPage } from "@/pages/Orders.tsx";
 import { LoadsPage, LoadDetailPage, ParchaRegisterPage } from "@/pages/Loads.tsx";
@@ -143,6 +144,7 @@ export default function App() {
           <Route path="/" component={Home} />
           <Route path="/scan">{() => <Guard perm="scan.create"><ScanListPage /></Guard>}</Route>
           <Route path="/scan/:id">{(p) => <Guard perm="scan.review"><ScanReviewPage scanId={p.id} /></Guard>}</Route>
+          <Route path="/sheets">{() => <Guard perm="scan.create"><SheetsPage /></Guard>}</Route>
           <Route path="/daily">{() => <Guard perm="slip.read"><DailyListPage /></Guard>}</Route>
           <Route path="/orders">{() => <Guard perm="po.read"><OrdersPage /></Guard>}</Route>
           <Route path="/loads">{() => <Guard perm="load.read"><LoadsPage /></Guard>}</Route>
