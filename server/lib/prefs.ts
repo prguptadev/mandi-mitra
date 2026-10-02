@@ -77,7 +77,7 @@ export const SUPPLIER_SHEET_COLUMNS = [
 ] as const;
 export type SupplierSheetColumnKey = (typeof SUPPLIER_SHEET_COLUMNS)[number]["key"];
 export const DEFAULT_SUPPLIER_SHEET_COLUMNS: Record<SupplierSheetColumnKey, boolean> = {
-  name: true, net: false, goods: true, commission: true, gaushala: true, payable: true, paid: false, toPay: true,
+  name: true, net: false, goods: false, commission: false, gaushala: false, payable: true, paid: false, toPay: false,
 };
 
 export const DailyListPrefsSchema = z.object({

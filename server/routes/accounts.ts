@@ -190,9 +190,9 @@ ledgerRoutes.get("/sheet", canAll("export.data", "ledger.read"), async (c) => {
   const notes: string[] = [];
   const waiting = rows.reduce((s, r) => s + r.unpriced, 0);
   if (waiting) notes.push(`${waiting} slip${waiting === 1 ? "" : "s"} with no rate yet: weight counted, amount 0.`);
-  // as the ledger's "paid ahead" card: everyone, at the end date (one day: those on the sheet)
+  // as the ledger's "paid ahead" card: everyone, at the end date (one day: those on the sheet); only beside a "To pay" column
   const ahead = (mode === "day" ? on : list.rows).filter((r) => r.balancePaise < 0);
-  if (ahead.length) notes.push(`Paid ahead (to recover, not in "To pay"): ${ahead.map((r) => `${names === "hinglish" ? latinOf(r) : r.nameHi} ${money(-r.balancePaise)}`).join("; ")}.`);
+  if (ahead.length && columns.includes("toPay")) notes.push(`Paid ahead (to recover, not in "To pay"): ${ahead.map((r) => `${names === "hinglish" ? latinOf(r) : r.nameHi} ${money(-r.balancePaise)}`).join("; ")}.`);
 
   const [business] = await db.select({ name: schema.businesses.name }).from(schema.businesses).where(eq(schema.businesses.id, biz)).limit(1);
   const L = (await supplierChargesOf(biz)).labels;

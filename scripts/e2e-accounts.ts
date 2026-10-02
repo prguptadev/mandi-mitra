@@ -344,8 +344,8 @@ check("…net weight in quintals, the unpriced slip's weight counted in it", hiT
 check("…and a line under it says how many slips have no rate yet",
   hiRows.some((r) => typeof r?.[0] === "string" && (r[0] as string).startsWith(`${till.totals.unpriced} slip`) && (r[0] as string).includes("no rate yet")), till.totals.unpriced);
 const defX = await xlsxRows((await fileOf(`mode=till&date=${PD}&names=hi&format=xlsx`)).buf);
-check("by default: name, amount, commission, gaushala, net amount, to pay",
-  JSON.stringify(header(defX)) === JSON.stringify(["Adati name", "Amount", L.commission, L.gaushala, L.payable, TO_PAY]), header(defX));
+check("by default: the name and the net amount only",
+  JSON.stringify(header(defX)) === JSON.stringify(["Adati name", L.payable]), header(defX));
 
 const enX = await xlsxRows((await fileOf(`mode=till&date=${PD}&names=hinglish&cols=${ALL}&format=xlsx`)).buf);
 check("Hinglish names: one name column, in Hinglish",
@@ -392,16 +392,18 @@ check("the CSV starts with the mark that tells Excel it is UTF-8 (Hindi stays Hi
 const ahead = await call("POST", "/adati", { nameHi: "अग्रिम जाँच भंडार", nameHinglish: "Agrim Jaanch Bhandar" });
 const a821 = await slipOf(ahead.id, "821", 3.00, 3000);
 await call("POST", "/payments", { adatiId: ahead.id, payDate: PD, amountPaise: a821.payablePaise + rs(1000), mode: "cash" });
-const day2 = await call("GET", `/ledger/sheet?mode=day&date=${PD}&format=json`);
+const day2 = await call("GET", `/ledger/sheet?mode=day&date=${PD}&cols=payable,toPay&format=json`);
 const aheadRow = day2.rows.find((r: any) => r.nameHi === "अग्रिम जाँच भंडार");
 const ledger2 = await call("GET", `/ledger?asOf=${PD}`);
 const owedOnSheet = ledger2.rows.filter((r: any) => day2.rows.some((x: any) => x.nameHi === r.nameHi) && r.balancePaise > 0).reduce((s: number, r: any) => s + r.balancePaise, 0);
 check("one day: a supplier paid ahead shows 0 to pay, not a minus", aheadRow?.toPayPaise === 0, aheadRow?.toPayPaise);
 check("…the to-pay total is only what is really owed", day2.totals.toPayPaise === owedOnSheet, { sheet: day2.totals.toPayPaise, owed: owedOnSheet });
 check("…and the advance is named under the total", day2.notes.some((n: string) => n.startsWith("Paid ahead") && n.includes("अग्रिम जाँच भंडार") && n.includes("1,000.00")), day2.notes);
-const till2 = await call("GET", `/ledger/sheet?mode=till&date=${PD}&format=json`);
+const till2 = await call("GET", `/ledger/sheet?mode=till&date=${PD}&cols=payable,toPay&format=json`);
 check("till date: still the ledger's to pay, and the advance named as the ledger's paid-ahead card counts it",
   till2.totals.toPayPaise === ledger2.totals.toPayPaise && till2.notes.some((n: string) => n.startsWith("Paid ahead") && n.includes("अग्रिम जाँच भंडार")), till2.notes);
+const till3 = await call("GET", `/ledger/sheet?mode=till&date=${PD}&format=json`);
+check("…but a sheet without the To pay column does not speak of it", !till3.notes.some((n: string) => n.includes("To pay")), till3.notes);
 
 /* Two suppliers whose Hinglish names come out the same are told apart by village. */
 const r1 = await call("POST", "/adati", { nameHi: "राम लाल जाँच", nameHinglish: "Ram Lal Jaanch", village: "Etah", villageHi: "एटा" });
