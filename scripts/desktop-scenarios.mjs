@@ -7,6 +7,8 @@
  *   crash       a crashed page is reloaded; a second crash restarts with software drawing
  *   damaged     damaged books and no backup: the window says only why, and the file is left as it was
  *   recover     damaged, then missing books: the newest good backup is put back and the first screen says so
+ *   tornpage    a cut-off run left a torn page in a table and newer rows only in the -wal: the good backup is put
+ *               back, and the books are kept exactly as they were (nothing rebuilt or folded into them first)
  *   badupdate   an update that cannot open the books: one sentence, "Go back to version …" and Close on the splash;
  *               Go back starts the kept installer and the app leaves
  *   servergone  the books' server killed twice: "Mandi Mitra stopped working.", and Close still ends the app
@@ -22,6 +24,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const DIR = process.env.SCEN_DIR;
@@ -236,6 +239,58 @@ const scenarios = {
     await opened("missing", "The books file was missing, so the backup from");
     code = await Promise.race([p.exited, sleep(15_000).then(() => "still running")]);
     check("  ...and closes as usual", code === 0, code);
+    if (code !== 0) p.kill();
+  },
+
+  async tornpage() {
+    const ud = fresh("tornpage");
+    const db = path.join(ud, "data", "mandi.db");
+    // books with a backup of their own: a first start, a backup, a normal close
+    let p = launch(ud);
+    const pg = await page();
+    await until(() => /window shown/.test(logOf(ud)), 15_000);
+    check("signed in on the first-run books (test PIN)", (await signIn(pg)) === 200);
+    const backup = await pg.evaluate('fetch("/api/backup/run", { method: "POST" }).then((r) => r.json())');
+    check("a backup is taken", Boolean(backup?.name), backup);
+    await pg.evaluate("window.close(), true").catch(() => undefined);
+    let code = await Promise.race([p.exited, sleep(15_000).then(() => "still running")]);
+    if (code !== 0) p.kill();
+    // the run is cut off: newer rows only in the -wal (copied while a connection that wrote them is open),
+    // a torn page in a table, and the clean-close mark still there
+    const Database = createRequire(import.meta.url)("better-sqlite3");
+    const w = path.join(DIR, "tornpage-wal");
+    fs.rmSync(w, { recursive: true, force: true });
+    fs.mkdirSync(w);
+    fs.copyFileSync(db, path.join(w, "mandi.db"));
+    const c = new Database(path.join(w, "mandi.db"));
+    c.pragma("journal_mode = WAL");
+    c.pragma("wal_autocheckpoint = 0");
+    c.exec("create table _scen_in_wal (x); insert into _scen_in_wal values (1);");
+    fs.copyFileSync(path.join(w, "mandi.db"), db);
+    fs.copyFileSync(path.join(w, "mandi.db-wal"), `${db}-wal`);
+    c.close();
+    fs.rmSync(w, { recursive: true, force: true });
+    const r = new Database(db, { readonly: true });
+    const ps = r.pragma("page_size", { simple: true });
+    const leaves = r.prepare("select pageno from dbstat where name = 'role_permissions' and pagetype = 'leaf' order by pageno").pluck().all();
+    r.close();
+    const fd = fs.openSync(db, "r+");
+    fs.writeSync(fd, Buffer.alloc(ps - 100, 0xff), 0, ps - 100, (leaves[Math.floor(leaves.length / 2)] - 1) * ps + 50);
+    fs.closeSync(fd);
+    fs.writeFileSync(path.join(ud, "data", "books-open.json"), JSON.stringify({ pid: 1, at: new Date().toISOString() }));
+    const was = { db: fs.readFileSync(db), wal: fs.readFileSync(`${db}-wal`) };
+    console.log("   (a cut-off run: a torn page in role_permissions, newer rows only in the -wal)");
+    p = launch(ud);
+    const shown = await until(() => (logOf(ud).match(/window shown/g) ?? []).length >= 2, 30_000, 200);
+    check("  ...the app opens on the good backup (in the books' own process)", Boolean(shown) && new RegExp(`the books file was damaged: put back ${backup?.name}`).test(logOf(ud)), logOf(ud).slice(-600));
+    const kept = (() => { try { return fs.readdirSync(path.join(ud, "data", "backups")).filter((n) => /^damaged-\d{8}-\d{6}\.db$/.test(n)); } catch { return []; } })();
+    const same = kept.length === 1 && fs.readFileSync(path.join(ud, "data", "backups", kept[0])).equals(was.db)
+      && fs.existsSync(path.join(ud, "data", "backups", `${kept[0]}-wal`)) && fs.readFileSync(path.join(ud, "data", "backups", `${kept[0]}-wal`)).equals(was.wal);
+    check("  ...and the damaged books are kept exactly as they were, with their -wal", same, kept);
+    const pg2 = await page();
+    await pg2?.evaluate("window.close(), true").catch(() => undefined);
+    code = await Promise.race([p.exited, sleep(15_000).then(() => "still running")]);
+    check("  ...and it closes as usual", code === 0, code);
     if (code !== 0) p.kill();
   },
 
