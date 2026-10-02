@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ZodError } from "zod";
 import { withSession, HttpError, type Env } from "./lib/http.ts";
+import { unchangedBooks } from "./lib/unchangedBooks.ts";
 import { authRoutes } from "./routes/auth.ts";
 import { adatiRoutes } from "./routes/adati.ts";
 import { merchantRoutes } from "./routes/merchants.ts";
@@ -51,6 +52,8 @@ export function createApp() {
     await next();
   });
   app.use("/api/*", withSession);
+  // a screen that adds up the whole book, asked again with nothing changed: the same answer at once
+  app.use("/api/*", unchangedBooks);
   // with sync on, a change made here goes up within a couple of seconds
   app.use("/api/*", async (c, next) => {
     await next();
