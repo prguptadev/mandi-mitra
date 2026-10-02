@@ -203,15 +203,16 @@ function MoneyCard({ qs }: { qs: string }) {
     <Card className="mt-5">
       <CardHeader title={t("dash.money")} sub={words.sub} />
       <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
-        {/* each balance is all time, so its explanation adds up to it: opening + bills − cuts − received − held back */}
-        {tile(t("dash.millsOwe"), toReceive, t("dash.millsOweSub", { o: f.money(m.mills.allTime.openingPaise), b: f.money(m.mills.allTime.billedPaise), c: f.money(m.mills.allTime.shortagePaise), r: f.money(m.mills.allTime.receivedPaise), h: f.money(m.mills.allTime.deductedPaise) })
+        {/* each balance is up to the period's end, as Mill accounts and the ledger show it; its explanation
+            (opening + bills − cuts − received − held back) adds up to it less the paid ahead its note names */}
+        {tile(t("dash.millsOwe"), toReceive, t("dash.millsOweSub", { o: f.money(m.mills.allTime.openingPaise), b: f.money(m.mills.allTime.billedPaise), c: f.money(m.mills.allTime.shortagePaise), r: f.money(m.mills.allTime.receivedPaise), h: f.money(m.mills.allTime.deductedPaise), w: words.span })
           + (m.mills.paidAheadPaise ? ` · ${t("dash.millsAhead", { a: f.money(m.mills.paidAheadPaise) })}` : ""), "/mill-accounts", "text-brand")}
-        {tile(t("dash.weOwe"), toPay, t("dash.weOweSub", { o: f.money(m.suppliers.allTime.openingPaise), p: f.money(m.suppliers.allTime.purchasesPaise), d: f.money(m.suppliers.allTime.paidPaise) })
+        {tile(t("dash.weOwe"), toPay, t("dash.weOweSub", { o: f.money(m.suppliers.allTime.openingPaise), p: f.money(m.suppliers.allTime.purchasesPaise), d: f.money(m.suppliers.allTime.paidPaise), w: words.span })
           + (m.suppliers.paidAheadPaise ? ` · ${t("dash.supAhead", { a: f.money(m.suppliers.paidAheadPaise) })}` : ""), "/ledger")}
         {tile(t("dash.stockValue"), stockPaise + unbilledPaise,
           (unbilledPaise ? t("dash.stockValueSub2", { u: f.money(unbilledPaise) }) : t("dash.stockValueSub"))
             + (m.stock.unpricedGrams > 0 ? ` · ${t("dash.unpricedStock", { q: f.weight(m.stock.unpricedGrams) })}` : ""), "/stock")}
-        {tile(t("dash.cash"), cash, t("dash.cashSub", { r: f.money(m.cash.receivedFromMillsPaise), p: f.money(m.cash.paidToSuppliersPaise) }), undefined, cash < 0 ? "text-warn" : undefined)}
+        {tile(t("dash.cash"), cash, t("dash.cashSub", { r: f.money(m.cash.receivedFromMillsPaise), p: f.money(m.cash.paidToSuppliersPaise), w: words.span }), undefined, cash < 0 ? "text-warn" : undefined)}
         {tile(t("dash.net"), net, t("dash.netSub"), undefined, net < 0 ? "text-bad" : "text-ok")}
       </div>
       {grand > 0 && (
