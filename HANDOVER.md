@@ -529,6 +529,16 @@ mean confidence                          : 0.90
   `src/lib/auditWords.ts`) with the raw JSON behind a toggle, and has "Check
   the books": `server/lib/booksCheck.ts`, the same independent re-working as
   `scripts/money-check.ts`, on the live books (`GET /api/audit/books-check`).
+- **Maths audit fixes (fix/math)**: a payment or receipt whose date moves into
+  another financial year takes that year's next number (the audit line names
+  the old one; the confirm box says so first); the post-sync voucher repair
+  groups by financial year. The dashboard's "Mills owe us" / "We owe
+  suppliers" tiles show the same figures as Mill accounts, the follow-up and
+  the ledger (paid ahead not counted, as their notes say; the net position
+  still nets it). "Paid in this period" stops at today; a supplier statement
+  with only To emptied runs to today; a past period's money card and ledger
+  card name their end date. The mill statement names the truck of money
+  received before its parcha. Checks: `scripts/e2e-math-fixes.ts`.
 - **Two businesses are two sets of books**: `scripts/e2e-isolation.ts` records
   everything business A shows, does a day of work in business B (same names,
   codes, RST and parcha numbers), and requires A to be byte-for-byte the same

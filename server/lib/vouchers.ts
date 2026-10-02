@@ -3,8 +3,10 @@ import { sqlite } from "../db/client.ts";
 /* Voucher numbers, as an accountant expects them: every payment to a supplier
    and every receipt from a mill gets the next whole number for its business,
    starting again at 1 each financial year (1 April). A cancelled voucher keeps
-   its number, so the sequence never has a gap that hides something. On screen
-   they read PV-12 (payment) and RV-7 (receipt). */
+   its number, so the sequence never has a gap that hides something. A voucher
+   whose date is moved into another year takes that year's next number (no
+   other voucher is renumbered); the number it leaves is named in the audit
+   trail. On screen they read PV-12 (payment) and RV-7 (receipt). */
 
 /** The financial year a date falls in, by the calendar year it starts in: 2026 for 2026-27. */
 export const fyStartOf = (iso: string) => { const y = Number(iso.slice(0, 4)); return Number(iso.slice(5, 7)) >= 4 ? y : y - 1; };
