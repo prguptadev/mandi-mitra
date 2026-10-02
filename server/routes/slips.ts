@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { slipCharges, supplierChargesOf, supplierTermsOf, termsOnly } from "../lib/supplierCharges.ts";
+import { slipCharges, supplierChargesOf, supplierTermsOf, ownSupplierTerms, termsOnly } from "../lib/supplierCharges.ts";
 import { z } from "zod";
 import { eq, and, asc, desc, sql, inArray, gte, lte } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
@@ -78,13 +78,18 @@ export async function katautiCfg(businessId: string, merchantId?: string | null)
   return KatautiSchema.parse({ mode: d.katautiMode, kgPerUnit: d.katautiKgPerUnit, rounding: d.katautiRounding });
 }
 
-/** The terms a slip was worked out with; slips from before v0.3 without them use `fallback`. */
-export function termsOf(slip: { katautiTerms: string | null }, fallback: Katauti): Katauti {
-  if (!slip.katautiTerms) return fallback;
+/** The katauti terms a slip was worked out with, or null for a slip that does not carry them (readably). */
+export function ownKatauti(slip: { katautiTerms: string | null }): Katauti | null {
+  if (!slip.katautiTerms) return null;
   try {
     const p = KatautiSchema.safeParse(JSON.parse(slip.katautiTerms));
-    return p.success ? p.data : fallback;
-  } catch { return fallback; }
+    return p.success ? p.data : null;
+  } catch { return null; }
+}
+
+/** The terms a slip was worked out with; slips from before v0.3 without them use `fallback`. */
+export function termsOf(slip: { katautiTerms: string | null }, fallback: Katauti): Katauti {
+  return ownKatauti(slip) ?? fallback;
 }
 
 /**
@@ -106,6 +111,29 @@ export function deriveSlip(
     netGrams,
     amountPaise: amountPaise(netGrams, ratePaisePerQtl),
   };
+}
+
+type StoredSlip = {
+  grossGrams: number; katautiUnits: number; katautiOverride: boolean; katautiTerms: string | null;
+  netGrams: number; ratePaisePerQtl: number; amountPaise: number;
+  commissionPaise: number; gaushalaPaise: number; payablePaise: number; supplierTerms: string | null;
+};
+
+/**
+ * A stored slip's figures worked out again on its own terms: what the daily
+ * list checks it against and "Recompute the day" repairs it to. A slip that
+ * does not carry its terms (a no-mill slip from before v0.3, say) has nothing
+ * to work them out from — today's settings were never its terms — so its
+ * stored katauti and net (or commission and gaushala) are the truth and only
+ * the sums are checked: amount = net × rate, net amount = amount + charges.
+ * So no change of settings ever moves a past figure.
+ */
+export function ownFigures(r: StoredSlip, k = ownKatauti(r), t = ownSupplierTerms(r)) {
+  const d = k ? deriveSlip(r.grossGrams, k, r.ratePaisePerQtl, r.katautiOverride ? r.katautiUnits : null)
+    : { katautiUnits: r.katautiUnits, katautiGrams: r.grossGrams - r.netGrams, netGrams: r.netGrams, amountPaise: amountPaise(r.netGrams, r.ratePaisePerQtl) };
+  const ch = t ? slipCharges(d.amountPaise, d.netGrams, r.ratePaisePerQtl, t)
+    : { commissionPaise: r.commissionPaise, gaushalaPaise: r.gaushalaPaise, payablePaise: d.amountPaise + r.commissionPaise + r.gaushalaPaise };
+  return { d, ch };
 }
 
 /* -------------------------------------------------------------------- read */
@@ -182,16 +210,18 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
 
   // recompute every row server-side and report any that no longer reconcile
   const cfgCache = new Map<string, Katauti>();
-  const bizTerms = termsOnly(await supplierChargesOf(biz));
   const checked = [];
   for (const r of rows) {
     const cacheKey = r.merchantId ?? "-";
-    if (!cfgCache.has(cacheKey)) cfgCache.set(cacheKey, await katautiCfg(biz, r.merchantId));
-    const cfg = termsOf(r, cfgCache.get(cacheKey)!);
-    const d = deriveSlip(r.grossGrams, cfg, r.ratePaisePerQtl, r.katautiOverride ? r.katautiUnits : null);
+    // the terms an edit of the row works with: its own, else (a slip from before they were kept) the mill's of today
+    let cfg = ownKatauti(r);
+    if (!cfg) {
+      if (!cfgCache.has(cacheKey)) cfgCache.set(cacheKey, await katautiCfg(biz, r.merchantId));
+      cfg = cfgCache.get(cacheKey)!;
+    }
+    // what the row should hold, on its own terms: katauti, net, amount, and what the supplier adds
+    const { d, ch } = ownFigures(r);
     const suggested = deriveSlip(r.grossGrams, cfg, r.ratePaisePerQtl, null);
-    // what the supplier adds, on the slip's own terms
-    const ch = slipCharges(d.amountPaise, d.netGrams, r.ratePaisePerQtl, supplierTermsOf(r, bizTerms));
     // kg per physical bag, only when a bag count was actually recorded
     const avgBagKg = r.bagsCount && r.bagsCount > 0 ? (r.netGrams / 1000) / r.bagsCount : null;
     checked.push({
@@ -419,24 +449,41 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
   const override = body.katautiUnits !== undefined
     ? body.katautiUnits
     : (before.katautiOverride ? before.katautiUnits : null);
-  // a new weight or another mill takes today's terms; any other edit (RST, rate,
-  // supplier…) keeps the terms the slip was made with, so its net never moves
-  const reweighed = merged.grossGrams !== before.grossGrams || merged.merchantId !== before.merchantId;
-  const current = await katautiCfg(biz, merged.merchantId);
-  const cfg = reweighed ? current : termsOf(before, current);
-  const d = deriveSlip(merged.grossGrams, cfg, merged.ratePaisePerQtl, override);
+  /* A slip keeps the katauti terms it was made with, and a corrected weight is
+     worked on them too: a later change to the mill's katauti never reaches an
+     old slip. Only a move to another mill takes that mill's terms (as
+     /reassign does). A slip that does not carry its terms (from before v0.3)
+     keeps its stored katauti and net until its weight or katauti is changed;
+     then today's terms are all there is to work with. */
+  const moved = merged.merchantId !== before.merchantId;
+  const own = ownKatauti(before);
+  const sameWeight = !moved && merged.grossGrams === before.grossGrams && override === (before.katautiOverride ? before.katautiUnits : null);
+  const cfg = moved || !own ? await katautiCfg(biz, merged.merchantId) : own;
+  const keepNet = !own && sameWeight;
+  const d = keepNet
+    ? {
+      katautiUnits: before.katautiUnits, katautiGrams: before.grossGrams - before.netGrams, netGrams: before.netGrams,
+      amountPaise: merged.ratePaisePerQtl === before.ratePaisePerQtl ? before.amountPaise : amountPaise(before.netGrams, merged.ratePaisePerQtl),
+    }
+    : deriveSlip(merged.grossGrams, cfg, merged.ratePaisePerQtl, override);
   if (d.netGrams <= 0) throw bad("Net weight works out to zero or less — check the gross weight", "bad_net");
-  // the supplier's charges follow the new weight or rate, on the terms the slip was made with
-  const sTerms = supplierTermsOf(before, termsOnly(await supplierChargesOf(biz)));
-  const ch = slipCharges(d.amountPaise, d.netGrams, merged.ratePaisePerQtl, sTerms);
+  /* The supplier's charges follow the new weight or rate, on the terms the slip
+     was made with. A slip that does not carry them keeps its stored charges
+     while its amount and net stand; once they change, today's are used. */
+  const ownS = ownSupplierTerms(before);
+  const keepCharges = !ownS && d.amountPaise === before.amountPaise && d.netGrams === before.netGrams && merged.ratePaisePerQtl === before.ratePaisePerQtl;
+  const sTerms = ownS ?? termsOnly(await supplierChargesOf(biz));
+  const ch = keepCharges
+    ? { commissionPaise: before.commissionPaise, gaushalaPaise: before.gaushalaPaise, payablePaise: before.payablePaise }
+    : slipCharges(d.amountPaise, d.netGrams, merged.ratePaisePerQtl, sTerms);
 
   await db.update(schema.purchaseSlips).set({
     ...merged,
-    katautiTerms: JSON.stringify(cfg),
+    katautiTerms: keepNet ? before.katautiTerms : JSON.stringify(cfg),
     katautiUnits: d.katautiUnits,
     katautiOverride: override != null,
     netGrams: d.netGrams, amountPaise: d.amountPaise,
-    supplierTerms: JSON.stringify(sTerms), ...ch,
+    supplierTerms: keepCharges ? before.supplierTerms : JSON.stringify(sTerms), ...ch,
     updatedAt: nowSec(),
   }).where(eq(schema.purchaseSlips.id, id));
 
@@ -577,16 +624,12 @@ slipRoutes.post("/recompute", can("slip.write"), async (c) => {
     .where(and(eq(schema.purchaseSlips.businessId, biz), eq(schema.purchaseSlips.slipDate, slipDate)));
 
   // repairs a stored figure that disagrees with the slip's own terms; a later
-  // change to a mill's katauti does not reach back into old slips
-  const cfgCache = new Map<string, Katauti>();
+  // change to a mill's katauti or the supplier charges never reaches back into
+  // old slips, nor into one that does not carry its terms (ownFigures)
   let changed = 0;
   const fixes: { rstNo: string; before: { net: number; amount: number; payable: number }; after: { net: number; amount: number; payable: number } }[] = [];
-  const bizTerms = termsOnly(await supplierChargesOf(biz));
   for (const r of rows) {
-    const key = r.merchantId ?? "-";
-    if (!cfgCache.has(key)) cfgCache.set(key, await katautiCfg(biz, r.merchantId));
-    const d = deriveSlip(r.grossGrams, termsOf(r, cfgCache.get(key)!), r.ratePaisePerQtl, r.katautiOverride ? r.katautiUnits : null);
-    const ch = slipCharges(d.amountPaise, d.netGrams, r.ratePaisePerQtl, supplierTermsOf(r, bizTerms));
+    const { d, ch } = ownFigures(r);
     if (d.netGrams !== r.netGrams || d.amountPaise !== r.amountPaise || d.katautiUnits !== r.katautiUnits
       || ch.commissionPaise !== r.commissionPaise || ch.gaushalaPaise !== r.gaushalaPaise || ch.payablePaise !== r.payablePaise) {
       fixes.push({ rstNo: r.rstNo, before: { net: r.netGrams, amount: r.amountPaise, payable: r.payablePaise }, after: { net: d.netGrams, amount: d.amountPaise, payable: ch.payablePaise } });

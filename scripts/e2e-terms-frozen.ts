@@ -2,6 +2,7 @@ import "./_guard.ts";
 import ExcelJS from "exceljs";
 import { screenLines } from "../server/lib/parchaLabels.ts";
 import { repairTrucks, repairTrucksAfterPull } from "../server/lib/repairTrucks.ts";
+import { sqlite } from "../server/db/client.ts";
 /* End-to-end: a change of terms never reaches back. On the test database only.
  *
  * The owner registers a mill with its terms (commission 1.2 %, kacchi adat,
@@ -11,7 +12,9 @@ import { repairTrucks, repairTrucksAfterPull } from "../server/lib/repairTrucks.
  * them (commission 2 %...). Every past parcha, amount and balance must read
  * exactly as before, to the paisa and the gram; only what is made after takes
  * the new terms. The same for the supplier charges (commission %, gaushala a
- * quintal) and for the mill's katauti on slips.
+ * quintal) and for the mill's katauti on slips — a slip's weight corrected
+ * later is worked on its own katauti too. Slips from before v0.3 that carry
+ * no terms keep their stored figures.
  *
  * Every expected figure is worked out here, in BigInt, from the inputs and
  * the terms in force — never with the app's own code.
@@ -272,6 +275,22 @@ for (let d = 1; d <= 30; d++) {
 }
 check(`${slips.length} slips over 01–30 July: katauti, net, amount, commission ${S1.commissionPct} %, gaushala ₹${S1.gaushalaPerQtl}/qtl — each as worked here`, slipOk === slips.length, { ok: slipOk, of: slips.length });
 
+/* Two slips as books from before v0.3 hold them: one with no mill and no
+   katauti terms of its own (migration 0014 gave terms only to slips with a
+   mill), one with no supplier terms. Made here and their terms taken off, as
+   such a slip looks. Their own supplier, so the ledger checks below stay exact. */
+const displayAtStart = await call("GET", "/settings/display");
+const oldSup = (await call("POST", "/adati", { nameHi: `शर्त परख पुराना ${stamp}` })).id as string;
+const L1 = { grossGrams: kg(2575) + 30, rate: 344_000, katKg: displayAtStart.katautiKgPerUnit as number, sup: S1 };
+const L2 = { grossGrams: kg(2710), rate: 336_500, katKg: 1, sup: S1 };
+const L1id = (await call("POST", "/slips", { slipDate: day(3), rstNo: "9001", adatiId: oldSup, jinsId: J1.id, merchantId: null, grossGrams: L1.grossGrams, ratePaisePerQtl: L1.rate })).id as string;
+const L2id = (await call("POST", "/slips", { slipDate: day(3), rstNo: "9002", adatiId: oldSup, jinsId: J1.id, merchantId: TRM, grossGrams: L2.grossGrams, ratePaisePerQtl: L2.rate })).id as string;
+sqlite.prepare("update purchase_slips set katauti_terms = null where id = ?").run(L1id);
+sqlite.prepare("update purchase_slips set supplier_terms = null where id = ?").run(L2id);
+const legacyAsMade = { L1: slipBy(L1), L2: slipBy(L2) };
+check(`two slips as before v0.3: RST 9001 with no mill and no katauti terms (net ${qt(legacyAsMade.L1.netGrams)}), RST 9002 with no supplier terms (payable ${inr(legacyAsMade.L2.payablePaise)})`,
+  JSON.stringify(pick((await call("GET", `/slips?date=${day(3)}`)).rows.find((r: any) => r.id === L1id))) === JSON.stringify(legacyAsMade.L1));
+
 /** A purchase day's average rate for the mill: Σ net × rate ÷ Σ net, half up. */
 function dayAvg(merchantId: string, jinsId: string, date: string) {
   let net = 0n, value = 0n;
@@ -412,6 +431,8 @@ const draftNetBefore = (await call("GET", `/loads/${D2.id}`)).load.millNetGrams;
 
 console.log("\nA month later the owner changes every term of the mill: commission 1.2 % → 2 %, and the rest");
 await call("PUT", `/merchants/${TRM}`, { chargeConfig: T2 });
+// and the firm's own katauti, which slips with no mill take
+await call("PUT", "/settings/display", { ...displayAtStart, katautiKgPerUnit: 1.5 });
 const m2 = await call("GET", `/merchants/${TRM}`);
 check("the mill now reads commission 2 %, adat 2.5 %, bardana 0.60 kg, katauti 1.5 kg a quintal", m2.chargeConfig.commission.pct === 2 && m2.chargeConfig.adat.pct === 2.5
   && m2.chargeConfig.millBardanaKgPerBag === 0.6 && m2.chargeConfig.katauti.kgPerUnit === 1.5);
@@ -536,9 +557,9 @@ await call("PUT", `/slips/${sG.id}`, { grossGrams: sG.grossGrams + kg(50) });
 sG.grossGrams += kg(50);
 const sGnow = pick(await slipNow(sG.id));
 const sGtoday = slipBy({ ...sG, katKg: 1.5 }), sGjuly = slipBy({ ...sG, katKg: 1 });
-check("an old slip's gross corrected after the change: supplier charges stay the slip's own; katauti takes the mill's terms of today", JSON.stringify(sGnow) === JSON.stringify(sGtoday), { app: sGnow, today: sGtoday, july: sGjuly });
-sG.katKg = 1.5;
-note(`correcting the gross of RST ${sG.rst} (6 July) by +0.50 qtl: the app works its katauti on the mill's katauti of today (1.5 kg/qtl) — net ${qt(sGwas.netGrams)} → ${qt(sGnow.netGrams)}, payable ${inr(sGwas.payablePaise)} → ${inr(sGnow.payablePaise)}; on the July katauti (1 kg/qtl) it would be net ${qt(sGjuly.netGrams)}, payable ${inr(sGjuly.payablePaise)}. Commission/gaushala stay on the slip's own July charges.`);
+check("an old slip's gross corrected after the change: its katauti and supplier charges both stay the slip's own (1 kg a quintal, 1.1 %)", JSON.stringify(sGnow) === JSON.stringify(sGjuly), { app: sGnow, july: sGjuly, today: sGtoday });
+check("…and the daily list hands the edit box the slip's own katauti (1 kg a quintal), so the preview shows what is saved", (await slipNow(sG.id)).katautiCfg.kgPerUnit === 1);
+note(`correcting the gross of RST ${sG.rst} (6 July) by +0.50 qtl: net ${qt(sGwas.netGrams)} → ${qt(sGnow.netGrams)}, payable ${inr(sGwas.payablePaise)} → ${inr(sGnow.payablePaise)} — on its own July katauti (1 kg/qtl); the mill's katauti of today (1.5 kg/qtl) would have made it net ${qt(sGtoday.netGrams)}, payable ${inr(sGtoday.payablePaise)}`);
 // the Recompute button on a day before the change
 const day7 = await call("GET", `/slips?date=${day(7)}`);
 const rc = await call("POST", "/slips/recompute", { slipDate: day(7) });
@@ -578,10 +599,43 @@ for (const s of sup) {
   check(`supplier ${sup.indexOf(s) + 1} is owed Σ its slips' payable ${inr(want)}`, balOf(ledger, s) === want, { got: balOf(ledger, s), want });
 }
 
+console.log("\nD. Slips from before v0.3, carrying no terms of their own, after the firm's katauti (1 → 1.5 kg) and charges (1.1 % → 2.25 %) changed");
+const legacyNow = async () => {
+  const rows = (await call("GET", `/slips?date=${day(3)}`)).rows;
+  return { L1: rows.find((r: any) => r.id === L1id), L2: rows.find((r: any) => r.id === L2id), all: rows };
+};
+const lg = await legacyNow();
+check(`(D) RST 9001 (no mill, no katauti terms): the daily list finds it adds up on its stored net ${qt(legacyAsMade.L1.netGrams)}`,
+  lg.L1.reconciles === true && lg.L1.expectedNetGrams === legacyAsMade.L1.netGrams && JSON.stringify(pick(lg.L1)) === JSON.stringify(legacyAsMade.L1),
+  { reconciles: lg.L1.reconciles, expectedNet: lg.L1.expectedNetGrams, stored: pick(lg.L1) });
+check(`(D) RST 9002 (no supplier terms): adds up on its stored charges, payable ${inr(legacyAsMade.L2.payablePaise)}`,
+  lg.L2.reconciles === true && lg.L2.expectedPayablePaise === legacyAsMade.L2.payablePaise, { reconciles: lg.L2.reconciles, expectedPayable: lg.L2.expectedPayablePaise });
+check("(D) no row of 3 July asks for Recompute", lg.all.every((r: any) => r.reconciles));
+const rc3 = await call("POST", "/slips/recompute", { slipDate: day(3) });
+const lgR = await legacyNow();
+check(`(D) "Recompute the day" on 3 July: ${rc3.changed} of ${rc3.scanned} changed; both old slips exactly as made`,
+  rc3.changed === 0 && JSON.stringify(pick(lgR.L1)) === JSON.stringify(legacyAsMade.L1) && JSON.stringify(pick(lgR.L2)) === JSON.stringify(legacyAsMade.L2),
+  { rc: rc3, L1: pick(lgR.L1), L2: pick(lgR.L2) });
+const booksD = await call("GET", "/audit/books-check");
+check("(D) the books check takes their stored figures as they are", booksD.problems === 0,
+  booksD.businesses.flatMap((b: any) => b.sections.flatMap((x: any) => x.lines.filter((l: any) => l.ok === false).map((l: any) => l.text))).slice(0, 4));
+// an edit that does not touch the weight keeps the stored net and charges
+await call("PUT", `/slips/${L2id}`, { rstNo: "9012" });
+check("(D) RST 9002's number corrected: its payable stays as made (not re-priced at 2.25 %)", JSON.stringify(pick((await legacyNow()).L2)) === JSON.stringify(legacyAsMade.L2), pick((await legacyNow()).L2));
+await call("PUT", `/slips/${L1id}`, { ratePaisePerQtl: L1.rate + 1_000 });
+const l1rate = slipBy({ ...L1, rate: L1.rate + 1_000 });
+check(`(D) RST 9001's rate corrected: net stays ${qt(l1rate.netGrams)}, amount ${inr(l1rate.amountPaise)} on it, charges on its own ${S1.commissionPct} %`,
+  JSON.stringify(pick((await legacyNow()).L1)) === JSON.stringify(l1rate), { app: pick((await legacyNow()).L1), here: l1rate });
+await call("PUT", `/slips/${L1id}`, { grossGrams: L1.grossGrams + kg(20) });
+const l1gross = slipBy({ ...L1, rate: L1.rate + 1_000, grossGrams: L1.grossGrams + kg(20), katKg: 1.5 });
+check("(D) RST 9001's gross corrected: with no katauti terms of its own, the firm's katauti of today (1.5 kg) is all there is", JSON.stringify(pick((await legacyNow()).L1)) === JSON.stringify(l1gross), { app: pick((await legacyNow()).L1), here: l1gross });
+note(`(D) a slip from before v0.3 with no katauti or supplier terms keeps its stored figures through a change of settings, Recompute and any edit that leaves its weight alone; a corrected weight is worked on today's katauti (net ${qt(legacyAsMade.L1.netGrams)} → ${qt(l1gross.netGrams)} for +0.20 qtl) — there is nothing else to work it on`);
+for (const id of [L1id, L2id]) await call("DELETE", `/slips/${id}`);
+
 console.log("\nC. The mill's katauti changed (1 → 1.5 kg a quintal): July slips' net never moved");
 const julyNet = (await call("GET", `/slips?from=2026-07-01&to=2026-07-31&merchantId=${TRM}`)).rows;
-check(`${julyNet.length} July slips of the mill: net = gross − whole quintals × 1 kg, as entered (the edited one excepted)`,
-  julyNet.filter((r: any) => r.id !== sG.id).every((r: any) => r.netGrams === r.grossGrams - r.katautiUnits * 1000 && r.katautiCfg.kgPerUnit === 1));
+check(`${julyNet.length} July slips of the mill: net = gross − whole quintals × 1 kg, the one with a corrected gross too`,
+  julyNet.every((r: any) => r.netGrams === r.grossGrams - r.katautiUnits * 1000 && r.katautiCfg.kgPerUnit === 1));
 const books = await call("GET", "/audit/books-check");
 check("the books check finds no problem", books.problems === 0, books.businesses.flatMap((b: any) => b.sections.flatMap((s: any) => s.lines.filter((l: any) => l.ok === false).map((l: any) => l.text))));
 const millCode = (await call("GET", `/merchants/${TRM}`)).code;
@@ -601,8 +655,10 @@ compare("…and after the after-pull repair", notStock(billedAfter), notStock(aw
 
 // leave the books as the scripts after this one expect them
 await call("PUT", "/settings/supplier-charges", supplierChargesAtStart);
+await call("PUT", "/settings/display", displayAtStart);
 for (const m of [TRM, TRM2]) await call("DELETE", `/merchants/${m}`);
-check("supplier charges back to what they were", JSON.stringify(await call("GET", "/settings/supplier-charges")) === JSON.stringify(supplierChargesAtStart));
+check("supplier charges and the firm's katauti back to what they were", JSON.stringify(await call("GET", "/settings/supplier-charges")) === JSON.stringify(supplierChargesAtStart)
+  && JSON.stringify(await call("GET", "/settings/display")) === JSON.stringify(displayAtStart));
 
 console.log(bad === 0 ? "\nPast figures never move when terms change." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

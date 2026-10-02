@@ -370,7 +370,11 @@ scripts/
   query planner's statistics refresh at start and every 6 hours.
 - **Money**: each slip keeps the katauti terms it was made with
   (`katauti_terms`), so a later change to a mill's terms never re-prices old
-  slips; the dashboard values stock per purchase day at that day's rate, as
+  slips — a corrected gross is worked on them too (only moving a slip to
+  another mill takes that mill's); a slip with no terms of its own (no-mill
+  slips from before 0014) keeps its stored katauti, net and charges through
+  the daily list's check, Recompute and the books check (`ownFigures`,
+  `slips.ts`); the dashboard values stock per purchase day at that day's rate, as
   of the period's end, including slips with no mill and every draft truck;
   totals no longer stop at 500/1000 rows; per-unit rates keep 1/100 paise;
   labels print 0.125 %; the paper shows LESS ADVANCE, ROUND OFF and whether

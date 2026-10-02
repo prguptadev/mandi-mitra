@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { amountPaise, divHalfUp } from "./money.ts";
-import { deriveKatauti, ChargeConfigSchema, type Katauti } from "./charges.ts";
+import { deriveKatauti, type Katauti } from "./charges.ts";
 import type { ParchaDoc } from "./parcha.ts";
 import { rstKey, dayGap, RST_WINDOW_DAYS } from "./slipChecks.ts";
 import { fyNumberLabel } from "./parchaLabels.ts";
@@ -42,27 +42,22 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     const look = (text: string) => { B.warnings++; out.warnings++; cur.lines.push({ ok: null, warn: true, text }); };
 
     const mills = all<{ id: string; code: string; charge_config: string; opening_balance_paise: number }>("select id, code, charge_config, opening_balance_paise from merchants where business_id = ?", biz.id);
-    const kOf = new Map<string, Katauti>();
-    for (const m of mills) { const c = ChargeConfigSchema.safeParse(JSON.parse(m.charge_config)); kOf.set(m.id, c.success ? c.data.katauti : DEFAULT_K); }
 
     // 1. every slip re-worked: katauti, net, amount
     section("1. Slips (daily list)");
     type Slip = { id: string; rst_no: string; slip_date: string; adati_id: string; merchant_id: string | null; jins_id: string; gross_grams: number; katauti_units: number; katauti_override: number; net_grams: number; rate_paise_per_qtl: number; amount_paise: number; katauti_terms?: string | null; commission_paise?: number; gaushala_paise?: number; payable_paise?: number; supplier_terms?: string | null };
     const slips = all<Slip>("select * from purchase_slips where business_id = ?", biz.id);
-    const disp = all<{ value: string }>("select value from settings where business_id = ? and key = 'display'", biz.id)[0];
-    const bizK: Katauti = (() => {
-      try {
-        const d = JSON.parse(disp?.value ?? "{}");
-        return { mode: d.katautiMode ?? DEFAULT_K.mode, kgPerUnit: d.katautiKgPerUnit ?? DEFAULT_K.kgPerUnit, rounding: d.katautiRounding ?? DEFAULT_K.rounding } as Katauti;
-      } catch { return DEFAULT_K; }
-    })();
-    const termsOf = (s: { merchant_id: string | null; katauti_terms?: string | null }): Katauti => {
-      if (s.katauti_terms) { try { return { ...DEFAULT_K, ...JSON.parse(s.katauti_terms) } as Katauti; } catch { /* fall through */ } }
-      return s.merchant_id ? kOf.get(s.merchant_id) ?? DEFAULT_K : bizK;
+    /* A slip is worked out on the terms it carries. One that carries none (a
+       no-mill slip from before v0.3) was never on today's settings: its
+       katauti and net are taken as stored, and only its amount is re-worked. */
+    const termsOf = (s: { katauti_terms?: string | null }): Katauti | null => {
+      if (s.katauti_terms) { try { return { ...DEFAULT_K, ...JSON.parse(s.katauti_terms) } as Katauti; } catch { /* none readable */ } }
+      return null;
     };
     let slipBad = 0;
     for (const s of slips) {
-      const k = deriveKatauti(s.gross_grams, termsOf(s), s.katauti_override ? s.katauti_units : null);
+      const terms = termsOf(s);
+      const k = terms ? deriveKatauti(s.gross_grams, terms, s.katauti_override ? s.katauti_units : null) : { units: s.katauti_units, deductionGrams: s.gross_grams - s.net_grams };
       const net = s.gross_grams - k.deductionGrams;
       const amt = amountPaise(net, s.rate_paise_per_qtl);
       if (k.units !== s.katauti_units || net !== s.net_grams || amt !== s.amount_paise) {
@@ -75,11 +70,12 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     let chBad = 0;
     for (const s of slips) {
       let t = { commissionPct: 0, gaushalaPerQtl: 0 };
-      try { t = { ...t, ...JSON.parse(s.supplier_terms ?? "{}") }; } catch { /* none */ }
+      let carried = Boolean(s.supplier_terms);
+      try { t = { ...t, ...JSON.parse(s.supplier_terms ?? "{}") }; } catch { carried = false; }
       const priced = s.rate_paise_per_qtl > 0;
-      // the terms to 4 decimals, as Settings keeps them (0.6667 %, ₹0.0625 a quintal)
-      const commission = priced ? Number((BigInt(s.amount_paise) * BigInt(Math.round(t.commissionPct * 10_000)) + 500_000n) / 1_000_000n) : 0;
-      const gaushala = priced ? Number((BigInt(s.net_grams) * BigInt(Math.round(t.gaushalaPerQtl * 10_000)) + 5_000_000n) / 10_000_000n) : 0;
+      // the terms to 4 decimals, as Settings keeps them (0.6667 %, ₹0.0625 a quintal); a slip carrying none keeps its stored charges, and its sum is checked
+      const commission = !carried ? s.commission_paise ?? 0 : priced ? Number((BigInt(s.amount_paise) * BigInt(Math.round(t.commissionPct * 10_000)) + 500_000n) / 1_000_000n) : 0;
+      const gaushala = !carried ? s.gaushala_paise ?? 0 : priced ? Number((BigInt(s.net_grams) * BigInt(Math.round(t.gaushalaPerQtl * 10_000)) + 5_000_000n) / 10_000_000n) : 0;
       const payable = s.amount_paise + commission + gaushala;
       if (commission !== (s.commission_paise ?? 0) || gaushala !== (s.gaushala_paise ?? 0) || payable !== (s.payable_paise ?? 0)) {
         chBad++;

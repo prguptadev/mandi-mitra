@@ -53,6 +53,8 @@ const emptyDraft = (): Draft => ({ rstNo: "", adatiId: null, adatiName: "", gros
 type Row = SlipRow & {
   /** The terms the slip was made with (JSON), which an edit keeps. */
   supplierTerms?: string | null;
+  /** The katauti terms the slip was made with (JSON); none on a slip from before v0.3. */
+  katautiTerms?: string | null;
   /** Slips on this date with this RST, every mill and commodity, this one included. */
   rstDay?: number;
   /** Other dates (30 days either side) with this RST and exactly this gross. */
@@ -180,8 +182,6 @@ export function DailyListPage() {
   const rateRef = useRef<HTMLInputElement>(null);
 
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
-  // a slip of a mill since made inactive is still re-worked on that mill's own katauti
-  const allMills = useQuery({ queryKey: ["merchants", "all"], queryFn: () => api.get<Merchant[]>("/merchants?all=1") });
   const jinsList = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
   /** Commission and gaushala each supplier adds, and what the columns are called (Settings). */
   const sc = useQuery({ queryKey: ["settings", "supplier-charges"], queryFn: () => api.get<SupplierCharges>("/settings/supplier-charges") });
@@ -619,7 +619,10 @@ export function DailyListPage() {
         }} />;
       case "amount": return <span className="num font-semibold">{dd.amountPaise === null ? "—" : f.amount(dd.amountPaise)}</span>;
       case "commission": case "gaushala": case "payable": {
-        const p = preview(dd.amountPaise, dd.netGrams, dd.ratePaise, own);
+        // a slip carrying no charges of its own keeps its stored ones while its amount and net stand, as the server does
+        const p = !r.supplierTerms && dd.amountPaise === r.amountPaise && dd.netGrams === r.netGrams && dd.ratePaise === r.ratePaisePerQtl
+          ? { commissionPaise: r.commissionPaise, gaushalaPaise: r.gaushalaPaise, payablePaise: r.payablePaise }
+          : preview(dd.amountPaise, dd.netGrams, dd.ratePaise, own);
         return <span className="num text-muted">{p ? f.amount(key === "commission" ? p.commissionPaise : key === "gaushala" ? p.gaushalaPaise : p.payablePaise) : "—"}</span>;
       }
       case "jins": return (
@@ -991,15 +994,20 @@ export function DailyListPage() {
               {!sheet.isLoading && shown.map((r, i) => {
                 if (editing?.id === r.id) {
                   const ed = editing.draft;
-                  /* As the server will: a slip keeps the katauti it was made with,
-                     until its weight changes — then the mill's terms of today apply. */
+                  /* As the server will: a slip keeps the katauti terms it was made
+                     with, a corrected weight too (r.katautiCfg). A slip from before
+                     those were kept keeps its stored net until its weight or katauti
+                     is changed; then the mill's terms of today (r.katautiCfg) apply. */
                   const reweighed = (editing.grossShown === undefined || ed.gross !== editing.grossShown)
                     && parseQtlToGrams(ed.gross) !== r.grossGrams;
-                  const millNow: KatautiConfig = (allMills.data ?? mills.data)?.find((m) => m.id === r.merchantId)?.chargeConfig.katauti
-                    ?? { mode: f.cfg.katautiMode, kgPerUnit: f.cfg.katautiKgPerUnit };
+                  const katSame = ed.katauti === (r.katautiOverride ? String(r.katautiUnits) : "");
                   // an untouched gross box shows the weight to 2 places; the server keeps the stored grams, so does the preview
                   const kept = editing.grossShown !== undefined && ed.gross === editing.grossShown ? { ...ed, gross: String(r.grossGrams / GRAMS_PER_QTL) } : ed;
-                  const dd = derive(kept, reweighed ? millNow : r.katautiCfg);
+                  const worked = derive(kept, r.katautiCfg);
+                  const dd = !r.katautiTerms && !reweighed && katSame
+                    ? { ...worked, katautiUnits: r.katautiUnits, katautiGrams: r.grossGrams - r.netGrams, netGrams: r.netGrams,
+                      amountPaise: worked.ratePaise === r.ratePaisePerQtl ? r.amountPaise : worked.ratePaise === null ? null : Math.round((r.netGrams * worked.ratePaise) / GRAMS_PER_QTL) }
+                    : worked;
                   return (
                     <tr key={r.id} className="bg-brand/[0.06]">
                       <td className={cn("border-b border-line/70 px-2", PAD)} />
