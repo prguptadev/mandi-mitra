@@ -873,19 +873,20 @@ async function smokeTest() {
       wc.openDevTools({ mode: "detach" });
       await sleep(500);
       checks.devtools = !wc.isDevToolsOpened();
-      // the refused keys never reach the page; typing, copy, paste and Ctrl+F still do
+      // the refused keys never reach the page; typing (AltGr and AltGr+Shift too), copy, paste and Ctrl+F still do
       await wc.executeJavaScript('window.__keys = []; addEventListener("keydown", (e) => __keys.push((e.ctrlKey || e.metaKey ? "C" : "") + (e.shiftKey ? "S" : "") + e.code), true); true');
       const mod = (c) => (process.platform === "darwin" ? ["meta"] : ["control"]).concat(c);
       const press = (keyCode, modifiers = []) => { wc.sendInputEvent({ type: "keyDown", keyCode, modifiers }); wc.sendInputEvent({ type: "keyUp", keyCode, modifiers }); };
       const refused = [["F12"], ["F5"], ["R", mod([])], ["R", mod(["shift"])], ["F5", mod([])], ["I", mod(["shift"])], ["J", mod(["shift"])],
         ["C", mod(["shift"])], ["U", mod([])], ["P", mod([])], ["N", mod([])], ["T", mod([])], ["L", mod([])], ["O", mod([])]];
-      const kept = [["A", []], ["C", mod([])], ["V", mod([])], ["F", mod([])], ["Enter", mod([])]];
+      // AltGr is Ctrl+Alt on Windows; with Shift it types the second layer of a Hindi or other Indian layout
+      const kept = [["A", []], ["C", mod([])], ["V", mod([])], ["F", mod([])], ["Enter", mod([])], ["I", ["control", "alt", "shift"]], ["R", ["control", "alt", "shift"]]];
       wc.focus();
       for (const [k, m] of refused) press(k, m);
       for (const [k, m] of kept) press(k, m);
       await sleep(400);
       const seen = await wc.executeJavaScript("window.__keys");
-      checks.keys = seen.join(",") === "KeyA,CKeyC,CKeyV,CKeyF,CEnter";
+      checks.keys = seen.join(",") === "KeyA,CKeyC,CKeyV,CKeyF,CEnter,CSKeyI,CSKeyR";
       if (!checks.keys) console.error("SMOKE keys seen by the page:", seen);
       checks.stillHere = wc.getURL().startsWith(base);
     }
