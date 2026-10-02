@@ -287,6 +287,19 @@ try {
       fs.statSync(path.join(d, "mandi.db")).ino === ino && inBackups(d, /^damaged-/).length === 0 && fs.existsSync(path.join(d, "books-open.json")));
   }
   {
+    // damage that came during a clean run: no check at start, so the start-up jobs are the first to meet it
+    const d = books("jobs", { probe: true });
+    const db = path.join(d, "mandi.db");
+    backupInto(d, "auto-20260302-100000.db", "_from_good_backup");
+    damagePage(db, "_desk_probe_idx");
+    const s = await serve(d);
+    check("damage first met by the start-up jobs (query statistics read every index): the app still opens", s.up && /\[start\]/.test(s.log()), s.log().slice(-800));
+    await s.stop("SIGTERM");
+    check("  ...and that run is not taken as clean: the next start checks the books file", fs.existsSync(path.join(d, "books-open.json")));
+    const r = startup(d);
+    check("  ...and puts the good backup back there", r.code === 0 && /did not close cleanly: checking the books file/.test(r.out) && whole(db) && hasTable(db, "_from_good_backup"), r.out.slice(-600));
+  }
+  {
     const d = books("unavailable");
     damageHeader(path.join(d, "mandi.db"));
     const bytes = fs.readFileSync(path.join(d, "mandi.db"));

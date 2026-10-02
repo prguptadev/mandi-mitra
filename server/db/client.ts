@@ -320,12 +320,25 @@ sqlite.pragma("temp_store = MEMORY");
 export const db = drizzle(sqlite, { schema });
 export { schema };
 
+/**
+ * Damage met in the books while they are open (a start-up job, a screen):
+ * this run is then not taken as clean, so the next start checks the file and
+ * mends it or puts a backup back. True when `e` is such damage.
+ */
+let damageMet = false;
+export function noteDamage(e: unknown) {
+  if (!isDamage(e)) return false;
+  if (!damageMet) console.error("[db] the books file is damaged: it is checked at the next start");
+  damageMet = true;
+  return true;
+}
+
 /** Everything into the main file, then closed; a clean close is remembered (no check at the next start). */
 export function closeBooks() {
   if (!sqlite.open) return;
   try { sqlite.pragma("wal_checkpoint(TRUNCATE)"); } catch { /* folded in at the next open */ }
   try { sqlite.close(); } catch { return; }
-  if (mode === "ok") fs.rmSync(OPEN_MARK, { force: true });
+  if (mode === "ok" && !damageMet) fs.rmSync(OPEN_MARK, { force: true });
 }
 
 /** What start-up did to the books, until someone closes the message. */

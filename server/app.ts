@@ -29,7 +29,7 @@ import { emandiRoutes } from "./routes/emandi.ts";
 import { dayRoutes } from "./routes/days.ts";
 import { millFollowupRoutes } from "./routes/millFollowup.ts";
 import { desktopGate } from "./lib/desktopGate.ts";
-import { BOOKS_READ_ONLY, BOOKS_UNAVAILABLE, booksMode } from "./db/client.ts";
+import { BOOKS_READ_ONLY, BOOKS_UNAVAILABLE, booksMode, noteDamage } from "./db/client.ts";
 import { COULD_NOT_WRITE, isDiskFull } from "./db/durable.ts";
 
 /** The whole API. Electron imports this same object — no second implementation. */
@@ -114,6 +114,8 @@ export function createApp() {
       }, 400);
     }
     console.error("[api]", err);
+    // damage met on a screen: the next start checks the books file
+    noteDamage(err);
     // said plainly: nothing was saved, and why
     if (isDiskFull(err)) return c.json({ error: "The disk is full, so this was not saved. Free some space on this computer and try again.", code: "disk_full" }, 507);
     if (/^SQLITE_IOERR/.test((err as { code?: string }).code ?? "")) return c.json({ error: COULD_NOT_WRITE, code: "io_error" }, 500);
