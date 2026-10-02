@@ -19,11 +19,16 @@ export const millsNow = (today = todayISO()) => `/mill-ledger?asOf=${today}`;
 export const millNow = (merchantId: string, exceptReceipt?: string | null, today = todayISO()) =>
   `/mill-ledger/${merchantId}?to=${today}${exceptReceipt ? `&exceptReceipt=${exceptReceipt}` : ""}`;
 
-/** One supplier's statement for the dates in its From and To boxes. */
-export function statementRange(from: string, to: string, _today = todayISO()) {
+/**
+ * One supplier's statement for the dates in its From and To boxes. A From with
+ * the To box emptied runs to today, as its CSV and print say; only both boxes
+ * empty ("All time") asks for every date.
+ */
+export function statementRange(from: string, to: string, today = todayISO()) {
   const qs = new URLSearchParams();
   if (from) qs.set("from", from);
   if (to) qs.set("to", to);
+  else if (from) qs.set("to", from > today ? from : today);
   return qs.toString();
 }
 
