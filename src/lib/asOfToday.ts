@@ -19,6 +19,14 @@ export const millsNow = (today = todayISO()) => `/mill-ledger?asOf=${today}`;
 export const millNow = (merchantId: string, exceptReceipt?: string | null, today = todayISO()) =>
   `/mill-ledger/${merchantId}?to=${today}${exceptReceipt ? `&exceptReceipt=${exceptReceipt}` : ""}`;
 
+/** One supplier's statement for the dates in its From and To boxes. */
+export function statementRange(from: string, to: string, _today = todayISO()) {
+  const qs = new URLSearchParams();
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  return qs.toString();
+}
+
 /** What each mill owes today, and how old it is: the follow-up screen. */
 export const followupNow = (today = todayISO()) => `/mill-followup?asOf=${today}`;
 

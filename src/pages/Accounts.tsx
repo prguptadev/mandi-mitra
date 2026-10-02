@@ -25,7 +25,8 @@ import { LoadError } from "@/components/LoadError.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
 import { cn, todayISO, fmtQtl } from "@/lib/utils.ts";
-import { owedBeforePayment, suppliersNow } from "@/lib/asOfToday.ts";
+import { owedBeforePayment, suppliersNow, statementRange } from "@/lib/asOfToday.ts";
+import { ledgerProof } from "@/lib/moneyFigures.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* Supplier ledger and payments. What is owed to a supplier is always
@@ -239,11 +240,9 @@ export function LedgerPage() {
     queryKey: ["ledger", "list", fy.from, asOf],
     queryFn: () => api.get<LedgerList>(`/ledger?from=${fy.from}&asOf=${asOf}`),
   });
-  const qs = new URLSearchParams();
-  if (from) qs.set("from", from);
-  if (to) qs.set("to", to);
+  const qs = statementRange(from, to);
   const st = useQuery({
-    queryKey: ["ledger", selected, qs.toString()],
+    queryKey: ["ledger", selected, qs],
     queryFn: () => api.get<Statement>(`/ledger/${selected}?${qs}`),
     enabled: Boolean(selected),
   });
@@ -323,7 +322,7 @@ export function LedgerPage() {
           <Card className="p-3"><p className="text-[12px] text-muted">{t("ledger.totalPaidAhead")}</p><p className="num break-all text-lg font-semibold text-warn">{f.money(list.data.totals.paidAheadPaise)}</p></Card>
           {/* the sum written out line by line: large figures stay readable on any screen */}
           <Card className="p-3 sm:col-span-2 xl:col-span-1">
-            <p className="mb-1 text-[12px] text-muted">{t("ledger.proof")}</p>
+            <p className="mb-1 text-[12px] text-muted">{ledgerProof(t, fy)}</p>
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[13px]">
               <dt className="text-muted">{t("ledger.broughtForward")}</dt><dd className="num break-all text-right">{f.money(list.data.totals.broughtForwardPaise)}</dd>
               <dt className="text-muted">+ {pick(L.payable, L.payableHi)}</dt><dd className="num break-all text-right">{f.money(list.data.totals.purchasesPaise)}</dd>

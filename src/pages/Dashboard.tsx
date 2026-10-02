@@ -19,6 +19,7 @@ import { RaceChart, type RacePoint } from "@/components/RaceChart.tsx";
 import { Card, CardHeader, Badge, Select, Input, Button } from "@/components/ui/index.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
 import { notAfterToday, suppliersNow } from "@/lib/asOfToday.ts";
+import { moneyTiles, moneyWords } from "@/lib/moneyFigures.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* One picture of the business: what came in, what went out to each mill,
@@ -177,13 +178,11 @@ function MoneyCard({ qs }: { qs: string }) {
   const m = q.data;
   if (q.isError) return <Card className="mt-5"><LoadError error={q.error} onRetry={() => void q.refetch()} /></Card>;
   if (!m) return <Card className="mt-5"><SkeletonTable rows={3} /></Card>;
-  const toReceive = m.mills.toReceivePaise - m.mills.paidAheadPaise;
-  const toPay = m.suppliers.toPayPaise - m.suppliers.paidAheadPaise;
-  const cash = m.cash.receivedFromMillsPaise - m.cash.paidToSuppliersPaise;
+  const { millsOwe: toReceive, weOwe: toPay, cash, net } = moneyTiles(m);
+  const words = moneyWords(t, new URLSearchParams(qs).get("to") ?? todayISO(), todayISO());
   // goods in hand and unbilled trucks, valued on the server as of the period's end
   const stockPaise = m.stock.valuePaise;
   const unbilledPaise = m.stock.unbilledGoodsPaise;
-  const net = toReceive + stockPaise + unbilledPaise + cash - toPay;
   const grand = m.billed.grandTotalPaise;
   const parts = [
     { key: "goods", label: t("dash.goodsPart"), amountPaise: m.billed.goodsPaise, tone: "bg-brand" },
@@ -202,7 +201,7 @@ function MoneyCard({ qs }: { qs: string }) {
   };
   return (
     <Card className="mt-5">
-      <CardHeader title={t("dash.money")} sub={t("dash.moneySub")} />
+      <CardHeader title={t("dash.money")} sub={words.sub} />
       <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
         {/* each balance is all time, so its explanation adds up to it: opening + bills − cuts − received − held back */}
         {tile(t("dash.millsOwe"), toReceive, t("dash.millsOweSub", { o: f.money(m.mills.allTime.openingPaise), b: f.money(m.mills.allTime.billedPaise), c: f.money(m.mills.allTime.shortagePaise), r: f.money(m.mills.allTime.receivedPaise), h: f.money(m.mills.allTime.deductedPaise) })
