@@ -50,7 +50,7 @@ const FIELDS: Record<string, [string, string]> = {
   openingBalancePaise: ["Opening balance", "प्रारंभिक शेष"], nameHi: ["Name (Hindi)", "नाम (हिन्दी)"], nameHinglish: ["Name (Hinglish)", "नाम (हिंग्लिश)"], name: ["Name", "नाम"], village: ["Village", "गाँव"], phone: ["Phone", "फ़ोन"], active: ["Active", "सक्रिय"], code: ["Code", "कोड"],
   truckNo: ["Truck no.", "ट्रक नं"], invoiceNo: ["Parcha no.", "पर्चा नं"], advancePaise: ["Advance", "एडवांस"], daraPaise: ["Dara", "दारा"], millGrossGrams: ["Mill gross", "मिल धर्म कांटा"], millNetGrams: ["Mill net", "मिल शुद्ध"], millBardanaGrams: ["Bardana", "बारदाना"],
   katteCount: ["Katte", "कट्टे"], boreCount: ["Bore", "बोरे"], millDeductionGrams: ["Mill cut", "मिल कटौती"], millDeductionNote: ["Cut for", "कटौती का कारण"], ewayBillNo: ["E-way bill", "ई-वे बिल"], transporter: ["Transporter", "ट्रांसपोर्टर"],
-  chargeConfig: ["Charge terms", "शर्तें"], stockDate: ["Purchase day", "खरीद का दिन"], poId: ["PO", "PO"], qtyGrams: ["Quantity", "मात्रा"], poNo: ["PO no.", "PO नं"], validTill: ["Valid till", "मान्य तक"],
+  chargeConfig: ["Charge terms", "शर्तें"], billedOn: ["Billed on", "किन शर्तों पर बिल"], stockDate: ["Purchase day", "खरीद का दिन"], poId: ["PO", "PO"], qtyGrams: ["Quantity", "मात्रा"], poNo: ["PO no.", "PO नं"], validTill: ["Valid till", "मान्य तक"],
   commissionPct: ["Commission %", "कमीशन %"], gaushalaPerQtl: ["Gaushala ₹/qtl", "गौशाला ₹/क्विं"], roleId: ["Role", "भूमिका"], permission: ["Permission", "अनुमति"], label: ["Label", "नाम"],
 };
 export const fieldWords = (key: string, lang: string) => { const w = FIELDS[key]; return w ? (lang === "hi" ? w[1] : w[0]) : key; };

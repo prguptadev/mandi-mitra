@@ -296,7 +296,16 @@ scripts/
 - **Voided parchas** — any version opens, prints and downloads exactly as
   frozen, stamped VOID. When a slip on a day an approved parcha takes its
   rate from changes, the edit names the parcha, and the truck shows "was /
-  would be now"; void and re-approve to bill the new figure.
+  would be now"; void and re-approve to bill the new figure. A truck keeps
+  the mill terms its parcha was billed on (`truckTerms`, `parcha.ts`: the
+  live parcha, else the one voided last by `voided_at`, never one voided as
+  approved twice): a void and re-approval after the mill's terms changed
+  bills the old terms again, and its stored net stays put; a truck never
+  billed takes the mill's terms of the day it is approved. To re-bill on
+  corrected mill terms (a mill registered wrongly), the approve step of such
+  a truck shows one tick, "Bill on the mill's current terms" (off by
+  default; `millTerms` on approve, `?terms=mill` on the truck), and the
+  audit trail's `billedOn` says which (`scripts/e2e-terms-frozen.ts`).
 - **Scanner (Windows)** — "Scan from scanner" on the Scan page drives any
   WIA scanner (Canon PIXMA / imageCLASS drivers include WIA) through a
   PowerShell script (`server/lib/scanner.ts`): page 1, page 2 … one sheet,
@@ -366,7 +375,11 @@ scripts/
   query planner's statistics refresh at start and every 6 hours.
 - **Money**: each slip keeps the katauti terms it was made with
   (`katauti_terms`), so a later change to a mill's terms never re-prices old
-  slips; the dashboard values stock per purchase day at that day's rate, as
+  slips — a corrected gross is worked on them too (only moving a slip to
+  another mill takes that mill's); a slip with no terms of its own (no-mill
+  slips from before 0014) keeps its stored katauti, net and charges through
+  the daily list's check, Recompute and the books check (`ownFigures`,
+  `slips.ts`); the dashboard values stock per purchase day at that day's rate, as
   of the period's end, including slips with no mill and every draft truck;
   totals no longer stop at 500/1000 rows; per-unit rates keep 1/100 paise;
   labels print 0.125 %; the paper shows LESS ADVANCE, ROUND OFF and whether

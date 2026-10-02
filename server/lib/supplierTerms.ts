@@ -42,12 +42,17 @@ export function slipCharges(amountPaise: number, netGrams: number, ratePaisePerQ
   return { commissionPaise, gaushalaPaise, payablePaise: amountPaise + commissionPaise + gaushalaPaise };
 }
 
-/** The terms a slip was made with; slips from before these charges existed use `fallback`. */
-export function supplierTermsOf(slip: { supplierTerms: string | null }, fallback: SupplierTerms): SupplierTerms {
-  if (!slip.supplierTerms) return fallback;
+/** The terms a slip was made with, or null for a slip that does not carry them (readably). */
+export function ownSupplierTerms(slip: { supplierTerms: string | null }): SupplierTerms | null {
+  if (!slip.supplierTerms) return null;
   try {
     const p = SupplierTermsSchema.safeParse(JSON.parse(slip.supplierTerms));
-    return p.success ? p.data : fallback;
-  } catch { return fallback; }
+    return p.success ? p.data : null;
+  } catch { return null; }
+}
+
+/** The terms a slip was made with; slips from before these charges existed use `fallback`. */
+export function supplierTermsOf(slip: { supplierTerms: string | null }, fallback: SupplierTerms): SupplierTerms {
+  return ownSupplierTerms(slip) ?? fallback;
 }
 export const termsOnly = (c: SupplierTerms): SupplierTerms => ({ commissionPct: c.commissionPct, gaushalaPerQtl: c.gaushalaPerQtl });
