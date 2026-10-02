@@ -816,13 +816,13 @@ export function DailyListPage() {
       {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
       {notice && <Alert tone="ok" className="mb-3">{notice}</Alert>}
       {staleWarn && (
-        <Alert tone="warn" className="mb-3">
+        <Alert tone="warn" className="mb-3" closable={false}>
           <span className="flex items-start justify-between gap-2"><span>{staleWarn}</span>
             <button type="button" className="shrink-0 text-faint hover:text-ink" onClick={() => setStaleWarn(null)} aria-label={t("common.close")}><X className="h-3.5 w-3.5" /></button></span>
         </Alert>
       )}
       {flagWarn && (
-        <Alert tone="warn" className="mb-3">
+        <Alert tone="warn" className="mb-3" closable={false}>
           <span className="flex items-start justify-between gap-2">
             <span>
               <b>{t(flagWarn.saved ? "daily.flagSavedTitle" : "daily.flagTitle", { rst: flagWarn.rst })}</b>

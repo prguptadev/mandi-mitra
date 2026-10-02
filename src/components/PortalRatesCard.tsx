@@ -358,7 +358,8 @@ function RatesCard({ bizId }: { bizId: string | null }) {
         ) : blocked ? (
           <Alert tone="warn">{t("portal.wrongFirm", { portal: s.firm ?? "—", here })}</Alert>
         ) : asking ? (
-          <Alert tone="brand">
+          // a question, not a warning: closing it would leave the rates unexplained
+          <Alert tone="brand" closable={false}>
             <p>{t("portal.askWhose", { portal: s.firm ?? s.portalLicence ?? "—", here })}</p>
             {can("business.write") && s.portalLicence ? (
               <>

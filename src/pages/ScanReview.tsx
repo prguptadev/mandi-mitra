@@ -829,7 +829,7 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
             </p>
             <p className="max-w-sm text-[13px] text-muted">{t("scan.readingSub")}</p>
             {b.warningText && (
-              <p className="max-w-sm rounded-lg border border-warn/40 bg-warn-soft px-3 py-1.5 text-[12px] text-warn">{sayServer(b.warningText, lang)}</p>
+              <Alert tone="warn" className="max-w-sm py-1.5 text-[12px]">{sayServer(b.warningText, lang)}</Alert>
             )}
             {/* "reading", but no read is running here: it stopped, or runs on another computer */}
             {!b.running && (

@@ -1,6 +1,7 @@
-import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes, useEffect, useRef } from "react";
+import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils.ts";
+import { useI18n } from "@/lib/i18n.tsx";
 import { Loader2, X, Check } from "lucide-react";
 
 /* ------------------------------------------------------------------ Button */
@@ -207,11 +208,51 @@ export function Badge({ tone = "neutral", className, children, title }: { tone?:
   );
 }
 
-export function Alert({ tone = "warn", title, children, className }: { tone?: Tone; title?: ReactNode; children?: ReactNode; className?: string }) {
+/* A closed message stays closed until its words change. A warning or note
+   stays closed until the app is closed (it would only say the same again); an
+   error or a "saved" closes for this time only, so a repeat still shows. */
+const closedKey = (tone: Tone, text: string) => {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+  return `mm.alertClosed.${tone}.${h.toString(36)}.${text.length}`;
+};
+const remembered = (tone: Tone) => tone === "warn" || tone === "neutral" || tone === "brand";
+function wasClosed(key: string) {
+  try { return sessionStorage.getItem(key) === "1"; } catch { return false; }
+}
+
+export function Alert({ tone = "warn", title, children, className, closable = true }: {
+  tone?: Tone; title?: ReactNode; children?: ReactNode; className?: string;
+  /** Every message can be closed with ×; false only where closing would hide the very thing being asked. */
+  closable?: boolean;
+}) {
+  const { t } = useI18n();
+  const box = useRef<HTMLDivElement>(null);
+  const key = useRef<string | null>(null);
+  const [closed, setClosed] = useState(false);
+  // after each render, before it is painted: new words show again, words closed before stay closed
+  useLayoutEffect(() => {
+    if (!closable) return;
+    const k = closedKey(tone, box.current?.textContent ?? "");
+    if (k === key.current) return;
+    key.current = k;
+    setClosed(remembered(tone) && wasClosed(k));
+  });
+  const close = () => {
+    setClosed(true);
+    if (key.current && remembered(tone)) { try { sessionStorage.setItem(key.current, "1"); } catch { /* private window: closed for now only */ } }
+  };
   return (
-    <div className={cn("rounded-lg border px-3 py-2.5 text-[13px] leading-snug", TONES[tone], className)}>
+    // kept in the page while closed, so changed words can bring it back
+    <div ref={box} hidden={closed} style={closed ? { display: "none" } : undefined} className={cn("rounded-lg border px-3 py-2.5 text-[13px] leading-snug", closable && "relative pr-8", TONES[tone], className)}>
       {title && <p className="font-semibold mb-0.5">{title}</p>}
       {children}
+      {closable && (
+        <button type="button" onClick={close} title={t("common.close")} aria-label={t("common.close")}
+          className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-md opacity-60 transition hover:bg-surface/60 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
     </div>
   );
 }
