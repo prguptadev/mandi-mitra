@@ -219,6 +219,11 @@ millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
   };
   // a receipt names its truck's parcha even when that parcha is dated after the period
   const truckOf = new Map((to ? await billed(biz, { merchantId }) : allBills).map((b) => [b.loadId, b]));
+  // money against a truck with no live parcha yet (a draft, or one voided and not approved again): the truck alone
+  const bare = [...new Set(recs.map((r) => r.loadId).filter((x): x is string => x != null && !truckOf.has(x)))];
+  const bareTruck = new Map(bare.length
+    ? (await db.select({ id: L.id, truckNo: L.truckNo }).from(L).where(and(eq(L.businessId, biz), inArray(L.id, bare)))).map((l) => [l.id, l.truckNo])
+    : []);
   // a parcha approved again after a void is a revised paper: the statement says so beside its number
   const revOf = revisions(bills.length ? await db.select({ id: Pa.id, loadId: Pa.loadId }).from(Pa).where(inArray(Pa.loadId, bills.map((b) => b.loadId))) : []);
   const entries: Entry[] = [
@@ -238,7 +243,7 @@ millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
       mode: r.mode, reference: r.reference, notes: r.notes, deductionNote: r.deductionNote,
       amountPaise: r.amountPaise, deductionPaise: r.deductionPaise, loadId: r.loadId,
       parchaNo: r.loadId ? truckOf.get(r.loadId)?.parchaNo : undefined,
-      truckNo: r.loadId ? truckOf.get(r.loadId)?.truckNo : undefined,
+      truckNo: r.loadId ? truckOf.get(r.loadId)?.truckNo ?? bareTruck.get(r.loadId) : undefined,
       voided: r.voidedAt != null, voidReason: r.voidReason,
       debitPaise: 0, creditPaise: r.voidedAt != null ? 0 : settled(r),
     })),

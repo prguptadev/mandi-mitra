@@ -463,7 +463,7 @@ export function MillStatementPage({ id }: { id: string }) {
         dmy(e.date),
         e.kind === "parcha" ? `Parcha #${e.parchaNo}${e.truckNo ? ` · ${e.truckNo}` : ""}`
           : e.kind === "shortage" ? `Mill cut on #${e.parchaNo} · ${fmtQtl(e.deductionGrams ?? 0)} qtl${e.deductionNote ? ` · ${e.deductionNote}` : ""}`
-          : `${e.voucherNo ? `RV-${e.voucherNo} · ` : ""}Receipt · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.parchaNo ? ` · for #${e.parchaNo}` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
+          : `${e.voucherNo ? `RV-${e.voucherNo} · ` : ""}Receipt · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.parchaNo ? ` · for #${e.parchaNo}` : e.truckNo ? ` · ${e.truckNo}, no parcha yet` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
         e.netGrams != null ? fmtQtl(e.netGrams) : "",
         e.debitPaise ? (e.debitPaise / 100).toFixed(2) : "",
         e.kind === "receipt" && !e.voided ? ((e.amountPaise ?? 0) / 100).toFixed(2) : "",
@@ -552,7 +552,8 @@ export function MillStatementPage({ id }: { id: string }) {
                         <Td className="text-ok">
                           <span className={cn(e.voided && "line-through")}>
                             {e.voucherNo ? <span className="num">RV-{e.voucherNo} · </span> : null}{t("mm.receipt")} · {t(`mm.mode.${e.mode ?? "bank"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}
-                            {e.parchaNo ? <span className="text-muted"> · {t("mm.forParcha", { no: e.parchaNo })}</span> : null}
+                            {e.parchaNo ? <span className="text-muted"> · {t("mm.forParcha", { no: e.parchaNo })}</span>
+                              : e.truckNo ? <span className="text-muted"> · {t("mm.truckNoParcha", { truck: e.truckNo })}</span> : null}
                             {e.deductionNote ? <span className="text-faint"> · {e.deductionNote}</span> : null}
                           </span>
                           {e.voided && <span className="block text-[11px] text-bad">{t("money.cancelledBecause", { why: e.voidReason ?? "" })}</span>}
