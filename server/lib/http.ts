@@ -88,10 +88,12 @@ function ownNames(fresh = false) {
   own = { at: Date.now(), names, base: os.hostname().toLowerCase().split(".")[0] };
   return own;
 }
-/** One of this computer's names: an address of its own, or its computer name with at most a one-word suffix (shop-pc, shop-pc.local, shop-pc.lan). */
+/** The endings a shop router or Windows gives a computer's name (never a public one like .com). */
+const LOCAL_SUFFIXES = new Set(["local", "lan", "home", "home.arpa", "localdomain", "internal", "intranet"]);
+/** One of this computer's names: an address of its own, or its computer name, bare or with a local ending (shop-pc, shop-pc.local, shop-pc.lan). */
 function isOwnName(name: string): boolean {
   const known = (o: ReturnType<typeof ownNames>) => o.names.has(name)
-    || (!!o.base && (name === o.base || (name.startsWith(`${o.base}.`) && !name.slice(o.base.length + 1).includes("."))));
+    || (!!o.base && (name === o.base || (name.startsWith(`${o.base}.`) && LOCAL_SUFFIXES.has(name.slice(o.base.length + 1)))));
   return known(ownNames()) || known(ownNames(true));
 }
 

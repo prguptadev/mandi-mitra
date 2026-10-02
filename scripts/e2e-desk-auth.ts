@@ -165,6 +165,10 @@ const q = <T = any>(sql: string, ...args: unknown[]) => qOne<T>(DIR, sql, ...arg
 check("an address on the open internet gets no answer", (await FAR.call("GET", "/auth/users")).json?.code === "bad_network");
 check("a page under another name (DNS rebinding) is refused, sharing or not", (await LAN1.call("GET", "/auth/users", undefined, { host: "rebind.example:8787" })).json?.code === "bad_host");
 check("another device using this computer's own address is answered", (await LAN1.call("GET", "/auth/users")).status === 200);
+const pcName = os.hostname().toLowerCase().split(".")[0];
+check("…or its computer name, bare or .local", (await LAN1.call("GET", "/auth/users", undefined, { host: `${pcName}:8787` })).status === 200
+  && (await LAN1.call("GET", "/auth/users", undefined, { host: `${pcName}.local:8787` })).status === 200);
+check("…but not a public site that borrows the computer's name", (await LAN1.call("GET", "/auth/users", undefined, { host: `${pcName}.com:8787` })).json?.code === "bad_host");
 check("a change from another site's page is refused", (await LAN1.call("POST", "/auth/login", { userId: id("Admin"), pin: "7747" }, { origin: "http://rebind.example:8787", "sec-fetch-site": "cross-site" })).json?.code === "bad_origin");
 
 console.log("\nThe first PIN (7747)");
