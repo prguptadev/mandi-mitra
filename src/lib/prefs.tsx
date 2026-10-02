@@ -30,8 +30,8 @@ export const LOCKED_COLUMNS: DailyColumnKey[] = ["rstNo", "gross", "net", "rate"
 export {
   MILL_REPORT_COLUMNS, DEFAULT_MILL_REPORT_COLUMNS, type MillReportColumnKey,
   SUPPLIER_SHEET_COLUMNS, DEFAULT_SUPPLIER_SHEET_COLUMNS, type SupplierSheetColumnKey,
-} from "@server/lib/prefs.ts";
-import { DEFAULT_MILL_REPORT_COLUMNS, DEFAULT_SUPPLIER_SHEET_COLUMNS } from "@server/lib/prefs.ts";
+} from "@server/lib/reportColumns.ts";
+import { DEFAULT_MILL_REPORT_COLUMNS, DEFAULT_SUPPLIER_SHEET_COLUMNS } from "@server/lib/reportColumns.ts";
 import type { SlipSortOrder } from "@server/lib/slipOrder.ts";
 
 export interface DailyListPrefs {

@@ -5,6 +5,7 @@ import { api, type Merchant, type Jins } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useFYRangeToToday } from "@/lib/fyToday.ts";
 import { useSort } from "@/lib/useSort.ts";
+import { useRowWindow, RowSpacer } from "@/lib/useRowWindow.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
@@ -46,6 +47,7 @@ export function SheetsPage() {
     date: (s) => s.day, mill: millOf, jins: (s) => s.jinsCode, pages: (s) => s.pages.length,
     lines: (s) => s.lines, added: (s) => s.slipsAdded, status: (s) => t(`scan.status.${s.status}` as never),
   }, { storageKey: "scan-sheets" });
+  const win = useRowWindow(sort.sorted);
   const filtersOn = Boolean(mill || jins || status !== "all" || !isDefault);
 
   return (
@@ -101,8 +103,9 @@ export function SheetsPage() {
                 <Th {...sort.th("status")}>{t("scan.filterStatus")}</Th>
               </tr>
             </thead>
-            <tbody>
-              {sort.sorted.map((s) => (
+            <tbody ref={win.bodyRef}>
+              <RowSpacer at="top" height={win.topHeight} cols={7} />
+              {win.rows.map((s) => (
                 <tr key={s.id} tabIndex={0} onClick={() => setOpen(s)}
                   onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(s); } }}
                   className="cursor-pointer transition-colors hover:bg-raised/60 focus-visible:bg-raised/60 focus-visible:outline-none">
@@ -120,6 +123,7 @@ export function SheetsPage() {
                   <Td><Badge tone={STATUS_TONE[s.status] ?? "neutral"}>{t(`scan.status.${s.status}` as never)}</Badge></Td>
                 </tr>
               ))}
+              <RowSpacer at="bottom" height={win.bottomHeight} cols={7} />
             </tbody>
           </Table>
         )}

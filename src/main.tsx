@@ -13,6 +13,17 @@ import { FormatProvider } from "./lib/format.tsx";
 import { PrefsProvider } from "./lib/prefs.tsx";
 import "./index.css";
 
+/* The figures' and Hindi typefaces still come from Google when the internet is
+   there. Asked for from here, not from the page's head, so a slow or missing
+   connection never holds the first paint: until they arrive (or without the
+   internet) the computer's own faces show, as they always did offline. */
+try {
+  const fonts = document.createElement("link");
+  fonts.rel = "stylesheet";
+  fonts.href = "https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap";
+  document.head.appendChild(fonts);
+} catch { /* no fonts from outside: the computer's own are used */ }
+
 const qc = new QueryClient({
   // an action whose screen has no error message of its own still says what went wrong
   mutationCache: new MutationCache({

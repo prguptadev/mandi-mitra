@@ -1,4 +1,4 @@
-import { forwardRef, Fragment, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { forwardRef, Fragment, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { FileText, Trash2, RotateCcw, Sparkles, Check, ArrowDown, ListChecks, List, AlertTriangle, AlertCircle, FileQuestion } from "lucide-react";
 import type { PageCheck, ScanRow } from "@/lib/api.ts";
 import { toHinglish } from "@server/lib/translit.ts";
@@ -194,7 +194,13 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
   const tt = t as unknown as T;
   const multi = pageCount > 1;
 
-  const states = useMemo(() => new Map(rows.map((r) => [r.id, lineState(r, tt)])), [rows, tt]);
+  // a line's state is kept with the line itself: one typed box works out that line again, not all
+  const stateCache = useMemo(() => new WeakMap<ScanRow, LineState>(), [tt]);
+  const states = useMemo(() => new Map(rows.map((r) => {
+    let st = stateCache.get(r);
+    if (!st) { st = lineState(r, tt); stateCache.set(r, st); }
+    return [r.id, st];
+  })), [rows, stateCache]);
   const toCheck = rows.filter((r) => states.get(r.id)!.tone !== "ok");
   const mustFix = toCheck.filter((r) => states.get(r.id)!.tone === "fix").length;
   const openChecks = locked ? [] : pageChecks.filter((pc) => !pc.confirmed);
@@ -251,12 +257,12 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
     if (first) onSelect?.(first);
   }, [rows.length, locked]);
 
-  const refuse = (key: string) => {
+  const refuse = useCallback((key: string) => {
     setRefused(key);
     if (refusedTimer.current) clearTimeout(refusedTimer.current);
     refusedTimer.current = setTimeout(() => setRefused(null), 1800);
-  };
-  const guard = (key: string) => ({
+  }, []);
+  const guard = useCallback((key: string) => ({
     onBeforeInput: (e: React.FormEvent<HTMLInputElement>) => {
       const data = (e as unknown as { data?: string | null }).data;
       if (data == null) return;
@@ -275,7 +281,7 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
       const data = e.dataTransfer.getData("text");
       if (!NUMERIC.test(data) || points(e.currentTarget.value + data) > 1) { e.preventDefault(); refuse(key); }
     },
-  });
+  }), [refuse]);
 
   /** Accepts every value on the line that may be accepted as read. */
   const acceptLine = (r: ScanRow) => {
@@ -306,6 +312,16 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
       box.current?.querySelector<HTMLElement>(`[data-row="${to.id}"][data-cell="${cell}"]`)?.focus();
     }
   };
+
+  /* The lines call back through these, always reaching what this render holds. */
+  const latestCb = useRef({ onPatch, onSelect, acceptLine });
+  latestCb.current = { onPatch, onSelect, acceptLine };
+  const lineCtx = useMemo<LineCtx>(() => ({
+    t, tt, f, guard, editName: setEditingName,
+    patch: (id, patch, confirm, now) => latestCb.current.onPatch(id, patch, confirm, now),
+    select: (r) => latestCb.current.onSelect?.(r),
+    acceptLine: (r) => latestCb.current.acceptLine(r),
+  }), [t, tt, f, guard]);
 
   const shown = (r: ScanRow, i: number) => {
     // the printed SR NO; else the line's place on its own page, never its place in the whole sheet
@@ -413,7 +429,12 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
                       </td>
                     </tr>
                   ))}
-                  {lines.map((r) => line(r))}
+                  {lines.map((r) => (
+                    <GridLine key={r.id} r={r} no={shown(r, rows.indexOf(r))} st={states.get(r.id)!}
+                      sel={selectedId === r.id} editing={editingName === r.id}
+                      refused={refused?.startsWith(`${r.id}:`) ? refused : null}
+                      locked={locked} canRate={canRate} lc={lineCtx} />
+                  ))}
                 </Fragment>
               );
             })}
@@ -423,214 +444,234 @@ export const ScanGrid = forwardRef<ScanGridHandle, {
     </div>
   );
 
-  function line(r: ScanRow) {
-    const i = rows.indexOf(r);
-    const dead = r.excluded || locked;
-    const name = r.chosen ?? r.match;
-    // a sheet already added is quiet: nothing on it is asked any more
-    const fl = locked ? { rst: null, name: null, gross: null, katauti: null, rate: null } : {
-      rst: flagFor(r, "rst", tt),
-      name: flagFor(r, "name", tt), gross: flagFor(r, "gross", tt),
-      katauti: flagFor(r, "katauti", tt), rate: flagFor(r, "rate", tt),
-    };
-    const st = states.get(r.id)!;
-    const sel = selectedId === r.id;
+});
 
-    return (
-      <Fragment key={r.id}>
-        <tr data-line={r.id}
-          onMouseDown={() => { if (!sel) onSelect?.(r); }}
-          onFocusCapture={() => { if (!sel) onSelect?.(r); }}
-          className={cn("transition-colors hover:bg-raised/30", r.excluded && "bg-raised/50 opacity-55", sel && "bg-brand/5")}>
-          <td className={cn("relative num border-b border-line/70 py-1 pl-2.5 pr-1 text-[11px]",
-            r.issues.some((x) => x.code.startsWith("sr_") || x.code === "name_only" || x.code === "figures_only") ? "font-bold text-bad" : "text-faint")}
-            title={r.ocr.confidence == null ? t("scan.srNoHint") : `${t("scan.srNoHint")} · ${t("scan.confHint", { n: Math.round(r.ocr.confidence * 100) })}`}>
-            {/* the line's colour: green nothing to do, amber a look, red a fix */}
-            <span aria-hidden className={cn("absolute inset-y-0 left-0 w-1",
-              r.excluded ? "bg-line" : locked ? "bg-ok/70" : st.tone === "fix" ? "bg-bad" : st.tone === "look" ? "bg-warn" : "bg-ok/70")} />
-            {shown(r, i)}
-          </td>
+/** What every line of the grid draws with: one object while the language and number style stay. */
+interface LineCtx {
+  t: ReturnType<typeof useI18n>["t"];
+  tt: T;
+  f: ReturnType<typeof useFormat>;
+  patch: (id: string, patch: Partial<ScanRow>, confirm?: Field | Field[], now?: boolean) => void;
+  select: (r: ScanRow) => void;
+  acceptLine: (r: ScanRow) => void;
+  editName: (id: string | null) => void;
+  guard: (key: string) => {
+    onBeforeInput: (e: React.FormEvent<HTMLInputElement>) => void;
+    onPaste: (e: React.ClipboardEvent<HTMLInputElement>) => void;
+    onDrop: (e: React.DragEvent<HTMLInputElement>) => void;
+  };
+}
 
-          <td className="border-b border-line/70 px-1 py-1">
-            <div className="relative">
-              <input value={r.rstNo} disabled={dead} placeholder="RST" title={fl.rst?.why}
-                data-row={r.id} data-cell="rst"
-                onChange={(e) => onPatch(r.id, { rstNo: e.target.value.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "") })}
-                className={cn(CELL, "text-left", cellClass(fl.rst))} />
-              {!dead && <Accept flag={fl.rst} label={t("scan.acceptValue")} onAccept={() => onPatch(r.id, {}, "rst")} />}
-            </div>
-          </td>
+/** One line of the sheet (and its notes). Drawn again only when that line, or whether it is
+ *  the one in hand, changes: typing in one box does not draw the whole sheet again. */
+const GridLine = memo(function GridLine({ r, no, st, sel, editing, refused, locked, canRate, lc }: {
+  r: ScanRow; no: number; st: LineState; sel: boolean; editing: boolean; refused: string | null;
+  locked: boolean; canRate: boolean; lc: LineCtx;
+}) {
+  const { t, tt, f } = lc;
+  const dead = r.excluded || locked;
+  const name = r.chosen ?? r.match;
+  // a sheet already added is quiet: nothing on it is asked any more
+  const fl = locked ? { rst: null, name: null, gross: null, katauti: null, rate: null } : {
+    rst: flagFor(r, "rst", tt),
+    name: flagFor(r, "name", tt), gross: flagFor(r, "gross", tt),
+    katauti: flagFor(r, "katauti", tt), rate: flagFor(r, "rate", tt),
+  };
 
-          <td className="border-b border-line/70 px-1 py-1">
-            <div className="relative">
-              {name && editingName !== r.id ? (
-                /* click the name itself to change it — no separate clear button */
-                <button type="button" disabled={dead} title={fl.name?.why ?? t("scan.clickToChange")}
-                  data-row={r.id} data-cell="name"
-                  onClick={() => setEditingName(r.id)}
-                  className={cn(
-                    "flex w-full items-center gap-1.5 rounded border px-1.5 py-0.5 text-left transition-colors",
-                    fl.name ? cellClass(fl.name) : "border-transparent hover:border-line hover:bg-surface",
-                  )}>
-                  <span className="min-w-0 flex-1">
-                    <span lang="hi" className="block truncate text-[14px] leading-tight text-ink">{name.nameHi}</span>
-                    <span className="block truncate text-[10px] leading-tight text-faint">
-                      {name.nameHinglish}
-                      {r.ocr.adatiName && r.ocr.adatiName !== name.nameHi && (
-                        <span lang="hi"> · {t("scan.ocrSaid")}: {r.ocr.adatiName}</span>
-                      )}
-                      {r.ocr.village && <span lang="hi"> · {t("scan.village")}: {r.ocr.village}</span>}
-                    </span>
+  return (
+    <Fragment key={r.id}>
+      <tr data-line={r.id}
+        onMouseDown={() => { if (!sel) lc.select(r); }}
+        onFocusCapture={() => { if (!sel) lc.select(r); }}
+        className={cn("transition-colors hover:bg-raised/30", r.excluded && "bg-raised/50 opacity-55", sel && "bg-brand/5")}>
+        <td className={cn("relative num border-b border-line/70 py-1 pl-2.5 pr-1 text-[11px]",
+          r.issues.some((x) => x.code.startsWith("sr_") || x.code === "name_only" || x.code === "figures_only") ? "font-bold text-bad" : "text-faint")}
+          title={r.ocr.confidence == null ? t("scan.srNoHint") : `${t("scan.srNoHint")} · ${t("scan.confHint", { n: Math.round(r.ocr.confidence * 100) })}`}>
+          {/* the line's colour: green nothing to do, amber a look, red a fix */}
+          <span aria-hidden className={cn("absolute inset-y-0 left-0 w-1",
+            r.excluded ? "bg-line" : locked ? "bg-ok/70" : st.tone === "fix" ? "bg-bad" : st.tone === "look" ? "bg-warn" : "bg-ok/70")} />
+          {no}
+        </td>
+
+        <td className="border-b border-line/70 px-1 py-1">
+          <div className="relative">
+            <input value={r.rstNo} disabled={dead} placeholder="RST" title={fl.rst?.why}
+              data-row={r.id} data-cell="rst"
+              onChange={(e) => lc.patch(r.id, { rstNo: e.target.value.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "") })}
+              className={cn(CELL, "text-left", cellClass(fl.rst))} />
+            {!dead && <Accept flag={fl.rst} label={t("scan.acceptValue")} onAccept={() => lc.patch(r.id, {}, "rst")} />}
+          </div>
+        </td>
+
+        <td className="border-b border-line/70 px-1 py-1">
+          <div className="relative">
+            {name && !editing ? (
+              /* click the name itself to change it — no separate clear button */
+              <button type="button" disabled={dead} title={fl.name?.why ?? t("scan.clickToChange")}
+                data-row={r.id} data-cell="name"
+                onClick={() => lc.editName(r.id)}
+                className={cn(
+                  "flex w-full items-center gap-1.5 rounded border px-1.5 py-0.5 text-left transition-colors",
+                  fl.name ? cellClass(fl.name) : "border-transparent hover:border-line hover:bg-surface",
+                )}>
+                <span className="min-w-0 flex-1">
+                  <span lang="hi" className="block truncate text-[14px] leading-tight text-ink">{name.nameHi}</span>
+                  <span className="block truncate text-[10px] leading-tight text-faint">
+                    {name.nameHinglish}
+                    {r.ocr.adatiName && r.ocr.adatiName !== name.nameHi && (
+                      <span lang="hi"> · {t("scan.ocrSaid")}: {r.ocr.adatiName}</span>
+                    )}
+                    {r.ocr.village && <span lang="hi"> · {t("scan.village")}: {r.ocr.village}</span>}
                   </span>
-                  {r.chosen
-                    ? <Badge tone="brand" className="shrink-0"><Check className="h-2.5 w-2.5" /></Badge>
-                    : r.match && <Badge tone={r.match.via === "fuzzy" ? "warn" : "ok"} className="shrink-0">
-                        {t(`scan.matchedBy.${r.match.via}` as never)}
-                      </Badge>}
+                </span>
+                {r.chosen
+                  ? <Badge tone="brand" className="shrink-0"><Check className="h-2.5 w-2.5" /></Badge>
+                  : r.match && <Badge tone={r.match.via === "fuzzy" ? "warn" : "ok"} className="shrink-0">
+                      {t(`scan.matchedBy.${r.match.via}` as never)}
+                    </Badge>}
+              </button>
+            ) : (
+              <div className={cn("rounded", fl.name && !name && cellClass(fl.name))}>
+                <SupplierPicker
+                  value={r.adatiId}
+                  selectedLabel={name ? { nameHi: name.nameHi, nameHinglish: name.nameHinglish } : null}
+                  disabled={dead}
+                  invalid={!name && !r.adatiRawText.trim()}
+                  autoFocus={editing}
+                  /* what the reader made of the handwriting is already in the box:
+                     fix a letter and press Enter, no retyping, no dialog */
+                  initialText={name?.nameHi ?? r.adatiRawText}
+                  placeholder={r.adatiRawText ? `${r.adatiRawText} · ${toHinglish(r.adatiRawText)}${r.ocr.village ? ` (${r.ocr.village})` : ""}` : t("scan.pickName")}
+                  onChange={(v) => { if (v) { lc.patch(r.id, { adatiId: v, nameCorrected: true }, "name"); lc.editName(null); } }}
+                  onCommitText={(text) => { lc.patch(r.id, { typedName: text, nameCorrected: true }, "name", true); lc.editName(null); }}
+                  onBlurEmpty={() => lc.editName(null)}
+                />
+              </div>
+            )}
+            {!dead && <Accept flag={fl.name} label={t("scan.acceptRow")} onAccept={() => lc.patch(r.id, {}, fl.name?.key ?? "name")} />}
+          </div>
+        </td>
+
+        <td className="border-b border-line/70 px-1 py-1">
+          <div className="relative">
+            <NumberInput disabled={dead} title={refused === `${r.id}:gross` ? t("scan.numbersOnly") : fl.gross?.why} decimals={2}
+              data-row={r.id} data-cell="gross" {...lc.guard(`${r.id}:gross`)}
+              className={cn(CELL, cellClass(fl.gross), refused === `${r.id}:gross` && "ring-2 ring-bad")}
+              value={r.grossGrams === null ? null : r.grossGrams / GRAMS_PER_QTL}
+              onValueChange={(n) => lc.patch(r.id, { grossGrams: n === null ? null : Math.round(n * GRAMS_PER_QTL) })} />
+            {!dead && <Accept flag={fl.gross} label={t("scan.acceptValue")} onAccept={() => lc.patch(r.id, {}, "gross")} />}
+            {refused === `${r.id}:gross` && <p className="mt-0.5 text-right text-[10px] font-medium text-bad">{t("scan.numbersOnly")}</p>}
+            {r.grossGrams === null && r.ocr.unreadable?.grossQtl && (
+              <p className="mt-0.5 truncate text-right text-[10px] text-bad" title={r.ocr.unreadable.grossQtl}>“{r.ocr.unreadable.grossQtl}”</p>
+            )}
+            {!dead && fl.gross && r.grossSuggestGrams != null && (
+              <button type="button" title={t("scan.useSuggest", { v: (r.grossSuggestGrams / GRAMS_PER_QTL).toFixed(2) })}
+                className="mt-0.5 block w-full rounded bg-brand/10 px-1 text-right text-[10px] font-medium text-brand hover:bg-brand/20"
+                onClick={() => lc.patch(r.id, { grossGrams: r.grossSuggestGrams! })}>
+                → {(r.grossSuggestGrams / GRAMS_PER_QTL).toFixed(2)}
+              </button>
+            )}
+          </div>
+        </td>
+
+        <td className="border-b border-line/70 px-1 py-1">
+          <div className="relative">
+            <NumberInput integer disabled={dead} title={fl.katauti?.why}
+              data-row={r.id} data-cell="katauti" {...lc.guard(`${r.id}:katauti`)}
+              className={cn(CELL, cellClass(fl.katauti), r.katautiOverride === null && !fl.katauti && "text-faint", refused === `${r.id}:katauti` && "ring-2 ring-bad")}
+              placeholder={r.derivedKatautiUnits === null ? "" : String(r.derivedKatautiUnits)}
+              value={r.katautiOverride}
+              onValueChange={(n) => lc.patch(r.id, { katautiOverride: n })} />
+            {!dead && <Accept flag={fl.katauti} label={t("scan.acceptValue")} onAccept={() => lc.patch(r.id, {}, "katauti")} />}
+          </div>
+        </td>
+
+        <td className="num border-b border-line/70 px-2 py-1 text-right text-faint">
+          {r.derivedNetGrams === null || r.grossGrams === null ? "—" : f.weight(r.grossGrams - r.derivedNetGrams)}
+        </td>
+
+        {/* net is always gross − katauti, so the parcha arithmetic holds;
+            fix a wrong net at its source, the gross */}
+        <td className="num border-b border-line/70 px-2 py-1 text-right font-semibold">
+          {r.derivedNetGrams === null ? "—" : f.weight(r.derivedNetGrams)}
+        </td>
+
+        <td className="border-b border-line/70 px-1 py-1">
+          <div className="relative">
+            <NumberInput disabled={dead || !canRate} title={refused === `${r.id}:rate` ? t("scan.numbersOnly") : fl.rate?.why} decimals={2}
+              data-row={r.id} data-cell="rate" {...lc.guard(`${r.id}:rate`)}
+              className={cn(CELL, cellClass(fl.rate), refused === `${r.id}:rate` && "ring-2 ring-bad")}
+              value={r.ratePaisePerQtl === null ? null : r.ratePaisePerQtl / 100}
+              onValueChange={(n) => lc.patch(r.id, { ratePaisePerQtl: n === null ? null : Math.round(n * 100) })} />
+            {!dead && canRate && <Accept flag={fl.rate} label={t("scan.acceptValue")} onAccept={() => lc.patch(r.id, {}, "rate")} />}
+            {refused === `${r.id}:rate` && <p className="mt-0.5 text-right text-[10px] font-medium text-bad">{t("scan.numbersOnly")}</p>}
+            {!r.ratePaisePerQtl && r.ocr.unreadable?.rate && (
+              <p className="mt-0.5 truncate text-right text-[10px] text-bad" title={r.ocr.unreadable.rate}>“{r.ocr.unreadable.rate}”</p>
+            )}
+          </div>
+        </td>
+
+        <td className="num border-b border-line/70 px-2 py-1 text-right font-semibold text-brand">
+          {r.derivedAmountPaise === null ? "—" : f.amount(r.derivedAmountPaise)}
+        </td>
+
+        <td className="border-b border-line/70 px-1 py-1">
+          <Button size="icon" variant="ghost" className="h-6 w-6" disabled={locked}
+            title={r.excluded ? t("scan.include") : t("scan.exclude")}
+            onClick={() => lc.patch(r.id, { excluded: !r.excluded })}>
+            {r.excluded ? <RotateCcw className="h-3 w-3" /> : <Trash2 className="h-3 w-3 text-bad/70" />}
+          </Button>
+        </td>
+      </tr>
+
+      {/* what to look at on this line, in words, and one tap when it is all right as read */}
+      {!locked && !r.excluded && st.tone !== "ok" && (
+        <tr className={cn(sel && "bg-brand/5")}>
+          <td className="relative border-b border-line/70">
+            <span aria-hidden className={cn("absolute inset-y-0 left-0 w-1", st.tone === "fix" ? "bg-bad" : "bg-warn")} />
+          </td>
+          <td colSpan={9} className="border-b border-line/70 px-1 pb-1.5 pt-0">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] leading-snug">
+              {st.flags.map(({ field, flag }) => (
+                <span key={field} className={cn("inline-flex items-start gap-1", flag.level === "bad" ? "text-bad" : "text-warn")}>
+                  {flag.level === "bad" ? <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" /> : <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />}
+                  <span><span className="font-semibold">{t(LABEL[field] as never)}:</span> {flag.why}</span>
+                </span>
+              ))}
+              {st.extra.map((x, k) => (
+                <span key={`x${k}`} className="inline-flex items-start gap-1 text-bad"><AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />{x}</span>
+              ))}
+              {st.flags.some((x) => x.flag.confirmable && (x.field !== "rate" || canRate)) && (
+                <button type="button" onClick={() => lc.acceptLine(r)} title={t("scan.acceptAllHint")}
+                  className="inline-flex items-center gap-1 rounded border border-ok/50 bg-ok-soft px-1.5 py-0.5 text-[11px] font-medium text-ok hover:bg-ok hover:text-white">
+                  <Check className="h-3 w-3" strokeWidth={3} /> {t("scan.acceptAll")}
                 </button>
-              ) : (
-                <div className={cn("rounded", fl.name && !name && cellClass(fl.name))}>
-                  <SupplierPicker
-                    value={r.adatiId}
-                    selectedLabel={name ? { nameHi: name.nameHi, nameHinglish: name.nameHinglish } : null}
-                    disabled={dead}
-                    invalid={!name && !r.adatiRawText.trim()}
-                    autoFocus={editingName === r.id}
-                    /* what the reader made of the handwriting is already in the box:
-                       fix a letter and press Enter, no retyping, no dialog */
-                    initialText={name?.nameHi ?? r.adatiRawText}
-                    placeholder={r.adatiRawText ? `${r.adatiRawText} · ${toHinglish(r.adatiRawText)}${r.ocr.village ? ` (${r.ocr.village})` : ""}` : t("scan.pickName")}
-                    onChange={(v) => { if (v) { onPatch(r.id, { adatiId: v, nameCorrected: true }, "name"); setEditingName(null); } }}
-                    onCommitText={(text) => { onPatch(r.id, { typedName: text, nameCorrected: true }, "name", true); setEditingName(null); }}
-                    onBlurEmpty={() => setEditingName(null)}
-                  />
-                </div>
-              )}
-              {!dead && <Accept flag={fl.name} label={t("scan.acceptRow")} onAccept={() => onPatch(r.id, {}, fl.name?.key ?? "name")} />}
-            </div>
-          </td>
-
-          <td className="border-b border-line/70 px-1 py-1">
-            <div className="relative">
-              <NumberInput disabled={dead} title={refused === `${r.id}:gross` ? t("scan.numbersOnly") : fl.gross?.why} decimals={2}
-                data-row={r.id} data-cell="gross" {...guard(`${r.id}:gross`)}
-                className={cn(CELL, cellClass(fl.gross), refused === `${r.id}:gross` && "ring-2 ring-bad")}
-                value={r.grossGrams === null ? null : r.grossGrams / GRAMS_PER_QTL}
-                onValueChange={(n) => onPatch(r.id, { grossGrams: n === null ? null : Math.round(n * GRAMS_PER_QTL) })} />
-              {!dead && <Accept flag={fl.gross} label={t("scan.acceptValue")} onAccept={() => onPatch(r.id, {}, "gross")} />}
-              {refused === `${r.id}:gross` && <p className="mt-0.5 text-right text-[10px] font-medium text-bad">{t("scan.numbersOnly")}</p>}
-              {r.grossGrams === null && r.ocr.unreadable?.grossQtl && (
-                <p className="mt-0.5 truncate text-right text-[10px] text-bad" title={r.ocr.unreadable.grossQtl}>“{r.ocr.unreadable.grossQtl}”</p>
-              )}
-              {!dead && fl.gross && r.grossSuggestGrams != null && (
-                <button type="button" title={t("scan.useSuggest", { v: (r.grossSuggestGrams / GRAMS_PER_QTL).toFixed(2) })}
-                  className="mt-0.5 block w-full rounded bg-brand/10 px-1 text-right text-[10px] font-medium text-brand hover:bg-brand/20"
-                  onClick={() => onPatch(r.id, { grossGrams: r.grossSuggestGrams! })}>
-                  → {(r.grossSuggestGrams / GRAMS_PER_QTL).toFixed(2)}
-                </button>
               )}
             </div>
-          </td>
-
-          <td className="border-b border-line/70 px-1 py-1">
-            <div className="relative">
-              <NumberInput integer disabled={dead} title={fl.katauti?.why}
-                data-row={r.id} data-cell="katauti" {...guard(`${r.id}:katauti`)}
-                className={cn(CELL, cellClass(fl.katauti), r.katautiOverride === null && !fl.katauti && "text-faint", refused === `${r.id}:katauti` && "ring-2 ring-bad")}
-                placeholder={r.derivedKatautiUnits === null ? "" : String(r.derivedKatautiUnits)}
-                value={r.katautiOverride}
-                onValueChange={(n) => onPatch(r.id, { katautiOverride: n })} />
-              {!dead && <Accept flag={fl.katauti} label={t("scan.acceptValue")} onAccept={() => onPatch(r.id, {}, "katauti")} />}
-            </div>
-          </td>
-
-          <td className="num border-b border-line/70 px-2 py-1 text-right text-faint">
-            {r.derivedNetGrams === null || r.grossGrams === null ? "—" : f.weight(r.grossGrams - r.derivedNetGrams)}
-          </td>
-
-          {/* net is always gross − katauti, so the parcha arithmetic holds;
-              fix a wrong net at its source, the gross */}
-          <td className="num border-b border-line/70 px-2 py-1 text-right font-semibold">
-            {r.derivedNetGrams === null ? "—" : f.weight(r.derivedNetGrams)}
-          </td>
-
-          <td className="border-b border-line/70 px-1 py-1">
-            <div className="relative">
-              <NumberInput disabled={dead || !canRate} title={refused === `${r.id}:rate` ? t("scan.numbersOnly") : fl.rate?.why} decimals={2}
-                data-row={r.id} data-cell="rate" {...guard(`${r.id}:rate`)}
-                className={cn(CELL, cellClass(fl.rate), refused === `${r.id}:rate` && "ring-2 ring-bad")}
-                value={r.ratePaisePerQtl === null ? null : r.ratePaisePerQtl / 100}
-                onValueChange={(n) => onPatch(r.id, { ratePaisePerQtl: n === null ? null : Math.round(n * 100) })} />
-              {!dead && canRate && <Accept flag={fl.rate} label={t("scan.acceptValue")} onAccept={() => onPatch(r.id, {}, "rate")} />}
-              {refused === `${r.id}:rate` && <p className="mt-0.5 text-right text-[10px] font-medium text-bad">{t("scan.numbersOnly")}</p>}
-              {!r.ratePaisePerQtl && r.ocr.unreadable?.rate && (
-                <p className="mt-0.5 truncate text-right text-[10px] text-bad" title={r.ocr.unreadable.rate}>“{r.ocr.unreadable.rate}”</p>
-              )}
-            </div>
-          </td>
-
-          <td className="num border-b border-line/70 px-2 py-1 text-right font-semibold text-brand">
-            {r.derivedAmountPaise === null ? "—" : f.amount(r.derivedAmountPaise)}
-          </td>
-
-          <td className="border-b border-line/70 px-1 py-1">
-            <Button size="icon" variant="ghost" className="h-6 w-6" disabled={locked}
-              title={r.excluded ? t("scan.include") : t("scan.exclude")}
-              onClick={() => onPatch(r.id, { excluded: !r.excluded })}>
-              {r.excluded ? <RotateCcw className="h-3 w-3" /> : <Trash2 className="h-3 w-3 text-bad/70" />}
-            </Button>
           </td>
         </tr>
+      )}
 
-        {/* what to look at on this line, in words, and one tap when it is all right as read */}
-        {!locked && !r.excluded && st.tone !== "ok" && (
-          <tr className={cn(sel && "bg-brand/5")}>
-            <td className="relative border-b border-line/70">
-              <span aria-hidden className={cn("absolute inset-y-0 left-0 w-1", st.tone === "fix" ? "bg-bad" : "bg-warn")} />
-            </td>
-            <td colSpan={9} className="border-b border-line/70 px-1 pb-1.5 pt-0">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] leading-snug">
-                {st.flags.map(({ field, flag }) => (
-                  <span key={field} className={cn("inline-flex items-start gap-1", flag.level === "bad" ? "text-bad" : "text-warn")}>
-                    {flag.level === "bad" ? <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" /> : <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />}
-                    <span><span className="font-semibold">{t(LABEL[field] as never)}:</span> {flag.why}</span>
-                  </span>
-                ))}
-                {st.extra.map((x, k) => (
-                  <span key={`x${k}`} className="inline-flex items-start gap-1 text-bad"><AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />{x}</span>
-                ))}
-                {st.flags.some((x) => x.flag.confirmable && (x.field !== "rate" || canRate)) && (
-                  <button type="button" onClick={() => acceptLine(r)} title={t("scan.acceptAllHint")}
-                    className="inline-flex items-center gap-1 rounded border border-ok/50 bg-ok-soft px-1.5 py-0.5 text-[11px] font-medium text-ok hover:bg-ok hover:text-white">
-                    <Check className="h-3 w-3" strokeWidth={3} /> {t("scan.acceptAll")}
-                  </button>
-                )}
-              </div>
-            </td>
-          </tr>
-        )}
-
-        {/* the three closest, one tap each; only while nothing is chosen */}
-        {!r.excluded && !r.chosen && !r.match && r.suggestions.length > 0 && (
-          <tr>
-            <td className="border-b border-line/70" />
-            <td className="border-b border-line/70" />
-            <td colSpan={8} className="border-b border-line/70 px-1 pb-1.5">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <Sparkles className="h-2.5 w-2.5 shrink-0 text-faint" />
-                {r.suggestions.slice(0, 3).map((sg) => (
-                  <button key={sg.adatiId} type="button" disabled={dead}
-                    onClick={() => onPatch(r.id, { adatiId: sg.adatiId, nameCorrected: true }, "name")}
-                    className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] hover:border-brand hover:bg-brand/5">
-                    <span lang="hi">{sg.nameHi}</span>
-                    <span className="num text-faint">{Math.round(sg.confidence * 100)}%</span>
-                  </button>
-                ))}
-              </div>
-            </td>
-          </tr>
-        )}
-      </Fragment>
-    );
-  }
+      {/* the three closest, one tap each; only while nothing is chosen */}
+      {!r.excluded && !r.chosen && !r.match && r.suggestions.length > 0 && (
+        <tr>
+          <td className="border-b border-line/70" />
+          <td className="border-b border-line/70" />
+          <td colSpan={8} className="border-b border-line/70 px-1 pb-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Sparkles className="h-2.5 w-2.5 shrink-0 text-faint" />
+              {r.suggestions.slice(0, 3).map((sg) => (
+                <button key={sg.adatiId} type="button" disabled={dead}
+                  onClick={() => lc.patch(r.id, { adatiId: sg.adatiId, nameCorrected: true }, "name")}
+                  className="inline-flex items-center gap-1 rounded border border-line bg-surface px-1.5 py-0.5 text-[11px] hover:border-brand hover:bg-brand/5">
+                  <span lang="hi">{sg.nameHi}</span>
+                  <span className="num text-faint">{Math.round(sg.confidence * 100)}%</span>
+                </button>
+              ))}
+            </div>
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
 });

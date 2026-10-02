@@ -1,4 +1,4 @@
-import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils.ts";
 import { useI18n } from "@/lib/i18n.tsx";
@@ -296,7 +296,7 @@ export function Dialog({
      "fixed" box is trapped in that bar instead of covering the screen. */
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:p-6">
-      <div className="fixed inset-0 bg-black/45 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/45" onClick={onClose} />
       <div
         role="dialog" aria-modal="true"
         className={cn(
@@ -326,7 +326,7 @@ export function Dialog({
 export function Table({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div className="overflow-x-auto">
-      <table className={cn("w-full text-sm border-collapse", className)}>{children}</table>
+      <table className={cn("w-full text-[13px] border-collapse", className)}>{children}</table>
     </div>
   );
 }
@@ -338,21 +338,26 @@ export function Th({ children, className, align = "left", numeric, sortDir, onSo
 }) {
   const right = align === "right" || numeric;
   return (
+    // a plain fill, no see-through blur: rows scroll under a stuck heading, and a blur is
+    // worked out again on every frame of the scroll — slow on a shop computer's graphics.
+    // A long heading goes onto two short lines when the table would not fit the screen
+    // otherwise; the sort arrow sits in the cell's edge, taking no width of its own.
     <th
       onClick={onSort}
       title={title}
       aria-sort={sortDir === "asc" ? "ascending" : sortDir === "desc" ? "descending" : undefined}
       className={cn(
-        "sticky top-0 z-10 bg-raised/90 backdrop-blur px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted border-b border-line whitespace-nowrap",
+        "sticky top-0 z-10 bg-raised px-2 py-2 text-[11px] font-semibold uppercase leading-tight tracking-wide text-muted border-b border-line text-balance",
         right ? "text-right" : align === "center" ? "text-center" : "text-left",
         onSort && "group cursor-pointer select-none hover:text-ink",
         sortDir && "text-ink",
         className,
       )}>
-      <span className={cn("inline-flex items-center gap-1", right && "flex-row-reverse")}>
-        <span>{children}</span>
+      <span className="relative inline-block">
+        {children}
         {onSort && (
-          <span className={cn("text-[10px] leading-none", sortDir ? "text-brand" : "text-faint opacity-0 group-hover:opacity-100")}>
+          <span aria-hidden className={cn("absolute top-1/2 -translate-y-1/2 text-[10px] leading-none", right ? "right-full mr-0.5" : "left-full ml-0.5",
+            sortDir ? "text-brand" : "text-faint opacity-0 group-hover:opacity-100")}>
             {sortDir === "asc" ? "▲" : sortDir === "desc" ? "▼" : "↕"}
           </span>
         )}
@@ -366,7 +371,7 @@ export function Td({ children, className, align = "left", numeric, colSpan, titl
 }) {
   return (
     <td colSpan={colSpan} title={title} className={cn(
-      "px-3 py-2 border-b border-line/70 align-middle",
+      "px-2 py-2 border-b border-line/70 align-middle",
       numeric && "num tabular-nums",
       align === "right" || numeric ? "text-right" : align === "center" ? "text-center" : "text-left",
       className,
@@ -382,6 +387,12 @@ export function Tr({ children, className, onClick }: { children: ReactNode; clas
       {children}
     </tr>
   );
+}
+
+/** Dates one after another ("26-09-2026, 27-09-2026"): a narrow column breaks the line
+ *  between two dates, never inside one. */
+export function DateList({ dates }: { dates: string[] }) {
+  return <>{dates.map((d, i) => <Fragment key={i}>{i > 0 && ", "}<span className="whitespace-nowrap">{d}</span></Fragment>)}</>;
 }
 
 /* -------------------------------------------------------------------- Tabs */

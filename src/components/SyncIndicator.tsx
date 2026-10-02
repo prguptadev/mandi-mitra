@@ -24,8 +24,19 @@ export function SyncIndicator() {
   const qc = useQueryClient();
   const [, navigate] = useLocation();
   // asked every 8 s while the window is in front (paused while it is minimised);
-  // coming back to the window asks at once, so the other computer's work shows straight away
-  const q = useQuery({ queryKey: ["cloud-status"], queryFn: () => api.get<Status>("/cloud/status"), refetchInterval: 8_000, refetchOnWindowFocus: true, retry: false });
+  // coming back to the window asks at once, so the other computer's work shows straight away.
+  // With sync off there is nothing to watch for (turning it on refreshes every screen), and
+  // while offline or held nothing can arrive: then a look now and then is enough.
+  const q = useQuery({
+    queryKey: ["cloud-status"], queryFn: () => api.get<Status>("/cloud/status"),
+    refetchInterval: (x) => {
+      const st = x.state.data;
+      if (!st) return 8_000;
+      if (!st.enabled) return 60_000;
+      return st.state === "ok" || st.state === "syncing" ? 8_000 : 30_000;
+    },
+    refetchOnWindowFocus: true, retry: false,
+  });
   const seen = useRef<number | null>(null);
   const s = q.data;
 

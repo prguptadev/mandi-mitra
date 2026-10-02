@@ -14,13 +14,14 @@ import {
 } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSort } from "@/lib/useSort.ts";
+import { useRowWindow, RowSpacer } from "@/lib/useRowWindow.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { NumberInput } from "@/components/NumberInput.tsx";
 import { ParchaPaper } from "@/components/ParchaPaper.tsx";
 import { SkeletonTable, SkeletonForm } from "@/components/Skeletons.tsx";
-import { Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Checkbox, Textarea, Switch } from "@/components/ui/index.tsx";
+import { Button, Card, CardHeader, DateList, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Checkbox, Textarea, Switch } from "@/components/ui/index.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
@@ -177,6 +178,7 @@ export function LoadsPage() {
     from: (r) => r.stockDates[0], loaded: (r) => r.loadedGrams, net: (r) => r.millNetGrams,
     parcha: (r) => r.parcha?.parchaNo, total: (r) => r.parcha?.grandTotalPaise,
   }, { storageKey: "loads" });
+  const win = useRowWindow(sort.sorted);
   const billed = rows.filter((r) => r.parcha);
   // hidden from roles that may not read parchas (the server sends no totals then): a dash, not ₹0
   const totalBilled = can("parcha.read") ? billed.reduce((s, r) => s + (r.parcha?.grandTotalPaise ?? 0), 0) : null;
@@ -233,14 +235,15 @@ export function LoadsPage() {
                 <Th {...sort.th("parcha")}>{t("load.parchaNo")}</Th><Th numeric {...sort.th("total")}>{t("load.grandTotal")}</Th>
               </tr>
             </thead>
-            <tbody>
-              {sort.sorted.map((r) => (
+            <tbody ref={win.bodyRef}>
+              <RowSpacer at="top" height={win.topHeight} cols={9} />
+              {win.rows.map((r) => (
                 <Tr key={r.id} onClick={() => navigate(`/loads/${r.id}`)}>
                   <Td className="whitespace-nowrap">{dmy(r.loadDate)}</Td>
                   <Td className="font-mono font-medium">{r.truckNo ?? <span className="text-faint">—</span>}</Td>
                   <Td><Badge tone="brand" className="num">{r.millCode}</Badge></Td>
                   <Td>{(r.jinsCodes ?? [r.jinsCode]).join(" + ")}</Td>
-                  <Td className="whitespace-nowrap text-muted">{r.stockDates.map(dmy).join(", ") || "—"}</Td>
+                  <Td className="text-muted">{r.stockDates.length ? <DateList dates={r.stockDates.map(dmy)} /> : "—"}</Td>
                   <Td numeric>{r.loadedGrams ? f.weight(r.loadedGrams) : <span className="text-faint">—</span>}</Td>
                   <Td numeric>{r.millNetGrams == null ? <span className="text-faint">—</span> : f.weight(r.millNetGrams)}</Td>
                   <Td>
@@ -251,12 +254,13 @@ export function LoadsPage() {
                   <Td numeric className="font-medium">{r.parcha ? f.money(r.parcha.grandTotalPaise) : <span className="text-faint">—</span>}</Td>
                 </Tr>
               ))}
+              <RowSpacer at="bottom" height={win.bottomHeight} cols={9} />
             </tbody>
             {billed.length > 0 && (
               <tfoot>
                 <tr className="bg-raised/50 text-[13px] font-medium">
-                  <td colSpan={8} className="px-3 py-2 text-right text-muted">{t("load.billedTotal", { n: billed.length })}</td>
-                  <td className="num px-3 py-2 text-right">{f.money(totalBilled)}</td>
+                  <td colSpan={8} className="px-2 py-2 text-right text-muted">{t("load.billedTotal", { n: billed.length })}</td>
+                  <td className="num px-2 py-2 text-right">{f.money(totalBilled)}</td>
                 </tr>
               </tfoot>
             )}
@@ -714,14 +718,14 @@ export function LoadDetailPage({ id }: { id: string }) {
                       </td>
                     )}
                     <td className="px-2 py-1.5">
-                      <select value={x.stockDate} disabled={!canEdit} className={cn(CELL, "min-w-[210px]")}
+                      <select value={x.stockDate} disabled={!canEdit} className={cn(CELL, "min-w-[160px]")}
                         onChange={(e) => lineSave.mutate({ lineId: x.id, patch: { stockDate: e.target.value } })}>
                         {!rowDays.some((d) => d.date === x.stockDate) && <option value={x.stockDate}>{dmy(x.stockDate)}</option>}
                         {rowDays.map((d) => <option key={d.date} value={d.date}>{dayLabel(f, t, d)}</option>)}
                       </select>
                     </td>
                     <td className="px-2 py-1.5">
-                      <select value={x.poId ?? ""} disabled={!canEdit} className={cn(CELL, "min-w-[120px]")}
+                      <select value={x.poId ?? ""} disabled={!canEdit} className={cn(CELL, "min-w-[96px]")}
                         onChange={(e) => lineSave.mutate({ lineId: x.id, patch: { poId: e.target.value || null } })}>
                         <option value="">—</option>
                         {rowPos.map((o) => <option key={o.id} value={o.id}>{o.poNo ? `PO ${o.poNo}` : poName(t, o)}</option>)}
@@ -740,8 +744,8 @@ export function LoadDetailPage({ id }: { id: string }) {
                         className={cn(!x.ratePaisePerQtlUsed && !billed && "border-warn")} />
                       <p className="mt-0.5 text-right text-[10px] text-faint">{x.rateTyped ? t("load.typed") : t("load.dayAverage")}</p>
                     </td>
-                    <td className="num px-3 py-1.5 text-right">{f.amount(x.amountPaise)}</td>
-                    <td className={cn("num px-3 py-1.5 text-right", x.day.leftGrams < 0 && "font-medium text-warn")}
+                    <td className="num px-2 py-1.5 text-right">{f.amount(x.amountPaise)}</td>
+                    <td className={cn("num px-2 py-1.5 text-right", x.day.leftGrams < 0 && "font-medium text-warn")}
                       title={t("load.dayLeftHelp", { bought: f.weight(x.day.boughtNetGrams), other: f.weight(x.day.otherTrucksGrams), mine: f.weight(x.day.thisTruckGrams) })}>
                       {f.weight(x.day.leftGrams)}
                     </td>
@@ -761,13 +765,13 @@ export function LoadDetailPage({ id }: { id: string }) {
               </tbody>
               <tfoot>
                 <tr className="bg-raised/50 text-[13px] font-semibold">
-                  <td className="px-3 py-2" colSpan={multi ? 3 : 2}>{t("load.total")}</td>
-                  <td className={cn("num px-3 py-2 text-right", w.netGrams != null && linesTotal !== w.netGrams && "text-bad")}>
+                  <td className="px-2 py-2" colSpan={multi ? 3 : 2}>{t("load.total")}</td>
+                  <td className={cn("num px-2 py-2 text-right", w.netGrams != null && linesTotal !== w.netGrams && "text-bad")}>
                     {f.weight(linesTotal)}
                     {w.netGrams != null && linesTotal !== w.netGrams && <span className="block text-[10px] font-normal">{t("load.millNetIs", { q: f.weight(w.netGrams) })}</span>}
                   </td>
-                  <td className="num px-3 py-2 text-right">{linesTotal ? f.rate(Math.round((goodsTotal * Q) / linesTotal)) : "—"}</td>
-                  <td className="num px-3 py-2 text-right">{f.amount(goodsTotal)}</td>
+                  <td className="num px-2 py-2 text-right">{linesTotal ? f.rate(Math.round((goodsTotal * Q) / linesTotal)) : "—"}</td>
+                  <td className="num px-2 py-2 text-right">{f.amount(goodsTotal)}</td>
                   <td colSpan={canEdit ? 2 : 1} />
                 </tr>
               </tfoot>
@@ -1018,6 +1022,8 @@ export function ParchaRegisterPage() {
     no: (r) => r.parchaNo, date: (r) => r.invoiceDate, mill: (r) => r.millCode, truck: (r) => r.truckNo,
     status: (r) => r.status, total: (r) => r.grandTotalPaise, cut: (r) => r.shortagePaise, received: (r) => r.receivedPaise, due: (r) => r.duePaise,
   }, { storageKey: "parcha-register" });
+  const win = useRowWindow(sort.sorted);
+  const cols = money ? 10 : 7;
 
   return (
     <div>
@@ -1050,8 +1056,9 @@ export function ParchaRegisterPage() {
                 <Th className="w-10" />
               </tr>
             </thead>
-            <tbody>
-              {sort.sorted.map((r) => (
+            <tbody ref={win.bodyRef}>
+              <RowSpacer at="top" height={win.topHeight} cols={cols} />
+              {win.rows.map((r) => (
                 <Tr key={r.id} onClick={() => navigate(`/loads/${r.loadId}`)} className={cn(r.status === "void" && "opacity-60")}>
                   <Td className="font-medium">
                     <span className="font-mono">{r.parchaNo}</span> <TallyMark flag={parchaFlags[r.id]} />
@@ -1086,15 +1093,16 @@ export function ParchaRegisterPage() {
                   </Td>
                 </Tr>
               ))}
+              <RowSpacer at="bottom" height={win.bottomHeight} cols={cols} />
             </tbody>
             <tfoot>
               <tr className="bg-raised/50 text-[13px] font-semibold">
-                <td colSpan={5} className="px-3 py-2 text-right text-muted">{t("parcha.registerTotal", { n: approved.length })}</td>
-                <td className="num px-3 py-2 text-right">{f.money(total)}</td>
+                <td colSpan={5} className="px-2 py-2 text-right text-muted">{t("parcha.registerTotal", { n: approved.length })}</td>
+                <td className="num px-2 py-2 text-right">{f.money(total)}</td>
                 {money && <>
-                  <td className="num px-3 py-2 text-right text-warn">{cutTotal ? `− ${f.money(cutTotal)}` : "—"}</td>
-                  <td className="num px-3 py-2 text-right text-ok">{f.money(paidTotal)}</td>
-                  <td className="num px-3 py-2 text-right">{f.money(dueTotal)}</td>
+                  <td className="num px-2 py-2 text-right text-warn">{cutTotal ? `− ${f.money(cutTotal)}` : "—"}</td>
+                  <td className="num px-2 py-2 text-right text-ok">{f.money(paidTotal)}</td>
+                  <td className="num px-2 py-2 text-right">{f.money(dueTotal)}</td>
                 </>}
                 <td />
               </tr>

@@ -3,7 +3,7 @@ import { DAILY_COLUMNS, MILL_REPORT_COLUMNS, type DailyColumnKey, type DailyList
 import { defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
 import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
-import type { MillReportColumnKey } from "@server/lib/prefs.ts";
+import type { MillReportColumnKey } from "@server/lib/reportColumns.ts";
 import { fmtQtl } from "@/lib/utils.ts";
 
 /* One table that leaves the app — as a CSV file, as a preview on screen, or

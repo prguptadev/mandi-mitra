@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -223,7 +223,9 @@ function MoneyCard({ qs }: { qs: string }) {
   );
 }
 
-function MillCard({ m }: { m: MillSummary }) {
+/** One mill's card. Drawn again only when its own figures change, not each time another
+ *  part of the dashboard finishes loading (25 cards, each with a chart). */
+const MillCard = memo(function MillCard({ m }: { m: MillSummary }) {
   const { t, pick } = useI18n();
   const f = useFormat();
   return (
@@ -274,7 +276,7 @@ function MillCard({ m }: { m: MillSummary }) {
       )}
     </Card>
   );
-}
+});
 
 export function DashboardPage() {
   const { t, pick, lang } = useI18n();

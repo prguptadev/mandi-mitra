@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useFormat } from "@/lib/format.tsx";
 import { useI18n } from "@/lib/i18n.tsx";
 import { dmy } from "@server/lib/parchaLabels.ts";
@@ -19,6 +19,10 @@ const dayNo = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, 
 function useWidth() {
   const ref = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(600);
+  // the real width before the first paint: the chart is drawn once at its size, not at 600 and then again
+  useLayoutEffect(() => {
+    if (ref.current) setW(Math.max(240, Math.floor(ref.current.getBoundingClientRect().width)));
+  }, []);
   useEffect(() => {
     if (!ref.current) return;
     const ro = new ResizeObserver(([e]) => setW(Math.max(240, Math.floor(e.contentRect.width))));
@@ -83,6 +87,14 @@ export function RaceChart({ points, height = 200 }: { points: RacePoint[]; heigh
     { a: xDay(d0), b: points.length ? x(points[0].date) : xDay(d1), p: start },
     ...points.map((p, i) => ({ a: x(p.date), b: i + 1 < points.length ? x(points[i + 1].date) : xDay(d1), p })),
   ].filter((g) => g.p.cumIn !== g.p.cumOut && g.b > g.a);
+  // each day's band is a rectangle; the days of one colour make one path
+  const bandPath = (ahead: boolean) => gaps.filter((g) => (g.p.cumOut > g.p.cumIn) === ahead).map((g) => {
+    const top = Math.min(y(g.p.cumIn), y(g.p.cumOut));
+    const bottom = top + Math.abs(y(g.p.cumIn) - y(g.p.cumOut));
+    return `M${g.a},${top}H${g.b}V${bottom}H${g.a}Z`;
+  }).join("");
+  const inHand = bandPath(false);
+  const loadedAhead = bandPath(true);
 
   const ticksY: number[] = [];
   for (let g = min; g <= max + 1; g += stepQ * 100_000) ticksY.push(g);
@@ -111,11 +123,9 @@ export function RaceChart({ points, height = 200 }: { points: RacePoint[]; heigh
         {tickDates.map((d) => (
           <text key={d} x={xMid(d)} y={height - 6} textAnchor="middle" fontSize="10" fill="hsl(var(--faint))">{dmy(d).slice(0, 5)}</text>
         ))}
-        {gaps.map((g, i) => (
-          <rect key={i} x={g.a} width={g.b - g.a}
-            y={Math.min(y(g.p.cumIn), y(g.p.cumOut))} height={Math.abs(y(g.p.cumIn) - y(g.p.cumOut))}
-            fill={g.p.cumOut > g.p.cumIn ? BAD : IN} opacity={g.p.cumOut > g.p.cumIn ? 0.14 : 0.1} />
-        ))}
+        {/* the day-by-day bands, one shape per colour (a season is hundreds of days, on 25 cards) */}
+        {inHand && <path d={inHand} fill={IN} opacity={0.1} />}
+        {loadedAhead && <path d={loadedAhead} fill={BAD} opacity={0.14} />}
         <path d={inPath} fill="none" stroke={IN} strokeWidth={2} />
         <path d={outPath} fill="none" stroke={OUT} strokeWidth={2} />
         {ahead.map((p) => <circle key={p.date} cx={xMid(p.date)} cy={y(p.cumOut)} r={3.5} fill={BAD} />)}

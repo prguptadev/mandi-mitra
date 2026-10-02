@@ -6,12 +6,13 @@ import { ClipboardCheck, Download, Search } from "lucide-react";
 import { api, ApiError, type Jins, type Merchant } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
-import { useFormat, GRAMS_PER_QTL } from "@/lib/format.tsx";
+import { useFormat, GRAMS_PER_QTL, RupeeMark } from "@/lib/format.tsx";
 import { useSort } from "@/lib/useSort.ts";
+import { useRowWindow, RowSpacer } from "@/lib/useRowWindow.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { NumCell } from "@/pages/Loads.tsx";
-import { Alert, Badge, Button, Card, EmptyState, Field, Input, Select, Table, Td, Th, Tr } from "@/components/ui/index.tsx";
+import { Alert, Badge, Button, Card, DateList, EmptyState, Field, Input, Select, Table, Td, Th, Tr } from "@/components/ui/index.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { cn, fmtQtl } from "@/lib/utils.ts";
@@ -47,7 +48,7 @@ function NoteCell({ value, onCommit, disabled }: { value: string; onCommit: (v: 
   useEffect(() => { if (!focused.current) setV(value); }, [value]);
   return (
     <input value={v} disabled={disabled} maxLength={200}
-      className="h-8 w-full min-w-[8rem] rounded-md border border-line bg-surface px-2 text-[12px] text-ink placeholder:text-faint focus:border-brand disabled:opacity-60"
+      className="h-8 w-full min-w-[6rem] rounded-md border border-line bg-surface px-2 text-[12px] text-ink placeholder:text-faint focus:border-brand disabled:opacity-60"
       onFocus={() => { focused.current = true; }}
       onChange={(e) => setV(e.target.value)}
       onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
@@ -99,6 +100,9 @@ export function ChallanPage() {
     cut: (r) => r.deductionGrams, finalNet: (r) => r.finalNetGrams, cutValue: (r) => r.deductionValuePaise,
     finalGoods: (r) => r.finalGoodsPaise, parcha: (r) => r.parchaNo, advance: (r) => r.advancePaise, grand: (r) => r.grandTotalPaise, finalTotal: (r) => r.finalTotalPaise,
   }, { storageKey: "challan" });
+  const win = useRowWindow(s.sorted);
+  // "from {d}": the words around a truck's purchase days, which break only between two days
+  const fromDays = t("ch.fromDays", { d: "\u0001" }).split("\u0001");
   const editable = can("challan.write");
   const T = list.data?.totals;
 
@@ -161,37 +165,36 @@ export function ChallanPage() {
                   <Th {...s.th("date")}>{t("load.date")}</Th>
                   <Th {...s.th("truck")}>{t("load.truckNo")}</Th>
                   <Th {...s.th("mill")}>{t("load.mill")}</Th>
-                  <Th {...s.th("jins")}>{t("load.jins")}</Th>
                   <Th numeric {...s.th("gross")} title={t("ch.grossHint")}>{t("ch.gross")}</Th>
                   <Th numeric {...s.th("loaded")}>{t("load.loaded")}</Th>
-                  <Th numeric {...s.th("rate")}>{t("load.rate")}</Th>
-                  <Th numeric {...s.th("goods")}>{t("stock.goodsValue")}</Th>
                   <Th numeric {...s.th("cut")} title={t("ch.cutHint")}>{t("ch.cut")}</Th>
                   <Th>{t("ch.cutNote")}</Th>
                   <Th numeric {...s.th("finalNet")}>{t("ch.finalNet")}</Th>
-                  <Th numeric {...s.th("cutValue")}>{t("ch.cutValue")}</Th>
-                  <Th numeric {...s.th("finalGoods")}>{t("ch.finalGoods")}</Th>
                   <Th {...s.th("parcha")}>{t("load.parchaNo")}</Th>
-                  <Th numeric {...s.th("advance")} title={t("ch.advanceHint")}>{t("ch.advance")}</Th>
-                  <Th numeric {...s.th("grand")}>{t("load.grandTotal")}</Th>
-                  <Th numeric {...s.th("finalTotal")} title={t("ch.finalTotalHint")}>{t("ch.finalTotal")}</Th>
+                  <Th numeric {...s.th("finalTotal")} title={t("ch.finalTotalHint")}>{t("ch.finalTotal")}<RupeeMark /></Th>
+                  <Th {...s.th("jins")}>{t("load.jins")}</Th>
+                  <Th numeric {...s.th("rate")}>{t("load.rate")}</Th>
+                  <Th numeric {...s.th("goods")}>{t("stock.goodsValue")}<RupeeMark /></Th>
+                  <Th numeric {...s.th("cutValue")}>{t("ch.cutValue")}<RupeeMark /></Th>
+                  <Th numeric {...s.th("finalGoods")}>{t("ch.finalGoods")}<RupeeMark /></Th>
+                  <Th numeric {...s.th("advance")} title={t("ch.advanceHint")}>{t("ch.advance")}<RupeeMark /></Th>
+                  <Th numeric {...s.th("grand")}>{t("load.grandTotal")}<RupeeMark /></Th>
                 </tr>
               </thead>
-              <tbody>
-                {s.sorted.map((r) => (
+              <tbody ref={win.bodyRef}>
+                <RowSpacer at="top" height={win.topHeight} cols={17} />
+                {win.rows.map((r) => (
                   <Tr key={r.loadId} className={cn(r.mismatch && "bg-bad-soft/30")}>
                     <Td className="whitespace-nowrap">{dmy(r.loadDate)}</Td>
-                    <Td className="whitespace-nowrap font-mono"><Link href={`/loads/${r.loadId}`} className="text-brand hover:underline">{r.truckNo ?? "—"}</Link>
-                      {r.stockDates.length > 0 && <span className="block font-sans text-[10px] text-faint">{t("ch.fromDays", { d: r.stockDates.map((d) => dmy(d).slice(0, 5)).join(", ") })}</span>}</Td>
-                    <Td className="whitespace-nowrap"><Badge className="num">{r.millCode}</Badge> <span className="text-[12px] text-muted">{pick(r.millName, r.millNameHi)}</span></Td>
-                    <Td className="text-muted">{r.jinsCode}</Td>
+                    {/* wide enough that a truck's days or a mill's name take two lines at most */}
+                    <Td className="font-mono"><div className="min-w-[8.5rem]"><Link href={`/loads/${r.loadId}`} className="whitespace-nowrap text-brand hover:underline">{r.truckNo ?? "—"}</Link>
+                      {r.stockDates.length > 0 && <span className="block font-sans text-[10px] text-faint">{fromDays[0]}<DateList dates={r.stockDates.map((d) => dmy(d).slice(0, 5))} />{fromDays[1]}</span>}</div></Td>
+                    <Td><div className="min-w-[8rem]"><Badge className="num">{r.millCode}</Badge> <span className="text-[12px] text-muted">{pick(r.millName, r.millNameHi)}</span></div></Td>
                     <Td numeric className="text-muted">{r.millGrossGrams != null ? f.weight(r.millGrossGrams) : "—"}</Td>
                     <Td numeric>{f.weight(r.weightGrams)}</Td>
-                    <Td numeric>{r.ratePaisePerQtl ? f.rate(r.ratePaisePerQtl) : "—"}</Td>
-                    <Td numeric>{f.amount(r.goodsPaise)}</Td>
-                    <Td numeric className="w-28">
+                    <Td numeric className="w-24">
                       {editable ? (
-                        <NumCell key={`${r.loadId}-${undo}`} value={r.deductionGrams || null} scale={GRAMS_PER_QTL} decimals={2} placeholder="0.00" className="h-8 w-24 text-[13px]"
+                        <NumCell key={`${r.loadId}-${undo}`} value={r.deductionGrams || null} scale={GRAMS_PER_QTL} decimals={2} placeholder="0.00" className="h-8 w-20 text-[13px]"
                           onCommit={async (v) => {
                             const cut = v ?? 0;
                             // a cut changes what the mill owes: say how much before saving
@@ -215,32 +218,37 @@ export function ChallanPage() {
                         : <span className="text-[12px] text-muted">{r.deductionNote ?? ""}</span>}
                     </Td>
                     <Td numeric className={cn("font-semibold", r.deductionGrams > 0 && "text-warn")}>{f.weight(r.finalNetGrams)}</Td>
-                    <Td numeric className="whitespace-nowrap text-muted">{r.deductionValuePaise ? `− ${f.amount(r.deductionValuePaise)}` : "—"}</Td>
-                    <Td numeric className="font-semibold">{f.amount(r.finalGoodsPaise)}</Td>
                     <Td>{r.parchaNo ? <Badge tone="ok">#{r.parchaNo}</Badge>
                       : <Badge tone={r.incomplete || r.mismatch ? "warn" : "neutral"}>{r.incomplete ? t("stock.truckIncomplete") : r.mismatch ? t("stock.truckMismatch") : t("load.status.draft")}</Badge>}</Td>
-                    <Td numeric className="text-muted">{r.advancePaise == null ? <span className="text-faint">—</span> : r.advancePaise ? f.money(r.advancePaise) : "—"}</Td>
-                    <Td numeric>{r.grandTotalPaise != null ? f.money(r.grandTotalPaise) : <span className="text-faint">—</span>}</Td>
-                    <Td numeric className="font-semibold text-brand">{r.finalTotalPaise != null ? f.money(r.finalTotalPaise) : <span className="text-faint">—</span>}</Td>
+                    <Td numeric className="font-semibold text-brand">{r.finalTotalPaise != null ? f.amount(r.finalTotalPaise) : <span className="text-faint">—</span>}</Td>
+                    <Td className="text-muted">{r.jinsCode}</Td>
+                    <Td numeric>{r.ratePaisePerQtl ? f.rate(r.ratePaisePerQtl) : "—"}</Td>
+                    <Td numeric>{f.amount(r.goodsPaise)}</Td>
+                    <Td numeric className="whitespace-nowrap text-muted">{r.deductionValuePaise ? `− ${f.amount(r.deductionValuePaise)}` : "—"}</Td>
+                    <Td numeric className="font-semibold">{f.amount(r.finalGoodsPaise)}</Td>
+                    <Td numeric className="text-muted">{r.advancePaise == null ? <span className="text-faint">—</span> : r.advancePaise ? f.amount(r.advancePaise) : "—"}</Td>
+                    <Td numeric>{r.grandTotalPaise != null ? f.amount(r.grandTotalPaise) : <span className="text-faint">—</span>}</Td>
                   </Tr>
                 ))}
+                <RowSpacer at="bottom" height={win.bottomHeight} cols={17} />
               </tbody>
               {T && (
                 <tfoot>
                   <tr className="bg-raised/50 text-[13px] font-semibold">
-                    <td className="px-3 py-2" colSpan={5}>{t("ch.totalN", { n: T.trucks, b: T.billed })}</td>
-                    <td className="num px-3 py-2 text-right">{f.weight(T.weightGrams)}</td>
-                    <td className="num px-3 py-2 text-right" title={t("stock.avgSaleHelp")}>{T.weightGrams ? f.rate(Math.floor((T.goodsPaise * 100_000) / T.weightGrams + 0.5)) : "—"}</td>
-                    <td className="num px-3 py-2 text-right">{f.amount(T.goodsPaise)}</td>
-                    <td className="num px-3 py-2 text-right text-warn">{T.deductionGrams ? f.weight(T.deductionGrams) : "—"}</td>
+                    <td className="px-2 py-2" colSpan={4}>{t("ch.totalN", { n: T.trucks, b: T.billed })}</td>
+                    <td className="num px-2 py-2 text-right">{f.weight(T.weightGrams)}</td>
+                    <td className="num px-2 py-2 text-right text-warn">{T.deductionGrams ? f.weight(T.deductionGrams) : "—"}</td>
                     <td />
-                    <td className="num px-3 py-2 text-right">{f.weight(T.finalNetGrams)}</td>
-                    <td className="num whitespace-nowrap px-3 py-2 text-right">{T.deductionValuePaise ? `− ${f.amount(T.deductionValuePaise)}` : "—"}</td>
-                    <td className="num px-3 py-2 text-right">{f.amount(T.finalGoodsPaise)}</td>
+                    <td className="num px-2 py-2 text-right">{f.weight(T.finalNetGrams)}</td>
                     <td />
-                    <td className="num px-3 py-2 text-right">{T.advancePaise ? f.money(T.advancePaise) : "—"}</td>
-                    <td className="num px-3 py-2 text-right">{f.money(T.grandTotalPaise)}</td>
-                    <td className="num px-3 py-2 text-right text-brand">{f.money(T.finalTotalPaise)}</td>
+                    <td className="num px-2 py-2 text-right text-brand">{f.amount(T.finalTotalPaise)}</td>
+                    <td />
+                    <td className="num px-2 py-2 text-right" title={t("stock.avgSaleHelp")}>{T.weightGrams ? f.rate(Math.floor((T.goodsPaise * 100_000) / T.weightGrams + 0.5)) : "—"}</td>
+                    <td className="num px-2 py-2 text-right">{f.amount(T.goodsPaise)}</td>
+                    <td className="num whitespace-nowrap px-2 py-2 text-right">{T.deductionValuePaise ? `− ${f.amount(T.deductionValuePaise)}` : "—"}</td>
+                    <td className="num px-2 py-2 text-right">{f.amount(T.finalGoodsPaise)}</td>
+                    <td className="num px-2 py-2 text-right">{T.advancePaise ? f.amount(T.advancePaise) : "—"}</td>
+                    <td className="num px-2 py-2 text-right">{f.amount(T.grandTotalPaise)}</td>
                   </tr>
                 </tfoot>
               )}

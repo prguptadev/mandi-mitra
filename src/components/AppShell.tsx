@@ -152,6 +152,9 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
      button or the left edge brings it back) without changing the choice
      kept for every other page. */
   const wide = /^\/scan\/[^/]+/.test(location);
+  /* The daily list, the challan and the supplier ledger have more columns than 1,400 px:
+     on a wide screen they use the whole width instead of leaving it empty either side. */
+  const fullWidth = /^\/(daily|challan|ledger)(\/|$|\?)/.test(location);
   const [navOnWide, setNavOnWide] = useState(false);
   useEffect(() => { setNavOnWide(false); }, [wide]);
   const collapsed = wide ? !navOnWide : savedCollapsed;
@@ -247,7 +250,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
   return (
     <div className="flex h-full bg-bg">
       <aside className={cn(
-        "hidden shrink-0 border-r border-line bg-surface transition-[width] duration-200 lg:block",
+        "hidden shrink-0 border-r border-line bg-surface lg:block",
         collapsed ? "w-0 overflow-hidden border-r-0" : "w-60",
       )}>
         {!collapsed && sidebar}
@@ -296,7 +299,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface/85 px-3 backdrop-blur sm:px-5">
+        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface/85 px-3 sm:px-5">
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Menu">
             <Menu className="h-4.5 w-4.5" />
           </Button>
@@ -349,7 +352,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
         </header>
 
         <main className="min-w-0 flex-1 overflow-y-auto">
-          <div className={wide ? "px-2 py-2 sm:px-3" : "mx-auto max-w-[1400px] px-3 py-5 sm:px-6 sm:py-6"}><DataNotice />{children}</div>
+          <div className={wide ? "px-2 py-2 sm:px-3" : cn("mx-auto px-3 py-5 sm:px-6 sm:py-6", !fullWidth && "max-w-[1400px]")}><DataNotice />{children}</div>
         </main>
       </div>
     </div>

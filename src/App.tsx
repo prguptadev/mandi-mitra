@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useEffect, useState, type ComponentType } from "react";
 import { Route, Switch as RouteSwitch, useLocation, Redirect, Link } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ShieldAlert, WifiOff, Plus } from "lucide-react";
@@ -9,25 +9,93 @@ import { AppShell } from "@/components/AppShell.tsx";
 import { ErrorBoundary } from "@/components/ErrorBoundary.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
 import { SkeletonShell } from "@/components/Skeletons.tsx";
-import { Button, Card, Dialog, Field, Input, Alert, EmptyState } from "@/components/ui/index.tsx";
-import { SignupPage, LoginPage } from "@/pages/Auth.tsx";
-import { DashboardPage } from "@/pages/Dashboard.tsx";
-import { SuppliersPage } from "@/pages/Suppliers.tsx";
-import { DailyListPage } from "@/pages/DailyList.tsx";
-import { ScanListPage } from "@/pages/ScanList.tsx";
-import { ScanReviewPage } from "@/pages/ScanReview.tsx";
-import { SheetsPage } from "@/pages/Sheets.tsx";
-import { MillsPage } from "@/pages/Mills.tsx";
-import { OrdersPage } from "@/pages/Orders.tsx";
-import { LoadsPage, LoadDetailPage, ParchaRegisterPage } from "@/pages/Loads.tsx";
-import { StockPage, MillAccountPage } from "@/pages/Stock.tsx";
-import { LedgerPage, PaymentsPage } from "@/pages/Accounts.tsx";
-import { MillLedgerPage, MillStatementPage } from "@/pages/MillMoney.tsx";
-import { ChallanPage } from "@/pages/Challan.tsx";
-import { TallyPage } from "@/pages/Tally.tsx";
-import { DayClosePage } from "@/pages/DayClose.tsx";
-import { MillFollowupPage } from "@/pages/MillFollowup.tsx";
-import { UsersPage, RolesPage, AuditPage, CommoditiesPage, SettingsPage } from "@/pages/Admin.tsx";
+import { Button, Card, Dialog, Field, Input, Alert, EmptyState, Spinner } from "@/components/ui/index.tsx";
+
+/* Each screen is its own file, fetched the first time it is opened, so the
+   app starts on the code of its first screen only. The others are fetched one
+   at a time once the first screen is up and the computer is idle, so moving
+   between screens stays instant. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Screen = ComponentType<any>;
+const loaders: (() => Promise<unknown>)[] = [];
+function screen<M>(load: () => Promise<M>, pick: (m: M) => Screen): Screen {
+  let mod: M | undefined;
+  const get = () => load().then((m) => (mod = m));
+  loaders.push(get);
+  // already fetched: handed over at once, so the screen does not blink through "loading"
+  return lazy(() => (mod !== undefined
+    ? ({ then: (ok: (v: { default: Screen }) => void) => ok({ default: pick(mod as M) }) } as unknown as Promise<{ default: Screen }>)
+    : get().then((m) => ({ default: pick(m) }))));
+}
+// most used first: that is the order they are fetched in while idle
+const DashboardPage = screen(() => import("@/pages/Dashboard.tsx"), (m) => m.DashboardPage);
+const DailyListPage = screen(() => import("@/pages/DailyList.tsx"), (m) => m.DailyListPage);
+const loads = () => import("@/pages/Loads.tsx");
+const LoadsPage = screen(loads, (m) => m.LoadsPage);
+const LoadDetailPage = screen(loads, (m) => m.LoadDetailPage);
+const ParchaRegisterPage = screen(loads, (m) => m.ParchaRegisterPage);
+const stock = () => import("@/pages/Stock.tsx");
+const StockPage = screen(stock, (m) => m.StockPage);
+const MillAccountPage = screen(stock, (m) => m.MillAccountPage);
+const accounts = () => import("@/pages/Accounts.tsx");
+const LedgerPage = screen(accounts, (m) => m.LedgerPage);
+const PaymentsPage = screen(accounts, (m) => m.PaymentsPage);
+const ScanListPage = screen(() => import("@/pages/ScanList.tsx"), (m) => m.ScanListPage);
+const ScanReviewPage = screen(() => import("@/pages/ScanReview.tsx"), (m) => m.ScanReviewPage);
+const SheetsPage = screen(() => import("@/pages/Sheets.tsx"), (m) => m.SheetsPage);
+const SuppliersPage = screen(() => import("@/pages/Suppliers.tsx"), (m) => m.SuppliersPage);
+const millMoney = () => import("@/pages/MillMoney.tsx");
+const MillLedgerPage = screen(millMoney, (m) => m.MillLedgerPage);
+const MillStatementPage = screen(millMoney, (m) => m.MillStatementPage);
+const OrdersPage = screen(() => import("@/pages/Orders.tsx"), (m) => m.OrdersPage);
+const ChallanPage = screen(() => import("@/pages/Challan.tsx"), (m) => m.ChallanPage);
+const DayClosePage = screen(() => import("@/pages/DayClose.tsx"), (m) => m.DayClosePage);
+const MillFollowupPage = screen(() => import("@/pages/MillFollowup.tsx"), (m) => m.MillFollowupPage);
+const MillsPage = screen(() => import("@/pages/Mills.tsx"), (m) => m.MillsPage);
+const TallyPage = screen(() => import("@/pages/Tally.tsx"), (m) => m.TallyPage);
+const admin = () => import("@/pages/Admin.tsx");
+const UsersPage = screen(admin, (m) => m.UsersPage);
+const RolesPage = screen(admin, (m) => m.RolesPage);
+const AuditPage = screen(admin, (m) => m.AuditPage);
+const CommoditiesPage = screen(admin, (m) => m.CommoditiesPage);
+const SettingsPage = screen(admin, (m) => m.SettingsPage);
+const auth = () => import("@/pages/Auth.tsx");
+const SignupPage = screen(auth, (m) => m.SignupPage);
+const LoginPage = screen(auth, (m) => m.LoginPage);
+
+/** The other screens, fetched one at a time while nothing else is going on. */
+function useFetchScreensWhenIdle(ready: boolean) {
+  useEffect(() => {
+    if (!ready) return;
+    let stop = false;
+    const idle = (fn: () => void) => {
+      if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(fn, { timeout: 5000 });
+      else setTimeout(fn, 200);
+    };
+    let i = 0;
+    const next = () => {
+      if (stop || i >= loaders.length) return;
+      loaders[i++]().catch(() => undefined).finally(() => { if (!stop) idle(next); });
+    };
+    // not before the first screen is drawn (nothing on it still loading), so it never slows that down
+    const since = Date.now();
+    let timer = 0;
+    const wait = () => {
+      if (stop) return;
+      if (document.querySelector('[aria-busy="true"]') && Date.now() - since < 30_000) { timer = window.setTimeout(wait, 1000); return; }
+      idle(next);
+    };
+    timer = window.setTimeout(wait, 2000);
+    return () => { stop = true; window.clearTimeout(timer); };
+  }, [ready]);
+}
+
+/** While a screen's file arrives: nothing for a moment (it is usually quick), then a small spinner. */
+function ScreenLoading() {
+  const [show, setShow] = useState(false);
+  useEffect(() => { const id = window.setTimeout(() => setShow(true), 250); return () => window.clearTimeout(id); }, []);
+  return <div className="flex justify-center py-16">{show && <Spinner className="h-5 w-5" />}</div>;
+}
 
 /** The dashboard, or — for a role without it — the first screen the role may open. */
 function Home() {
@@ -107,6 +175,7 @@ export default function App() {
   const { me, loading, error, refresh } = useSession();
   const [addBiz, setAddBiz] = useState(false);
   const [location] = useLocation();
+  useFetchScreensWhenIdle(Boolean(me));
 
   const bootstrap = useQuery({
     queryKey: ["bootstrap"],
@@ -140,7 +209,7 @@ export default function App() {
   }
 
   if (loading || (bootstrap.isLoading && !me)) return <SkeletonShell />;
-  if (!me) return bootstrap.data?.needsSignup ? <SignupPage /> : <LoginPage />;
+  if (!me) return <Suspense fallback={<SkeletonShell />}>{bootstrap.data?.needsSignup ? <SignupPage /> : <LoginPage />}</Suspense>;
 
   return (
     <>
@@ -152,6 +221,7 @@ export default function App() {
           fallbackSub={t("err.crashedSub")}
           reloadLabel={t("err.reload")}
         >
+        <Suspense fallback={<ScreenLoading />}>
         <RouteSwitch>
           <Route path="/" component={Home} />
           <Route path="/scan">{() => <Guard perm="scan.create"><ScanListPage /></Guard>}</Route>
@@ -186,6 +256,7 @@ export default function App() {
             </Card>
           </Route>
         </RouteSwitch>
+        </Suspense>
         </ErrorBoundary>
       </AppShell>
       <AddBusinessDialog open={addBiz} onClose={() => setAddBiz(false)} />
