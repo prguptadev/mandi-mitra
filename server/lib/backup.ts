@@ -17,8 +17,11 @@ export { BACKUP_DIR, BACKUP_NAME };
      manual-…         "Back up now" (20 kept)
      before-cloud-…   this computer's own data, just before the cloud's
                       replaced it (joining, or "Bring all data down"; 10 kept)
-   All of them together are also kept under a size limit (the oldest go
-   first, never the newest of a kind), so they cannot fill the disk.
+   Nothing is removed for size while the disk holding them has room. Only
+   when it is short of room (under 2 GB free, a tenth of a small pen drive,
+   or room for fewer than 3 more copies of the books) are old ones removed,
+   until it is not: the oldest daily copies first, the weekly ones of half a
+   year last, never the newest of a kind. Each folder goes by its own disk.
    The scan pictures are files beside the database (data/scans), not in it:
    they go into the second folder only, below, next to the database copies.
    Each is written under a temporary name, checked, flushed to the disk, then
@@ -73,6 +76,18 @@ const removeBackup = (dir: string, f: string) => {
 };
 
 const WEEKS_KEPT = 26;
+/** Of the automatic backups past the newest 30 (oldest first), the ones kept: the newest of each week, for half a year. */
+function weeklyKeepers(old: string[]) {
+  const weekly = new Set<string>();
+  const seen = new Set<number>();
+  for (const f of [...old].reverse()) {
+    const d = f.match(/(\d{4})(\d{2})(\d{2})-/);
+    if (!d) continue;
+    const week = Math.floor(Date.UTC(+d[1], +d[2] - 1, +d[3]) / (7 * 86400_000));
+    if (!seen.has(week) && seen.size < WEEKS_KEPT) { seen.add(week); weekly.add(f); }
+  }
+  return weekly;
+}
 /**
  * Keep the newest backups of one kind in a folder, delete older ones of that
  * kind only — never `keepAlso` (the one just made, even if the PC clock went
@@ -82,47 +97,57 @@ const WEEKS_KEPT = 26;
 function prune(dir: string, kind: BackupKind, keepAlso?: string) {
   const mine = fs.readdirSync(dir).filter((f) => BACKUP_NAME.test(f) && f.startsWith(`${kind}-`) && f !== keepAlso).sort();
   const old = mine.slice(0, Math.max(0, mine.length - KEEP[kind]));
-  const weekly = new Set<string>();
-  if (kind === "auto") {
-    const seen = new Set<string>();
-    for (const f of [...old].reverse()) {
-      const d = f.match(/(\d{4})(\d{2})(\d{2})-/);
-      if (!d) continue;
-      const week = Math.floor(Date.UTC(+d[1], +d[2] - 1, +d[3]) / (7 * 86400_000));
-      if (!seen.has(String(week)) && seen.size < WEEKS_KEPT) { seen.add(String(week)); weekly.add(f); }
-    }
-  }
+  const weekly = kind === "auto" ? weeklyKeepers(old) : new Set<string>();
   for (const f of old) if (!weekly.has(f)) removeBackup(dir, f);
 }
 
-/** At least this much may always be kept, however small the books. */
-const MIN_CAP = 1024 ** 3;
-/** All backups in a folder together: a dozen copies of the books, or 1 GB, whichever is more. */
-export const sizeCap = (dbBytes: number) => Math.max(MIN_CAP, 12 * dbBytes);
+/** Free and total bytes on the disk holding `dir`, or null when they cannot be told. (An object, so the checks can stand in for a disk.) */
+export const disk = {
+  space(dir: string): { free: number; size: number } | null {
+    try {
+      const s = fs.statfsSync(dir);
+      return { free: s.bavail * s.bsize, size: s.blocks * s.bsize };
+    } catch { return null; }
+  },
+};
+const GB = 1024 ** 3;
+/** The room a disk holding backups keeps free: 2 GB (a tenth of a small pen drive), and at least 3 copies of the books. */
+export const roomKept = (diskBytes: number, books: number) => Math.max(Math.min(2 * GB, diskBytes / 10), 3 * books);
+const kindOf = (f: string) => f.replace(/-\d{8}-\d{6}\.db$/, "");
 /**
- * Keeps the backups in a folder under `cap` bytes together: the oldest go
- * first, of any kind, but never `keep` (the one just made) nor the newest of
- * each kind. Returns the names removed.
+ * Only when the disk holding `dir` is short of room (roomKept): old backups
+ * are removed until it is not. The oldest daily copies go first, then the
+ * one-off ones (by hand, before an update…), and the weekly ones of half a
+ * year last; never `keep` nor the newest of each kind. On a disk with room,
+ * or one that cannot be measured, nothing is removed. Returns the names removed.
  */
-export function pruneBySize(dir: string, cap: number, keep: string[] = []): string[] {
-  const files = fs.readdirSync(dir).filter((f) => BACKUP_NAME.test(f)).sort(byStamp);
-  const sizes = new Map(files.map((f) => {
-    try { return [f, fs.statSync(path.join(dir, f)).size] as const; } catch { return [f, 0] as const; }
-  }));
-  let total = [...sizes.values()].reduce((s, n) => s + n, 0);
+export function makeRoom(dir: string, keep: string[] = [], books = dbBytes(), room = disk.space(dir)): string[] {
+  if (!room) return [];
+  let short = roomKept(room.size, books) - room.free;
+  if (short <= 0) return [];
+  let files: string[];
+  try { files = fs.readdirSync(dir).filter((f) => BACKUP_NAME.test(f)).sort(byStamp); } catch { return []; }
   const newestOfKind = new Set<string>();
-  for (const f of [...files].reverse()) {
-    const kind = f.replace(/-\d{8}-\d{6}\.db$/, "");
-    if (![...newestOfKind].some((x) => x.startsWith(`${kind}-`))) newestOfKind.add(f);
-  }
+  const kinds = new Set<string>();
+  for (const f of [...files].reverse()) if (!kinds.has(kindOf(f))) { kinds.add(kindOf(f)); newestOfKind.add(f); }
+  const autos = files.filter((f) => kindOf(f) === "auto");
+  const weekly = weeklyKeepers(autos.slice(0, Math.max(0, autos.length - KEEP.auto)));
+  const order = [
+    ...autos.filter((f) => !weekly.has(f)),
+    ...files.filter((f) => kindOf(f) !== "auto"),
+    ...autos.filter((f) => weekly.has(f)),
+  ];
   const removed: string[] = [];
-  for (const f of files) {
-    if (total <= cap) break;
+  for (const f of order) {
+    if (short <= 0) break;
     if (keep.includes(f) || newestOfKind.has(f)) continue;
-    removeBackup(dir, f);
-    total -= sizes.get(f) ?? 0;
+    let bytes = 0;
+    for (const side of ["", "-wal", "-shm"]) { try { bytes += fs.statSync(path.join(dir, f + side)).size; } catch { /* none */ } }
+    try { removeBackup(dir, f); } catch { continue; }
+    short -= bytes;
     removed.push(f);
   }
+  if (removed.length) console.warn(`[backup] the disk holding ${dir} is short of room: removed ${removed.length} old backup(s), the oldest daily ones first`);
   return removed;
 }
 const dbBytes = () => { try { return fs.statSync(DB_PATH).size; } catch { return 0; } };
@@ -244,13 +269,14 @@ const PICTURES_WAIT_MS = 2_000;
 async function copyToFolder(folder: string, name: string, kind: BackupKind) {
   const out = path.join(folder, "MandiMitra-backups", hostDir());
   fs.mkdirSync(out, { recursive: true });
+  // the second folder's own disk (a pen drive, a Drive folder) decides whether it is short of room
+  makeRoom(out);
   const tmp = path.join(out, `${name}.tmp`);
   await fsp.copyFile(path.join(BACKUP_DIR, name), tmp);
   const h = await fsp.open(tmp, "r+");
   try { await h.sync(); } finally { await h.close(); }
   await fsp.rename(tmp, path.join(out, name));
   prune(out, kind, name);
-  pruneBySize(out, sizeCap(dbBytes()), [name]);
   return out;
 }
 
@@ -268,6 +294,7 @@ export async function backupNow(kind: BackupKind) {
   const tmp = `${file}.tmp`;
   try {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    makeRoom(BACKUP_DIR);
     await sqlite.backup(tmp);
     verify(tmp);
     renameDurable(tmp, file);
@@ -276,7 +303,6 @@ export async function backupNow(kind: BackupKind) {
     throw new Error(localFailed(e));
   }
   prune(BACKUP_DIR, kind, name);
-  pruneBySize(BACKUP_DIR, sizeCap(dbBytes()), [name]);
   const c = readBackupConfig();
   let copiedAt = c.copiedAt;
   let lastError: string | null = null;
@@ -321,6 +347,7 @@ function vacuumCopy(kind: BackupKind) {
   try {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     rmQuiet(tmp);
+    makeRoom(BACKUP_DIR);
     sqlite.prepare("vacuum into ?").run(tmp);
     verify(tmp);
     renameDurable(tmp, file);
@@ -329,7 +356,6 @@ function vacuumCopy(kind: BackupKind) {
     throw e;
   }
   prune(BACKUP_DIR, kind, name);
-  pruneBySize(BACKUP_DIR, sizeCap(dbBytes()), [name]);
   return file;
 }
 
@@ -354,10 +380,10 @@ export function backupBeforeUpdate(): { file: string | null; plain?: boolean; pr
   const tmp = `${file}.tmp`;
   try {
     try { sqlite.pragma("wal_checkpoint(TRUNCATE)"); } catch (e) { console.warn("[db] could not fold the -wal in before copying; the plain copy may miss the latest changes", e); }
+    makeRoom(BACKUP_DIR);
     fs.copyFileSync(DB_PATH, tmp);
     renameDurable(tmp, file);
     prune(BACKUP_DIR, "before-update", name);
-    pruneBySize(BACKUP_DIR, sizeCap(dbBytes()), [name]);
     return { file, plain: true };
   } catch (e) {
     rmQuiet(tmp);

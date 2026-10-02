@@ -128,6 +128,31 @@ function keptExactly(dir: string, was: { db: Buffer; wal: Buffer }) {
   const f = path.join(dir, "backups", kept[0]);
   try { return fs.readFileSync(f).equals(was.db) && fs.readFileSync(`${f}-wal`).equals(was.wal); } catch { return false; }
 }
+const MB = 1024 ** 2, GB = 1024 ** 3;
+/** The time in a backup's name (local time, as server/lib/backup.ts writes it). */
+const stampOf = (d: Date) => {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
+/**
+ * Half a year of backups as the counts leave them, each `bytes` long (sparse
+ * files: they take no room on the disk): two automatic ones a day for the last
+ * 15 days, one a week for 26 weeks before that, a before-update copy a month
+ * and three by hand. Returns their names.
+ */
+function history(dir: string, bytes: number) {
+  fs.mkdirSync(dir, { recursive: true });
+  const at = (daysAgo: number, hour: number) => { const d = new Date(); d.setDate(d.getDate() - daysAgo); d.setHours(hour, 0, 0, 0); return stampOf(d); };
+  const names: string[] = [];
+  for (let i = 1; i <= 15; i++) for (const h of [9, 21]) names.push(`auto-${at(i, h)}.db`);
+  for (let w = 0; w < 26; w++) names.push(`auto-${at(18 + 7 * w, 21)}.db`);
+  for (let m = 0; m < 6; m++) names.push(`before-update-${at(10 + 30 * m, 8)}.db`);
+  for (const d of [5, 40, 100]) names.push(`manual-${at(d, 12)}.db`);
+  for (const n of names) { fs.writeFileSync(path.join(dir, n), ""); fs.truncateSync(path.join(dir, n), bytes); }
+  return names;
+}
+/** This computer's sub-folder in the second folder (as server/lib/backup.ts names it). */
+const hostDirOf = () => os.hostname().replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40) || "this-computer";
 /** As if the last run was cut off (power cut, crash, killed): the clean-close mark is still there. */
 const cutOff = (dir: string) => fs.writeFileSync(path.join(dir, "books-open.json"), JSON.stringify({ pid: 1, at: new Date().toISOString() }));
 const notice = (dir: string) => { try { return JSON.parse(fs.readFileSync(path.join(dir, "start-notice.json"), "utf8")); } catch { return null; } };
@@ -496,9 +521,27 @@ try {
   /* --------------------------------------------------------------- backups */
   console.log("\nBackups");
   {
-    const r = unitRun(books("prune"), "prune");
-    check("backups are kept under a size limit, the oldest going first", r.total <= r.cap && r.removed?.[0] === "auto-20260101-000000.db", r);
-    check("  ...never the newest of a kind, nor the one just made", ["auto-20260110-000000.db", "manual-20260105-000000.db", "before-update-20260102-000000.db"].every((f) => r.left?.includes(f)), r);
+    // half a year of backups as the counts leave them, each as big as 100 MB books (sparse files: they take no room)
+    const r = unitRun(books("keep"), "keep-history");
+    check("on a disk with room, a backup keeps the whole half-year history (no size limit removes the weekly copies)", r.made === true && r.kept === r.history && r.history === 65, r);
+    check("  ...in the second folder too", r.keptInFolder === r.history, r);
+  }
+  {
+    const r = unitRun(books("room"), "room");
+    check("a disk is short of room under 2 GB free (a tenth of a small pen drive), or with room for fewer than 3 copies of the books",
+      r.big === 2 * 1024 ** 3 && r.pen === Math.round(0.8 * 1024 ** 3) && r.huge === 3 * 1024 ** 3, r);
+    check("  ...with room, no backup is removed for size", r.healthy?.length === 0, r.healthy);
+    const same = (a: unknown, b: unknown) => Array.isArray(a) && Array.isArray(b) && a.length > 0 && JSON.stringify(a) === JSON.stringify(b);
+    check("  ...short of room, the oldest daily copies go first, only as many as needed", same(r.short, r.want?.short), { got: r.short, want: r.want?.short });
+    check("  ...the weekly copies of half a year are kept while daily ones remain", same(r.veryShort, r.want?.veryShort), { got: r.veryShort, want: r.want?.veryShort });
+    check("  ...and go last: daily, then one-off (by hand, before an update), then weekly; never the newest of a kind nor the one just made",
+      same(r.all, r.want?.all) && same(r.left, r.want?.left), { got: r.all, left: r.left, want: r.want });
+  }
+  {
+    const r = unitRun(books("room-folder"), "room-folder");
+    check("this computer's disk short of room: its oldest daily copies go, the second folder (its own disk has room) keeps all",
+      r.hereShort?.here === 6 && r.hereShort?.folder === 0, r);
+    check("  ...and the other way round: a full pen drive is pruned, this computer's copies are kept", r.folderShort?.here === 0 && r.folderShort?.folder === 6, r);
   }
   {
     const r = unitRun(books("sweep"), "sweep");
@@ -647,19 +690,72 @@ async function unit(name: string, _args: string[]) {
       return out({ name: x.name, message: x.message, mandiUpdateFailed: x.mandiUpdateFailed ?? false, diskFull: x.diskFull ?? false, goBack: x.goBack ?? null });
     }
   }
-  if (name === "prune") {
-    const { pruneBySize } = await import("../server/lib/backup.ts");
-    const f = path.join(dir, "prune-test");
-    fs.mkdirSync(f);
-    const names = [
-      ...Array.from({ length: 10 }, (_, i) => `auto-202601${String(i + 1).padStart(2, "0")}-000000.db`),
-      "manual-20260105-000000.db", "before-update-20260102-000000.db",
-    ];
-    for (const n of names) { fs.writeFileSync(path.join(f, n), ""); fs.truncateSync(path.join(f, n), 100_000); }
-    const cap = 450_000;
-    const removed = pruneBySize(f, cap, ["auto-20260110-000000.db"]);
-    const left = fs.readdirSync(f);
-    return out({ cap, removed, left, total: left.reduce((s, n) => s + fs.statSync(path.join(f, n)).size, 0) });
+  if (name === "keep-history") {
+    const b = await import("../server/lib/backup.ts");
+    // a second folder outside the app's data folder (a pen drive)
+    const folder = `${dir}-second-folder`;
+    fs.mkdirSync(folder, { recursive: true });
+    b.setBackupFolder(folder);
+    const names = history(b.BACKUP_DIR, 100 * MB);
+    const there = path.join(folder, "MandiMitra-backups", hostDirOf());
+    history(there, 100 * MB);
+    // the real disk, which has room (the history takes none: sparse files)
+    const made = await b.backupNow("auto");
+    const left = (d: string) => names.filter((n) => fs.existsSync(path.join(d, n))).length;
+    return out({ made: Boolean(made?.name), history: names.length, kept: left(b.BACKUP_DIR), keptInFolder: left(there), free: Math.round(fs.statfsSync(dir).bavail * fs.statfsSync(dir).bsize / MB) });
+  }
+  if (name === "room") {
+    const b = await import("../server/lib/backup.ts");
+    const books = 100 * MB;
+    const disk = (free: number) => ({ free, size: 500 * GB });
+    const at = (sub: string) => { const f = path.join(dir, sub); fs.rmSync(f, { recursive: true, force: true }); return { f, names: history(f, books) }; };
+    const kindOf = (n: string) => n.replace(/-\d{8}-\d{6}\.db$/, "");
+    const byTime = (a: string, c: string) => a.replace(/^\D+/, "").localeCompare(c.replace(/^\D+/, ""));
+    const left = (f: string) => fs.readdirSync(f).sort(byTime);
+    // what history() made: 30 daily autos, 26 weekly ones before them, 6 before-update and 3 by-hand copies
+    const { names } = at("room-short");
+    const autos = names.filter((n) => kindOf(n) === "auto").sort(byTime);
+    const weekly = autos.slice(0, autos.length - 30), daily = autos.slice(autos.length - 30);
+    const oneOff = names.filter((n) => kindOf(n) !== "auto").sort(byTime);
+    const newestOf = (k: string) => names.filter((n) => kindOf(n) === k).sort(byTime).pop()!;
+    const justMade = weekly[0]; // made just now with the PC clock gone back: it sorts oldest
+    const want = {
+      short: daily.slice(0, 6), // 512 MB short: six 100 MB copies
+      veryShort: daily.slice(0, 21), // 2 GB short
+      all: [...daily.slice(0, -1), ...oneOff.filter((n) => n !== newestOf("manual") && n !== newestOf("before-update")), ...weekly.filter((n) => n !== justMade)],
+      left: [justMade, newestOf("before-update"), newestOf("manual"), daily[daily.length - 1]].sort(byTime),
+    };
+    const short = b.makeRoom(path.join(dir, "room-short"), [], books, disk(1.5 * GB));
+    const healthyDir = at("room-healthy").f;
+    const healthy = b.makeRoom(healthyDir, [], books, disk(50 * GB));
+    const veryShort = b.makeRoom(at("room-very").f, [], books, disk(0));
+    const allDir = at("room-all").f;
+    const all = b.makeRoom(allDir, [justMade], 50 * GB, disk(0));
+    return out({
+      big: b.roomKept(500 * GB, books), pen: Math.round(b.roomKept(8 * GB, 38 * MB)), huge: b.roomKept(500 * GB, GB),
+      healthy, short, veryShort, all, left: left(allDir), want,
+    });
+  }
+  if (name === "room-folder") {
+    const b = await import("../server/lib/backup.ts");
+    // a second folder outside the app's data folder (a pen drive)
+    const folder = `${dir}-second-folder`;
+    fs.mkdirSync(folder, { recursive: true });
+    b.setBackupFolder(folder);
+    const there = path.join(folder, "MandiMitra-backups", hostDirOf());
+    const missing = (d: string, names: string[]) => names.filter((n) => !fs.existsSync(path.join(d, n))).length;
+    const inFolder = (d: string) => path.resolve(d).startsWith(path.resolve(folder) + path.sep);
+    const run = async (folderShort: boolean) => {
+      const here = history(b.BACKUP_DIR, 100 * MB);
+      const far = history(there, 100 * MB);
+      b.disk.space = (d: string) => ({ free: inFolder(d) === folderShort ? 1.5 * GB : 50 * GB, size: 500 * GB });
+      await b.backupNow("manual");
+      return { here: missing(b.BACKUP_DIR, here), folder: missing(there, far) };
+    };
+    const hereShort = await run(false);
+    await sleep(1100); // a backup's name has the time to the second
+    const folderShort = await run(true);
+    return out({ hereShort, folderShort });
   }
   if (name === "sweep") {
     const b = path.join(dir, "backups");
