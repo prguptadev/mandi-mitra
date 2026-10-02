@@ -32,6 +32,37 @@ export function statementRange(from: string, to: string, today = todayISO()) {
   return qs.toString();
 }
 
+/** One mill's statement for the dates in its From and To boxes. */
+export function millStatementRange(from: string, to: string, _today = todayISO()) {
+  const qs = new URLSearchParams();
+  if (from) qs.set("from", from);
+  if (to) qs.set("to", to);
+  return qs.toString();
+}
+
+/** The stock page's (and a mill's stock page's) commodity and dates. */
+export function stockRange(f: { jinsId?: string; from?: string; to?: string }, _today = todayISO()) {
+  const qs = new URLSearchParams();
+  if (f.jinsId) qs.set("jinsId", f.jinsId);
+  if (f.from) qs.set("from", f.from);
+  if (f.to) qs.set("to", f.to);
+  return qs;
+}
+
+export type DashPeriod = "fy" | "all" | "today" | "week" | "month" | "custom";
+
+/** The dashboard's period: the dates its figures are asked for. */
+export function dashboardPeriod(p: DashPeriod, from: string, to: string, fy: { from: string; to: string }, today = todayISO()): { from?: string; to?: string } {
+  // the year so far (a year already over: to its 31 March), as the ledger page counts it
+  if (p === "fy") return { from: fy.from, to: notAfterToday(fy.to, today) };
+  const d = new Date(today + "T00:00:00Z");
+  if (p === "today") return { from: today, to: today };
+  if (p === "week") { d.setUTCDate(d.getUTCDate() - 6); return { from: d.toISOString().slice(0, 10), to: today }; }
+  if (p === "month") return { from: today.slice(0, 8) + "01", to: today };
+  if (p === "custom") return { from: from || undefined, to: to || undefined };
+  return {};
+}
+
 /** What each mill owes today, and how old it is: the follow-up screen. */
 export const followupNow = (today = todayISO()) => `/mill-followup?asOf=${today}`;
 

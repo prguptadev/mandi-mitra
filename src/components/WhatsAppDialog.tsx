@@ -5,6 +5,7 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { usePrefs, MILL_REPORT_COLUMNS } from "@/lib/prefs.tsx";
 import { Button, Dialog, Field, Input, Select, Tabs, Alert, Spinner } from "@/components/ui/index.tsx";
 import { ExportPreview } from "@/components/ExportPreview.tsx";
+import { daraStartJins } from "@/lib/dailyList.ts";
 import { buildListTable, buildDaraTable, csvOf, whatsappText, whatsappLink, type ExportTable } from "@/lib/exportTable.ts";
 import type { SlipSortOrder } from "@server/lib/slipOrder.ts";
 
@@ -34,7 +35,7 @@ export function WhatsAppDialog({ open, onClose, date, merchantId, mills, jinsId 
   const [to, setTo] = useState(date);
   const [mill, setMill] = useState(merchantId);
   const [jins, setJins] = useState(jinsId);
-  const daraJins = jins || jinsList.find((j) => j.code === "1509")?.id || jinsList[0]?.id || "";
+  const daraJins = jins || daraStartJins(jinsList);
   // Hinglish lines up in a fixed-width block; Hindi is there for those who want it
   const [names, setNames] = useState<"hi" | "latin">("latin");
   const [sort, setSort] = useState<SlipSortOrder>(P.sortOrder);

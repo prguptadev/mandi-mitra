@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useFYRange, fyStartOf, financialYear } from "@/lib/fy.tsx";
 import { useFYRangeToToday } from "@/lib/fyToday.ts";
-import { millNow, millsNow } from "@/lib/asOfToday.ts";
+import { millNow, millsNow, millStatementRange } from "@/lib/asOfToday.ts";
 import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -428,10 +428,8 @@ export function MillStatementPage({ id }: { id: string }) {
   const [receiving, setReceiving] = useState<null | { loadId?: string; editing?: ReceiptRow }>(null);
   const [voiding, setVoiding] = useState<MillEntry | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const qs = new URLSearchParams();
-  if (from) qs.set("from", from);
-  if (to) qs.set("to", to);
-  const st = useQuery({ queryKey: ["mill-ledger", id, qs.toString()], queryFn: () => api.get<MillStatement>(`/mill-ledger/${id}?${qs}`) });
+  const qs = millStatementRange(from, to);
+  const st = useQuery({ queryKey: ["mill-ledger", id, qs], queryFn: () => api.get<MillStatement>(`/mill-ledger/${id}?${qs}`) });
   const voidIt = useMutation({
     mutationFn: ({ rid, reason }: { rid: string; reason: string }) => api.post(`/mill-receipts/${rid}/void`, { reason }),
     onSuccess: async () => { setVoiding(null); setErr(null); await invalidateMillMoney(qc); },

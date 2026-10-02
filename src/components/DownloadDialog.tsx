@@ -7,6 +7,7 @@ import { Button, Dialog, Field, Input, Select, Tabs, Alert, Badge } from "@/comp
 import type { SlipSortOrder } from "@server/lib/slipOrder.ts";
 import { buildListTable, buildDaraTable, csvOf, type ExportTable } from "@/lib/exportTable.ts";
 import { ExportPreview } from "@/components/ExportPreview.tsx";
+import { daraStartJins } from "@/lib/dailyList.ts";
 
 /* Everything that leaves the daily list: the list itself as CSV, and the
    report sent to a mill ("dara") as Excel or CSV. Either for one day or a
@@ -62,7 +63,7 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
   const [mill, setMill] = useState(merchantId);
   const [jins, setJins] = useState(jinsId);
   // a dara is one commodity's rate: never a blend of paddy and wheat
-  const daraJins = jins || jinsList.find((j) => j.code === "1509")?.id || jinsList[0]?.id || "";
+  const daraJins = jins || daraStartJins(jinsList);
   const [names, setNames] = useState<"hi" | "latin">(P.exportNameLang);
   const [sort, setSort] = useState<SlipSortOrder>(P.sortOrder);
   const [format, setFormat] = useState<"xlsx" | "csv">("xlsx");

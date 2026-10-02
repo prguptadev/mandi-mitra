@@ -30,6 +30,25 @@ export function moneyTiles(m: MoneyCardData) {
   return { millsOwe, weOwe, stock, cash, net };
 }
 
+/** What the two balance tiles' notes need besides the tiles' own figures. */
+export interface MoneyNotesData {
+  suppliers: { paidAheadPaise: number; allTime: { openingPaise: number; purchasesPaise: number; paidPaise: number } };
+  mills: { paidAheadPaise: number; allTime: { openingPaise: number; billedPaise: number; shortagePaise: number; receivedPaise: number; deductedPaise: number } };
+}
+
+/**
+ * The notes under "Mills owe us" and "We owe suppliers": each balance written
+ * out from its parts, up to the period's end (`span`, from moneyWords).
+ */
+export function moneyNotes(t: T, money: (paise: number) => string, m: MoneyNotesData, span: string) {
+  const M = m.mills.allTime, S = m.suppliers.allTime;
+  const millsOwe = t("dash.millsOweSub", { o: money(M.openingPaise), b: money(M.billedPaise), c: money(M.shortagePaise), r: money(M.receivedPaise), h: money(M.deductedPaise), w: span })
+    + (m.mills.paidAheadPaise ? ` · ${t("dash.millsAhead", { a: money(m.mills.paidAheadPaise) })}` : "");
+  const weOwe = t("dash.weOweSub", { o: money(S.openingPaise), p: money(S.purchasesPaise), d: money(S.paidPaise), w: span })
+    + (m.suppliers.paidAheadPaise ? ` · ${t("dash.supAhead", { a: money(m.suppliers.paidAheadPaise) })}` : "");
+  return { millsOwe, weOwe };
+}
+
 /**
  * The money card's heading, and the words that end each balance's
  * explanation. Its balances are on the period's end (never after today): a
