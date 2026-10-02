@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
+import { translateServer } from "../src/lib/serverHi.ts";
 /* End-to-end: holding sync, a backup refused on a computer that syncs, the
  * cloud settings file, and update day — on the two computers e2e-cloud.ts
  * leaves joined (A and B). Test databases only.
@@ -168,6 +169,29 @@ try {
     try { return JSON.parse(fs.readFileSync(`${B.cfgPath}.bak`, "utf8")).deviceId === JSON.parse(fs.readFileSync(B.cfgPath, "utf8")).deviceId; } catch { return false; }
   })());
   check("  ...and leaves no half-written file behind", !fs.existsSync(`${B.cfgPath}.tmp`) && !fs.existsSync(`${A.cfgPath}.tmp`));
+
+  console.log("\nWhat the sync screens say about these is in Hindi too");
+  const refusal = String(refused.json?.error ?? "");
+  const meta = (await cloud("select value from mm_meta where key = 'schema'"))[0].value;
+  const ownVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version as string;
+  await cloud("update mm_meta set value = $1::jsonb where key = 'schema'", [JSON.stringify({ migrations: meta.migrations + 1, version: "9.9.9" })]);
+  const named = String((await B.sync()).paused ?? "");
+  await cloud("update mm_meta set value = $1::jsonb where key = 'schema'", [JSON.stringify({ migrations: meta.migrations + 1, version: ownVersion })]);
+  const unnamed = String((await B.sync()).paused ?? "");
+  await cloud("update mm_meta set value = $1::jsonb where key = 'schema'", [JSON.stringify(meta)]);
+  check("  (B pauses for a newer computer, then carries on)", Boolean(named && unnamed) && !(await B.sync()).paused, { named, unnamed });
+  const cfgText = fs.readFileSync(B.cfgPath, "utf8"), bakText = fs.readFileSync(`${B.cfgPath}.bak`, "utf8");
+  fs.writeFileSync(B.cfgPath, "{");
+  fs.writeFileSync(`${B.cfgPath}.bak`, "{");
+  const unreadable = String((await B.call("GET", "/cloud/status")).pausedReason ?? "");
+  fs.writeFileSync(B.cfgPath, cfgText);
+  fs.writeFileSync(`${B.cfgPath}.bak`, bakText);
+  const said = [refusal, `Not gone back to ${bk}. ${refusal}`, named, unnamed, unreadable];
+  // wholly in Hindi: no English words left over (file names and version numbers may stay)
+  const noHindi = said.filter((m) => { const hi = translateServer(m); return !m || hi === null || /[A-Za-z]{3,} [A-Za-z]{3,}/.test(hi); });
+  check("every sentence about a refused restore, a pause for a newer version or an unreadable settings file has its Hindi", noHindi.length === 0, noHindi);
+  check("  ...naming the newer computer's version in Hindi too", (translateServer(named) ?? "").includes("(9.9.9)"), translateServer(named));
+  check("B is back in step", (await B.call("GET", "/cloud/status")).state === "ok");
 
   console.log("\nUpdate day: an older computer's records lack the mill licence column");
   const OLD_DEVICE = "old-pc-on-v0.3.17";

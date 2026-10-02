@@ -7,6 +7,7 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { Alert, Badge, Button, Card, CardHeader, Dialog, Field, Input, Switch } from "@/components/ui/index.tsx";
 import { cn } from "@/lib/utils.ts";
+import { sayServer } from "@/lib/serverHi.ts";
 
 /* Cloud sync (Supabase): every computer keeps its own data and works offline;
    in the background each sends its changes up and brings the others' down. */
@@ -102,8 +103,8 @@ export function CloudCard() {
               <Switch checked={c.live} disabled={live.isPending}
                 onChange={(on: boolean) => { setErr(null); live.mutate(on); }} />
             </div>
-            {c.pausedReason && <Alert tone="warn">{c.pausedReason}</Alert>}
-            {!c.pausedReason && c.lastError && <Alert tone={c.state === "offline" ? "warn" : "bad"}>{c.lastError}</Alert>}
+            {c.pausedReason && <Alert tone="warn">{sayServer(c.pausedReason, lang)}</Alert>}
+            {!c.pausedReason && c.lastError && <Alert tone={c.state === "offline" ? "warn" : "bad"}>{sayServer(c.lastError, lang)}</Alert>}
             <p className="text-muted">
               {c.lastSyncAt ? t("sync.last", { when: when(c.lastSyncAt) }) : t("sync.notYet")}
               {c.pending ? ` · ${t("sync.pending", { n: c.pending })}` : ""}
@@ -149,7 +150,7 @@ export function CloudCard() {
           </>
         ) : (
           <>
-            {c?.pausedReason && <Alert tone="warn">{c.pausedReason}</Alert>}
+            {c?.pausedReason && <Alert tone="warn">{sayServer(c.pausedReason, lang)}</Alert>}
             <ol className="list-decimal space-y-1 pl-5 text-[12px] leading-snug text-muted">
               <li>{t("cloud.step1")} <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-brand hover:underline">supabase.com <ExternalLink className="h-3 w-3" /></a></li>
               <li>{t("cloud.step2")}</li>
