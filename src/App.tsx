@@ -77,8 +77,16 @@ function useFetchScreensWhenIdle(ready: boolean) {
       if (stop || i >= loaders.length) return;
       loaders[i++]().catch(() => undefined).finally(() => { if (!stop) idle(next); });
     };
-    const start = window.setTimeout(() => idle(next), 2000);
-    return () => { stop = true; window.clearTimeout(start); };
+    // not before the first screen is drawn (nothing on it still loading), so it never slows that down
+    const since = Date.now();
+    let timer = 0;
+    const wait = () => {
+      if (stop) return;
+      if (document.querySelector('[aria-busy="true"]') && Date.now() - since < 30_000) { timer = window.setTimeout(wait, 1000); return; }
+      idle(next);
+    };
+    timer = window.setTimeout(wait, 2000);
+    return () => { stop = true; window.clearTimeout(timer); };
   }, [ready]);
 }
 
