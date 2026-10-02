@@ -9,6 +9,7 @@ import crypto from "node:crypto";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
+import { officeToday, shiftDay } from "../lib/parchaLabels.ts";
 import { decryptSecret } from "../lib/secrets.ts";
 import { GeminiConfigSchema, defaultGeminiConfig } from "../lib/display.ts";
 import { deriveKatauti, type Katauti } from "../lib/charges.ts";
@@ -304,8 +305,8 @@ async function loadBatch(businessId: string, id: string) {
  */
 async function usualRateRange(businessId: string, jinsId: string | null, day: string | null) {
   const S = schema.purchaseSlips;
-  const until = day ?? new Date().toLocaleDateString("en-CA");
-  const since = new Date(new Date(until).getTime() - 90 * 86400_000).toLocaleDateString("en-CA");
+  const until = day ?? officeToday();
+  const since = shiftDay(until, -90);
   const rates = (await db.select({ r: S.ratePaisePerQtl }).from(S).where(and(
     eq(S.businessId, businessId), gte(S.slipDate, since), lte(S.slipDate, until), sql`${S.ratePaisePerQtl} > 0`,
     ...(jinsId ? [eq(S.jinsId, jinsId)] : []),

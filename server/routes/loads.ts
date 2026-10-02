@@ -16,6 +16,7 @@ import { claimParchaNumber, releaseParchaNumber, CloudError } from "../lib/cloud
 import { repairTrucks } from "../lib/repairTrucks.ts";
 import { can, actor, param, notFound, bad, HttpError, attachment, isoDay, LIMIT, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
+import { officeToday } from "../lib/parchaLabels.ts";
 
 /* A load is one truck to one mill, loaded by weight from that mill's stock:
    each row takes a weight from one purchase day (optionally against a PO),
@@ -493,7 +494,7 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
       // the truck's earlier (voided) parchas: one or more means this paper is a revised one, dated today
       const before = tx.select({ n: sql<number>`count(*)` }).from(schema.parchas).where(eq(schema.parchas.loadId, id)).get();
       const revision = (before?.n ?? 0) + 1;
-      const doc: ParchaDoc = { ...s2.doc!, version, revision, revisedOn: revision > 1 ? new Date().toLocaleDateString("en-CA") : null };
+      const doc: ParchaDoc = { ...s2.doc!, version, revision, revisedOn: revision > 1 ? officeToday() : null };
       // the stored mill figures are what stock and PO balances read: make them the billed ones
       const moved = tx.update(schema.loads).set({
         status: "billed", invoiceDate: doc.invoiceDate, updatedAt: at,

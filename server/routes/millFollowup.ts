@@ -6,6 +6,7 @@ import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
 import { can, actor, bad, isoDay, notFound, param, LIMIT, type Env } from "../lib/http.ts";
 import { billed, receipts, settle } from "./millAccounts.ts";
+import { officeToday } from "../lib/parchaLabels.ts";
 
 /* Chasing the mills for money. For each mill: what it owes, how old the
    oldest unpaid parcha is, the money split by age, when it last paid, and
@@ -17,7 +18,8 @@ import { billed, receipts, settle } from "./millAccounts.ts";
    mill's statement. */
 
 export const millFollowupRoutes = new Hono<Env>();
-const today = () => new Date().toLocaleDateString("en-CA");
+// India's date, also on a computer set to another zone: a call due today is due on India's today
+const today = () => officeToday();
 const daysBetween = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400_000);
 export const AGE_BUCKETS = [15, 30, 60] as const; // 0–15, 16–30, 31–60, over 60 days
 

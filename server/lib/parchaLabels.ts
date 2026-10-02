@@ -129,6 +129,15 @@ export function partyHeading(p: { name: string; city: string | null; state: stri
 }
 
 /**
+ * Today's date in India, as YYYY-MM-DD, whatever zone the computer's clock is
+ * set to: the books are kept in Indian days, so "today" on the server (a day
+ * that may be closed, a call due today, a parcha revised today) is India's.
+ * India has kept +05:30 all year round since 1945, so it is the instant moved
+ * on five and a half hours.
+ */
+export const officeToday = (now: Date = new Date()) => new Date(now.getTime() + 330 * 60_000).toISOString().slice(0, 10);
+
+/**
  * A day before or after, as a YYYY-MM-DD date.
  *
  * The date is read and written in the office's own time, never through UTC.

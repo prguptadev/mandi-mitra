@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { encryptSecret, decryptSecret } from "./secrets.ts";
+import { officeToday, shiftDay } from "./parchaLabels.ts";
 
 /*
  * The UP e-Mandi portal (emandi.up.gov.in), read from Mandi Mitra.
@@ -973,9 +974,8 @@ export interface StockLine {
   rows: number;
 }
 
-/** dd/mm/yyyy, which is what the portal's date boxes hold. */
-const ddmmyyyy = (d: Date) =>
-  `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+/** dd/mm/yyyy, which is what the portal's date boxes hold, from a YYYY-MM-DD day. */
+const ddmmyyyy = (iso: string) => iso.split("-").reverse().join("/");
 const grams = (cell: unknown) => decimalUnits(cell, 5); // 1 quintal = 100 000 g = 10^5
 /** Adds what is there; null only when nothing at all was given. */
 const plus = (...xs: (number | null)[]) => (xs.every((x) => x === null) ? null : xs.reduce<number>((a, x) => a + (x ?? 0), 0));
@@ -1014,9 +1014,9 @@ async function licenceOf(biz: string): Promise<string> {
 export async function availableStock(biz: string, days = 30): Promise<{ lines: StockLine[]; licence: string; from: string; to: string; at: string }> {
   await freshSession(biz);
   const licence = await licenceOf(biz);
-  const to = new Date();
-  const from = new Date();
-  from.setDate(from.getDate() - days);
+  // the portal's days are India's, whatever zone this computer is set to
+  const to = officeToday();
+  const from = shiftDay(to, -days);
 
   const body = new URLSearchParams();
   DAYBOOK_COLUMNS.forEach((name, i) => {

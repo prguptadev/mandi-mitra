@@ -5,6 +5,7 @@ import { db, schema, sqlite } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
 import { can, actor, bad, isoDay, HttpError, type Env } from "../lib/http.ts";
+import { officeToday } from "../lib/parchaLabels.ts";
 
 /* Day close. Each day of business gets a row here with its figures — slips,
    payments, trucks, parchas, money from mills — and whether it is closed.
@@ -12,7 +13,8 @@ import { can, actor, bad, isoDay, HttpError, type Env } from "../lib/http.ts";
    anything dated on a closed day (lib/dayClose.ts) until it is reopened. */
 
 export const dayRoutes = new Hono<Env>();
-const today = () => new Date().toLocaleDateString("en-CA");
+// India's date, also on a computer set to another zone
+const today = () => officeToday();
 const MAX_DAYS = 800;
 
 export interface DaySummary {
