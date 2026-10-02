@@ -47,7 +47,7 @@ export interface DailyListPrefs {
   /** Columns of the report sent to a mill ("dara"). */
   millReportColumns: Record<string, boolean>;
   /** Columns of the supplier pay sheet (ledger download), and the script its names are in. */
-  supplierSheetColumns: Record<string, boolean>;
+  paySheetColumns: Record<string, boolean>;
   supplierSheetNames: "hi" | "hinglish" | "both";
   /** Column widths (px) dragged by hand on the daily list. */
   widths: Record<string, number>;
@@ -69,7 +69,7 @@ export const DEFAULT_PREFS: Prefs = {
     showRunningTotal: true,
     exportNameLang: "hi",
     millReportColumns: { ...DEFAULT_MILL_REPORT_COLUMNS },
-    supplierSheetColumns: { ...DEFAULT_SUPPLIER_SHEET_COLUMNS },
+    paySheetColumns: { ...DEFAULT_SUPPLIER_SHEET_COLUMNS },
     supplierSheetNames: "hi",
     widths: {},
   },
@@ -131,7 +131,7 @@ export function PrefsProvider({ children }: { children: ReactNode }) {
       columns: { ...DEFAULT_PREFS.dailyList.columns, ...saved.dailyList?.columns, ...(here?.columns ?? {}) },
       exportColumns: { ...DEFAULT_PREFS.dailyList.exportColumns, ...saved.dailyList?.exportColumns, ...(here?.exportColumns ?? {}) },
       millReportColumns: { ...DEFAULT_PREFS.dailyList.millReportColumns, ...saved.dailyList?.millReportColumns, ...(here?.millReportColumns ?? {}) },
-      supplierSheetColumns: { ...DEFAULT_PREFS.dailyList.supplierSheetColumns, ...saved.dailyList?.supplierSheetColumns, ...(here?.supplierSheetColumns ?? {}) },
+      paySheetColumns: { ...DEFAULT_PREFS.dailyList.paySheetColumns, ...saved.dailyList?.paySheetColumns, ...(here?.paySheetColumns ?? {}) },
     },
   }), [saved, here]);
 
