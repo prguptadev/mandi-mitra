@@ -3,6 +3,7 @@ import { z } from "zod";
 import { eq, and, gte, lte, lt, desc, sql, isNull } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { rowsOf } from "../db/rows.ts";
+import { sharedPart } from "../lib/unchangedBooks.ts";
 import { newId } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, canAll, actor, param, notFound, bad, isoDay, attachment, LIMIT, HttpError, type Env } from "../lib/http.ts";
@@ -63,6 +64,11 @@ async function sums(businessId: string, opts: { before?: string; from?: string; 
   return { bought: new Map(bought.map((b) => [b.adatiId, b])), paid: new Map(paid.map((p) => [p.adatiId, p])) };
 }
 
+/** sums(businessId, { upTo }): every supplier's purchases and payments up to a day (all of them with
+ *  none), shared by the screens asked for while the books are unchanged (read, never changed). */
+export const supplierSumsUpTo = (businessId: string, upTo?: string) =>
+  sharedPart(`supplierSums|${businessId}|${upTo ?? ""}`, () => sums(businessId, { upTo }));
+
 /**
  * Every supplier with what is owed at a day, and what a period put on and took
  * off his account: the ledger list, and the pay sheet built from it.
@@ -77,7 +83,7 @@ async function ledgerList(biz: string, opts: { from?: string; asOf?: string } = 
     village: schema.adati.village, villageHi: schema.adati.villageHi, phone: schema.adati.phone, active: schema.adati.active,
     openingBalancePaise: schema.adati.openingBalancePaise,
   }).from(schema.adati).where(eq(schema.adati.businessId, biz));
-  const all = await sums(biz, { upTo: opts.asOf });
+  const all = await supplierSumsUpTo(biz, opts.asOf);
   const period = opts.from ? await sums(biz, { from: opts.from, upTo: opts.asOf }) : all;
   const rows = suppliers.map((s) => {
     const b = period.bought.get(s.id);

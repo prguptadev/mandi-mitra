@@ -55,6 +55,9 @@ export async function slipDays(businessId: string): Promise<SlipDay[]> {
 export const bookSlipDays = (businessId: string) => sharedPart(`slipDays|${businessId}`, () => slipDays(businessId));
 /** dayAverages(businessId): every mill's, from bookSlipDays(). */
 export const bookAverages = (businessId: string) => sharedPart(`averages|${businessId}`, async () => averagesOf(await bookSlipDays(businessId)));
+/** incoming(businessId, { jinsId }), from bookSlipDays(). */
+export const bookIncoming = (businessId: string, jinsId?: string | null) =>
+  sharedPart(`incoming|${businessId}|${jinsId ?? ""}`, async () => incomingOf(await bookSlipDays(businessId), jinsId));
 /** Every truck row of a business with its weight: linesWithWeights() for the business, in that query's order. */
 const linesKey = (businessId: string) => `lines|${businessId}`;
 export const bookLines = (businessId: string) =>

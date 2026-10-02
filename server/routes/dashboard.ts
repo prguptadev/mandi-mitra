@@ -2,12 +2,14 @@ import { Hono } from "hono";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { can, bad, notFound, HttpError, type Env } from "../lib/http.ts";
-import { incoming, trucks, race, worstAhead, incomingOf, bookSlipDays, bookAverages, bookLines, bookTrucks, type AvgOf, type Filter, type SlipDay, type TruckSummary } from "../lib/tracking.ts";
+import { incoming, trucks, race, worstAhead, bookIncoming, bookSlipDays, bookAverages, bookLines, bookTrucks, type AvgOf, type Filter, type SlipDay, type TruckSummary } from "../lib/tracking.ts";
 import { linesWithWeights } from "../lib/parcha.ts";
 import { dispatchedByPo, poLabel } from "./orders.ts";
 import { amountPaise, avgFromSums } from "../lib/money.ts";
 import { sharedMillBalances } from "./millAccounts.ts";
+import { supplierSumsUpTo } from "./accounts.ts";
 import { figuresOf } from "../lib/parchaFigures.ts";
+import { sharedPart } from "../lib/unchangedBooks.ts";
 
 /* The owner's control panel: what came in, what went out, what is left per
    mill, how the two raced each other, and a list of everything that does not
@@ -133,14 +135,9 @@ async function flags(biz: string, jinsId: string | null, opts: { all: TruckSumma
   if (opts.canLedger) {
   const suppliers = await db.select({ id: schema.adati.id, nameHi: schema.adati.nameHi, nameHinglish: schema.adati.nameHinglish, opening: schema.adati.openingBalancePaise })
     .from(schema.adati).where(eq(schema.adati.businessId, biz));
-  const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.payablePaise})` }).from(S)
-    .where(and(eq(S.businessId, biz), ...(opts.asOf ? [lte(S.slipDate, opts.asOf)] : []))).groupBy(S.adatiId);
-  const paid = await db.select({ adatiId: schema.payments.adatiId, p: sql<number>`sum(${schema.payments.amountPaise})` })
-    .from(schema.payments).where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt),
-      ...(opts.asOf ? [lte(schema.payments.payDate, opts.asOf)] : []))).groupBy(schema.payments.adatiId);
-  const boughtBy = new Map(bought.map((b) => [b.adatiId, b.p]));
-  const paidBy = new Map(paid.map((p) => [p.adatiId, p.p]));
-  const ahead = suppliers.map((s) => ({ s, bal: s.opening + (boughtBy.get(s.id) ?? 0) - (paidBy.get(s.id) ?? 0) }))
+  // what each was owed for and paid up to asOf: the ledger's own sums (shared with it)
+  const { bought, paid } = await supplierSumsUpTo(biz, opts.asOf);
+  const ahead = suppliers.map((s) => ({ s, bal: s.opening + (bought.get(s.id)?.amountPaise ?? 0) - (paid.get(s.id)?.amountPaise ?? 0) }))
     .filter((x) => x.bal < 0);
   out.push({ code: "paid_ahead", level: "warn", items: ahead.map((x) => ({ adatiId: x.s.id, nameHi: x.s.nameHi, name: x.s.nameHinglish, paise: -x.bal })) });
   }
@@ -203,7 +200,7 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
   // each purchase day's average (the trucks' rates) and the checks below
   const days = await bookSlipDays(biz);
   const avg = await bookAverages(biz);
-  const allIn = incomingOf(days, f.jinsId);
+  const allIn = await bookIncoming(biz, f.jinsId);
   const allOut = await bookTrucks(biz, f.jinsId);
   const inRange = (d: string) => (!f.from || d >= f.from) && (!f.to || d <= f.to);
   const inRows = allIn.filter((r) => inRange(r.date));
@@ -290,11 +287,14 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
   }));
   // what was billed on parchas is for those who may read parchas
   const bills = auth.permissions.has("parcha.read");
+  const canLedger = auth.permissions.has("ledger.read");
   return c.json({
     period: { from: f.from ?? null, to: f.to ?? null },
     kpis: { ...kpis, avgSalePaisePerQtl: avgSale, billedPaise: bills ? kpis.billedPaise : null },
     mills: millsOut.map((m) => (bills ? m : { ...m, billedPaise: null })),
-    flags: await flags(biz, f.jinsId ?? null, { all: allOut, canLedger: auth.permissions.has("ledger.read"), asOf, days, avg }),
+    // the same whatever the period: shared while the books are unchanged (a new period is quick to show)
+    flags: await sharedPart(`flags|${biz}|${f.jinsId ?? ""}|${canLedger}|${asOf ?? ""}`,
+      () => flags(biz, f.jinsId ?? null, { all: allOut, canLedger, asOf, days, avg })),
   });
 });
 
@@ -439,14 +439,10 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
   // suppliers, as of `to`
   const sup = await db.select({ opening: sql<number>`coalesce(sum(${schema.adati.openingBalancePaise}), 0)` })
     .from(schema.adati).where(eq(schema.adati.businessId, biz));
-  const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.payablePaise})` }).from(S)
-    .where(and(eq(S.businessId, biz), ...(f.to ? [lte(S.slipDate, f.to)] : []))).groupBy(S.adatiId);
-  const paidBy = await db.select({ adatiId: P.adatiId, p: sql<number>`sum(${P.amountPaise})` }).from(P)
-    .where(and(eq(P.businessId, biz), isNull(P.voidedAt), ...(f.to ? [lte(P.payDate, f.to)] : []))).groupBy(P.adatiId);
+  // each supplier's purchases and payments up to `to`: the ledger's own sums (shared with it)
+  const upToTo = await supplierSumsUpTo(biz, f.to);
   const openings = await db.select({ id: schema.adati.id, o: schema.adati.openingBalancePaise }).from(schema.adati).where(eq(schema.adati.businessId, biz));
-  const boughtOf = new Map(bought.map((b) => [b.adatiId, b.p]));
-  const paidOf = new Map(paidBy.map((p) => [p.adatiId, p.p]));
-  const bal = openings.map((a) => a.o + (boughtOf.get(a.id) ?? 0) - (paidOf.get(a.id) ?? 0));
+  const bal = openings.map((a) => a.o + (upToTo.bought.get(a.id)?.amountPaise ?? 0) - (upToTo.paid.get(a.id)?.amountPaise ?? 0));
 
   // flows in the period
   const inPeriod = <T,>(col: T) => [...(f.from ? [gte(col as never, f.from)] : []), ...(f.to ? [lte(col as never, f.to)] : [])];
@@ -488,7 +484,6 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
      purchase day's net that no truck has taken yet, valued at that day's own
      average rate — slips with no mill included. Trucks loaded but not yet
      billed (drafts, of any date up to `to`) are counted at their goods value. */
-  const upTo = f.to ? [lte(S.slipDate, f.to)] : [];
   // every purchase day up to `to`, from one pass over the slips (shared with the dashboard)
   const days = (await bookSlipDays(biz)).filter((x) => !f.to || x.date <= f.to)
     .map((x) => ({ m: x.merchantId, j: x.jinsId, d: x.date, net: x.netGrams, pricedNet: x.pricedNet, pricedValue: x.pricedValue }));
@@ -531,14 +526,15 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
   const drafts = (await bookTrucks(biz)).filter((t) => (!f.to || t.loadDate <= f.to)
     && (t.status !== "billed" || (billedBy != null && !billedBy.has(t.loadId))));
 
-  // what the supplier ledger is made of, all time up to `to` (the "we owe" figure is all time)
-  const [boughtAll] = await db.select({ p: sql<number>`coalesce(sum(${S.payablePaise}), 0)` }).from(S)
-    .where(and(eq(S.businessId, biz), ...upTo));
+  // what the supplier ledger is made of, all time up to `to` (the "we owe" figure is all time): every supplier's added up
+  let boughtAllP = 0, paidAllP = 0;
+  for (const b of upToTo.bought.values()) boughtAllP += b.amountPaise;
+  const boughtAll = { p: boughtAllP };
   const [openingAll] = await db.select({ p: sql<number>`coalesce(sum(${schema.adati.openingBalancePaise}), 0)` }).from(schema.adati)
     .where(eq(schema.adati.businessId, biz));
   // cash that has actually moved, all time up to `to`: in from mills, out to suppliers
-  const [paidAll] = await db.select({ p: sql<number>`coalesce(sum(${P.amountPaise}), 0)` }).from(P)
-    .where(and(eq(P.businessId, biz), isNull(P.voidedAt), ...(f.to ? [lte(P.payDate, f.to)] : [])));
+  for (const x of upToTo.paid.values()) paidAllP += x.amountPaise;
+  const paidAll = { p: paidAllP };
   const recAll = await receipts(biz, { upTo: f.to });
 
   return c.json({
