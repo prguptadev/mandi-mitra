@@ -195,9 +195,11 @@ check("…and stays on the ledger with its balance", Boolean(still) && still.bal
  *   पर्ची जाँच भंडार  811  10.00 gross -> 9.90 net @ 3000 = 29,700.00 + 297.00 + 12.38 (12.375) = 30,009.38
  *                    812   5.00 gross -> 4.95 net, no rate yet = 0
  *   शून्य जाँच ट्रेडर्स 813   4.00 gross -> 3.96 net @ 3000 = 11,880.00 + 118.80 + 4.95 = 12,003.75, paid in full that day
- * Every figure on the sheet must be the ledger's own. */
+ * Till date runs from 1 April. Every total on the sheet must be the ledger's
+ * own for the same period: GET /ledger?from=…&asOf=…, which the ledger page shows. */
 console.log("\nSupplier pay sheet (ledger download)");
 const PD = "2026-09-30";
+const ALL = "name,net,goods,commission,gaushala,payable,paid,toPay";
 const sp = await call("POST", "/adati", { nameHi: "पर्ची जाँच भंडार", nameHinglish: "Parchi Jaanch Bhandar", village: "Rampur", villageHi: "रामपुर" });
 const sq = await call("POST", "/adati", { nameHi: "शून्य जाँच ट्रेडर्स", nameHinglish: "Shunya Jaanch Traders" });
 const slipOf = (adatiId: string, rstNo: string, grossQtl: number, rate: number) => call("POST", "/slips", {
@@ -216,29 +218,64 @@ const sqL = ledgerOn.rows.find((r: any) => r.id === sq.id);
 check("both suppliers are on the ledger, named in Hindi and Hinglish",
   spL?.nameHi === "पर्ची जाँच भंडार" && spL.nameHinglish === "PARCHI JAANCH BHANDAR" && sqL?.nameHi === "शून्य जाँच ट्रेडर्स",
   { p: spL && [spL.nameHi, spL.nameHinglish], q: sqL?.nameHi });
-const till = await call("GET", `/ledger/sheet?mode=till&date=${PD}&format=json`);
-check("till date: the sheet's to-pay total is the ledger's own to-pay total", till.totals.toPayPaise === ledgerOn.totals.toPayPaise,
-  { sheet: till.totals.toPayPaise, ledger: ledgerOn.totals.toPayPaise });
-check("…one row for every supplier with something to pay, largest first",
-  till.rows.length === ledgerOn.rows.filter((r: any) => r.balancePaise > 0).length
-  && till.rows.every((r: any, i: number, a: any[]) => r.toPayPaise > 0 && (i === 0 || a[i - 1].toPayPaise >= r.toPayPaise)), till.rows.length);
+
+// the ledger for a period: what it bought and paid in it, and the balance at its end
+const fyOn = await call("GET", `/ledger?from=2026-04-01&asOf=${PD}`);
+check("the ledger from 01-04 to 30-09: brought forward + purchases − payments = balance, each supplier and the total",
+  fyOn.rows.every((r: any) => r.broughtForwardPaise + r.purchasesPaise - r.paymentsPaise === r.balancePaise)
+  && fyOn.totals.broughtForwardPaise + fyOn.totals.purchasesPaise - fyOn.totals.paymentsPaise === fyOn.totals.balancePaise, fyOn.totals);
+check("…its balances are the ledger's on 30-09, whatever the period", fyOn.totals.toPayPaise === ledgerOn.totals.toPayPaise && fyOn.totals.balancePaise === ledgerOn.totals.balancePaise);
+const aOn = (await call("GET", "/ledger?from=2026-09-28&asOf=2026-09-29")).rows.find((r: any) => r.id === A);
+check("one supplier from 28-09 to 29-09: brought forward 59,234.90 + 17,504.44 − 60,000.00 = 16,739.34",
+  aOn?.broughtForwardPaise === rs(59234.90) && aOn.purchasesPaise === rs(17504.44) && aOn.paymentsPaise === rs(60000) && aOn.balancePaise === rs(16739.34) && aOn.slips === 1, aOn);
+check("a from date after the to date is refused", (await raw("GET", "/ledger?from=2026-09-30&asOf=2026-09-29")).status === 400);
+
+const till = await call("GET", `/ledger/sheet?mode=till&date=${PD}&cols=${ALL}&format=json`);
+check("till date runs from 1 April: '01-04-2026 to 30-09-2026'", till.from === "2026-04-01" && till.to === PD && till.period === "01-04-2026 to 30-09-2026", till.period);
+// "amount total is different in UI and in sheet": the sheet must say what the screen says, figure by figure
+const sameAsLedger = (s: any, l: any) => s.goodsPaise === l.goodsPaise && s.commissionPaise === l.commissionPaise && s.gaushalaPaise === l.gaushalaPaise
+  && s.payablePaise === l.purchasesPaise && s.paidPaise === l.paymentsPaise && s.toPayPaise === l.toPayPaise;
+check("till date: amount, commission, gaushala, net amount, paid and to pay are the ledger's own totals for the period",
+  sameAsLedger(till.totals, fyOn.totals), { sheet: till.totals, ledger: fyOn.totals });
+check("…net amount = amount + commission + gaushala, row by row and in total",
+  till.rows.every((r: any) => r.payablePaise === r.goodsPaise + r.commissionPaise + r.gaushalaPaise)
+  && till.totals.payablePaise === till.totals.goodsPaise + till.totals.commissionPaise + till.totals.gaushalaPaise, till.totals);
+check("…everyone who bought, was paid or is still to be paid is on it, largest to pay first",
+  till.rows.length === fyOn.rows.filter((r: any) => r.slips > 0 || r.balancePaise > 0 || r.paymentsPaise > 0).length
+  && till.rows.every((r: any, i: number, a: any[]) => r.toPayPaise >= 0 && (i === 0 || a[i - 1].toPayPaise >= r.toPayPaise)), till.rows.length);
 const tillP = till.rows.find((r: any) => r.nameHi === spL.nameHi);
 check("…the supplier owed 30,009.38 is on it, with 2 slips, 14.85 qtl, 1 without a rate",
   tillP?.toPayPaise === rs(30009.38) && tillP.slips === 2 && tillP.netGrams === 1_485_000 && tillP.unpriced === 1
   && tillP.goodsPaise + tillP.commissionPaise + tillP.gaushalaPaise === tillP.payablePaise, tillP);
-check("a supplier with nothing to pay is not on the till-date sheet",
-  ledgerOn.rows.find((r: any) => r.id === sq.id)?.balancePaise === 0 && !till.rows.some((r: any) => r.nameHi === sqL.nameHi));
+const tillQ = till.rows.find((r: any) => r.nameHi === sqL.nameHi);
+check("…the supplier paid in full is on it too (he sold in the period), with 0 to pay",
+  sqL.balancePaise === 0 && tillQ?.payablePaise === rs(12003.75) && tillQ.toPayPaise === 0, tillQ);
 const before = await call("GET", `/ledger/sheet?mode=till&date=2026-09-29&format=json`);
 check("till the day before, neither of them is on it", !before.rows.some((r: any) => r.nameHi === spL.nameHi || r.nameHi === sqL.nameHi)
   && before.totals.toPayPaise === (await call("GET", "/ledger?asOf=2026-09-29")).totals.toPayPaise);
+const nextFy = await call("GET", `/ledger/sheet?mode=till&date=2027-04-05&cols=${ALL}&format=json`);
+check("till a day in the next year starts again on its 1 April, and still says the ledger's totals",
+  nextFy.period === "01-04-2027 to 05-04-2027" && sameAsLedger(nextFy.totals, (await call("GET", "/ledger?from=2027-04-01&asOf=2027-04-05")).totals), nextFy.totals);
+
+const rng = await call("GET", `/ledger/sheet?mode=range&from=2026-09-27&to=${PD}&cols=${ALL}&format=json`);
+check("from – to: '27-09-2026 to 30-09-2026', every total the ledger's for those days",
+  rng.period === "27-09-2026 to 30-09-2026" && sameAsLedger(rng.totals, (await call("GET", `/ledger?from=2026-09-27&asOf=${PD}`)).totals), rng.totals);
+check("…a from date after the to date is refused", (await raw("GET", `/ledger/sheet?mode=range&from=${PD}&to=2026-09-27&format=json`)).status === 400);
+check("…and both dates are needed", (await raw("GET", `/ledger/sheet?mode=range&from=2026-09-27&format=json`)).status === 400);
 
 const daySlips = await call("GET", `/slips?date=${PD}`);
 const oneDay = await call("GET", `/ledger/sheet?mode=day&date=${PD}&format=json`);
-check("one day: the sheet's payable total is the sum of that day's slips' payable",
-  oneDay.totals.payablePaise === daySlips.rows.reduce((s: number, r: any) => s + r.payablePaise, 0) && oneDay.totals.payablePaise === daySlips.totals.payablePaise,
+check("one day: '30-09-2026', and its net amount is the sum of that day's slips",
+  oneDay.period === "30-09-2026" && oneDay.totals.payablePaise === daySlips.rows.reduce((s: number, r: any) => s + r.payablePaise, 0) && oneDay.totals.payablePaise === daySlips.totals.payablePaise,
   { sheet: oneDay.totals.payablePaise, slips: daySlips.totals.payablePaise });
 check("…and its slips and weight are that day's", oneDay.totals.slips === daySlips.rows.length && oneDay.totals.netGrams === daySlips.totals.netGrams,
   { slips: oneDay.totals.slips, net: oneDay.totals.netGrams });
+const dayLedger = await call("GET", `/ledger?from=${PD}&asOf=${PD}`);
+const dayAll = await call("GET", `/ledger/sheet?mode=day&date=${PD}&cols=${ALL}&format=json`);
+check("…amount, commission, gaushala, net amount and paid are the ledger's own for that day",
+  dayAll.totals.goodsPaise === dayLedger.totals.goodsPaise && dayAll.totals.commissionPaise === dayLedger.totals.commissionPaise
+  && dayAll.totals.gaushalaPaise === dayLedger.totals.gaushalaPaise && dayAll.totals.payablePaise === dayLedger.totals.purchasesPaise
+  && dayAll.totals.paidPaise === dayLedger.totals.paymentsPaise, { sheet: dayAll.totals, ledger: dayLedger.totals });
 const dayQ = oneDay.rows.find((r: any) => r.nameHi === sqL.nameHi);
 check("…the supplier paid in full that day is on it: 12,003.75 bought, 0 to pay at the day's end",
   dayQ?.payablePaise === rs(12003.75) && dayQ.paidPaise === rs(12003.75) && dayQ.toPayPaise === 0, dayQ);
@@ -248,7 +285,7 @@ check("an unpriced slip: its 4.95 qtl is counted, its money is 0",
 check("…and the sheet counts it", oneDay.totals.unpriced === daySlips.totals.ratePendingRows && oneDay.totals.unpriced >= 1, oneDay.totals.unpriced);
 
 /* The files themselves: Excel read back cell by cell, CSV parsed by hand. */
-const ALL = "name,net,goods,commission,gaushala,paid,toPay";
+const L = (await call("GET", "/settings/supplier-charges")).labels;
 const fileOf = async (q: string) => {
   const res = await raw("GET", `/ledger/sheet?${q}`);
   if (!res.ok) throw new Error(`/ledger/sheet?${q} -> ${res.status} ${await res.text()}`);
@@ -277,23 +314,36 @@ const csvRows = (text: string) => {
   return out;
 };
 const totalRow = (rows: unknown[][]) => rows.find((r) => typeof r?.[0] === "string" && (r[0] as string).startsWith("Total ("))!;
-const header = (rows: unknown[][]) => rows.find((r) => r?.includes("To pay") || r?.includes("To pay (end of day)") || r?.some((v) => String(v ?? "").startsWith("Adati name")))!;
+const header = (rows: unknown[][]) => rows.find((r) => r?.includes("To pay") || r?.some((v) => String(v ?? "").startsWith("Adati name")))!;
 
 const hiX = await fileOf(`mode=till&date=${PD}&names=hi&cols=${ALL}&format=xlsx`);
 check("the till-date sheet downloads as Excel", hiX.res.headers.get("content-type")?.includes("spreadsheetml") === true && hiX.buf.subarray(0, 2).toString() === "PK"
   && /pay-sheet-till-2026-09-30\.xlsx/.test(hiX.res.headers.get("content-disposition") ?? ""), hiX.res.headers.get("content-disposition"));
 const hiRows = await xlsxRows(hiX.buf);
-check("its head: the business, 'Supplier pay sheet — till 30-09-2026', and when it was made",
-  String(hiRows[0]?.[0] ?? "").length > 0 && hiRows[1]?.[0] === "Supplier pay sheet — till 30-09-2026" && /^Made on \d{2}-\d{2}-\d{4} \d{2}:\d{2}$/.test(String(hiRows[2]?.[0])),
+check("its head: line 1 the business, line 2 '01-04-2026 to 30-09-2026', then the table",
+  String(hiRows[0]?.[0] ?? "").length > 0 && hiRows[1]?.[0] === "01-04-2026 to 30-09-2026" && hiRows[2] === header(hiRows),
   hiRows.slice(0, 3).map((r) => r?.[0]));
+const hiBook = new ExcelJS.Workbook();
+await hiBook.xlsx.load(hiX.buf as any);
+const hiWs = hiBook.worksheets[0];
+const lastCol = String.fromCharCode(64 + header(hiRows).length);
+check("…both centred across the whole table", ["A1", "A2"].every((a) => hiWs.getCell(a).alignment?.horizontal === "center")
+  && hiWs.getCell(`${lastCol}1`).isMerged && hiWs.getCell(`${lastCol}2`).isMerged);
+check("…no 'Made on', no opening balance, no brought forward",
+  !hiRows.some((r) => r?.some((v) => /Made on|Opening balance|Brought forward/.test(String(v ?? "")))), hiRows.slice(0, 3));
 const hiHead = header(hiRows);
-check("Hindi names: one name column, in Hindi", hiHead[0] === "Adati name" && hiHead[1] === "Net weight (qtl)" && hiRows.some((r) => r?.[0] === spL.nameHi), hiHead);
+check("Hindi names: one name column, in Hindi, then the columns asked for in order",
+  JSON.stringify(hiHead) === JSON.stringify(["Adati name", "Net weight (qtl)", "Amount", L.commission, L.gaushala, L.payable, "Paid", "To pay"]) && hiRows.some((r) => r?.[0] === spL.nameHi), hiHead);
 const hiTotal = totalRow(hiRows);
 check("…its total row: to pay = the ledger's to-pay total", hiTotal[0] === `Total (${till.totals.count})` && hiTotal[hiHead.indexOf("To pay")] === ledgerOn.totals.toPayPaise / 100,
   { total: hiTotal, ledger: ledgerOn.totals.toPayPaise / 100 });
+check("…net amount = the ledger's purchases for the period", Math.round(Number(hiTotal[hiHead.indexOf(L.payable)]) * 100) === fyOn.totals.purchasesPaise, hiTotal);
 check("…net weight in quintals, the unpriced slip's weight counted in it", hiTotal[hiHead.indexOf("Net weight (qtl)")] === Math.round(till.totals.netGrams / 1000) / 100);
 check("…and a line under it says how many slips have no rate yet",
-  hiRows.some((r) => typeof r?.[0] === "string" && (r[0] as string).startsWith(`${till.totals.unpriced} slip(s) have no rate yet`)), till.totals.unpriced);
+  hiRows.some((r) => typeof r?.[0] === "string" && (r[0] as string).startsWith(`${till.totals.unpriced} slip`) && (r[0] as string).includes("no rate yet")), till.totals.unpriced);
+const defX = await xlsxRows((await fileOf(`mode=till&date=${PD}&names=hi&format=xlsx`)).buf);
+check("by default: name, amount, commission, gaushala, net amount, to pay",
+  JSON.stringify(header(defX)) === JSON.stringify(["Adati name", "Amount", L.commission, L.gaushala, L.payable, "To pay"]), header(defX));
 
 const enX = await xlsxRows((await fileOf(`mode=till&date=${PD}&names=hinglish&cols=${ALL}&format=xlsx`)).buf);
 check("Hinglish names: one name column, in Hinglish",
@@ -308,7 +358,9 @@ check("only the columns asked for, and the name always", JSON.stringify(header(o
 
 const csvF = await fileOf(`mode=till&date=${PD}&names=both&cols=${ALL}&format=csv`);
 const csv = csvRows(csvF.buf.toString("utf8"));
-check("the CSV downloads and parses: the same header, one row per supplier",
+check("the CSV: line 1 the business alone, line 2 the period alone, then the table",
+  csv[0].length === 1 && csv[0][0] === hiRows[0]?.[0] && csv[1].length === 1 && csv[1][0] === "01-04-2026 to 30-09-2026" && csv[2] === header(csv), csv.slice(0, 3));
+check("…the same header as the Excel, one row per supplier",
   csvF.res.headers.get("content-type")?.startsWith("text/csv") === true && JSON.stringify(header(csv)) === JSON.stringify(bothHead)
   && csv.filter((r) => r[0] === spL.nameHi).length === 1 && csv.indexOf(totalRow(csv)) - csv.indexOf(header(csv)) - 1 === till.rows.length, header(csv));
 const csvTotal = totalRow(csv);
@@ -317,16 +369,19 @@ check("…its totals are the Excel's, column by column",
   csvTotal[0] === xlTotal[0] && bothHead.every((_, i) => i < 2 || (csvTotal[i] === "" ? xlTotal[i] == null : Number(csvTotal[i]) === xlTotal[i])),
   { csv: csvTotal, xlsx: xlTotal });
 check("…to pay to the paisa: the ledger's total", csvTotal[bothHead.indexOf("To pay")] === (ledgerOn.totals.toPayPaise / 100).toFixed(2), csvTotal[bothHead.indexOf("To pay")]);
+check("…net amount to the paisa: the ledger's purchases for the period", csvTotal[bothHead.indexOf(L.payable)] === (fyOn.totals.purchasesPaise / 100).toFixed(2), csvTotal[bothHead.indexOf(L.payable)]);
 
 const dayX = await xlsxRows((await fileOf(`mode=day&date=${PD}&names=hi&cols=${ALL}&format=xlsx`)).buf);
 const dayHead = header(dayX);
 const dayTot = totalRow(dayX);
-const cell = (label: string) => Number(dayTot[dayHead.findIndex((h) => String(h).startsWith(label))] ?? NaN);
-check("the one-day Excel: '30-09-2026', and amount + commission + gaushala is the day's slips' payable",
-  dayX[1]?.[0] === "Supplier pay sheet — 30-09-2026"
-  && Math.round((cell("Amount") + cell(dayHead[dayHead.indexOf("Amount") + 1] as string) + cell(dayHead[dayHead.indexOf("Amount") + 2] as string)) * 100) === daySlips.totals.payablePaise,
-  { title: dayX[1]?.[0], total: dayTot, payable: daySlips.totals.payablePaise });
-check("…with the unpriced slips noted", dayX.some((r) => typeof r?.[0] === "string" && (r[0] as string).startsWith(`${oneDay.totals.unpriced} slip(s) have no rate yet`)));
+check("the one-day Excel: '30-09-2026', and its net amount is the day's slips'",
+  dayX[1]?.[0] === "30-09-2026" && Math.round(Number(dayTot[dayHead.indexOf(L.payable)]) * 100) === daySlips.totals.payablePaise,
+  { period: dayX[1]?.[0], total: dayTot, payable: daySlips.totals.payablePaise });
+check("…with the unpriced slips noted", dayX.some((r) => typeof r?.[0] === "string" && (r[0] as string).startsWith(`${oneDay.totals.unpriced} slip`)));
+const rngF = await fileOf(`mode=range&from=2026-09-27&to=${PD}&format=csv`);
+check("from – to downloads as pay-sheet-2026-09-27-to-2026-09-30, its second line the period",
+  /pay-sheet-2026-09-27-to-2026-09-30\.csv/.test(rngF.res.headers.get("content-disposition") ?? "") && csvRows(rngF.buf.toString("utf8"))[1]?.[0] === "27-09-2026 to 30-09-2026",
+  rngF.res.headers.get("content-disposition"));
 check("a date is needed", (await raw("GET", "/ledger/sheet?mode=day&format=json")).status === 400);
 check("…and it must be a real day", (await raw("GET", "/ledger/sheet?mode=till&date=2026-02-31&format=json")).status === 400);
 check("the CSV starts with the mark that tells Excel it is UTF-8 (Hindi stays Hindi)", csvF.buf[0] === 0xef && csvF.buf[1] === 0xbb && csvF.buf[2] === 0xbf);
@@ -342,6 +397,9 @@ const owedOnSheet = ledger2.rows.filter((r: any) => day2.rows.some((x: any) => x
 check("one day: a supplier paid ahead shows 0 to pay, not a minus", aheadRow?.toPayPaise === 0, aheadRow?.toPayPaise);
 check("…the to-pay total is only what is really owed", day2.totals.toPayPaise === owedOnSheet, { sheet: day2.totals.toPayPaise, owed: owedOnSheet });
 check("…and the advance is named under the total", day2.notes.some((n: string) => n.startsWith("Paid ahead") && n.includes("अग्रिम जाँच भंडार") && n.includes("1,000.00")), day2.notes);
+const till2 = await call("GET", `/ledger/sheet?mode=till&date=${PD}&format=json`);
+check("till date: still the ledger's to pay, and the advance named as the ledger's paid-ahead card counts it",
+  till2.totals.toPayPaise === ledger2.totals.toPayPaise && till2.notes.some((n: string) => n.startsWith("Paid ahead") && n.includes("अग्रिम जाँच भंडार")), till2.notes);
 
 /* Two suppliers whose Hinglish names come out the same are told apart by village. */
 const r1 = await call("POST", "/adati", { nameHi: "राम लाल जाँच", nameHinglish: "Ram Lal Jaanch", village: "Etah", villageHi: "एटा" });
@@ -352,17 +410,17 @@ const twin = await call("GET", `/ledger/sheet?mode=till&date=${PD}&names=hinglis
 const latin = twin.rows.map((r: any) => r.nameLatin).filter((n: string) => n.startsWith("RAM LAL JAANCH"));
 check("two RAM LAL JAANCHs on a Hinglish sheet carry their village", latin.includes("RAM LAL JAANCH (Etah)") && latin.includes("RAM LAL JAANCH (Nagla)"), latin);
 
-/* An opening balance gets its own column, so the row adds up to "to pay". */
+/* An opening balance has no column of its own: it is in "to pay", as the ledger has it.
+ *   opening 5,000.00 + 841: 1.00 gross -> 0.99 net @ 3000 = 2,970.00 + 29.70 + 1.24 (1.2375) = 3,000.94  ->  to pay 8,000.94 */
 const op = await call("POST", "/adati", { nameHi: "पुराना जाँच भंडार", nameHinglish: "Purana Jaanch Bhandar", openingBalanceRupees: 5000 });
 await slipOf(op.id, "841", 1.00, 3000);
 const opX = await xlsxRows((await fileOf(`mode=till&date=${PD}&names=hi&cols=${ALL}&format=xlsx`)).buf);
 const opHead = header(opX);
 const opRow = opX.find((r) => r?.[0] === "पुराना जाँच भंडार")!;
-const at = (label: string) => Number(opRow[opHead.findIndex((h) => String(h).startsWith(label))] ?? 0);
-const comm = Number(opRow[opHead.indexOf("Amount") + 1]), gau = Number(opRow[opHead.indexOf("Amount") + 2]);
-check("an opening balance gets its own column on the till-date sheet", opHead.includes("Opening balance"), opHead);
-check("…and the row adds up: opening + amount + commission + gaushala − paid = to pay",
-  Math.round((at("Opening balance") + at("Amount") + comm + gau - at("Paid")) * 100) === Math.round(at("To pay") * 100), opRow);
+const at = (label: string) => Number(opRow[opHead.indexOf(label)] ?? NaN);
+check("an opening balance: no column of its own", !opHead.some((h) => /Opening|Brought/.test(String(h))), opHead);
+check("…net amount 3,000.94 = 2,970.00 + 29.70 + 1.24, and to pay 8,000.94 with the opening in it",
+  at("Amount") === 2970 && at(L.commission) === 29.7 && at(L.gaushala) === 1.24 && at(L.payable) === 3000.94 && at("To pay") === 8000.94, opRow);
 
 console.log(bad === 0 ? "\nLedger and payments add up." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

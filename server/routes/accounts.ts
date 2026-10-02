@@ -7,12 +7,11 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, canAll, actor, param, notFound, bad, isoDay, attachment, LIMIT, HttpError, type Env } from "../lib/http.ts";
 import { weightedAvgRate } from "../lib/money.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
-import { nextVoucherNo } from "../lib/vouchers.ts";
+import { nextVoucherNo, fyRange } from "../lib/vouchers.ts";
 import { parsePrefs, SUPPLIER_SHEET_COLUMNS, type SupplierSheetColumnKey } from "../lib/prefs.ts";
 import { readDevicePrefs } from "../lib/devicePrefs.ts";
 import { supplierChargesOf } from "../lib/supplierCharges.ts";
-import { supplierSheetXlsx, supplierSheetCsv, sheetTotals, type SupplierSheetRow, type SupplierSheetData, type SheetNames } from "../lib/supplierSheet.ts";
-import { dmy } from "../lib/parchaLabels.ts";
+import { supplierSheetXlsx, supplierSheetCsv, sheetTotals, sheetPeriod, type SupplierSheetRow, type SupplierSheetData, type SheetNames } from "../lib/supplierSheet.ts";
 
 /* The supplier (adati) ledger, Tally-style. What we owe a supplier is
      opening balance + every purchase (net × rate, on the slip's date) − every payment.
@@ -59,19 +58,28 @@ async function sums(businessId: string, opts: { before?: string; from?: string; 
   return { bought: new Map(bought.map((b) => [b.adatiId, b])), paid: new Map(paid.map((p) => [p.adatiId, p])) };
 }
 
-/** Every supplier with what is owed, as of a day (default: everything): the ledger list, and the pay sheet built from it. */
-async function ledgerList(biz: string, asOf?: string) {
+/**
+ * Every supplier with what is owed at a day, and what a period put on and took
+ * off his account: the ledger list, and the pay sheet built from it.
+ *   asOf  the balance counts everything up to and including this day (default: everything)
+ *   from  slips, weight, amount, commission, gaushala, purchases and payments
+ *         count from this day (default: from the start); what was owed before
+ *         it is brought forward, so  brought forward + purchases − payments = balance
+ */
+async function ledgerList(biz: string, opts: { from?: string; asOf?: string } = {}) {
   const suppliers = await db.select({
     id: schema.adati.id, nameHi: schema.adati.nameHi, nameHinglish: schema.adati.nameHinglish,
     village: schema.adati.village, villageHi: schema.adati.villageHi, phone: schema.adati.phone, active: schema.adati.active,
     openingBalancePaise: schema.adati.openingBalancePaise,
   }).from(schema.adati).where(eq(schema.adati.businessId, biz));
-  const { bought, paid } = await sums(biz, { upTo: asOf });
+  const all = await sums(biz, { upTo: opts.asOf });
+  const period = opts.from ? await sums(biz, { from: opts.from, upTo: opts.asOf }) : all;
   const rows = suppliers.map((s) => {
-    const b = bought.get(s.id);
-    const p = paid.get(s.id);
+    const b = period.bought.get(s.id);
+    const p = period.paid.get(s.id);
     const purchases = b?.amountPaise ?? 0;
     const payments = p?.amountPaise ?? 0;
+    const balance = s.openingBalancePaise + (all.bought.get(s.id)?.amountPaise ?? 0) - (all.paid.get(s.id)?.amountPaise ?? 0);
     return {
       ...s,
       slips: b?.slips ?? 0,
@@ -83,131 +91,117 @@ async function ledgerList(biz: string, asOf?: string) {
       /** goods + commission + gaushala: what the purchases put on the supplier's account */
       purchasesPaise: purchases,
       paymentsPaise: payments,
-      balancePaise: s.openingBalancePaise + purchases - payments,
-      lastActivity: [b?.last, p?.last].filter(Boolean).sort().pop() ?? null,
+      /** What was owed when the period began: the opening balance, or with `from`, everything before it too. */
+      broughtForwardPaise: balance - purchases + payments,
+      balancePaise: balance,
+      lastActivity: [all.bought.get(s.id)?.last, all.paid.get(s.id)?.last].filter(Boolean).sort().pop() ?? null,
     };
   }).filter((r) => r.active || r.balancePaise !== 0 || r.slips > 0);
   rows.sort((a, b) => b.balancePaise - a.balancePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
+  const total = (k: "openingBalancePaise" | "broughtForwardPaise" | "goodsPaise" | "commissionPaise" | "gaushalaPaise" | "purchasesPaise" | "paymentsPaise" | "balancePaise") =>
+    rows.reduce((s, r) => s + r[k], 0);
   const totals = {
-    openingPaise: rows.reduce((s, r) => s + r.openingBalancePaise, 0),
-    goodsPaise: rows.reduce((s, r) => s + r.goodsPaise, 0),
-    commissionPaise: rows.reduce((s, r) => s + r.commissionPaise, 0),
-    gaushalaPaise: rows.reduce((s, r) => s + r.gaushalaPaise, 0),
-    purchasesPaise: rows.reduce((s, r) => s + r.purchasesPaise, 0),
-    paymentsPaise: rows.reduce((s, r) => s + r.paymentsPaise, 0),
-    balancePaise: rows.reduce((s, r) => s + r.balancePaise, 0),
+    openingPaise: total("openingBalancePaise"),
+    broughtForwardPaise: total("broughtForwardPaise"),
+    goodsPaise: total("goodsPaise"),
+    commissionPaise: total("commissionPaise"),
+    gaushalaPaise: total("gaushalaPaise"),
+    purchasesPaise: total("purchasesPaise"),
+    paymentsPaise: total("paymentsPaise"),
+    balancePaise: total("balancePaise"),
     toPayPaise: rows.filter((r) => r.balancePaise > 0).reduce((s, r) => s + r.balancePaise, 0),
     paidAheadPaise: rows.filter((r) => r.balancePaise < 0).reduce((s, r) => s - r.balancePaise, 0),
   };
-  return { rows, totals };
+  return { from: opts.from ?? null, asOf: opts.asOf ?? null, rows, totals };
 }
 
+/** ?from=YYYY-MM-DD &asOf=YYYY-MM-DD, both optional: see ledgerList. */
 ledgerRoutes.get("/", can("ledger.read"), async (c) => {
-  const asOf = c.req.query("asOf");
-  if (asOf && !ISO_DATE.test(asOf)) throw bad("Date must be YYYY-MM-DD");
-  return c.json(await ledgerList(c.get("auth")!.businessId!, asOf));
+  const asOf = c.req.query("asOf") || undefined;
+  const from = c.req.query("from") || undefined;
+  if ((asOf && !ISO_DATE.test(asOf)) || (from && !ISO_DATE.test(from))) throw bad("Date must be YYYY-MM-DD");
+  if (from && asOf && from > asOf) throw bad("The from date is after the to date", "bad_range");
+  return c.json(await ledgerList(c.get("auth")!.businessId!, { from, asOf }));
 });
 
 /**
- * The supplier pay sheet, as Excel or CSV: what is to be paid, one row per adati.
- *   mode=till  every adati with something to pay on `date`, largest first
- *   mode=day   every adati with slips on `date`: that day's purchases, what
- *              was paid that day, and what is to pay at the end of it
- * Every figure is the ledger list's own sum. A slip with no rate yet counts
- * its weight and no money, and the file says how many there are.
- * ?mode=till|day&date=YYYY-MM-DD [&names=hi|hinglish|both] [&cols=a,b] [&format=xlsx|csv|json]
+ * The supplier pay sheet, as Excel or CSV: one row per adati.
+ *   mode=till&date=D          1 April of D's financial year to D
+ *   mode=day&date=D           D alone
+ *   mode=range&from=F&to=T    F to T
+ * Amount, commission, gaushala, net amount and paid are for the period; "to
+ * pay" is the balance at its end, never below zero (paid ahead is named under
+ * the total instead). Every figure is ledgerList's own for the same period, so
+ * each total is the ledger's: GET /ledger?from=F&asOf=T.
+ * Who is on it: everyone with slips in the period; for till date and from–to
+ * also everyone still to be paid at the end; with the paid column, also
+ * everyone paid in the period. Largest to pay first.
+ * [&names=hi|hinglish|both] [&cols=a,b] [&format=xlsx|csv|json]
  * Registered before "/:adatiId", which would otherwise take "sheet" for a supplier.
  */
 ledgerRoutes.get("/sheet", canAll("export.data", "ledger.read"), async (c) => {
   const auth = c.get("auth")!;
   const biz = auth.businessId!;
-  const mode = c.req.query("mode") === "day" ? "day" : "till";
-  const date = c.req.query("date") ?? "";
-  if (!isoDay().safeParse(date).success) throw bad("Pick a date", "bad_date");
+  const m = c.req.query("mode");
+  const mode = m === "day" ? "day" : m === "range" ? "range" : "till";
+  const day = (v: string | undefined) => {
+    if (!v || !isoDay().safeParse(v).success) throw bad("Pick a date", "bad_date");
+    return v;
+  };
+  let from: string, to: string;
+  if (mode === "range") {
+    from = day(c.req.query("from"));
+    to = day(c.req.query("to"));
+    if (from > to) throw bad("The from date is after the to date", "bad_range");
+  } else {
+    to = day(c.req.query("date"));
+    from = mode === "day" ? to : fyRange(to).from;
+  }
 
   const prefs = readDevicePrefs(auth.user.id) ?? parsePrefs(auth.user.prefs).dailyList;
   const known = new Set<string>(SUPPLIER_SHEET_COLUMNS.map((x) => x.key));
   const asked = new Set(c.req.query("cols")?.split(",").filter((k) => known.has(k)) ?? []);
-  const chosen = asked.size ? asked : new Set<string>(SUPPLIER_SHEET_COLUMNS.filter((x) => prefs.supplierSheetColumns[x.key]).map((x) => x.key));
+  const chosen = asked.size ? asked : new Set<string>(SUPPLIER_SHEET_COLUMNS.filter((x) => prefs.paySheetColumns[x.key]).map((x) => x.key));
   // the name is always there: a sheet of figures with no one to pay is no use
   const columns: SupplierSheetColumnKey[] = SUPPLIER_SHEET_COLUMNS.map((x) => x.key).filter((k) => k === "name" || chosen.has(k));
   const n = c.req.query("names") ?? prefs.supplierSheetNames;
   const names: SheetNames = n === "both" ? "both" : n === "hinglish" || n === "latin" ? "hinglish" : "hi";
 
-  const list = await ledgerList(biz, date);
+  const list = await ledgerList(biz, { from, asOf: to });
+  const on = list.rows.filter((r) => r.slips > 0 || (mode !== "day" && r.balancePaise > 0) || (columns.includes("paid") && r.paymentsPaise > 0));
   // Hindi names are unique, Hinglish ones need not be: two RAM LALs get their village
   const latinSeen = new Map<string, number>();
   for (const r of list.rows) { const k = r.nameHinglish || r.nameHi; latinSeen.set(k, (latinSeen.get(k) ?? 0) + 1); }
-  const base = (r: (typeof list.rows)[number]) => {
+  const latinOf = (r: (typeof list.rows)[number]) => {
     const latin = r.nameHinglish || r.nameHi;
-    const village = (names === "hinglish" ? r.village || r.villageHi : r.villageHi || r.village) ?? "";
-    return {
-      nameHi: r.nameHi,
-      nameLatin: (latinSeen.get(latin) ?? 0) > 1 ? `${latin} (${r.village || r.villageHi || r.nameHi})` : latin,
-      village,
-    };
+    return (latinSeen.get(latin) ?? 0) > 1 ? `${latin} (${r.village || r.villageHi || r.nameHi})` : latin;
   };
-  const money = (n: number) => `₹${(n / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const rows: SupplierSheetRow[] = on.map((r) => ({
+    nameHi: r.nameHi, nameLatin: latinOf(r),
+    slips: r.slips, netGrams: r.netGrams, unpriced: r.unpriced,
+    goodsPaise: r.goodsPaise, commissionPaise: r.commissionPaise, gaushalaPaise: r.gaushalaPaise,
+    payablePaise: r.purchasesPaise, paidPaise: r.paymentsPaise,
+    // paid ahead is money to recover, not money to pay: it never lowers the total
+    toPayPaise: Math.max(0, r.balancePaise),
+  })).sort((a, b) => b.toPayPaise - a.toPayPaise || b.payablePaise - a.payablePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
+
+  const money = (p: number) => `₹${(p / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const notes: string[] = [];
-  let rows: SupplierSheetRow[];
-  if (mode === "till") {
-    // the list is already largest first; "to pay" here adds up to its toPayPaise
-    rows = list.rows.filter((r) => r.balancePaise > 0).map((r) => ({
-      ...base(r), slips: r.slips, netGrams: r.netGrams, unpriced: r.unpriced,
-      goodsPaise: r.goodsPaise, commissionPaise: r.commissionPaise, gaushalaPaise: r.gaushalaPaise,
-      payablePaise: r.purchasesPaise, beforePaise: r.openingBalancePaise, paidPaise: r.paymentsPaise, toPayPaise: r.balancePaise,
-    }));
-    // every slip waiting for a rate counts, including those of an adati with nothing to pay yet
-    const waiting = list.rows.reduce((s, r) => s + r.unpriced, 0);
-    const offSheet = waiting - rows.reduce((s, r) => s + r.unpriced, 0);
-    if (waiting) notes.push(`${waiting} slip(s) have no rate yet: their weight is counted, their money is 0 until a rate is set${offSheet ? ` (${offSheet} of them for adatis not on this sheet)` : ""}.`);
-    // a slip or payment dated after the sheet's date is not in it — say so, so the ledger card can be matched
-    const [later] = await db.select({ n: sql<number>`count(*)` }).from(schema.purchaseSlips)
-      .where(and(eq(schema.purchaseSlips.businessId, biz), sql`${schema.purchaseSlips.slipDate} > ${date}`));
-    const [laterPaid] = await db.select({ n: sql<number>`count(*)` }).from(schema.payments)
-      .where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt), sql`${schema.payments.payDate} > ${date}`));
-    const after = (later?.n ?? 0) + (laterPaid?.n ?? 0);
-    if (after) notes.push(`${after} entr${after === 1 ? "y" : "ies"} dated after ${dmy(date)} ${after === 1 ? "is" : "are"} not included.`);
-  } else {
-    const day = await sums(biz, { from: date, upTo: date });
-    const ahead: string[] = [];
-    rows = list.rows.filter((r) => day.bought.has(r.id)).map((r) => {
-      const b = day.bought.get(r.id)!;
-      const paidThatDay = day.paid.get(r.id)?.amountPaise ?? 0;
-      const row = base(r);
-      // paid ahead is money to recover, not money to pay: it never lowers the total
-      if (r.balancePaise < 0) ahead.push(`${names === "hinglish" ? row.nameLatin : row.nameHi} ${money(-r.balancePaise)}`);
-      return {
-        ...row, slips: b.slips, netGrams: b.netGrams, unpriced: b.unpriced,
-        goodsPaise: b.goodsPaise, commissionPaise: b.commissionPaise, gaushalaPaise: b.gaushalaPaise, payablePaise: b.amountPaise,
-        // the balance at the day's end, less what the day did to it
-        beforePaise: r.balancePaise - b.amountPaise + paidThatDay, paidPaise: paidThatDay, toPayPaise: Math.max(0, r.balancePaise),
-      };
-    }).sort((a, b) => b.payablePaise - a.payablePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
-    const waiting = rows.reduce((s, r) => s + r.unpriced, 0);
-    if (waiting) notes.push(`${waiting} slip(s) have no rate yet: their weight is counted, their money is 0 until a rate is set.`);
-    if (ahead.length) notes.push(`Paid ahead (to recover, not in "To pay"): ${ahead.join("; ")}.`);
-    // money paid that day to an adati with no slip that day is not on this sheet
-    const onSheet = new Set(list.rows.filter((r) => day.bought.has(r.id)).map((r) => r.id));
-    const elsewhere = [...day.paid.entries()].filter(([id]) => !onSheet.has(id)).reduce((s, [, p]) => s + p.amountPaise, 0);
-    if (elsewhere) notes.push(`${money(elsewhere)} paid that day to adatis with no slip that day is not in "Paid that day".`);
-  }
-  // an opening (or brought-forward) balance gets its own column whenever the row
-  // shows money that has to add up to "to pay" with it
-  const showBefore = rows.some((r) => r.beforePaise !== 0)
-    && columns.some((k) => k === "goods" || k === "commission" || k === "gaushala" || k === "paid");
+  const waiting = rows.reduce((s, r) => s + r.unpriced, 0);
+  if (waiting) notes.push(`${waiting} slip${waiting === 1 ? "" : "s"} with no rate yet: weight counted, amount 0.`);
+  // as the ledger's "paid ahead" card: everyone, at the end date (one day: those on the sheet)
+  const ahead = (mode === "day" ? on : list.rows).filter((r) => r.balancePaise < 0);
+  if (ahead.length) notes.push(`Paid ahead (to recover, not in "To pay"): ${ahead.map((r) => `${names === "hinglish" ? latinOf(r) : r.nameHi} ${money(-r.balancePaise)}`).join("; ")}.`);
 
   const [business] = await db.select({ name: schema.businesses.name }).from(schema.businesses).where(eq(schema.businesses.id, biz)).limit(1);
   const L = (await supplierChargesOf(biz)).labels;
-  const now = new Date();
-  const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
   const data: SupplierSheetData = {
-    mode, date, madeAt: `${dmy(now.toLocaleDateString("en-CA"))} ${hhmm}`, businessName: business?.name ?? "",
-    names, columns, labels: { commission: L.commission, gaushala: L.gaushala, payable: L.payable }, showBefore, rows, notes,
+    mode, from, to, businessName: business?.name ?? "",
+    names, columns, labels: { commission: L.commission, gaushala: L.gaushala, payable: L.payable }, rows, notes,
   };
   const format = c.req.query("format") ?? "xlsx";
-  const fileBase = mode === "till" ? `pay-sheet-till-${date}` : `pay-sheet-${date}`;
-  if (format === "json") return c.json({ ...data, totals: sheetTotals(rows) });
+  const fileBase = mode === "till" ? `pay-sheet-till-${to}` : mode === "day" ? `pay-sheet-${to}` : `pay-sheet-${from}-to-${to}`;
+  if (format === "json") return c.json({ ...data, period: sheetPeriod(data), totals: sheetTotals(rows) });
   if (format === "csv") {
     return new Response(supplierSheetCsv(data), {
       headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": attachment(`${fileBase}.csv`) },
