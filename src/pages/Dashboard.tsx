@@ -178,7 +178,8 @@ function MoneyCard({ qs }: { qs: string }) {
     const body = (
       <div className="h-full rounded-lg border border-line bg-surface px-3 py-2.5 transition-colors hover:border-faint/60">
         <p className="text-[11px] font-medium uppercase tracking-wide text-muted">{label}</p>
-        <p className={cn("num text-xl font-semibold", tone)}>{f.money(value)}</p>
+        {/* one line always; a minus is a real minus sign, joined to the amount */}
+        <p className={cn("num whitespace-nowrap text-xl font-semibold", tone)}>{value < 0 ? `\u2212${f.money(-value)}` : f.money(value)}</p>
       </div>
     );
     return href ? <Link href={href}>{body}</Link> : body;
@@ -186,7 +187,7 @@ function MoneyCard({ qs }: { qs: string }) {
   return (
     <Card className="mt-5">
       <CardHeader title={t("dash.money")} />
-      <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
         {/* each balance is up to the period's end, as Mill accounts and the ledger show it */}
         {tile(t("dash.millsOwe"), toReceive, "/mill-accounts", "text-brand")}
         {tile(t("dash.weOwe"), toPay, "/ledger")}
