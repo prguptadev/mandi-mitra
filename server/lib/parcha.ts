@@ -177,28 +177,50 @@ function weighment(l: LoadRow, cfg: ChargeConfig) {
   return { katte, bore, bags: katte + bore, katteBardanaGrams, boreBardanaGrams, bardanaGrams, grossGrams, netGrams };
 }
 
+/** The void reason, and the clash note, when one truck was approved on two computers (repairTrucks.ts). */
+export const APPROVED_TWICE = "this truck was approved on two computers — the earlier parcha is kept";
+
+type TermsParcha = { id: string; status: string; snapshot: string; voidedAt?: number | null; voidReason?: string | null };
+
+/** The parcha whose terms a truck keeps: the live one, else the one voided last. */
+function billedParcha<P extends TermsParcha>(parchas: P[]): P | null {
+  const live = parchas.find((p) => p.status === "approved");
+  if (live) return live;
+  /* Voided ones: the latest void wins (voided_at, then the id), the same on
+     every computer. A parcha voided because the truck was approved on two
+     computers was never the mill's bill: it counts only if nothing else does. */
+  const voided = parchas.filter((p) => p.status !== "approved");
+  const genuine = voided.filter((p) => p.voidReason !== APPROVED_TWICE);
+  const later = (a: P, b: P) => ((a.voidedAt ?? 0) !== (b.voidedAt ?? 0) ? (a.voidedAt ?? 0) > (b.voidedAt ?? 0) : a.id > b.id);
+  return (genuine.length ? genuine : voided).reduce<P | null>((a, p) => (!a || later(p, a) ? p : a), null);
+}
+
+/** The terms a parcha froze, or null when it has none readable. */
+function frozenTerms(p: TermsParcha): ChargeConfig | null {
+  try {
+    const r = ChargeConfigSchema.safeParse((JSON.parse(p.snapshot) as Partial<ParchaDoc>).config);
+    return r.success ? r.data : null;
+  } catch { return null; }
+}
+
 /**
  * The terms a truck is billed on. Once a truck has had a parcha it keeps the
- * terms that parcha froze — the live one, else the latest voided one — so
+ * terms that parcha froze — the live one, else the one voided last — so
  * voiding it to put something right and approving again never re-prices it
- * on terms the mill was given since. A truck never billed takes its mill's
- * terms as they stand. Ids are UUIDv7, so the largest is the latest, and
- * every computer picks the same parcha.
+ * on terms the mill was given since (unless the approver ticks "bill on the
+ * mill's current terms": loadState's millTerms). A truck never billed takes
+ * its mill's terms as they stand. Every computer picks the same parcha.
  */
-export function truckTerms(millCfg: ChargeConfig, parchas: { id: string; status: string; snapshot: string }[]): ChargeConfig {
-  const last = parchas.find((p) => p.status === "approved")
-    ?? parchas.reduce<(typeof parchas)[number] | null>((a, p) => (!a || p.id > a.id ? p : a), null);
-  if (!last) return millCfg;
-  try {
-    const r = ChargeConfigSchema.safeParse((JSON.parse(last.snapshot) as Partial<ParchaDoc>).config);
-    return r.success ? r.data : millCfg;
-  } catch { return millCfg; }
+export function truckTerms(millCfg: ChargeConfig, parchas: TermsParcha[]): ChargeConfig {
+  const last = billedParcha(parchas);
+  return (last && frozenTerms(last)) ?? millCfg;
 }
 
 /** The same rule, read from the books for one truck (synchronous: the sync repair calls it inside its transaction). */
 export function termsOfTruck(loadId: string, millCfg: ChargeConfig): ChargeConfig {
   const P = schema.parchas;
-  return truckTerms(millCfg, db.select({ id: P.id, status: P.status, snapshot: P.snapshot }).from(P).where(eq(P.loadId, loadId)).all());
+  return truckTerms(millCfg, db.select({ id: P.id, status: P.status, snapshot: P.snapshot, voidedAt: P.voidedAt, voidReason: P.voidReason })
+    .from(P).where(eq(P.loadId, loadId)).all());
 }
 
 /** Recompute the stored mill figures from gross, bags and the truck's terms (termsOfTruck). */
@@ -339,7 +361,12 @@ export async function boughtByDay(businessId: string, merchantId: string, jinsId
   }]));
 }
 
-export async function loadState(businessId: string, loadId: string) {
+/**
+ * Everything about one truck. `millTerms`: a truck billed before and voided
+ * is worked out on its mill's terms of today instead of those it was billed
+ * on — the approver's own choice, for a mill whose terms were put right.
+ */
+export async function loadState(businessId: string, loadId: string, opts: { millTerms?: boolean } = {}) {
   const [l] = await db.select().from(schema.loads)
     .where(and(eq(schema.loads.id, loadId), eq(schema.loads.businessId, businessId))).limit(1);
   if (!l) return null;
@@ -351,7 +378,13 @@ export async function loadState(businessId: string, loadId: string) {
   const history = await db.select().from(schema.parchas)
     .where(eq(schema.parchas.loadId, l.id)).orderBy(desc(schema.parchas.id));
   // a truck billed before keeps the terms it was billed on; one never billed takes its mill's of today
-  const cfg = truckTerms(ChargeConfigSchema.parse(JSON.parse(mill.chargeConfig)), history);
+  const millCfg = ChargeConfigSchema.parse(JSON.parse(mill.chargeConfig));
+  const billedCfg = truckTerms(millCfg, history);
+  const live = history.some((p) => p.status === "approved");
+  // voided, and its mill's terms are not those it was billed on: the approver may bill it on today's
+  const millTermsChanged = !live && history.length > 0 && JSON.stringify(billedCfg) !== JSON.stringify(millCfg);
+  const onMillTerms = millTermsChanged && opts.millTerms === true;
+  const cfg = onMillTerms ? millCfg : billedCfg;
   const w = weighment(l, cfg);
 
   const rawLines = await db.select({
@@ -548,6 +581,10 @@ export async function loadState(businessId: string, loadId: string) {
     /** Every commodity on the truck's rows (the first is the truck's own). */
     jinsList: jinsIds.map((jid) => ({ id: jid, code: codeOf(jid), name: jinsOf.get(jid)?.name ?? "", nameHi: jinsOf.get(jid)?.nameHi ?? null })),
     config: cfg,
+    /** Voided, and the mill's terms changed since it was billed: approving may use either (see onMillTerms). */
+    millTermsChanged,
+    /** This state is worked out on the mill's terms of today rather than those the truck was billed on. */
+    onMillTerms,
     lines,
     stock,
     stockByJins,

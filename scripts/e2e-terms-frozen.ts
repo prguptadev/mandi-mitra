@@ -1,8 +1,10 @@
 import "./_guard.ts";
 import ExcelJS from "exceljs";
 import { screenLines } from "../server/lib/parchaLabels.ts";
-import { repairTrucks, repairTrucksAfterPull } from "../server/lib/repairTrucks.ts";
+import { repairTrucks, repairTrucksAfterPull, APPROVED_TWICE } from "../server/lib/repairTrucks.ts";
+import { termsOfTruck } from "../server/lib/parcha.ts";
 import { sqlite } from "../server/db/client.ts";
+import { newId } from "../server/lib/ids.ts";
 /* End-to-end: a change of terms never reaches back. On the test database only.
  *
  * The owner registers a mill with its terms (commission 1.2 %, kacchi adat,
@@ -14,7 +16,9 @@ import { sqlite } from "../server/db/client.ts";
  * the new terms. The same for the supplier charges (commission %, gaushala a
  * quintal) and for the mill's katauti on slips — a slip's weight corrected
  * later is worked on its own katauti too. Slips from before v0.3 that carry
- * no terms keep their stored figures.
+ * no terms keep their stored figures. A truck approved on two computers keeps
+ * the terms of the parcha the mill was billed on; a mill registered with the
+ * wrong terms can be re-billed on its corrected ones, by an explicit tick.
  *
  * Every expected figure is worked out here, in BigInt, from the inputs and
  * the terms in force — never with the app's own code.
@@ -532,6 +536,71 @@ console.log("\n(v) The repair after a cloud pull, once more");
 const pre = await millView([...OLD, N1, D1]);
 const n = repairTrucksAfterPull();
 compare(`(v) after the repair (${n} record(s) changed) every parcha, truck, statement and stock reading`, pre, await millView([...OLD, N1, D1]));
+
+console.log("\n(vi) One truck approved on two computers, on different terms, then voided");
+/* Computer A approved 7609 on the mill's terms; computer B, still on terms it
+   was given by mistake (commission 3 %, bardana 0.66 kg), approved it a moment
+   later. Sync keeps A's (the earlier) and voids B's as approved twice — B's
+   has the larger id. Then the owner voids A's to put something right. */
+const N2 = await makeTruck("2026-08-04", [{ date: "2026-08-01", jinsId: J1.id, grams: null, rate: null }], { gross: kg(3100), katte: 52, bore: 0, advance: 0, dara: 0, no: "7609" });
+await approve(N2);
+const pA = sqlite.prepare("select * from parchas where id = ?").get(N2.pid) as any;
+const wrong = { ...T2, commission: { ...T2.commission, pct: 3 }, millBardanaKgPerBag: 0.66 };
+const docB = JSON.parse(pA.snapshot);
+docB.config = { ...docB.config, commission: { ...docB.config.commission, pct: 3 }, millBardanaKgPerBag: 0.66 };
+const pBid = newId();
+sqlite.prepare(`insert into parchas (id, business_id, load_id, parcha_no, version, invoice_date, snapshot, grand_total_paise, status, approved_by, approved_at, voided_by, voided_at, void_reason, created_at)
+  values (?, ?, ?, ?, ?, ?, ?, ?, 'void', ?, ?, null, ?, ?, ?)`).run(pBid, pA.business_id, pA.load_id, pA.parcha_no, pA.version + 1, pA.invoice_date, JSON.stringify(docB),
+  parchaBy(wrong as Terms, specOf(N2)).grand, pA.approved_by, pA.approved_at + 1, pA.approved_at + 2, APPROVED_TWICE, pA.created_at + 1);
+check("the loser has the larger id (B approved later)", pBid > pA.id);
+await call("POST", `/parchas/${N2.pid}/void`, { reason: "advance typed wrong" });
+const n2v = await call("GET", `/loads/${N2.id}`);
+const eN2 = parchaBy(T2, specOf(N2));
+check("(vi) voided: the truck keeps the terms of the parcha the mill was billed on (commission 2 %), never the approved-twice loser's (3 %)",
+  n2v.config.commission.pct === 2 && n2v.config.millBardanaKgPerBag === 0.6, { commission: n2v.config.commission.pct, bardana: n2v.config.millBardanaKgPerBag });
+check(`(vi) …its stored net stays the billed ${qt(eN2.weights.netGrams)} (bardana 52 × 0.60), not 52 × 0.66`, n2v.load.millNetGrams === eN2.weights.netGrams, { stored: n2v.load.millNetGrams, billed: eN2.weights.netGrams, loser: parchaBy(wrong as Terms, specOf(N2)).weights.netGrams });
+check("(vi) …the after-pull repair, which every computer runs, agrees", repairTrucks([N2.id]) === 0 && termsOfTruck(N2.id, wrong as any).commission.pct === 2);
+await approve(N2);
+checkPaper("(vi) 7609 approved again: on the terms it was billed on", (await call("GET", `/parchas/${N2.pid}`)).doc, eN2);
+
+console.log("\n(vii) A mill registered with the wrong terms: re-billing a truck on the corrected ones");
+/* 7606 was billed on the July terms; the owner says the mill's terms are now
+   right (commission 2 %, ...) and wants that truck billed on them. Only an
+   explicit tick at the approve step does it. */
+const owesBefore7 = (await call("GET", "/mill-ledger")).rows.find((r: any) => r.id === TRM).balancePaise;
+const a6Billed = (await call("GET", `/parchas/${A6.pid}`)).doc;
+await call("POST", `/parchas/${A6.pid}/void`, { reason: "mill's commission was registered wrong" });
+const a6Own = await call("GET", `/loads/${A6.id}`);
+const a6Mill = await call("GET", `/loads/${A6.id}?terms=mill`);
+const eA6new = parchaBy(T2, specOf(A6));
+check("(vii) voided 7606 says its mill's terms changed since it was billed, and by default still offers the July terms",
+  a6Own.millTermsChanged === true && a6Own.onMillTerms === false && a6Own.doc?.result.grandTotalPaise === eA6.grand, { changed: a6Own.millTermsChanged, own: a6Own.onMillTerms, total: a6Own.doc?.result.grandTotalPaise });
+check(`(vii) with the tick its parcha is worked on the mill's current terms: ${inr(eA6new.grand)} (commission 2 %)`,
+  a6Mill.onMillTerms === true && a6Mill.config.commission.pct === 2 && a6Mill.doc?.result.grandTotalPaise === eA6new.grand, { total: a6Mill.doc?.result.grandTotalPaise, want: eA6new.grand });
+check("(vii) looking does not move anything: its stored net is still the July one", a6Mill.load.millNetGrams === eA6.weights.netGrams);
+const seenOld = await raw("POST", `/loads/${A6.id}/approve`, { millTerms: true, expectedGrandTotalPaise: eA6.grand });
+const seenOldBody = await seenOld.json();
+check("(vii) approving with the tick but the July total on screen is refused: the approver must see what is billed", seenOld.status === 409 && seenOldBody.code === "changed", seenOld.ok ? seenOldBody : undefined);
+// (a wrong approval here is put back, so the checks after it still say something)
+if (seenOld.ok) await call("POST", `/parchas/${seenOldBody.id}/void`, { reason: "approved on a total not seen" });
+const a6res = await raw("POST", `/loads/${A6.id}/approve`, { millTerms: true, expectedGrandTotalPaise: eA6new.grand });
+const a6r = await a6res.json();
+check(`(vii) ticked, with ${inr(eA6new.grand)} on screen: approved`, a6res.ok, a6res.ok ? undefined : a6r);
+A6.pid = a6res.ok ? a6r.id : (await call("POST", `/loads/${A6.id}/approve`, { millTerms: true })).id;
+const a6Doc = (await call("GET", `/parchas/${A6.pid}`)).doc;
+checkPaper("(vii) 7606 revision 3, ticked: every line on the mill's current terms", a6Doc, eA6new);
+check(`(vii) commission ${inr(lineOf(eA6new, "commission"))} at 2 % (was ${inr(lineOf(eA6, "commission"))} at 1.2 %)`, a6Doc.config.commission.pct === 2 && a6Doc.revision === 3);
+const trail = (await call("GET", "/audit?action=parcha.approve&limit=200")).rows;
+const said = (pid: string | undefined) => trail.find((r: any) => r.entityId === pid)?.after?.billedOn;
+check(`(vii) the audit trail says which: 7606 "${said(A6.pid)}", 7605 "${said(A5.pid)}"`,
+  said(A6.pid) === "the mill's current terms" && said(A5.pid) === "the terms it was first billed on" && said(N1.pid) === undefined);
+const owesAfter7 = (await call("GET", "/mill-ledger")).rows.find((r: any) => r.id === TRM).balancePaise;
+check(`(vii) the mill owes exactly the difference more: ${inr(eA6new.grand - a6Billed.result.grandTotalPaise)}`, owesAfter7 - owesBefore7 === eA6new.grand - a6Billed.result.grandTotalPaise, { moved: owesAfter7 - owesBefore7 });
+await call("POST", `/parchas/${A6.pid}/void`, { reason: "check the terms it keeps" });
+const a6Again = await call("GET", `/loads/${A6.id}`);
+check("(vii) voided once more, it keeps the terms it was last billed on (the corrected ones): nothing to tick", a6Again.millTermsChanged === false && a6Again.doc?.result.grandTotalPaise === eA6new.grand);
+A6.pid = (await call("POST", `/loads/${A6.id}/approve`, {})).id;
+note(`(vii) a truck billed before keeps its terms unless the approver ticks "Bill on the mill's current terms": 7606 ${inr(eA6.grand)} → ${inr(eA6new.grand)}; the trail records the choice`);
 
 /* ------------------------------------------------------------- suppliers */
 console.log("\nB. The supplier charges change: commission 1.1 % → 2.25 %, gaushala ₹1.30 → ₹2.00 a quintal");

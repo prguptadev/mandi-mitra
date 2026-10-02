@@ -198,7 +198,8 @@ loadRoutes.get("/", can("load.read"), async (c) => {
 
 loadRoutes.get("/:id", can("load.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
-  const s = await loadState(biz, param(c, "id"));
+  // ?terms=mill: a voided truck worked out on its mill's terms of today, as the approver may choose to bill it
+  const s = await loadState(biz, param(c, "id"), { millTerms: c.req.query("terms") === "mill" });
   if (!s) throw notFound("Load not found");
   const canSeeParcha = c.get("auth")!.permissions.has("parcha.read");
   if (canSeeParcha) return c.json(s);
@@ -433,11 +434,14 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
     expectedGrandTotalPaise: z.number().int().optional(),
     /** The approver saw that this number is already on another parcha this year, and keeps it. */
     acceptRepeatedNo: z.boolean().optional(),
+    /** A truck billed before, whose mill's terms changed since: bill it on the mill's terms of today (default: those it was billed on). */
+    millTerms: z.boolean().optional(),
   }).parse(await c.req.json().catch(() => ({})));
   if (req.invoiceNo && req.invoiceNo !== (l.invoiceNo ?? "")) {
     await db.update(schema.loads).set({ invoiceNo: req.invoiceNo, updatedAt: nowSec() }).where(eq(schema.loads.id, id));
   }
-  const s = await loadState(biz, id);
+  const terms = { millTerms: req.millTerms === true };
+  const s = await loadState(biz, id, terms);
   if (!s) throw notFound("Load not found");
   if (s.blockers.length || !s.doc) {
     return c.json({ error: "The parcha is not ready to approve", code: "not_ready", blockers: s.blockers }, 409);
@@ -474,8 +478,8 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
   }
 
   // the claim waited on the network: look again, and freeze only what is there now
-  const now = await loadState(biz, id);
-  if (!now || now.load.status !== "draft" || now.blockers.length || !now.doc || now.doc.invoiceNo !== parchaNo
+  const now = await loadState(biz, id, terms);
+  if (!now || now.load.status !== "draft" || now.onMillTerms !== s.onMillTerms || now.blockers.length || !now.doc || now.doc.invoiceNo !== parchaNo
     || now.doc.result.grandTotalPaise !== s.doc.result.grandTotalPaise || JSON.stringify(now.doc.lines) !== JSON.stringify(s.doc.lines)) {
     // a refused approval gives its number back, so no other computer is warned about it
     await releaseParchaNumber(biz, parchaNo, s.doc.invoiceDate, id).catch(() => undefined);
@@ -520,9 +524,11 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
   }
   const { version, doc } = frozen;
   const revision = doc.revision ?? 1;
+  // a truck billed before: the trail says which terms the approver chose
+  const billedOn = s.millTermsChanged ? (s.onMillTerms ? "the mill's current terms" : "the terms it was first billed on") : undefined;
   await audit({ actor: actor(c), action: "parcha.approve", entity: "parcha", entityId: pid,
-    entityLabel: `Parcha ${parchaNo}${revision > 1 ? ` revised ${revision}` : ""}${others.length ? " (number also on another parcha this year)" : ""} — ${s.mill.code} ${l.truckNo ?? ""}`.trim(),
-    after: { parchaNo, version, revision, grandTotalPaise: doc.result.grandTotalPaise, loadId: id, rows: doc.lines.length, repeatedNo: others.length > 0 } });
+    entityLabel: `Parcha ${parchaNo}${revision > 1 ? ` revised ${revision}` : ""}${others.length ? " (number also on another parcha this year)" : ""}${s.onMillTerms ? " on the mill's current terms" : ""} — ${s.mill.code} ${l.truckNo ?? ""}`.trim(),
+    after: { parchaNo, version, revision, grandTotalPaise: doc.result.grandTotalPaise, loadId: id, rows: doc.lines.length, repeatedNo: others.length > 0, ...(billedOn ? { billedOn } : {}) } });
   await enqueueSync(biz, "parcha", pid, "insert", { id: pid, loadId: id, parchaNo, version });
   return c.json({ id: pid, parchaNo, version, revision, grandTotalPaise: doc.result.grandTotalPaise });
 });
@@ -530,7 +536,7 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
 /** Excel in the paper's layout. The approved copy when there is one, else a marked draft. */
 loadRoutes.get("/:id/parcha.xlsx", can("parcha.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
-  const s = await loadState(biz, param(c, "id"));
+  const s = await loadState(biz, param(c, "id"), { millTerms: c.req.query("terms") === "mill" });
   if (!s) throw notFound("Load not found");
   const doc = s.approved?.doc ?? s.doc;
   if (!doc) throw bad("Enter the mill weight and bags first — there is no parcha to export yet", "not_ready");

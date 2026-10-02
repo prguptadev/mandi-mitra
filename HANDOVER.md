@@ -297,10 +297,15 @@ scripts/
   frozen, stamped VOID. When a slip on a day an approved parcha takes its
   rate from changes, the edit names the parcha, and the truck shows "was /
   would be now"; void and re-approve to bill the new figure. A truck keeps
-  the mill terms its parcha was billed on (`truckTerms`, `parcha.ts`): a void
-  and re-approval after the mill's terms changed bills the old terms again,
-  and its stored net stays put; a truck never billed takes the mill's terms
-  of the day it is approved (`scripts/e2e-terms-frozen.ts`).
+  the mill terms its parcha was billed on (`truckTerms`, `parcha.ts`: the
+  live parcha, else the one voided last by `voided_at`, never one voided as
+  approved twice): a void and re-approval after the mill's terms changed
+  bills the old terms again, and its stored net stays put; a truck never
+  billed takes the mill's terms of the day it is approved. To re-bill on
+  corrected mill terms (a mill registered wrongly), the approve step of such
+  a truck shows one tick, "Bill on the mill's current terms" (off by
+  default; `millTerms` on approve, `?terms=mill` on the truck), and the
+  audit trail's `billedOn` says which (`scripts/e2e-terms-frozen.ts`).
 - **Scanner (Windows)** — "Scan from scanner" on the Scan page drives any
   WIA scanner (Canon PIXMA / imageCLASS drivers include WIA) through a
   PowerShell script (`server/lib/scanner.ts`): page 1, page 2 … one sheet,

@@ -1,7 +1,7 @@
 import { eq, and, inArray } from "drizzle-orm";
 import { db, schema, sqlite } from "../db/client.ts";
 import { ChargeConfigSchema, type ChargeConfig } from "./charges.ts";
-import { billedFigures, storedWeighment, termsOfTruck, type LoadRow } from "./parcha.ts";
+import { billedFigures, storedWeighment, termsOfTruck, APPROVED_TWICE, type LoadRow } from "./parcha.ts";
 import { newId } from "./ids.ts";
 
 /* Truck and parcha repairs after a cloud pull, and the rule for a truck
@@ -16,14 +16,15 @@ import { newId } from "./ids.ts";
  * is what the mill was billed, so the truck follows it:
  *   - a truck with a live parcha is billed, and holds the figures the parcha froze;
  *   - a truck with no live parcha is a draft, its stored net worked out from
- *     its terms (as every draft's is): those of its latest voided parcha when
- *     it was billed before, else its mill's as they stand now.
+ *     its terms (as every draft's is): those of the parcha voided last when
+ *     it was billed before (never one voided as approved twice, unless it is
+ *     the only one), else its mill's as they stand now.
  * The truck's own updated_at is left alone: a repair is not a new edit, so a
  * real change made later on another computer still wins, and two computers
  * repairing the same truck write the same record. */
 
-/** The void reason, and the clash note, when one truck was approved on two computers. */
-export const APPROVED_TWICE = "this truck was approved on two computers — the earlier parcha is kept";
+/** The void reason, and the clash note, when one truck was approved on two computers (kept in parcha.ts: a truck's terms skip such a parcha). */
+export { APPROVED_TWICE };
 
 /** The audit trail names the app itself, not a person, for what sync puts right. */
 function auditSync(businessId: string, action: string, entity: string, entityId: string, label: string, before: unknown, after: Record<string, unknown>) {

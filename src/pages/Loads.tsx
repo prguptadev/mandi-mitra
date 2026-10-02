@@ -436,10 +436,15 @@ export function LoadDetailPage({ id }: { id: string }) {
   const [voiding, setVoiding] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  /* A truck billed before keeps the terms it was billed on; when its mill's
+     terms changed since, the approver may tick to bill it on today's. */
+  const [millTerms, setMillTerms] = useState(false);
+  useEffect(() => setMillTerms(false), [id]);
   const q = useQuery({
-    queryKey: ["load", id],
-    queryFn: () => api.get<LoadState>(`/loads/${id}`),
+    queryKey: ["load", id, millTerms ? "mill-terms" : "own-terms"],
+    queryFn: () => api.get<LoadState>(`/loads/${id}${millTerms ? "?terms=mill" : ""}`),
     retry: (n, e) => apiStatus(e) !== 404 && n < 2,
+    placeholderData: (prev) => prev,
   });
   const mills = useQuery({ queryKey: ["merchants"], queryFn: () => api.get<Merchant[]>("/merchants") });
   const st = q.data;
@@ -505,8 +510,9 @@ export function LoadDetailPage({ id }: { id: string }) {
       invoiceNo: invoice.trim() || undefined,
       expectedGrandTotalPaise: (st!.approved?.doc ?? st!.doc)?.result.grandTotalPaise,
       acceptRepeatedNo: opts.acceptRepeatedNo,
+      ...(st!.onMillTerms ? { millTerms: true } : {}),
     }),
-    onSuccess: async () => { await refresh(); await qc.invalidateQueries({ queryKey: ["parchas"] }); },
+    onSuccess: async () => { setMillTerms(false); await refresh(); await qc.invalidateQueries({ queryKey: ["parchas"] }); },
     onError: async (e) => {
       await refresh();
       if (e instanceof ApiError && e.code === "offline") { setErr(t("parcha.needsInternet")); return; }
@@ -880,7 +886,7 @@ export function LoadDetailPage({ id }: { id: string }) {
                 )}
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button size="sm" icon={<Printer className="h-3.5 w-3.5" />} onClick={() => setPaper(true)}>{t("parcha.printOrSee")}</Button>
-                  <a href={`/api/loads/${id}/parcha.xlsx`} download>
+                  <a href={`/api/loads/${id}/parcha.xlsx${st.onMillTerms ? "?terms=mill" : ""}`} download>
                     <Button size="sm" icon={<FileSpreadsheet className="h-3.5 w-3.5" />}>{t("parcha.excel")}</Button>
                   </a>
                 </div>
@@ -891,8 +897,16 @@ export function LoadDetailPage({ id }: { id: string }) {
 
             {!billed && can("parcha.approve") && (
               <div className="border-t border-line p-4">
+                {st.millTermsChanged && (
+                  <div className="mb-3 text-[13px]">
+                    <p className="mb-1.5 text-muted">{t("parcha.termsChanged")}</p>
+                    <Checkbox checked={millTerms} onChange={setMillTerms} label={t("parcha.billOnMillTerms")} />
+                  </div>
+                )}
                 <Button variant="primary" className="w-full" icon={<CheckCircle2 className="h-4 w-4" />}
-                  disabled={blockers.length > 0 || !shownDoc || save.isPending || lineSave.isPending}
+                  disabled={blockers.length > 0 || !shownDoc || save.isPending || lineSave.isPending
+                    // the tick was just changed: wait for the parcha on the terms it now says
+                    || (st.millTermsChanged && millTerms !== st.onMillTerms)}
                   loading={approve.isPending}
                   onClick={async () => {
                     if (!shownDoc) return;
