@@ -11,14 +11,27 @@ import "./_guard.ts";
  *   - "Paid in this period" stops at today, as the money card does.
  *   - A statement with its To box empty runs to today, as it says.
  *   - A past year's money card and ledger card say which day they are on.
+ *   - A line of the day's rate, and a day row on a mill's stock page, open the
+ *     daily list for that mill and commodity: the same net, average and amount.
+ *   - The dara starts on a commodity the mill bought, not on 1509 regardless.
+ *   - The notes under "Mills owe us" and "We owe suppliers" add up to the tile.
+ *   - The stock page with no dates and the dashboard's "All time" stop at today.
+ *   - A mill statement with its To box empty runs to today, as it says.
+ *   - Nothing writes the old sync list (sync_outbox) any more; what it holds is
+ *     cleared in the background after start-up.
+ *   - A server on a computer set to London takes India's date for "today".
  * Runs after the sync test, on the books it leaves behind (A and B joined).
  * Run through: npm run test:e2e
  */
+import fs from "node:fs";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import { shiftDay, dmy } from "../server/lib/parchaLabels.ts";
-import { notAfterToday, suppliersNow, millsNow, followupNow, statementRange } from "../src/lib/asOfToday.ts";
-import { moneyTiles, moneyWords, ledgerProof } from "../src/lib/moneyFigures.ts";
+import { notAfterToday, suppliersNow, millsNow, followupNow, statementRange, millStatementRange, stockRange, dashboardPeriod } from "../src/lib/asOfToday.ts";
+import { moneyTiles, moneyWords, ledgerProof, moneyNotes } from "../src/lib/moneyFigures.ts";
+import { dayRateLink, stockDayLink, dailyListFrom, dailyListQuery, daraStartJins } from "../src/lib/dailyList.ts";
 import { STRINGS, type StringKey } from "../src/lib/strings.ts";
 
 const PIN = process.env.MANDI_PIN ?? "482915";
@@ -286,6 +299,236 @@ console.log("\nA past year says which day its balances are on");
   check("the ledger's sum card for a past year says 1 April to 31 March", /31 March/.test(ledgerProof(en, { current: false })) && !/to date/.test(ledgerProof(en, { current: false })), ledgerProof(en, { current: false }));
   check("  ...in Hindi too", ledgerProof(hi, { current: false }).includes("31 मार्च") && !ledgerProof(hi, { current: false }).includes("आज"), ledgerProof(hi, { current: false }));
   check("  ...and for this year, 1 April to date", /to date/.test(ledgerProof(en, { current: true })), ledgerProof(en, { current: true }));
+}
+
+console.log("\nA line of the day's rate opens the daily list for that mill and that commodity");
+const S3 = await A.call("POST", "/adati", { nameHi: "गणित जाँच तीन" });
+const M3 = await A.call("POST", "/merchants", { code: "MFX3", name: "Maths Fix Wheat Mill", chargeConfig: lb.chargeConfig });
+const j2 = jinsAll.find((x: any) => x.id !== j.id && x.code !== "1509");
+const DAY = d(-6);
+const slip = async (rst: string, millId: string, jinsId: string, date: string, grossGrams: number, ratePaisePerQtl: number) => {
+  const s = await A.call("POST", "/slips", { slipDate: date, rstNo: rst, adatiId: S3.id, jinsId, merchantId: millId, grossGrams, ratePaisePerQtl });
+  made.slips.push(s.id);
+  return s as { id: string; netGrams: number };
+};
+{
+  // one mill, two commodities on one day; another mill the same day
+  await slip("MFX21", M1.id, j.id, DAY, 1_234_000, 310_000);
+  await slip("MFX22", M1.id, j.id, DAY, 2_000_000, 320_000);
+  await slip("MFX23", M1.id, j2.id, DAY, 1_500_000, 230_000);
+  await slip("MFX24", lb.id, j.id, DAY, 900_000, 300_000);
+  // the card as the dashboard asks for it
+  const card = await A.call("GET", `/dashboard/day-averages?${new URLSearchParams({ from: DAY, to: DAY, days: "1", mills: "all" })}`);
+  const lines = (card.days[0]?.lines ?? []).filter((l: any) => l.millId === M1.id);
+  check(`the card has a line for each commodity MFX1 bought on ${dmy(DAY)}`, lines.length === 2, lines.map((l: any) => l.jinsCode));
+  // the list each line opens: its address, read the way the daily list reads it, then what the list asks for
+  const opens = async (href: string) => {
+    const o = dailyListFrom(href.slice(href.indexOf("?")));
+    return { o, list: await A.call("GET", dailyListQuery(o.date ?? T, o.mill, o.jins)) };
+  };
+  for (const l of lines) {
+    const { o, list } = await opens(dayRateLink(DAY, l));
+    check(`  ${l.jinsCode}: the list it opens (${dmy(o.date ?? "")}, ${o.mill === M1.id ? "MFX1" : o.mill || "every mill"}, ${o.jins ? jinsAll.find((x: any) => x.id === o.jins)?.code : "every commodity"}) has the line's net, average and amount`,
+      list.totals.pricedNetGrams === l.netGrams && list.totals.weightedAvgRatePaise === l.avgRatePaisePerQtl && list.totals.amountPaise === l.amountPaise,
+      { line: [l.netGrams, l.avgRatePaisePerQtl, l.amountPaise], list: [list.totals.pricedNetGrams, list.totals.weightedAvgRatePaise, list.totals.amountPaise] });
+  }
+
+  console.log("\nA day row on a mill's stock page opens the daily list for that mill and commodity");
+  for (const jinsId of [j.id, ""]) {
+    const st = await A.call("GET", `/stock/${M1.id}?${stockRange({ jinsId })}`);
+    const row = st.days.find((x: any) => x.date === DAY);
+    const { o, list } = await opens(stockDayLink(DAY, M1.id, jinsId));
+    check(`MFX1, ${jinsId ? j.code : "every commodity"}, ${dmy(DAY)}: the list it opens has the row's ${row?.slips} slips and ${row?.boughtNet} g`,
+      Boolean(row) && list.totals.rows === row.slips && list.totals.netGrams === row.boughtNet,
+      { row: row && [row.slips, row.boughtNet], list: [list.totals.rows, list.totals.netGrams], opened: o });
+  }
+}
+
+console.log("\nThe dara starts on a commodity the mill bought");
+{
+  await slip("MFX25", M3.id, j2.id, DAY, 1_100_000, 225_000);
+  // what the dialog asks: the commodities the mill bought in the period (an older server answers with a file)
+  const bought = async (millId: string, from: string, to: string) => {
+    try {
+      const r = await A.raw("GET", `/reports/mill?${new URLSearchParams({ merchantId: millId, from, to, format: "jins" })}`);
+      return r.status === 200 && Array.isArray(r.json?.jins) ? (r.json.jins as { jinsId: string }[]).map((x) => x.jinsId) : undefined;
+    } catch { return undefined; }
+  };
+  const daraRows = async (millId: string, jinsId: string) =>
+    (await A.call("GET", `/reports/mill?${new URLSearchParams({ merchantId: millId, from: DAY, to: DAY, jinsId, format: "json" })}`)).totals.count as number;
+  const onlyOther = daraStartJins(jinsAll, await bought(M3.id, DAY, DAY));
+  check(`a mill that bought only ${j2.code} on ${dmy(DAY)}: the dara starts on ${j2.code}, and it has that day's slip`,
+    onlyOther === j2.id && (await daraRows(M3.id, onlyOther)) === 1, { startsOn: jinsAll.find((x: any) => x.id === onlyOther)?.code });
+  const both = daraStartJins(jinsAll, await bought(M1.id, DAY, DAY));
+  check(`  ...a mill that bought ${j.code} and ${j2.code}: it starts on ${j.code}, as before`, both === j.id && (await daraRows(M1.id, both)) === 2,
+    { startsOn: jinsAll.find((x: any) => x.id === both)?.code });
+  const none = daraStartJins(jinsAll, await bought(M3.id, d(-30), d(-30)));
+  check(`  ...a day the mill bought nothing: ${j.code}, as before`, none === j.id, { startsOn: jinsAll.find((x: any) => x.id === none)?.code });
+  check(`  ...the same rule on its own: bought only ${j2.code} → ${j2.code}; ${j.code} and ${j2.code} → ${j.code}`, daraStartJins(jinsAll, [j2.id]) === j2.id && daraStartJins(jinsAll, [j2.id, j.id]) === j.id);
+}
+
+console.log("\nThe notes under \"Mills owe us\" and \"We owe suppliers\" add up to the figure above them");
+{
+  const money = await A.call("GET", `/dashboard/money?from=${FY.from}&to=${YEAR_TO}`);
+  const tiles = moneyTiles(money);
+  const mills = await A.call("GET", millsNow(T));
+  const follow = await A.call("GET", followupNow(T));
+  const ledger = await A.call("GET", suppliersNow(T));
+  // plain rupees, so the figures in the words can be read back and added: +, − and the first one
+  const rs = (p: number) => `₹${(p / 100).toFixed(2)}`;
+  const addUp = (note: string) => {
+    let sum = 0, first = true;
+    for (const m of note.matchAll(/(^|[+−-]\s*|·\s*)?₹(-?\d+\.\d{2})/g)) {
+      const sign = (m[1] ?? "").trim();
+      const v = Math.round(Number(m[2]) * 100);
+      if (first && !sign.startsWith("·")) sum += v;
+      else if (sign.startsWith("+")) sum += v;
+      else if (sign.startsWith("−") || sign.startsWith("-")) sum -= v;
+      first = false;
+    }
+    return sum;
+  };
+  for (const [lang, t] of [["English", en], ["Hindi", hi]] as const) {
+    const n = moneyNotes(t, rs, money, moneyWords(t, YEAR_TO, T).span);
+    check(`${lang}: "Mills owe us" ${rs(tiles.millsOwe)} (Mill accounts ${rs(mills.totals.toReceivePaise)}, follow-up ${rs(follow.totals.toReceivePaise)}): its note adds up to it`,
+      money.mills.paidAheadPaise > 0 && addUp(n.millsOwe) === tiles.millsOwe && tiles.millsOwe === mills.totals.toReceivePaise && tiles.millsOwe === follow.totals.toReceivePaise,
+      { note: n.millsOwe, addsUpTo: addUp(n.millsOwe), tile: tiles.millsOwe });
+    check(`${lang}: "We owe suppliers" ${rs(tiles.weOwe)} (ledger "Owed to suppliers" ${rs(ledger.totals.toPayPaise)}): its note adds up to it`,
+      money.suppliers.paidAheadPaise > 0 && addUp(n.weOwe) === tiles.weOwe && tiles.weOwe === ledger.totals.toPayPaise,
+      { note: n.weOwe, addsUpTo: addUp(n.weOwe), tile: tiles.weOwe });
+  }
+  const words = moneyNotes(en, rs, money, moneyWords(en, YEAR_TO, T).span);
+  check("  ...and each names what it adds back the way Mill accounts and the ledger name it",
+    words.millsOwe.includes(en("mm.totalAhead").split(" (")[0].toLowerCase()) && words.weOwe.includes(en("ledger.totalPaidAhead").split(" (")[0].toLowerCase()), words);
+  const none = moneyNotes(en, rs, { ...money, mills: { ...money.mills, paidAheadPaise: 0 }, suppliers: { ...money.suppliers, paidAheadPaise: 0 } }, "all time");
+  check("  ...and with nothing paid ahead there is nothing to add back", !/ahead/.test(none.millsOwe + none.weOwe), none);
+}
+
+console.log("\nThe stock page with no dates and the dashboard's \"All time\" stop at today");
+{
+  const late = await slip("MFX26", M1.id, j.id, d(4), 3_000_000, 300_000);   // bought for a day still to come
+  const row = (rows: any[]) => rows.find((r: any) => r.merchantId === M1.id);
+  const page = row(await A.call("GET", `/stock?${stockRange({})}`));
+  const today = row(await A.call("GET", `/stock?to=${T}`));
+  check(`stock page, no dates: MFX1 bought ${page?.boughtNet} g = bought up to today ${today?.boughtNet} g, without the slip dated ${dmy(d(4))}`,
+    page?.boughtNet === today?.boughtNet && page?.stockNet === today?.stockNet, { page: page && [page.boughtNet, page.stockNet], today: today && [today.boughtNet, today.stockNet] });
+  const millPage = await A.call("GET", `/stock/${M1.id}?${stockRange({ jinsId: j.id })}`);
+  check("  ...and the mill's own stock page has no row for that day yet", !millPage.days.some((x: any) => x.date === d(4)));
+  const picked = row(await A.call("GET", `/stock?${stockRange({ from: d(-10), to: d(10) })}`));
+  check("  ...until later dates are picked", picked?.boughtNet - row(await A.call("GET", `/stock?from=${d(-10)}&to=${T}`))?.boughtNet === late.netGrams);
+  const ask = (r: { from?: string; to?: string }) => {
+    const qs = new URLSearchParams(); if (r.from) qs.set("from", r.from); if (r.to) qs.set("to", r.to); qs.set("asOf", T);
+    return A.call("GET", `/dashboard?${qs}`);
+  };
+  const all = (await ask(dashboardPeriod("all", "", "", FY, T))).kpis;
+  const toToday = (await ask({ to: T })).kpis;
+  check(`dashboard "All time": bought ${all.boughtNetGrams} g and left ${all.leftGrams} g are those up to today`,
+    all.boughtNetGrams === toToday.boughtNetGrams && all.leftGrams === toToday.leftGrams, { all: [all.boughtNetGrams, all.leftGrams], toToday: [toToday.boughtNetGrams, toToday.leftGrams] });
+  const card = await A.call("GET", `/dashboard/money?to=${notAfterToday(undefined, T)}`);
+  check("  ...so its \"left\" (with the slips of no mill) is the money card's", all.leftGrams + all.noMillGrams === card.stock.leftGrams, { kpi: all.leftGrams + all.noMillGrams, card: card.stock.leftGrams });
+  const year = (await ask(dashboardPeriod("fy", "", "", FY, T))).kpis;
+  check("  ...as \"This year\" already did", year.leftGrams === (await ask({ from: FY.from, to: T })).kpis.leftGrams);
+  const custom = (await ask(dashboardPeriod("custom", d(-10), d(10), FY, T))).kpis;
+  const ahead = (await A.call("GET", `/slips?from=${d(1)}&to=${d(10)}`)).totals.netGrams;
+  check(`  ...and dates picked past today still count what is dated after it (the slip dated ${dmy(d(4))} among it)`,
+    ahead >= late.netGrams && custom.boughtNetGrams - (await ask({ from: d(-10), to: T })).kpis.boughtNetGrams === ahead);
+}
+
+console.log("\nA mill statement with its To box empty runs to today");
+{
+  const cheque = await receipt(A, M2.id, d(3), 777_700);   // a post-dated cheque
+  const st = await A.call("GET", `/mill-ledger/${M2.id}?${millStatementRange(FY.from, "", T)}`);
+  const row = (await A.call("GET", millsNow(T))).rows.find((r: any) => r.id === M2.id);
+  check(`From ${dmy(FY.from)}, To empty: the closing (${st.totals.closingPaise}) is what MFX2 owes today (${row?.balancePaise}), without the cheque dated ${dmy(d(3))}`,
+    st.totals.closingPaise === row?.balancePaise && !st.entries.some((e: any) => e.id === cheque.id), { closing: st.totals.closingPaise, owes: row?.balancePaise });
+  check("  ...and its CSV and print say the date it runs to: today's", st.to === T, { to: st.to });
+  check("both boxes empty is still all time", millStatementRange("", "", T) === "");
+  check("both boxes filled are asked as they are", millStatementRange(FY.from, d(10), T) === `from=${FY.from}&to=${d(10)}`);
+}
+
+console.log("\nThe old sync list is no longer written");
+{
+  const outbox = () => A.q<{ n: number }>("select count(*) n from sync_outbox")[0].n;
+  const before = outbox();
+  const s = await slip("MFX27", M1.id, j.id, T, 800_000, 300_000);
+  check(`a slip saved: no row added to sync_outbox (${before} before, ${outbox()} after)`, outbox() === before, { before, after: outbox() });
+  check("  ...and the cloud sync still has it marked to send", A.q("select 1 from _sync_dirty where tbl = 'purchase_slips' and row_id = ?", s.id).length === 1);
+}
+
+console.log("\nA computer set to London, at night in India");
+{
+  /* A server of its own on a new book, so the clock and the zone are its alone:
+     first started to set the book up, then given an old sync list of 45,000
+     rows, then started again at 01:00 in India with the zone set to London
+     (20:30 the evening before there). */
+  const OFF = Number(new URL(process.env.MANDI_API!).port) - 8799;
+  const port = 8804 + OFF;
+  const dir = path.resolve("data-test-tz");
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  const env = { ...process.env, MANDI_DATA_DIR: dir, PORT: String(port), MANDI_API: `http://127.0.0.1:${port}/api`, MANDI_NO_SEED: "0", FAKE_NOW: "" };
+  // one process (node with tsx), so stopping it stops the server; the clock is set before anything loads
+  const clock = pathToFileURL(path.resolve("scripts/fake-clock.mjs")).href;
+  const start = (extra: Record<string, string>) =>
+    spawn(process.execPath, ["--import", clock, "--import", "tsx", "server/index.ts"], { env: { ...env, ...extra }, stdio: "ignore" });
+  const up = async () => {
+    for (let i = 0; i < 160; i++) {
+      try { if ((await fetch(`http://127.0.0.1:${port}/api/health`)).ok) return true; } catch { /* not yet */ }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return false;
+  };
+  const down = async (p: ReturnType<typeof spawn>) => {
+    p.kill();
+    for (let i = 0; i < 80; i++) {
+      try { await fetch(`http://127.0.0.1:${port}/api/health`); } catch { return; }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  };
+  // India's date now, and 01:00 on it
+  const india = new Date(Date.now() + 330 * 60_000).toISOString().slice(0, 10);
+  const night = `${india}T01:00:00+05:30`;
+  let srv = start({});
+  try {
+    check("a new book is set up", await up());
+    await down(srv);
+    {
+      const db = new Database(path.join(dir, "mandi.db"));
+      const add = db.prepare("insert into sync_outbox (id, business_id, entity, entity_id, op, payload, attempts, created_at) values (?, null, 'purchase_slip', ?, 'insert', '{}', 0, 0)");
+      db.transaction(() => { for (let i = 0; i < 45_000; i++) add.run(`old-${i}`, `slip-${i}`); })();
+      db.close();
+    }
+    const t0 = Date.now();
+    srv = start({ TZ: "Europe/London", FAKE_NOW: night });
+    check(`started again at ${night} (London ${new Date(Date.parse(night)).toLocaleString("en-GB", { timeZone: "Europe/London" })})`, await up());
+    const firstScreen = Date.now() - t0;
+    const atStart = new Database(path.join(dir, "mandi.db"), { readonly: true });
+    const waiting = (atStart.prepare("select count(*) n from sync_outbox").get() as { n: number }).n;
+    atStart.close();
+    check(`the server answers first (in ${firstScreen} ms) and does not wait for the old sync list (${waiting} rows still there)`, waiting === 45_000, { waiting });
+    const L = computer("London", `http://127.0.0.1:${port}/api`, dir);
+    await L.login("Admin", "7747");
+    const span = await L.call("GET", "/days/span");
+    check(`the day list's today is India's ${dmy(india)}, not London's`, span.today === india, span);
+    const lm = await L.call("POST", "/merchants", { code: "LDN1", name: "Night Mill" });
+    await L.call("POST", "/mill-followup/notes", { merchantId: lm.id, note: "call back", nextDate: india });
+    const fu = await L.call("GET", "/mill-followup");
+    check(`the follow-up counts to ${dmy(india)} and a call promised for that day is due today`,
+      fu.asOf === india && fu.rows.find((r: any) => r.id === lm.id)?.dueToday === true, { asOf: fu.asOf, row: fu.rows.find((r: any) => r.id === lm.id) });
+    const closed = await L.raw("POST", "/days/close", { day: india });
+    check(`${dmy(india)} can be closed: it has come in India`, closed.status === 200, closed);
+    // the old list is emptied after the first screen, in the background
+    let left = -1;
+    for (let i = 0; i < 160; i++) {
+      left = L.q<{ n: number }>("select count(*) n from sync_outbox")[0].n;
+      if (left === 0) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    check(`  ...then empties it in the background: the 45,000 rows are gone (${left} left)`, left === 0, { left });
+  } finally {
+    await down(srv);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // leave the books as they were: what this test entered counts for nothing from here on
