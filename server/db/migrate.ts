@@ -51,24 +51,41 @@ export function reportBrokenLinks() {
   try { sayBrokenLinks(brokenLinks()); } catch { /* closing, or the books check says it */ }
 }
 
+function readJournal() {
+  const file = path.join(FOLDER, "meta", "_journal.json");
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) as { entries: { when: number }[] } : null;
+}
+function appliedCount() {
+  const has = sqlite.prepare("select count(*) as n from sqlite_master where type = 'table' and name = '__drizzle_migrations'").get() as { n: number };
+  return { has: has.n > 0, applied: has.n ? (sqlite.prepare("select count(*) as n from __drizzle_migrations").get() as { n: number }).n : 0 };
+}
+
+/** An update is about to change these books' tables: runMigrations() will want a checked copy first. */
+export function updateNeeded(): boolean {
+  const journal = readJournal();
+  const { applied } = appliedCount();
+  return Boolean(journal) && applied > 0 && applied < journal!.entries.length;
+}
+
 /**
  * Brings the database up to date. Returns true when nothing needed applying,
  * in which case the dangling-link note is left to reportBrokenLinks().
+ * `copyMade` is the checked copy already made for this update
+ * (backupBeforeUpdateAside, at the app's start); without it the copy is made here.
  */
-export function runMigrations(): boolean {
-  if (!fs.existsSync(path.join(FOLDER, "meta", "_journal.json"))) {
+export function runMigrations(copyMade?: string | null): boolean {
+  const journal = readJournal();
+  if (!journal) {
     console.warn("[db] no migrations found — run: npx drizzle-kit generate");
     return false;
   }
-  const journal = JSON.parse(fs.readFileSync(path.join(FOLDER, "meta", "_journal.json"), "utf8")) as { entries: { when: number }[] };
-  const has = sqlite.prepare("select count(*) as n from sqlite_master where type = 'table' and name = '__drizzle_migrations'").get() as { n: number };
-  const applied = has.n ? (sqlite.prepare("select count(*) as n from __drizzle_migrations").get() as { n: number }).n : 0;
+  const { has, applied } = appliedCount();
   const updating = applied > 0 && applied < journal.entries.length;
   // what drizzle itself applies: every entry newer than the newest one recorded here
-  const last = has.n ? sqlite.prepare("select created_at from __drizzle_migrations order by created_at desc limit 1").get() as { created_at: number | string } | undefined : undefined;
+  const last = has ? sqlite.prepare("select created_at from __drizzle_migrations order by created_at desc limit 1").get() as { created_at: number | string } | undefined : undefined;
   const pending = journal.entries.some((e) => !last || Number(last.created_at) < e.when);
   // an update about to change the tables: a checked copy first, or no update at all
-  const backup = updating ? backupBeforeUpdate() : null;
+  const backup = updating ? (copyMade ?? backupBeforeUpdate()) : null;
   if (backup) console.log(`[db] backed up before update: ${path.basename(backup)}`);
   const before = updating ? rowCounts() : null;
 

@@ -1,15 +1,19 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.ts";
-import { runMigrations, reportBrokenLinks } from "./db/migrate.ts";
+import { runMigrations, reportBrokenLinks, updateNeeded } from "./db/migrate.ts";
 import { recoverInterruptedScans, fingerprintOldPagesLater } from "./routes/scans.ts";
 import { DB_PATH, sqlite } from "./db/client.ts";
-import { startAutoBackups } from "./lib/backup.ts";
+import { startAutoBackups, backupBeforeUpdateAside } from "./lib/backup.ts";
 import { startCloudSync } from "./lib/cloud.ts";
 import { syncNewPermissions } from "./lib/rbacSync.ts";
 import { seedFirstRun } from "./lib/businessSetup.ts";
 
 const port = Number(process.env.PORT ?? 8787);
-const upToDate = runMigrations();
+/* An update about to change the tables: its checked copy is made first, as
+   always, and nothing goes ahead without it; but on a thread of its own, so
+   on a slow laptop the window is not taken for hung while a big book is copied. */
+const copyMade = updateNeeded() ? await backupBeforeUpdateAside() : null;
+const upToDate = runMigrations(copyMade);
 /* Fresh statistics for the query planner (cheap; only re-analyses what
    changed: a millisecond on books analysed at the last start). Before the
    first screen, as always: rows that tie in a list come back in the order

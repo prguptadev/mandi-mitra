@@ -88,42 +88,53 @@ function verify(file: string) {
   } finally { d.close(); }
 }
 
-/* The same check on a thread of its own. Reading a big book's copy through
-   takes seconds on a slow laptop, and the app's one thread would answer no
-   screen meanwhile. If no thread can be started, it is checked here as before:
-   either way a copy is kept only once the check has passed. */
-const VERIFY_ASIDE = `
+/* The same work on a thread of its own: writing a big book's copy (`from`
+   given: VACUUM INTO, through the thread's own connection) and reading it
+   through take seconds on a slow laptop, and the app's one thread would
+   answer no screen, nor keep its window alive, meanwhile. If no thread can be
+   started it is done here as before: either way a copy is kept only once the
+   check has passed. */
+const ASIDE = `
 const { parentPort, workerData } = require("node:worker_threads");
 (() => {
   let Database;
   try { Database = require(workerData.lib); } catch { parentPort.postMessage({ here: true }); return; }
-  let d;
+  let src, d;
   try {
+    if (workerData.from) {
+      src = new Database(workerData.from, { fileMustExist: true });
+      src.prepare("vacuum into ?").run(workerData.file);
+      src.close();
+      src = undefined;
+    }
     d = new Database(workerData.file, { readonly: true, fileMustExist: true });
     const r = d.pragma("quick_check", { simple: true });
     parentPort.postMessage(r === "ok" ? { ok: true } : { error: "the copy is damaged (" + String(r).slice(0, 80) + ")" });
   } catch (e) {
     parentPort.postMessage({ error: e && e.message ? e.message : String(e) });
   } finally {
+    try { if (src) src.close(); } catch { /* closed */ }
     try { if (d) d.close(); } catch { /* closed */ }
   }
 })();`;
-export function verifyAside(file: string): Promise<void> {
-  const here = () => new Promise<void>((resolve) => { verify(file); resolve(); });
+function aside(file: string, from: string | null, here: () => void): Promise<void> {
+  const inline = () => new Promise<void>((resolve) => { here(); resolve(); });
   let lib: string;
-  try { lib = createRequire(import.meta.url).resolve("better-sqlite3"); } catch { return here(); }
+  try { lib = createRequire(import.meta.url).resolve("better-sqlite3"); } catch { return inline(); }
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     const finish = (p: () => Promise<void>) => { if (!settled) { settled = true; p().then(resolve, reject); } };
     let w: Worker;
-    try { w = new Worker(VERIFY_ASIDE, { eval: true, workerData: { lib, file } }); } catch { finish(here); return; }
+    try { w = new Worker(ASIDE, { eval: true, workerData: { lib, file, from } }); } catch { finish(inline); return; }
     w.once("message", (m: { ok?: boolean; here?: boolean; error?: string }) =>
-      finish(m.ok ? () => Promise.resolve() : m.here ? here : () => Promise.reject(new Error(m.error))));
-    // the thread itself failed (not the copy): check here
-    w.once("error", () => finish(here));
-    w.once("exit", () => finish(here));
+      finish(m.ok ? () => Promise.resolve() : m.here ? inline : () => Promise.reject(new Error(m.error))));
+    // the thread itself failed (not the copy): do it here
+    w.once("error", () => finish(inline));
+    w.once("exit", () => finish(inline));
   });
 }
+/** verify(), on a thread of its own. */
+export const verifyAside = (file: string) => aside(file, null, () => verify(file));
 const hostDir = () => os.hostname().replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40) || "this-computer";
 
 /** A second folder must exist and take a file; says why not in plain words. */
@@ -277,6 +288,35 @@ export function backupBeforeUpdate() {
   try {
     sqlite.prepare("vacuum into ?").run(tmp);
     verify(tmp);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+  prune(BACKUP_DIR, "before-update", name);
+  return file;
+}
+
+/**
+ * backupBeforeUpdate() with the copy written and checked on a thread of its
+ * own, for the app's own start: a big book takes long enough on a slow laptop
+ * for the window to be taken as hung. Nothing else touches the database
+ * meanwhile (the caller waits for it before the update), and it throws, as
+ * the other does, if no good copy could be made.
+ */
+export async function backupBeforeUpdateAside(): Promise<string> {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const name = `before-update-${stamp()}.db`;
+  const file = path.join(BACKUP_DIR, name);
+  const tmp = `${file}.tmp`;
+  fs.rmSync(tmp, { force: true });
+  try {
+    await aside(tmp, DB_PATH, () => {
+      // a thread that stopped part-way may have left a piece of the copy
+      fs.rmSync(tmp, { force: true });
+      sqlite.prepare("vacuum into ?").run(tmp);
+      verify(tmp);
+    });
     fs.renameSync(tmp, file);
   } catch (e) {
     fs.rmSync(tmp, { force: true });
