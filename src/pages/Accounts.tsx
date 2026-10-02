@@ -348,7 +348,8 @@ export function LedgerPage() {
 
       {/* the list above the statement at every width: a statement's columns need the whole width */}
       <div className="grid gap-5">
-        <Card className="self-start">
+        {/* a name and its amount stay close enough to read across */}
+        <Card className="w-full max-w-3xl self-start">
           <div className="border-b border-line p-3">
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
