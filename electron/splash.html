@@ -20,7 +20,18 @@
   .bar i { display: block; width: 40%; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--brand), var(--brand2));
     animation: slide 1.1s ease-in-out infinite; }
   #status { font-size: 12.5px; color: var(--muted); min-height: 17px; text-align: center; padding: 0 20px; }
-  #status.bad { color: #c0392b; }
+  #status.bad { color: #c0392b; font-size: 14px; font-weight: 600; }
+  /* when start-up goes wrong: one sentence, Try again, Close, and where the log is */
+  .btns { display: none; gap: 10px; -webkit-app-region: no-drag; }
+  .btns button { font: inherit; font-size: 13.5px; padding: 7px 18px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--track); background: transparent; color: var(--ink); }
+  .btns button.go { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
+  #log { display: none; font-size: 10.5px; color: var(--muted); max-width: 400px; text-align: center; padding: 0 16px;
+    word-break: break-all; -webkit-user-select: text; user-select: text; -webkit-app-region: no-drag; }
+  body.err .bar { display: none; }
+  body.err .btns { display: flex; }
+  body.err #log { display: block; }
+  body.err .ver { display: none; }
   .ver { position: absolute; bottom: 10px; font-size: 11px; color: var(--muted); opacity: .8; }
   @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
   @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -47,10 +58,21 @@
   <p class="hi">मंडी मित्र</p>
   <div class="bar"><i></i></div>
   <div id="status">Starting…</div>
+  <div class="btns"><button class="go" id="again">Try again</button><button id="close">Close</button></div>
+  <div id="log"></div>
   <div class="ver" id="ver"></div>
   <script>
-    // the app fills these in as it starts: setStatus("Opening your data…"), setVersion("0.2.1")
+    // the app fills these in as it starts: setStatus("Opening your data…"), setVersion("0.2.1"),
+    // and setError("Mandi Mitra could not open your books.", "C:\\…\\logs\\main.log") when it cannot
     window.setStatus = (text, bad) => { const s = document.getElementById("status"); s.textContent = text; s.className = bad ? "bad" : ""; };
+    window.setError = (text, logFile) => {
+      window.setStatus(text, true);
+      document.getElementById("log").textContent = logFile ? "Details: " + logFile : "";
+      document.body.classList.add("err");
+    };
+    // the two buttons reach the app through splash-preload.cjs, and nothing else does
+    document.getElementById("again").onclick = () => window.mandi && window.mandi.tryAgain();
+    document.getElementById("close").onclick = () => (window.mandi ? window.mandi.close() : window.close());
     window.setVersion = (v) => { document.getElementById("ver").textContent = "v" + v; };
     const q = new URLSearchParams(location.search);
     if (q.get("v")) window.setVersion(q.get("v"));

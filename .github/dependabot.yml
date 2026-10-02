@@ -1,0 +1,24 @@
+# Electron gets security fixes only for its latest three versions (a new one about every
+# 8 weeks). Once a month this offers one pull request for Electron and its packager, and one
+# for the build's GitHub actions; desktop.yml builds and smoke-tests each on Windows first.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    allow:
+      - dependency-name: electron
+      - dependency-name: electron-builder
+    groups:
+      electron:
+        patterns: [electron, electron-builder]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 1
+    groups:
+      actions:
+        patterns: ["*"]

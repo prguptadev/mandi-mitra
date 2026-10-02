@@ -28,10 +28,15 @@ import { tallyRoutes } from "./routes/tally.ts";
 import { emandiRoutes } from "./routes/emandi.ts";
 import { dayRoutes } from "./routes/days.ts";
 import { millFollowupRoutes } from "./routes/millFollowup.ts";
+import { desktopGate } from "./lib/desktopGate.ts";
 
 /** The whole API. Electron imports this same object — no second implementation. */
 export function createApp() {
   const app = new Hono<Env>();
+
+  // the desktop app's server answers only the app's own windows (lib/desktopGate.ts); off elsewhere
+  const gate = desktopGate();
+  if (gate) app.use("*", gate);
 
   /* Only this computer's own pages may talk to the API: its own names and
      port, and changes only from its own pages (lib/http.ts requestGuard).

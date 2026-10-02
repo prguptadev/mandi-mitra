@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # the Windows build (desktop.yml) runs these same checks before it may publish
+  workflow_call:
 
 jobs:
   check:
@@ -12,14 +14,16 @@ jobs:
       # the desktop app is built by desktop.yml; this job never starts Electron
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - name: Typecheck
         run: npm run typecheck
+      - name: The desktop app's own files parse
+        run: for f in electron/*.cjs; do node --check "$f" || exit 1; done
       - name: Parcha charge engine regression
         run: npx tsx server/lib/charges.check.ts
       - name: Transliteration check
