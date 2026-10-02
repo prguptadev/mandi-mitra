@@ -14,6 +14,7 @@ import { toastError } from "@/components/Toaster.tsx";
 import { ReceiptDialog } from "@/pages/MillMoney.tsx";
 import { Alert, Badge, Button, Card, CardHeader, Dialog, EmptyState, Field, Input, Spinner, Table, Td, Textarea, Th, Tr } from "@/components/ui/index.tsx";
 import { cn, dmy, todayISO } from "@/lib/utils.ts";
+import { followupNow } from "@/lib/asOfToday.ts";
 
 /* Chasing the mills for money: who owes what, since when (the unpaid parchas,
    oldest first), when each last paid, and the call log — what was said, what
@@ -37,7 +38,8 @@ export function MillFollowupPage() {
   const { t, pick } = useI18n();
   const f = useFormat();
   const { can } = useSession();
-  const q = useQuery({ queryKey: ["mill-followup"], queryFn: () => api.get<FollowResp>("/mill-followup") });
+  // what each mill owes today: a post-dated cheque is not received before its day
+  const q = useQuery({ queryKey: ["mill-followup", todayISO()], queryFn: () => api.get<FollowResp>(followupNow()) });
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [noting, setNoting] = useState<FollowRow | null>(null);
   const [receiving, setReceiving] = useState<string | null>(null);

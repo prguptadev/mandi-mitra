@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useFYRange } from "@/lib/fy.tsx";
+import { useFYRangeToToday } from "@/lib/fyToday.ts";
 import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
 import { Link, useLocation, useSearch } from "wouter";
 import { useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -23,7 +24,7 @@ import { Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badg
 import { LoadError } from "@/components/LoadError.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
-import { dmy, screenLines } from "@server/lib/parchaLabels.ts";
+import { dmy, screenLines, goodsAt } from "@server/lib/parchaLabels.ts";
 import { PoProgress, poName } from "@/pages/Orders.tsx";
 
 const Q = 100_000;
@@ -847,7 +848,10 @@ export function LoadDetailPage({ id }: { id: string }) {
                     <tr>
                       <td className="py-1 pr-2">
                         {t("parcha.goods")}
-                        <span className="ml-1.5 text-[11px] text-faint">{f.weight(shownDoc.totals.netGrams)} × {f.rate(shownDoc.totals.ratePaisePerQtl)}</span>
+                        {/* one row: net × its rate; several rows: their net and average rate, which need not multiply back to the sum */}
+                        <span className="ml-1.5 text-[11px] text-faint">{goodsAt(shownDoc).average
+                          ? `${f.weight(shownDoc.totals.netGrams)} · ${t("load.avgShort", { r: f.rate(shownDoc.totals.ratePaisePerQtl) })}`
+                          : `${f.weight(shownDoc.totals.netGrams)} × ${f.rate(shownDoc.totals.ratePaisePerQtl)}`}</span>
                       </td>
                       <td className="num py-1 text-right">{f.money(shownDoc.totals.goodsPaise)}</td>
                     </tr>
@@ -990,8 +994,10 @@ export function ParchaRegisterPage() {
   const { t, pick } = useI18n();
   const f = useFormat();
   const [, navigate] = useLocation();
-  // the chosen financial year, until other dates are picked
-  const { from, setFrom, to, setTo } = useFYRange();
+  /* the chosen financial year up to today, until other dates are picked: each
+     parcha's due is as of the end date, like the mill statement's, so a
+     post-dated cheque is not counted as received before its day */
+  const { from, setFrom, to, setTo } = useFYRangeToToday();
   const [showVoid, setShowVoid] = useState(false);
   const qs = new URLSearchParams();
   if (from) qs.set("from", from);
