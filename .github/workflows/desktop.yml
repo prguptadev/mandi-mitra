@@ -89,10 +89,13 @@ jobs:
           $out = ((Get-Content upgrade-out.txt -Raw), (Get-Content upgrade-err.txt -Raw)) -join "`n"
           Write-Host $out
           if ($p.ExitCode -ne 0) { throw "the app did not start on last release's books (exit code $($p.ExitCode))" }
-          if ($out -notmatch "backed up before update") { throw "no copy of the books was made before the update" }
-          if ($out -notmatch "migrations up to date") { throw "the books were not updated" }
-          if ($out -match "first run") { throw "new books were made instead of opening the old ones" }
-          if ($out -notmatch "before-update copy made") { throw "no before-update backup file" }
+          # the same again from what the app printed, when Windows passed its output on
+          if ($out.Trim()) {
+            if ($out -notmatch "backed up before update") { throw "no copy of the books was made before the update" }
+            if ($out -notmatch "migrations up to date") { throw "the books were not updated" }
+            if ($out -match "first run") { throw "new books were made instead of opening the old ones" }
+            if ($out -notmatch "before-update copy made") { throw "no before-update backup file" }
+          }
 
       - name: Tricks to get into the app do nothing (fuses and refused switches)
         shell: pwsh
