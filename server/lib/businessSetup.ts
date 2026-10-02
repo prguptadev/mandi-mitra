@@ -1,20 +1,23 @@
-import { db, schema } from "../db/client.ts";
+import { db, schema, sqlite } from "../db/client.ts";
 import { newId } from "./ids.ts";
 import { ROLE_PRESETS } from "./rbac.ts";
 import { hashPin } from "./auth.ts";
 
-/* What every new business starts with: the stock roles and the local commodities. */
+/* What every new business starts with: the stock roles and the local commodities.
+   Callers put these in one transaction with the business itself (sqlite.transaction):
+   every commit is a flush to the disk (synchronous = FULL), so hundreds of rows
+   committed one by one would take seconds on a shop PC's hard disk. */
 
-export async function seedRoles(businessId: string) {
+export function seedRoles(businessId: string) {
   const map: Record<string, string> = {};
   for (const preset of ROLE_PRESETS) {
     const roleId = newId();
-    await db.insert(schema.roles).values({
+    db.insert(schema.roles).values({
       id: roleId, businessId, key: preset.key, label: preset.label,
       labelHi: preset.labelHi, isSystem: true, rank: preset.rank,
-    });
+    }).run();
     for (const p of preset.permissions) {
-      await db.insert(schema.rolePermissions).values({ id: newId(), roleId, permission: p });
+      db.insert(schema.rolePermissions).values({ id: newId(), roleId, permission: p }).run();
     }
     map[preset.key] = roleId;
   }
@@ -22,7 +25,7 @@ export async function seedRoles(businessId: string) {
 }
 
 /** Give a fresh business the commodities that actually move through Etah. */
-export async function seedJins(businessId: string) {
+export function seedJins(businessId: string) {
   const rows = [
     { code: "1509", name: "Paddy 1509", nameHi: "धान 1509", crop: "paddy" },
     { code: "1121", name: "Paddy 1121", nameHi: "धान 1121", crop: "paddy" },
@@ -32,7 +35,7 @@ export async function seedJins(businessId: string) {
     { code: "MAIZE", name: "Maize", nameHi: "मक्का", crop: "maize" },
   ];
   for (const r of rows) {
-    await db.insert(schema.jins).values({ id: newId(), businessId, ...r });
+    db.insert(schema.jins).values({ id: newId(), businessId, ...r }).run();
   }
 }
 
@@ -54,27 +57,33 @@ export const FIRST_PIN = "7747";
  * Managers, everyone on PIN 7747 with full access
  * in both firms. Only the Admin can add a further business. A computer that
  * then joins the office's cloud has all of this replaced by the cloud's data.
+ * All of it is one transaction: one flush to the disk, and never half a set-up.
  */
 export async function seedFirstRun() {
   if (process.env.MANDI_NO_SEED === "1") return false;
   const [u] = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
   if (u) return false;
-  const users = FIRST_USERS.map((x) => ({ ...x, id: newId() }));
-  for (const x of users) {
+  // the PINs are hashed first (deliberately slow), so the transaction holds the books only for the writes
+  const users = FIRST_USERS.map((x) => {
     const { hash, salt } = hashPin(FIRST_PIN);
-    await db.insert(schema.users).values({ id: x.id, name: x.name, nameHi: x.nameHi, pinHash: hash, pinSalt: salt, isRoot: x.isRoot });
-  }
-  let first: string | null = null;
-  for (const b of FIRST_BUSINESSES) {
-    const businessId = newId();
-    first ??= businessId;
-    await db.insert(schema.businesses).values({ id: businessId, ...b });
-    const roles = await seedRoles(businessId);
-    await seedJins(businessId);
-    // full access for now; the owner can narrow the Managers later from Users
-    for (const x of users) await db.insert(schema.memberships).values({ id: newId(), userId: x.id, businessId, roleId: roles.owner });
-  }
-  // everyone starts in Vijay Laxmi Dal Mill; the switcher is one click away
-  await db.update(schema.users).set({ prefs: JSON.stringify({ lastBusinessId: first }) });
+    return { ...x, id: newId(), pinHash: hash, pinSalt: salt };
+  });
+  sqlite.transaction(() => {
+    for (const x of users) {
+      db.insert(schema.users).values({ id: x.id, name: x.name, nameHi: x.nameHi, pinHash: x.pinHash, pinSalt: x.pinSalt, isRoot: x.isRoot }).run();
+    }
+    let first: string | null = null;
+    for (const b of FIRST_BUSINESSES) {
+      const businessId = newId();
+      first ??= businessId;
+      db.insert(schema.businesses).values({ id: businessId, ...b }).run();
+      const roles = seedRoles(businessId);
+      seedJins(businessId);
+      // full access for now; the owner can narrow the Managers later from Users
+      for (const x of users) db.insert(schema.memberships).values({ id: newId(), userId: x.id, businessId, roleId: roles.owner }).run();
+    }
+    // everyone starts in Vijay Laxmi Dal Mill; the switcher is one click away
+    db.update(schema.users).set({ prefs: JSON.stringify({ lastBusinessId: first }) }).run();
+  })();
   return true;
 }

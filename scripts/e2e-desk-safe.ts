@@ -85,6 +85,22 @@ function damageHeader(file: string) {
   fs.writeSync(fd, Buffer.from("this is not a database any more, a torn write".padEnd(100, "#")), 0, 100, 0);
   fs.closeSync(fd);
 }
+/**
+ * Commits in a -wal file since it was last reset: frames carrying a commit mark
+ * under the file's current salt. With synchronous = FULL, each one is a flush to the disk.
+ */
+function walCommits(file: string) {
+  let b: Buffer;
+  try { b = fs.readFileSync(file); } catch { return 0; }
+  if (b.length < 32) return 0;
+  const ps = b.readUInt32BE(8), s1 = b.readUInt32BE(16), s2 = b.readUInt32BE(20);
+  let n = 0;
+  for (let at = 32; at + 24 + ps <= b.length; at += 24 + ps) {
+    if (b.readUInt32BE(at + 8) !== s1 || b.readUInt32BE(at + 12) !== s2) break;
+    if (b.readUInt32BE(at + 4) !== 0) n++;
+  }
+  return n;
+}
 /** As if the last run was cut off (power cut, crash, killed): the clean-close mark is still there. */
 const cutOff = (dir: string) => fs.writeFileSync(path.join(dir, "books-open.json"), JSON.stringify({ pid: 1, at: new Date().toISOString() }));
 const notice = (dir: string) => { try { return JSON.parse(fs.readFileSync(path.join(dir, "start-notice.json"), "utf8")); } catch { return null; } };
@@ -201,6 +217,15 @@ try {
     check("the next start checks the books file, then opens", again.up && /did not close cleanly: checking the books file/.test(again.log()), again.log().slice(-600));
     await again.stop("SIGTERM");
     check("  a clean close is remembered (no check at the start after it)", !fs.existsSync(path.join(d, "books-open.json")));
+  }
+  {
+    // every commit is a flush to the disk (10 to 30 ms each on a shop PC's hard disk): a set-up of hundreds of rows is one commit
+    const d = path.join(ROOT, "seed");
+    fs.mkdirSync(d, { recursive: true });
+    const r = unitRun(d, "seed", [], { MANDI_NO_SEED: "0", PORT: String(PORT) });
+    check("a new install's first-run set-up (both firms, users, roles, commodities) is one commit, not one per row",
+      r.seeded === true && r.rows > 200 && r.firstRun === 1, r);
+    check("  ...and so is Add business (its roles and commodities)", r.added === 200 && r.businessRows > 50 && r.addBusiness <= 2, r);
   }
 
   /* ------------------------------------------------------ damaged books */
@@ -528,6 +553,42 @@ async function unit(name: string, _args: string[]) {
   if (name === "sync") {
     const { sqlite } = await import("../server/db/client.ts");
     return out({ synchronous: sqlite.pragma("synchronous", { simple: true }) });
+  }
+  if (name === "seed") {
+    const { sqlite, DB_PATH } = await import("../server/db/client.ts");
+    const { runMigrations } = await import("../server/db/migrate.ts");
+    runMigrations();
+    // nothing folded in meanwhile: every commit stays countable in the -wal
+    sqlite.pragma("wal_autocheckpoint = 0");
+    sqlite.pragma("wal_checkpoint(TRUNCATE)");
+    const { seedFirstRun } = await import("../server/lib/businessSetup.ts");
+    const seeded = await seedFirstRun();
+    const firstRun = walCommits(`${DB_PATH}-wal`);
+    const n = (t: string) => (sqlite.prepare(`select count(*) as n from "${t}"`).get() as { n: number }).n;
+    const tables = ["users", "businesses", "roles", "role_permissions", "jins", "memberships"];
+    const rows = tables.reduce((s, t) => s + n(t), 0);
+    // Add business, as the Admin does it in the app (signed in on the first-run PIN)
+    const { createApp } = await import("../server/app.ts");
+    const app = createApp();
+    const host = `127.0.0.1:${process.env.PORT}`;
+    let cookie = "";
+    const call = async (method: string, p: string, body?: unknown) => {
+      const res = await app.fetch(new Request(`http://${host}/api${p}`, {
+        method, body: body === undefined ? undefined : JSON.stringify(body),
+        headers: { host, "content-type": "application/json", origin: `http://${host}`, "sec-fetch-site": "same-origin", ...(cookie ? { cookie } : {}) },
+      }), { incoming: { socket: { remoteAddress: "127.0.0.1", remotePort: 50123, remoteFamily: "IPv4", localPort: Number(process.env.PORT) } }, outgoing: {} });
+      const sc = res.headers.get("set-cookie");
+      if (sc) cookie = sc.split(";")[0];
+      return { status: res.status, json: await res.json().catch(() => null) };
+    };
+    const users = (await call("GET", "/auth/users")).json as { id: string; name: string }[];
+    await call("POST", "/auth/login", { userId: users.find((u) => u.name === "Admin")!.id, pin: "7747" });
+    sqlite.pragma("wal_checkpoint(TRUNCATE)");
+    const before = rows;
+    const added = await call("POST", "/auth/businesses", { name: "Desk Safe Test Firm", shortCode: "DSTF" });
+    const addBusiness = walCommits(`${DB_PATH}-wal`);
+    const businessRows = tables.reduce((s, t) => s + n(t), 0) - before;
+    return out({ seeded, firstRun, rows, added: added.status, addBusiness, businessRows });
   }
   if (name === "migrate") {
     const { runMigrations } = await import("../server/db/migrate.ts");

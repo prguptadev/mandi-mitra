@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { setCookie, deleteCookie, getCookie } from "hono/cookie";
 import { z } from "zod";
 import { eq, and, asc, ne } from "drizzle-orm";
-import { db, schema } from "../db/client.ts";
+import { db, schema, sqlite } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import type { Context } from "hono";
 import {
@@ -51,20 +51,23 @@ authRoutes.post("/signup", mainComputerOnly, async (c) => {
   const userId = newId();
   const businessId = newId();
 
-  await db.insert(schema.users).values({
-    id: userId, name: body.name, nameHi: body.nameHi || null,
-    phone: body.phone || null, pinHash: hash, pinSalt: salt, isRoot: true,
-  });
-  await db.insert(schema.businesses).values({
-    id: businessId, name: body.businessName,
-    nameHi: body.businessNameHi || null,
-    shortCode: body.shortCode.toUpperCase(),
-  });
-  const roles = await seedRoles(businessId);
-  await seedJins(businessId);
-  await db.insert(schema.memberships).values({
-    id: newId(), userId, businessId, roleId: roles.owner,
-  });
+  // one transaction: one flush to the disk for the business's hundred-odd rows, and never half a business
+  sqlite.transaction(() => {
+    db.insert(schema.users).values({
+      id: userId, name: body.name, nameHi: body.nameHi || null,
+      phone: body.phone || null, pinHash: hash, pinSalt: salt, isRoot: true,
+    }).run();
+    db.insert(schema.businesses).values({
+      id: businessId, name: body.businessName,
+      nameHi: body.businessNameHi || null,
+      shortCode: body.shortCode.toUpperCase(),
+    }).run();
+    const roles = seedRoles(businessId);
+    seedJins(businessId);
+    db.insert(schema.memberships).values({
+      id: newId(), userId, businessId, roleId: roles.owner,
+    }).run();
+  })();
 
   const token = await createSession(userId, businessId, c.req.header("user-agent"));
   setCookie(c, COOKIE, token, cookieOpts);
@@ -233,17 +236,20 @@ authRoutes.post("/businesses", requireAuth, async (c) => {
   }).parse(await c.req.json());
 
   const businessId = newId();
-  await db.insert(schema.businesses).values({
-    id: businessId, name: body.name,
-    nameHi: body.nameHi || null, shortCode: body.shortCode.toUpperCase(),
-  });
-  const roles = await seedRoles(businessId);
-  await seedJins(businessId);
-  await db.insert(schema.memberships).values({
-    id: newId(), userId: auth.user.id, businessId, roleId: roles.owner,
-  });
-  await db.update(schema.sessions).set({ activeBusinessId: businessId })
-    .where(eq(schema.sessions.id, auth.session.id));
+  // one transaction: one flush to the disk for the business's hundred-odd rows, and never half a business
+  sqlite.transaction(() => {
+    db.insert(schema.businesses).values({
+      id: businessId, name: body.name,
+      nameHi: body.nameHi || null, shortCode: body.shortCode.toUpperCase(),
+    }).run();
+    const roles = seedRoles(businessId);
+    seedJins(businessId);
+    db.insert(schema.memberships).values({
+      id: newId(), userId: auth.user.id, businessId, roleId: roles.owner,
+    }).run();
+    db.update(schema.sessions).set({ activeBusinessId: businessId })
+      .where(eq(schema.sessions.id, auth.session.id)).run();
+  })();
   await audit({
     actor: { ...actor(c), businessId }, action: "business.create",
     entity: "business", entityId: businessId, entityLabel: body.name, after: body,
