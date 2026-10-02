@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -12,7 +12,7 @@ import { useSort } from "@/lib/useSort.ts";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, parseLooseNumber, parseQtlToGrams, parseRupeesToPaise, GRAMS_PER_QTL } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
-import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
+import { TallyMark, useTallyFlags, type TallyFlag } from "@/components/TallyMark.tsx";
 import { useDayActions, type DayRow } from "@/lib/dayClose.tsx";
 import { DailyListSettings } from "@/components/DailyListSettings.tsx";
 import { usePrefs, DAILY_COLUMNS, type DailyColumnKey } from "@/lib/prefs.tsx";
@@ -105,6 +105,144 @@ const WIDTHS: Record<string, string> = {
 };
 
 const CELL = "h-8 w-full rounded-md border border-line bg-surface px-2 text-[13px] text-ink num text-right placeholder:text-faint focus:border-brand disabled:opacity-60";
+
+/** A column's width dragged by hand, if it has one. */
+const colWidth = (widths: Record<string, number | undefined>, k: string) => {
+  const w = widths[k];
+  return w ? { width: w, minWidth: w, maxWidth: w, overflow: "hidden" as const } : undefined;
+};
+
+/** What every saved row draws with: the same object from one key press to the next, so typing
+ *  in the new row does not draw the day's other rows again (a season day has 1,500). */
+interface CellCtx {
+  t: ReturnType<typeof useI18n>["t"];
+  f: ReturnType<typeof useFormat>;
+  lang: string;
+  canReview: boolean;
+  showFlag: (rst: string, why: string) => void;
+}
+interface RowActions { toggle: (id: string, on: boolean) => void; edit: (r: Row) => void; remove: (r: Row) => void }
+type DailyColumn = (typeof DAILY_COLUMNS)[number];
+
+function displayCell(key: DailyColumnKey, r: Row, i: number, x: CellCtx, flag: TallyFlag | undefined, rstDay: number) {
+  const { t, f, lang } = x;
+  switch (key) {
+    case "sr": return <span className="inline-flex items-center gap-1"><span className="num text-[11px] text-faint">{i + 1}</span><TallyMark flag={flag} /></span>;
+    case "rstNo": {
+      // orange: the same RST again today, or the same RST and weight on another date — a flag, never a block
+      const other = r.rstOtherDays ?? [];
+      const why = [
+        rstDay > 1 ? t("daily.rstRepeated") : "",
+        other.length ? t("daily.rstOtherDays", { rst: r.rstNo, dates: other.map(dmy).join(", ") }) : "",
+      ].filter(Boolean).join(" · ");
+      if (!why) return <span className="num font-medium">{r.rstNo}</span>;
+      return (
+        <span className="inline-flex flex-wrap items-center gap-1" title={why}>
+          <span className="num rounded border-2 border-warn px-1 font-medium">{r.rstNo}</span>
+          {/* the other date in plain sight, so a tap or a glance is enough */}
+          {other.length > 0 && (
+            <button type="button" className="num rounded bg-warn-soft px-1 text-[10px] font-medium text-warn"
+              aria-label={why} onClick={() => x.showFlag(r.rstNo, why)}>
+              {dmy(other[0]).slice(0, 5)}{other.length > 1 ? ` +${other.length - 1}` : ""}
+            </button>
+          )}
+        </span>
+      );
+    }
+    case "adatiHi": return (
+      <span className="flex items-center gap-1.5">
+        <span lang="hi" className="truncate text-[14px] text-ink">{r.adatiNameHi}</span>
+        {r.scanBatchId && x.canReview && (
+          <Link href={`/scan/${r.scanBatchId}`} title={t("daily.fromScan")}
+            className="shrink-0 text-faint transition-colors hover:text-brand">
+            <ImageIcon className="h-3.5 w-3.5" />
+          </Link>
+        )}
+        {r.ratePending && <Badge tone="warn">{t("daily.ratePending")}</Badge>}
+      </span>
+    );
+    case "adatiLatin": return <span className="truncate text-[12px] text-muted">{r.adatiNameHinglish}</span>;
+    case "village": return <span className="text-[12px] text-muted">{lang === "hi" ? (r.adatiVillage ?? "") : (r.adatiVillage ?? "")}</span>;
+    case "mill": return r.merchantCode ? <Badge tone="neutral" className="num">{r.merchantCode}</Badge> : <span className="text-faint">—</span>;
+    case "jins": return <span className="num text-[12px] text-muted">{r.jinsCode}</span>;
+    case "gross": return r.grossOdd
+      ? <span className="text-warn" title={t(r.grossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip")}>{f.weight(r.grossGrams)} !</span>
+      : f.weight(r.grossGrams);
+    case "katauti": return (
+      <span className={cn(r.katautiOverride && "text-warn")}>
+        {f.int(r.katautiUnits)}
+        {r.katautiOverride && <span className="ml-0.5 text-[10px]" title={t("daily.katautiEdited")}>*</span>}
+      </span>
+    );
+    case "deduction": return <span className="text-faint">{f.weight(r.katautiGrams)}</span>;
+    case "net": return (
+      <span className={cn("font-semibold", r.netMismatchGrams !== 0 && "text-bad")}>
+        {f.weight(r.netGrams)}
+        {r.netMismatchGrams !== 0 && <span className="ml-1 text-[10px]">({f.weight(r.expectedNetGrams)})</span>}
+      </span>
+    );
+    case "rate": return r.ratePending ? <span className="text-faint">—</span>
+      : r.rateOdd
+        ? <span className="text-warn" title={t("daily.rateFarTip", { floor: f.rate(r.rateOdd.floorPaise), ceil: f.rate(r.rateOdd.ceilPaise) })}>{f.rate(r.ratePaisePerQtl)} !</span>
+        : f.rate(r.ratePaisePerQtl);
+    case "amount": return r.ratePending
+      ? <span className="text-faint">—</span>
+      : <span className="font-semibold">{f.amount(r.amountPaise)}</span>;
+    case "commission": return r.ratePending ? <span className="text-faint">—</span> : f.amount(r.commissionPaise);
+    case "gaushala": return r.ratePending ? <span className="text-faint">—</span> : f.amount(r.gaushalaPaise);
+    case "payable": return r.ratePending
+      ? <span className="text-faint">—</span>
+      : <span className="font-semibold text-ink">{f.amount(r.payablePaise)}</span>;
+    case "bagsCount": return r.bagsCount != null ? f.int(r.bagsCount) : <span className="text-faint">—</span>;
+    case "status": return <span className="text-[11px] text-muted">{t(`slip.status.${r.status}` as "slip.status.open")}</span>;
+    default: return null;
+  }
+}
+
+/** One saved row of the day. Drawn again only when something it shows has changed. */
+const SlipLine = memo(function SlipLine({ r, i, cols, pad, widths, checked, canSlip, canDel, flag, rstDay, x, act }: {
+  r: Row; i: number; cols: DailyColumn[]; pad: string; widths: Record<string, number | undefined>;
+  checked: boolean; canSlip: boolean; canDel: boolean; flag: TallyFlag | undefined; rstDay: number;
+  x: CellCtx; act: RowActions;
+}) {
+  const { t } = x;
+  return (
+    <tr className={cn(
+      "transition-colors hover:bg-raised/40",
+      !r.reconciles && "bg-bad-soft/60",
+    )}>
+      <td className={cn("border-b border-line/70 px-2", pad)}>
+        {canSlip && (
+          <Checkbox checked={checked} onChange={(v) => act.toggle(r.id, v)} />
+        )}
+      </td>
+      {cols.map((c) => (
+        <td key={c.key} style={colWidth(widths, c.key)} className={cn(
+          "border-b border-line/70 px-2", pad,
+          NUMERIC.has(c.key) && "num text-right",
+        )}>
+          {displayCell(c.key, r, i, x, flag, rstDay)}
+        </td>
+      ))}
+      <td className={cn("border-b border-line/70 px-1", pad)}>
+        <div className="flex items-center justify-end gap-0.5">
+          {canSlip && (
+            <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.edit")} aria-label={t("common.edit")}
+              onClick={() => act.edit(r)}>
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {canDel && (
+            <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.delete")} aria-label={t("common.delete")}
+              onClick={() => act.remove(r)}>
+              <Trash2 className="h-3.5 w-3.5 text-bad/80" />
+            </Button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+});
 
 export function DailyListPage() {
   const { t, pick, lang } = useI18n();
@@ -423,11 +561,11 @@ export function DailyListPage() {
 
   /* A row cannot be entered without a supplier, so one name column is always
      shown: if both are switched off, the Hindi one comes back. */
-  const visibleCols = DAILY_COLUMNS.filter((c) =>
+  const visibleCols = useMemo(() => DAILY_COLUMNS.filter((c) =>
     P.columns[c.key] !== false
     || (c.key === "adatiHi" && P.columns.adatiHi === false && P.columns.adatiLatin === false)
     // with every commodity on screen, each row has to say which one it is
-    || (c.key === "jins" && !filterJins));
+    || (c.key === "jins" && !filterJins)), [P.columns, filterJins]);
   // the supplier box lives in the first name column on screen, Hindi or Hinglish
   const nameCol: DailyColumnKey = visibleCols.some((c) => c.key === "adatiHi") ? "adatiHi" : "adatiLatin";
   const PAD = P.density === "compact" ? "py-0.5" : "py-1";
@@ -435,8 +573,9 @@ export function DailyListPage() {
      double-click on the edge gives the column back its own width. Widths are
      kept with this computer's layout. */
   const [liveW, setLiveW] = useState<Record<string, number>>({});
-  const widthOf = (k: string) => liveW[k] ?? P.widths?.[k];
-  const cw = (k: string) => { const w = widthOf(k); return w ? { width: w, minWidth: w, maxWidth: w, overflow: "hidden" as const } : undefined; };
+  // a width being dragged now wins over the one kept
+  const widths = useMemo<Record<string, number | undefined>>(() => ({ ...(P.widths ?? {}), ...liveW }), [P.widths, liveW]);
+  const cw = (k: string) => colWidth(widths, k);
   const startResize = (k: string) => (e: React.MouseEvent<HTMLSpanElement>) => {
     e.preventDefault(); e.stopPropagation();
     const th = (e.currentTarget.parentElement as HTMLElement);
@@ -512,79 +651,41 @@ export function DailyListPage() {
   }, [rows]);
   const rstOnDay = (r: Row) => r.rstDay ?? rstCount.get(rstKey(r.rstNo)) ?? 1;
 
-  function displayCell(key: DailyColumnKey, r: Row, i: number) {
-    switch (key) {
-      case "sr": return <span className="inline-flex items-center gap-1"><span className="num text-[11px] text-faint">{i + 1}</span><TallyMark flag={tallyFlags[r.id]} /></span>;
-      case "rstNo": {
-        // orange: the same RST again today, or the same RST and weight on another date — a flag, never a block
-        const other = r.rstOtherDays ?? [];
-        const why = [
-          rstOnDay(r) > 1 ? t("daily.rstRepeated") : "",
-          other.length ? t("daily.rstOtherDays", { rst: r.rstNo, dates: other.map(dmy).join(", ") }) : "",
-        ].filter(Boolean).join(" · ");
-        if (!why) return <span className="num font-medium">{r.rstNo}</span>;
-        return (
-          <span className="inline-flex flex-wrap items-center gap-1" title={why}>
-            <span className="num rounded border-2 border-warn px-1 font-medium">{r.rstNo}</span>
-            {/* the other date in plain sight, so a tap or a glance is enough */}
-            {other.length > 0 && (
-              <button type="button" className="num rounded bg-warn-soft px-1 text-[10px] font-medium text-warn"
-                aria-label={why} onClick={() => setFlagWarn({ rst: r.rstNo, lines: [why] })}>
-                {dmy(other[0]).slice(0, 5)}{other.length > 1 ? ` +${other.length - 1}` : ""}
-              </button>
-            )}
-          </span>
-        );
-      }
-      case "adatiHi": return (
-        <span className="flex items-center gap-1.5">
-          <span lang="hi" className="truncate text-[14px] text-ink">{r.adatiNameHi}</span>
-          {r.scanBatchId && can("scan.review") && (
-            <Link href={`/scan/${r.scanBatchId}`} title={t("daily.fromScan")}
-              className="shrink-0 text-faint transition-colors hover:text-brand">
-              <ImageIcon className="h-3.5 w-3.5" />
-            </Link>
-          )}
-          {r.ratePending && <Badge tone="warn">{t("daily.ratePending")}</Badge>}
-        </span>
-      );
-      case "adatiLatin": return <span className="truncate text-[12px] text-muted">{r.adatiNameHinglish}</span>;
-      case "village": return <span className="text-[12px] text-muted">{lang === "hi" ? (r.adatiVillage ?? "") : (r.adatiVillage ?? "")}</span>;
-      case "mill": return r.merchantCode ? <Badge tone="neutral" className="num">{r.merchantCode}</Badge> : <span className="text-faint">—</span>;
-      case "jins": return <span className="num text-[12px] text-muted">{r.jinsCode}</span>;
-      case "gross": return r.grossOdd
-        ? <span className="text-warn" title={t(r.grossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip")}>{f.weight(r.grossGrams)} !</span>
-        : f.weight(r.grossGrams);
-      case "katauti": return (
-        <span className={cn(r.katautiOverride && "text-warn")}>
-          {f.int(r.katautiUnits)}
-          {r.katautiOverride && <span className="ml-0.5 text-[10px]" title={t("daily.katautiEdited")}>*</span>}
-        </span>
-      );
-      case "deduction": return <span className="text-faint">{f.weight(r.katautiGrams)}</span>;
-      case "net": return (
-        <span className={cn("font-semibold", r.netMismatchGrams !== 0 && "text-bad")}>
-          {f.weight(r.netGrams)}
-          {r.netMismatchGrams !== 0 && <span className="ml-1 text-[10px]">({f.weight(r.expectedNetGrams)})</span>}
-        </span>
-      );
-      case "rate": return r.ratePending ? <span className="text-faint">—</span>
-        : r.rateOdd
-          ? <span className="text-warn" title={t("daily.rateFarTip", { floor: f.rate(r.rateOdd.floorPaise), ceil: f.rate(r.rateOdd.ceilPaise) })}>{f.rate(r.ratePaisePerQtl)} !</span>
-          : f.rate(r.ratePaisePerQtl);
-      case "amount": return r.ratePending
-        ? <span className="text-faint">—</span>
-        : <span className="font-semibold">{f.amount(r.amountPaise)}</span>;
-      case "commission": return r.ratePending ? <span className="text-faint">—</span> : f.amount(r.commissionPaise);
-      case "gaushala": return r.ratePending ? <span className="text-faint">—</span> : f.amount(r.gaushalaPaise);
-      case "payable": return r.ratePending
-        ? <span className="text-faint">—</span>
-        : <span className="font-semibold text-ink">{f.amount(r.payablePaise)}</span>;
-      case "bagsCount": return r.bagsCount != null ? f.int(r.bagsCount) : <span className="text-faint">—</span>;
-      case "status": return <span className="text-[11px] text-muted">{t(`slip.status.${r.status}` as "slip.status.open")}</span>;
-      default: return null;
-    }
-  }
+  /* Saved rows draw from one context object and call back through stable
+     handlers, so typing in the new (or an edited) row leaves them be. */
+  const cellCtx = useMemo<CellCtx>(() => ({
+    t, f, lang, canReview: can("scan.review"),
+    showFlag: (rst, why) => setFlagWarn({ rst, lines: [why] }),
+  }), [t, f, lang, can]);
+  const actNow = useRef<RowActions>(null!);
+  actNow.current = {
+    toggle: (id, on) => setSelected((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id); else next.delete(id);
+      return next;
+    }),
+    edit: (r) => setEditing({
+      id: r.id,
+      grossShown: (r.grossGrams / GRAMS_PER_QTL).toFixed(2),
+      draft: {
+        rstNo: r.rstNo, adatiId: r.adatiId,
+        gross: (r.grossGrams / GRAMS_PER_QTL).toFixed(2),
+        katauti: r.katautiOverride ? String(r.katautiUnits) : "",
+        rate: (r.ratePaisePerQtl / 100).toFixed(2),
+        jinsId: r.jinsId,
+      },
+    }),
+    remove: async (r) => {
+      if (await ask({ title: t("daily.confirmDeleteRow", { rst: r.rstNo }), danger: true, confirmLabel: t("confirm.yesDelete"),
+        rows: [{ label: t("daily.supplier"), value: <span lang="hi">{r.adatiNameHi}</span> }, { label: t("daily.net"), value: f.weight(r.netGrams, { unit: true }) }, { label: t("daily.amount"), value: f.money(r.amountPaise) }] })) remove.mutate(r.id);
+    },
+  };
+  const rowActs = useMemo<RowActions>(() => ({
+    toggle: (id, on) => actNow.current.toggle(id, on),
+    edit: (r) => actNow.current.edit(r),
+    remove: (r) => actNow.current.remove(r),
+  }), []);
+  const displayCellOf = (key: DailyColumnKey, r: Row, i: number) => displayCell(key, r, i, cellCtx, tallyFlags[r.id], rstOnDay(r));
 
   function editCell(
     key: DailyColumnKey, ed: Draft,
@@ -599,7 +700,7 @@ export function DailyListPage() {
         onChange={(e) => upd({ rstNo: rstTyped(e.target.value) })} />;
       case "adatiHi":
       case "adatiLatin":
-        if (key !== nameCol) return displayCell(key, r, i);
+        if (key !== nameCol) return displayCellOf(key, r, i);
         return <SupplierPicker value={ed.adatiId}
           selectedLabel={{ nameHi: r.adatiNameHi, nameHinglish: r.adatiNameHinglish }}
           onChange={(v) => upd({ adatiId: v })} onQueryChange={(q) => upd({ adatiName: q })} />;
@@ -628,7 +729,7 @@ export function DailyListPage() {
           {jinsList.data?.map((j) => <option key={j.id} value={j.id}>{j.code}</option>)}
         </select>
       );
-      default: return displayCell(key, r, i);
+      default: return displayCellOf(key, r, i);
     }
   }
 
@@ -1021,57 +1122,9 @@ export function DailyListPage() {
                   );
                 }
                 return (
-                  <tr key={r.id} className={cn(
-                    "transition-colors hover:bg-raised/40",
-                    !r.reconciles && "bg-bad-soft/60",
-                  )}>
-                    <td className={cn("border-b border-line/70 px-2", PAD)}>
-                      {canSlip && (
-                        <Checkbox checked={selected.has(r.id)} onChange={(v) => {
-                          const next = new Set(selected);
-                          if (v) next.add(r.id); else next.delete(r.id);
-                          setSelected(next);
-                        }} />
-                      )}
-                    </td>
-                    {visibleCols.map((c) => (
-                      <td key={c.key} style={cw(c.key)} className={cn(
-                        "border-b border-line/70 px-2", PAD,
-                        NUMERIC.has(c.key) && "num text-right",
-                      )}>
-                        {displayCell(c.key, r, i)}
-                      </td>
-                    ))}
-                    <td className={cn("border-b border-line/70 px-1", PAD)}>
-                      <div className="flex items-center justify-end gap-0.5">
-                        {canSlip && (
-                          <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.edit")} aria-label={t("common.edit")}
-                            onClick={() => setEditing({
-                              id: r.id,
-                              grossShown: (r.grossGrams / GRAMS_PER_QTL).toFixed(2),
-                              draft: {
-                                rstNo: r.rstNo, adatiId: r.adatiId,
-                                gross: (r.grossGrams / GRAMS_PER_QTL).toFixed(2),
-                                katauti: r.katautiOverride ? String(r.katautiUnits) : "",
-                                rate: (r.ratePaisePerQtl / 100).toFixed(2),
-                                jinsId: r.jinsId,
-                              },
-                            })}>
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
-                        {canDel && (
-                          <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.delete")} aria-label={t("common.delete")}
-                            onClick={async () => {
-                              if (await ask({ title: t("daily.confirmDeleteRow", { rst: r.rstNo }), danger: true, confirmLabel: t("confirm.yesDelete"),
-                                rows: [{ label: t("daily.supplier"), value: <span lang="hi">{r.adatiNameHi}</span> }, { label: t("daily.net"), value: f.weight(r.netGrams, { unit: true }) }, { label: t("daily.amount"), value: f.money(r.amountPaise) }] })) remove.mutate(r.id);
-                            }}>
-                            <Trash2 className="h-3.5 w-3.5 text-bad/80" />
-                          </Button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
+                  <SlipLine key={r.id} r={r} i={i} cols={visibleCols} pad={PAD} widths={widths}
+                    checked={selected.has(r.id)} canSlip={canSlip} canDel={canDel}
+                    flag={tallyFlags[r.id]} rstDay={rstOnDay(r)} x={cellCtx} act={rowActs} />
                 );
               })}
 
