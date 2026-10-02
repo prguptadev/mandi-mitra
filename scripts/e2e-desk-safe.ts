@@ -268,7 +268,7 @@ try {
     const s = await serve(d);
     check("will not open, and no backup at all: the app still opens", s.up, s.log().slice(-800));
     const b = await s.call("GET", "/auth/bootstrap");
-    check("  ...and says so in one sentence instead of showing empty books", b.status === 503 && b.json?.code === "books_unavailable" && /no good backup/.test(b.json?.error ?? ""), b);
+    check("  ...and says so in one sentence instead of showing empty books", b.status === 503 && b.json?.code === "books_unavailable" && /no backup could be put back/.test(b.json?.error ?? ""), b);
     await s.stop();
     check("  ...the damaged file is untouched and no new books were made", fs.readFileSync(path.join(d, "mandi.db")).equals(bytes) && !fs.existsSync(path.join(d, "backups")));
   }
@@ -336,6 +336,31 @@ try {
     check("a restore that cannot copy the backup: the books stay as they were and the app starts",
       r.code === 0 && fs.existsSync(db) && !hasTable(db, "_from_the_backup") && count(db, "users") === users, r.out.slice(-600));
     check("  ...and the Backups card says why", /^Not gone back to manual-20260502-100000\.db: /.test(backupCfg(d)?.lastError ?? ""), backupCfg(d));
+  }
+
+  {
+    const d = books("restore-locked");
+    const old = backupInto(d, "manual-20260503-100000.db", "_from_the_backup");
+    fs.writeFileSync(path.join(d, "restore-pending.json"), JSON.stringify({ file: old }));
+    const users = count(path.join(d, "mandi.db"), "users");
+    // the current books cannot be moved aside (a folder Windows or a virus scanner will not let go of)
+    fs.chmodSync(path.join(d, "backups"), 0o555);
+    const r = startup(d);
+    fs.chmodSync(path.join(d, "backups"), 0o755);
+    const db = path.join(d, "mandi.db");
+    check("a restore that cannot move the current books aside: they stay as they were, never missing",
+      r.code === 0 && fs.existsSync(db) && !hasTable(db, "_from_the_backup") && count(db, "users") === users && !fs.existsSync(`${db}.tmp`), r.out.slice(-600));
+  }
+  {
+    const d = books("putback-locked");
+    backupInto(d, "auto-20260504-100000.db", "_from_good_backup");
+    damageHeader(path.join(d, "mandi.db"));
+    const bytes = fs.readFileSync(path.join(d, "mandi.db"));
+    fs.chmodSync(path.join(d, "backups"), 0o555);
+    const r = startup(d);
+    fs.chmodSync(path.join(d, "backups"), 0o755);
+    check("damaged books that cannot be moved aside: the app still starts, the file untouched, and says so",
+      r.code === 0 && fs.readFileSync(path.join(d, "mandi.db")).equals(bytes) && notice(d)?.kind === "unavailable", { out: r.out.slice(-500), n: notice(d) });
   }
 
   /* --------------------------------------------------------------- updates */

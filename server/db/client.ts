@@ -28,9 +28,9 @@ export const RESTORE_WHILE_CONNECTED =
   "This computer syncs with the cloud, so going back to a backup here would undo the other computers' newer work. Use Cloud sync › Bring all data down instead.";
 
 /** Said for every save while the books are only readable. */
-export const BOOKS_READ_ONLY = "The books file is damaged and no good backup was found, so nothing can be saved: call support (nothing has been deleted).";
+export const BOOKS_READ_ONLY = "The books file is damaged and no backup could be put back, so nothing can be saved: call support (nothing has been deleted).";
 /** Said for everything while there are no books to open. */
-export const BOOKS_UNAVAILABLE = "The books file could not be opened and no good backup was found: call support (nothing has been deleted).";
+export const BOOKS_UNAVAILABLE = "The books file could not be opened and no backup could be put back: call support (nothing has been deleted).";
 
 export interface StartNotice {
   /** restored: a backup was put back; readOnly: damaged, kept, nothing saved; unavailable: no books open. */
@@ -63,6 +63,33 @@ function cloudConnectedOnDisk() {
 
 const p2 = (n: number) => String(n).padStart(2, "0");
 const stampNow = (d = new Date()) => `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+
+/**
+ * `tmp` (a whole, flushed copy) becomes mandi.db. What was there goes to
+ * `aside` in backups/ with its side files, as a set SQLite can still pair, or
+ * its side files are removed when `dropSides` (books already folded into one
+ * file). If any step fails, every move is undone: the books are never left
+ * missing. Returns the name kept aside, if any.
+ */
+function swapIn(tmp: string, aside: string, dropSides: boolean): string | null {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const moved: [string, string][] = [];
+  try {
+    for (const s of ["", "-wal", "-shm"]) {
+      if (!fs.existsSync(DB_PATH + s)) continue;
+      if (s && dropSides) { fs.rmSync(DB_PATH + s, { force: true }); continue; }
+      renameRetry(DB_PATH + s, aside + s);
+      moved.push([DB_PATH + s, aside + s]);
+    }
+    renameRetry(tmp, DB_PATH);
+  } catch (e) {
+    for (const [from, to] of moved.reverse()) { try { renameRetry(to, from); } catch { /* still in backups/, never lost */ } }
+    throw e;
+  }
+  fsyncDir(BACKUP_DIR);
+  fsyncDir(DATA_DIR);
+  return moved.some(([from]) => from === DB_PATH) ? path.basename(aside) : null;
+}
 
 /** A note on the Backups card (backup.json), written whole. */
 function backupNote(text: string) {
@@ -99,34 +126,18 @@ function restorePending() {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     fs.copyFileSync(file, tmp);
     fsyncFile(tmp);
-    let aside: string | null = null;
-    if (fs.existsSync(DB_PATH)) {
-      let folded = false;
+    // the current books folded into one file first; books too damaged to fold go aside whole, side files and all
+    let folded = !fs.existsSync(DB_PATH);
+    if (!folded) {
       try {
         const cur = new Database(DB_PATH);
         try { cur.pragma("wal_checkpoint(TRUNCATE)"); folded = true; } finally { cur.close(); }
       } catch (e) {
         if (!isDamage(e)) throw e;
       }
-      aside = path.join(BACKUP_DIR, `${folded ? "before-restore" : "damaged"}-${stampNow()}.db`);
-      renameRetry(DB_PATH, aside);
-      for (const side of ["-wal", "-shm"]) {
-        if (!fs.existsSync(DB_PATH + side)) continue;
-        if (folded) fs.rmSync(DB_PATH + side, { force: true });
-        else renameRetry(DB_PATH + side, aside + side);
-      }
-    } else {
-      for (const side of ["-wal", "-shm"]) fs.rmSync(DB_PATH + side, { force: true });
     }
-    try {
-      renameRetry(tmp, DB_PATH);
-    } catch (e) {
-      if (aside) renameRetry(aside, DB_PATH); // the books back where they were
-      throw e;
-    }
-    fsyncDir(DATA_DIR);
-    fsyncDir(BACKUP_DIR);
-    console.log(`[db] restored ${path.basename(file)}; the database it replaced is kept as ${aside ? path.basename(aside) : "(there was none)"}`);
+    const aside = swapIn(tmp, path.join(BACKUP_DIR, `${folded ? "before-restore" : "damaged"}-${stampNow()}.db`), folded);
+    console.log(`[db] restored ${path.basename(file)}; the database it replaced is kept as ${aside ?? "(there was none)"}`);
   } catch (e) {
     // fail open: the books stay as they were, and the backup card says why
     fs.rmSync(tmp, { force: true });
@@ -187,16 +198,6 @@ function quickCheck(db: Database.Database) {
     return true; // cannot tell: open as before
   }
 }
-/** mandi.db and its side files into backups/, under one name, as a set SQLite can still pair. */
-function setAside(): string | null {
-  const parts = ["", "-wal", "-shm"].filter((s) => fs.existsSync(DB_PATH + s));
-  if (!parts.length) return null;
-  fs.mkdirSync(BACKUP_DIR, { recursive: true });
-  const base = path.join(BACKUP_DIR, `damaged-${stampNow()}.db`);
-  for (const s of parts) renameRetry(DB_PATH + s, base + s);
-  fsyncDir(BACKUP_DIR);
-  return path.basename(base);
-}
 /** Pauses cloud sync, so records from the backup are not sent up over the other computers' newer ones. */
 function holdSync() {
   const file = path.join(DATA_DIR, "cloud.json");
@@ -219,9 +220,15 @@ function putBack(good: Good, why: StartNotice["why"]): boolean {
     lastDetail = plainError(e);
     return false;
   }
-  const keptAs = setAside();
-  renameRetry(tmp, DB_PATH);
-  fsyncDir(DATA_DIR);
+  let keptAs: string | null;
+  try {
+    keptAs = swapIn(tmp, path.join(BACKUP_DIR, `damaged-${stampNow()}.db`), false);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    console.error(`[db] could not put back ${good.name}: ${plainError(e)}`);
+    lastDetail = plainError(e);
+    return false;
+  }
   const syncHeld = cloudConnectedOnDisk() && holdSync();
   notice({ kind: "restored", why, backup: good.name, backupAt: good.at, keptAs, syncHeld });
   console.warn(`[db] the books file was ${why}: put back ${good.name}${keptAs ? `; the old one is kept as backups/${keptAs}` : ""}${syncHeld ? "; cloud sync paused" : ""}`);
@@ -240,7 +247,7 @@ function unavailable(why: StartNotice["why"]) {
   process.env.MANDI_NO_SEED = "1";
   process.env.MANDI_NO_AUTO_BACKUP = "1";
   notice({ kind: "unavailable", why, detail: lastDetail });
-  console.error(`[db] the books file is ${why} and no good backup was found; nothing is opened (nothing was deleted)`);
+  console.error(`[db] the books file is ${why} and no backup could be put back${lastDetail ? ` (${lastDetail})` : ""}; nothing is opened (nothing was deleted)`);
   return new Database(":memory:");
 }
 
@@ -293,7 +300,7 @@ function openBooks(): Database.Database {
     mode = "readOnly";
     process.env.MANDI_NO_AUTO_BACKUP = "1";
     notice({ kind: "readOnly", why: "damaged", detail: lastDetail });
-    console.error("[db] the books file is damaged and no good backup was found: open for reading only");
+    console.error(`[db] the books file is damaged and no backup could be put back${lastDetail ? ` (${lastDetail})` : ""}: open for reading only`);
     markOpen();
     return db;
   }

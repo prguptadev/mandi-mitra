@@ -415,7 +415,8 @@ export function backupOnQuit(): string | null {
 async function copyLatestToFolder() {
   const c = readBackupConfig();
   if (!c.folder || checkFolder(c.folder)) return;
-  const f = fs.readdirSync(BACKUP_DIR).filter((n) => BACKUP_NAME.test(n)).sort(byStamp).pop();
+  let f: string | undefined;
+  try { f = fs.readdirSync(BACKUP_DIR).filter((n) => BACKUP_NAME.test(n)).sort(byStamp).pop(); } catch { return; }
   if (!f || fs.existsSync(path.join(c.folder, "MandiMitra-backups", hostDir(), f))) return;
   try {
     await copyToFolder(c.folder, f, f.replace(/-\d{8}-\d{6}\.db$/, "") as BackupKind);
