@@ -190,8 +190,8 @@ function MoneyCard({ qs }: { qs: string }) {
     <Card className="mt-5">
       <CardHeader title={t("dash.money")} sub={words.sub} />
       <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
-        {/* each balance is up to the period's end, as Mill accounts and the ledger show it; its explanation
-            (opening + bills − cuts − received − held back) adds up to it less the paid ahead its note names */}
+        {/* each balance is up to the period's end, as Mill accounts and the ledger show it; its note
+            (opening + bills − cuts − received − held back + received ahead) adds up to it */}
         {tile(t("dash.millsOwe"), toReceive, notes.millsOwe, "/mill-accounts", "text-brand")}
         {tile(t("dash.weOwe"), toPay, notes.weOwe, "/ledger")}
         {tile(t("dash.stockValue"), stockPaise + unbilledPaise,

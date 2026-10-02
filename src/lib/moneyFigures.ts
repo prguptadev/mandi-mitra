@@ -17,8 +17,9 @@ export interface MoneyCardData {
 /**
  * The money card's five tiles. "Mills owe us" and "We owe suppliers" are the
  * figures Mill accounts, the follow-up and the ledger show under the same
- * words: a mill or supplier paid ahead is not counted (each tile's note says
- * how much). The net position takes what was paid ahead off both sides.
+ * words: a mill or supplier paid ahead is not counted (each tile's note adds
+ * it back, see moneyNotes). The net position takes what was paid ahead off
+ * both sides.
  */
 export function moneyTiles(m: MoneyCardData) {
   const millsOwe = m.mills.toReceivePaise;
@@ -38,14 +39,19 @@ export interface MoneyNotesData {
 
 /**
  * The notes under "Mills owe us" and "We owe suppliers": each balance written
- * out from its parts, up to the period's end (`span`, from moneyWords).
+ * out from its parts, up to the period's end (`span`, from moneyWords), so the
+ * note adds up to the tile. Opening + billed − cuts − received − held back is
+ * every mill's balance together; a mill that paid more than its bills is not
+ * one that owes, so what it paid ahead is added back — the "Received ahead" of
+ * Mill accounts. The same for suppliers, with the ledger's "Paid ahead".
  */
 export function moneyNotes(t: T, money: (paise: number) => string, m: MoneyNotesData, span: string) {
   const M = m.mills.allTime, S = m.suppliers.allTime;
-  const millsOwe = t("dash.millsOweSub", { o: money(M.openingPaise), b: money(M.billedPaise), c: money(M.shortagePaise), r: money(M.receivedPaise), h: money(M.deductedPaise), w: span })
-    + (m.mills.paidAheadPaise ? ` · ${t("dash.millsAhead", { a: money(m.mills.paidAheadPaise) })}` : "");
-  const weOwe = t("dash.weOweSub", { o: money(S.openingPaise), p: money(S.purchasesPaise), d: money(S.paidPaise), w: span })
-    + (m.suppliers.paidAheadPaise ? ` · ${t("dash.supAhead", { a: money(m.suppliers.paidAheadPaise) })}` : "");
+  const millsOwe = t(m.mills.paidAheadPaise ? "dash.millsOweSubAhead" : "dash.millsOweSub", {
+    o: money(M.openingPaise), b: money(M.billedPaise), c: money(M.shortagePaise), r: money(M.receivedPaise), h: money(M.deductedPaise),
+    a: money(m.mills.paidAheadPaise), w: span });
+  const weOwe = t(m.suppliers.paidAheadPaise ? "dash.weOweSubAhead" : "dash.weOweSub", {
+    o: money(S.openingPaise), p: money(S.purchasesPaise), d: money(S.paidPaise), a: money(m.suppliers.paidAheadPaise), w: span });
   return { millsOwe, weOwe };
 }
 
