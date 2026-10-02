@@ -254,10 +254,6 @@ export function resolveWeights(lines: { netGrams: number | null }[], millNetGram
   });
 }
 
-/**
- * Every truck row matching `where`, with its weight resolved against its
- * truck's mill net. The basis of stock and PO balances.
- */
 const lineFields = {
   id: schema.loadLines.id, loadId: schema.loadLines.loadId, poId: schema.loadLines.poId,
   jinsId: schema.loadLines.jinsId, stockDate: schema.loadLines.stockDate,
@@ -271,7 +267,13 @@ const siblingFields = {
   sort: schema.loadLines.sort, createdAt: schema.loadLines.createdAt,
 };
 
-export async function linesWithWeights(where: SQL | undefined) {
+/**
+ * Every truck row matching `where`, with its weight resolved against its
+ * truck's mill net. The basis of stock and PO balances.
+ * `wholeTrucks`: `where` keeps every row of each truck it touches (a filter by
+ * truck, or by the truck's own business), so those rows are all its siblings.
+ */
+export async function linesWithWeights(where: SQL | undefined, opts: { wholeTrucks?: boolean } = {}) {
   const rows = await rowsOf(db.select(lineFields)
     .from(schema.loadLines)
     .innerJoin(schema.loads, eq(schema.loads.id, schema.loadLines.loadId))
@@ -280,15 +282,20 @@ export async function linesWithWeights(where: SQL | undefined) {
   // resolve per truck: the blank row depends on its siblings
   const byLoad = new Map<string, typeof rows>();
   for (const r of rows) { const a = byLoad.get(r.loadId); if (a) a.push(r); else byLoad.set(r.loadId, [r]); }
-  // a blank row needs every sibling, even ones the filter left out
+  /* A blank row needs every sibling, even ones the filter left out. With the
+     whole truck in hand already, only a truck with two or more blank rows reads
+     them again: which blank row comes first, and so takes the rest of the net,
+     is settled by that read's order, as always. With one blank row or none,
+     the order of the rows changes no weight. */
   const partial = [...byLoad.keys()];
-  const siblings = partial.length ? await rowsOf(db.select(siblingFields).from(schema.loadLines).where(inArray(schema.loadLines.loadId, partial))
+  const read = opts.wholeTrucks ? partial.filter((id) => byLoad.get(id)!.filter((r) => r.netGrams == null).length > 1) : partial;
+  const siblings = read.length ? await rowsOf(db.select(siblingFields).from(schema.loadLines).where(inArray(schema.loadLines.loadId, read))
     .orderBy(asc(schema.loadLines.sort), asc(schema.loadLines.createdAt)), siblingFields) : [];
-  const siblingsOf = new Map<string, typeof siblings>();
+  const siblingsOf = new Map<string, { id: string; netGrams: number | null }[]>();
   for (const sb of siblings) { const a = siblingsOf.get(sb.loadId); if (a) a.push(sb); else siblingsOf.set(sb.loadId, [sb]); }
   const weightById = new Map<string, number>();
   for (const loadId of partial) {
-    const all = siblingsOf.get(loadId) ?? [];
+    const all = siblingsOf.get(loadId) ?? (opts.wholeTrucks ? byLoad.get(loadId)! : []);
     const net = byLoad.get(loadId)![0].millNetGrams;
     resolveWeights(all, net).forEach((g, i) => weightById.set(all[i].id, g));
   }

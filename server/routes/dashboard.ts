@@ -497,7 +497,7 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
      before its truck was loaded; from that date the mill owes it, so its
      goods are off stock from then too — never in hand and owed at once. */
   const billedBy = f.to ? new Set((await billed(biz, { upTo: f.to })).map((b) => b.loadId)) : null;
-  const loadedLines = (await linesWithWeights(eq(schema.loads.businessId, biz)))
+  const loadedLines = (await linesWithWeights(eq(schema.loads.businessId, biz), { wholeTrucks: true }))
     .filter((l) => !f.to || l.loadDate <= f.to || billedBy!.has(l.loadId));
   const dayKey = (m: string | null, j: string, d: string) => `${m ?? "-"}|${j}|${d}`;
   const loaded = new Map<string, number>();

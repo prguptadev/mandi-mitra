@@ -137,7 +137,7 @@ export async function trucks(businessId: string, f: Filter & { before?: string }
   const loadFields = getTableColumns(L);
   const allLoads = await rowsOf(db.select(loadFields).from(L).where(and(...w)), loadFields);
   if (!allLoads.length) return [];
-  const allLines = await linesWithWeights(inArray(schema.loadLines.loadId, allLoads.map((l) => l.id)));
+  const allLines = await linesWithWeights(inArray(schema.loadLines.loadId, allLoads.map((l) => l.id)), { wholeTrucks: true });
   const lines = f.jinsId ? allLines.filter((x) => x.jinsId === f.jinsId) : allLines;
   const withLines = f.jinsId ? new Set(lines.map((x) => x.loadId)) : null;
   const loads = withLines ? allLoads.filter((l) => withLines.has(l.id)) : allLoads;

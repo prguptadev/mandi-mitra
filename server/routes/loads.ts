@@ -167,7 +167,7 @@ loadRoutes.get("/", can("load.read"), async (c) => {
     .limit(20_000);
 
   const ids = rows.map((r) => r.l.id);
-  const lines = ids.length ? await linesWithWeights(inArray(schema.loadLines.loadId, ids)) : [];
+  const lines = ids.length ? await linesWithWeights(inArray(schema.loadLines.loadId, ids), { wholeTrucks: true }) : [];
   const jinsCodes = new Map((await db.select({ id: schema.jins.id, code: schema.jins.code }).from(schema.jins).where(eq(schema.jins.businessId, biz))).map((j) => [j.id, j.code]));
   const parchas = ids.length ? await db.select({
     loadId: schema.parchas.loadId, id: schema.parchas.id, parchaNo: schema.parchas.parchaNo,
