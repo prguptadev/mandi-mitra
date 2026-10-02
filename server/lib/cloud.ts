@@ -14,6 +14,7 @@ import { fyRange } from "./vouchers.ts";
 import { repairSuppliersAfterPull } from "./repairSuppliers.ts";
 import { repairTrucksAfterPull, parchaUniqueClash, APPROVED_TWICE } from "./repairTrucks.ts";
 import { settleRecentAddedSheets } from "./sheetSlips.ts";
+import { forgetParchaFigures } from "./parchaFigures.ts";
 
 /* Two-way sync of several computers through one cloud Postgres (Supabase).
  *
@@ -645,6 +646,8 @@ function applyRemote(rows: RemoteRow[], me: string, retrying = false) {
       for (const r of rows) {
         if (r.device === me) continue; // our own change coming back
         if (!tables.has(r.tbl)) continue;
+        // a parcha arriving from another computer is read afresh by the lists that add parchas up
+        if (r.tbl === "parchas") forgetParchaFigures(r.row_id);
         const local = sqlite.prepare(`select * from "${r.tbl}" where id = ?`).get(r.row_id) as Record<string, unknown> | undefined;
         const pending = dirty.get(r.tbl, r.row_id) as { n: number } | undefined;
         const now = new Date().toISOString();

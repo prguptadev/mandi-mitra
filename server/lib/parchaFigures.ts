@@ -50,3 +50,8 @@ export function figuresOf(rows: { id: string; bytes: number }[]): Map<string, Pa
   }
   return out;
 }
+
+/** A parcha written again under its id (brought down from another computer): read afresh next time. */
+export function forgetParchaFigures(id: string) {
+  kept.delete(id);
+}

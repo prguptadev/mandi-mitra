@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { eq, and, gte, lte, lt, desc, sql, isNull } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
+import { rowsOf } from "../db/rows.ts";
 import { newId } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, canAll, actor, param, notFound, bad, isoDay, attachment, LIMIT, HttpError, type Env } from "../lib/http.ts";
@@ -38,7 +39,7 @@ async function sums(businessId: string, opts: { before?: string; from?: string; 
   if (opts.before) { sw.push(lt(S.slipDate, opts.before)); pw.push(lt(P.payDate, opts.before)); }
   if (opts.from) { sw.push(gte(S.slipDate, opts.from)); pw.push(gte(P.payDate, opts.from)); }
   if (opts.upTo) { sw.push(lte(S.slipDate, opts.upTo)); pw.push(lte(P.payDate, opts.upTo)); }
-  const bought = await db.select({
+  const slipFields = {
     adatiId: S.adatiId,
     slips: sql<number>`count(*)`,
     netGrams: sql<number>`sum(${S.netGrams})`,
@@ -50,13 +51,15 @@ async function sums(businessId: string, opts: { before?: string; from?: string; 
     amountPaise: sql<number>`sum(${S.payablePaise})`,
     unpriced: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then 0 else 1 end)`,
     last: sql<string>`max(${S.slipDate})`,
-  }).from(S).where(and(...sw)).groupBy(S.adatiId);
-  const paid = await db.select({
+  };
+  const bought = await rowsOf(db.select(slipFields).from(S).where(and(...sw)).groupBy(S.adatiId), slipFields);
+  const payFields = {
     adatiId: P.adatiId,
     n: sql<number>`count(*)`,
     amountPaise: sql<number>`sum(${P.amountPaise})`,
     last: sql<string>`max(${P.payDate})`,
-  }).from(P).where(and(...pw)).groupBy(P.adatiId);
+  };
+  const paid = await rowsOf(db.select(payFields).from(P).where(and(...pw)).groupBy(P.adatiId), payFields);
   return { bought: new Map(bought.map((b) => [b.adatiId, b])), paid: new Map(paid.map((p) => [p.adatiId, p])) };
 }
 
