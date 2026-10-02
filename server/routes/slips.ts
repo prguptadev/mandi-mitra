@@ -177,7 +177,8 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     .leftJoin(schema.merchants, eq(schema.merchants.id, schema.purchaseSlips.merchantId))
     .leftJoin(schema.scanBatches, eq(schema.scanBatches.id, schema.purchaseSlips.scanBatchId))
     .where(and(...where))
-    .orderBy(asc(schema.purchaseSlips.slipDate), asc(schema.purchaseSlips.createdAt));
+    // the id last: slips entered in the same second (on two computers, or one sheet's lines) list the same everywhere
+    .orderBy(asc(schema.purchaseSlips.slipDate), asc(schema.purchaseSlips.createdAt), asc(schema.purchaseSlips.id));
 
   // recompute every row server-side and report any that no longer reconcile
   const cfgCache = new Map<string, Katauti>();
@@ -291,7 +292,7 @@ slipRoutes.get("/last-rate", can("slip.read"), async (c) => {
       eq(schema.purchaseSlips.adatiId, adatiId),
       eq(schema.purchaseSlips.jinsId, jinsId),
     ))
-    .orderBy(desc(schema.purchaseSlips.slipDate), desc(schema.purchaseSlips.createdAt))
+    .orderBy(desc(schema.purchaseSlips.slipDate), desc(schema.purchaseSlips.createdAt), desc(schema.purchaseSlips.id))
     .limit(1);
   return c.json(row ?? { ratePaisePerQtl: null, slipDate: null });
 });

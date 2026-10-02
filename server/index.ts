@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.ts";
 import { runMigrations } from "./db/migrate.ts";
-import { recoverInterruptedScans } from "./routes/scans.ts";
+import { recoverInterruptedScans, fingerprintOldPagesLater } from "./routes/scans.ts";
 import { DB_PATH, sqlite } from "./db/client.ts";
 import { startAutoBackups } from "./lib/backup.ts";
 import { startCloudSync } from "./lib/cloud.ts";
@@ -18,6 +18,8 @@ const granted = syncNewPermissions();
 if (granted) console.log(`[rbac] granted ${granted} new permission(s) to the stock roles`);
 const recovered = recoverInterruptedScans();
 if (recovered) console.log(`[scan] reset ${recovered} interrupted read(s)`);
+// older sheets' pages get their fingerprints, so another computer notices the same picture again
+fingerprintOldPagesLater();
 // this computer only; MANDI_HOST=0.0.0.0 opens it to the local network on purpose
 serve({ fetch: createApp().fetch, port, hostname: process.env.MANDI_HOST ?? "127.0.0.1" });
 startAutoBackups();

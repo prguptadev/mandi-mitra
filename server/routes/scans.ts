@@ -26,6 +26,7 @@ import { approvedOnDays } from "../lib/parcha.ts";
 import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 import { ensureSupplier } from "../lib/supplierFromName.ts";
+import { sheetSlipId, sheetHasSlips, settleAddedSheets } from "../lib/sheetSlips.ts";
 
 /** Pages read so far. A sheet read before pages were counted (before 21-09-2026)
  *  was read in full, but its count was left at 0 when the count was added. */
@@ -104,6 +105,53 @@ function pageHash(id: string, f: PageFile): string | null {
   } catch {
     return null;
   }
+}
+
+/** Sheets whose pictures are on this computer and whose pages (saved before 01-10-2026) carry no fingerprint. */
+function unfingerprinted() {
+  return db.select({ id: schema.scanBatches.id, filePaths: schema.scanBatches.filePaths }).from(schema.scanBatches).all()
+    .filter((s) => SAFE_ID.test(s.id) && (JSON.parse(s.filePaths) as PageFile[]).some((f) => !f.sha256) && fs.existsSync(path.join(SCAN_DIR, s.id)));
+}
+/** Writes in the fingerprint of each page of one sheet whose picture is here. Only if its pages were not changed meanwhile. */
+function fingerprintSheet(id: string, filePaths: string): boolean {
+  let changed = false;
+  const next = (JSON.parse(filePaths) as PageFile[]).map((f) => {
+    if (f.sha256) return f;
+    const p = scanFile(id, f.name);
+    if (!fs.existsSync(p)) return f;
+    changed = true;
+    return { ...f, sha256: sha256Of(fs.readFileSync(p)) };
+  });
+  if (!changed) return false;
+  return db.update(schema.scanBatches).set({ filePaths: JSON.stringify(next) })
+    .where(and(eq(schema.scanBatches.id, id), eq(schema.scanBatches.filePaths, filePaths))).run().changes === 1;
+}
+/**
+ * Pages saved before 01-10-2026 carry no fingerprint, and another computer,
+ * which has only their rows, cannot tell when the same picture is scanned
+ * there again. The computer holding the pictures writes the fingerprints in
+ * once; sync takes them to the others. Returns how many sheets it did.
+ */
+export function fingerprintOldPages(): number {
+  let n = 0;
+  for (const s of unfingerprinted()) {
+    try { if (fingerprintSheet(s.id, s.filePaths)) n++; } catch { /* a page that cannot be read keeps no fingerprint */ }
+  }
+  return n;
+}
+/** The same, at start-up: after a pause and one sheet at a time, so opening the app is never held up. */
+export function fingerprintOldPagesLater() {
+  setTimeout(() => {
+    let todo: { id: string; filePaths: string }[] = [];
+    try { todo = unfingerprinted(); } catch { return; }
+    const step = () => {
+      const s = todo.shift();
+      if (!s) return;
+      try { fingerprintSheet(s.id, s.filePaths); } catch { /* left without one; tried again next start */ }
+      setTimeout(step, 20).unref();
+    };
+    step();
+  }, 15_000).unref();
 }
 
 /**
@@ -237,9 +285,13 @@ async function refreshScanMeta(businessId: string, id: string) {
 }
 
 async function loadBatch(businessId: string, id: string) {
-  const [b] = await db.select().from(schema.scanBatches)
+  const get = () => db.select().from(schema.scanBatches)
     .where(and(eq(schema.scanBatches.id, id), eq(schema.scanBatches.businessId, businessId))).limit(1);
+  const [b] = await get();
   if (!b) throw notFound("Scan not found");
+  /* Its slips on the daily list mean it was added, whatever the status says
+     (a tick on another computer can win the sync): it is shown, and kept, as added. */
+  if (b.status !== "committed" && settleAddedSheets({ businessId, scanId: id })) return (await get())[0];
   return b;
 }
 
@@ -338,19 +390,21 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   const existingRst = new Set<string>();
   let rstOtherDays = new Map<string, { id: string; date: string }[]>();
   if (batch.slipDate) {
-    // a sheet already added is never flagged against its own slips
+    /* A sheet already added is never flagged against its own slips. One not
+       marked added is: if its slips are there, it is being added twice. */
+    const added = batch.status === "committed";
     const taken = await db.select({ rstNo: schema.purchaseSlips.rstNo }).from(schema.purchaseSlips)
       .where(and(
         eq(schema.purchaseSlips.businessId, businessId),
         eq(schema.purchaseSlips.slipDate, batch.slipDate),
-        or(sql`${schema.purchaseSlips.scanBatchId} is null`, ne(schema.purchaseSlips.scanBatchId, batch.id)),
+        ...(added ? [or(sql`${schema.purchaseSlips.scanBatchId} is null`, ne(schema.purchaseSlips.scanBatchId, batch.id))] : []),
       ));
     const takenKeys = new Set(taken.map((r) => rstKey(r.rstNo)));
     // the row's own spelling goes in, so the check below finds it whatever the zeros
     for (const r of rows) if (r.rstNo && takenKeys.has(rstKey(r.rstNo))) existingRst.add(r.rstNo);
     rstOtherDays = await sameSlipOtherDays(businessId,
       rows.filter((r) => !r.excluded).map((r) => ({ key: r.id, slipDate: batch.slipDate!, rstNo: r.rstNo, grossGrams: r.grossGrams })),
-      { exceptBatch: batch.id });
+      added ? { exceptBatch: batch.id } : {});
   }
   const flagOtherDays = (c: { id: string; rstNo: string; excluded: boolean; issues: { code: string; level: "error" | "warn"; message: string; params?: Record<string, string | number> }[] }) => {
     const od = c.excluded ? undefined : rstOtherDays.get(c.id);
@@ -1010,6 +1064,8 @@ scanRoutes.post("/:id/try-model", can("scan.create"), async (c) => {
 /** Counts per status, for the filter chips. */
 scanRoutes.get("/counts", can("scan.review", "scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
+  // a sheet whose slips are on the list is counted as added, not waiting
+  settleAddedSheets({ businessId: biz });
   const rows = await db.select({
     status: schema.scanBatches.status,
     n: sql<number>`count(*)`.as("n"),
@@ -1086,6 +1142,7 @@ async function sheetRows(businessId: string, where: ReturnType<typeof eq>[], lim
 /** Every sheet uploaded, newest day first: ?from&to (the sheet's day), &merchantId (or "own"), &jinsId, &status. */
 scanRoutes.get("/sheets", can("scan.review", "scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
+  settleAddedSheets({ businessId: biz });
   const S = schema.scanBatches;
   const q = (k: string) => c.req.query(k) || "";
   const where: ReturnType<typeof eq>[] = [];
@@ -1425,7 +1482,8 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
     const d = deriveSlip(r.grossGrams!, katauti!, r.ratePaisePerQtl ?? 0, r.katautiOverride);
     if (d.netGrams <= 0) throw new HttpError(409, `RST ${r.rstNo}: the net weight works out to zero or less — check the gross`, "has_blocking");
     slipRows.push({
-      id: newId(), businessId: biz,
+      // the same line of the same sheet is the same slip on every computer: added on two, sync keeps one
+      id: sheetSlipId(id, r), businessId: biz,
       slipDate: batch.slipDate, rstNo: normRst(r.rstNo),
       adatiId, jinsId: batch.jinsId,
       merchantId: batch.merchantId,
@@ -1456,7 +1514,8 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
        two "Add"s sent together, the second writes nothing. */
     const claimed = tx.update(schema.scanBatches).set({ status: "committed", reviewedBy: userId, reviewedAt: nowSec() })
       .where(and(eq(schema.scanBatches.id, id), eq(schema.scanBatches.status, "review"))).run();
-    if (claimed.changes !== 1) throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
+    // its slips arrived from another computer a moment ago: the sheet is not added twice
+    if (claimed.changes !== 1 || sheetHasSlips(id)) throw new HttpError(409, "This scan has already been added to the daily list", "already_committed");
     for (const v of slipRows) tx.insert(schema.purchaseSlips).values(v).run();
     for (const a of aliasOps) {
       const ex = aliasByRaw.get(a.raw);
@@ -1648,6 +1707,8 @@ scanRoutes.delete("/:id", can("scan.create"), async (c) => {
 
 scanRoutes.get("/", can("scan.review", "scan.create"), async (c) => {
   const biz = c.get("auth")!.businessId!;
+  // a sheet whose slips are on the list is listed as added, not waiting
+  settleAddedSheets({ businessId: biz });
   const status = c.req.query("status");
   const from = c.req.query("from");
   const to = c.req.query("to");

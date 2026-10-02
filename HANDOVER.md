@@ -145,7 +145,7 @@ stored — summed every time. Slips with no rate count as 0 until priced.
 | API | **Hono**, one app object (`server/app.ts`) | Electron will import the same object — no second data layer |
 | Local DB | SQLite + Drizzle ORM | Offline, single file, easy backup |
 | Cloud | Postgres later, same Drizzle schema | `sync_outbox` already records every write |
-| IDs | **UUIDv7** everywhere | Local and cloud rows can never collide |
+| IDs | **UUIDv7** everywhere; a scanned sheet's slips take an id worked out from the sheet and the line (`server/lib/sheetSlips.ts`) | Local and cloud rows can never collide; one sheet added on two computers is one set of slips |
 | OCR | Gemini via REST, strict `responseSchema` | No SDK dependency |
 | Router | wouter | |
 | Data fetching | TanStack Query | |
