@@ -175,6 +175,13 @@ export function remoteWait(userId: string, ip: string | null): number {
   return Math.max(0, (t?.lockedUntil ?? 0) - now, (p?.lockedUntil ?? 0) - now);
 }
 
+/** Until when some other device must wait for this person (0: none), for the Users list's "Locked". */
+export function remoteLockedUntil(userId: string): number {
+  let until = byPerson.get(userId)?.lockedUntil ?? 0;
+  for (const [k, t] of byDevice) if (k.startsWith(`${userId} `) && t.lockedUntil > until) until = t.lockedUntil;
+  return until > nowSec() ? until : 0;
+}
+
 /** Counts a wrong PIN from another device: the tries left there, and the wait it now has. */
 export function registerRemoteFailure(userId: string, ip: string | null): { left: number; wait: number } {
   const now = nowSec();

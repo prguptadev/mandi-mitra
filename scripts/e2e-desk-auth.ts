@@ -86,7 +86,9 @@ check("…nor, from a browser that does not say, an address that is not this one
 
 console.log("\nHow much may be sent");
 const big = (n: number) => ({ userId: nobody, pin: "1", pad: "x".repeat(n) });
-check("before signing in, a request of 100 KB is refused", (await send("POST", here("/auth/login"), { body: big(100_000) })).status === 413);
+const signedOutBig = await send("POST", here("/auth/login"), { body: big(100_000) });
+check("before signing in, a request of 100 KB is refused (and told to sign in)", signedOutBig.status === 401 && signedOutBig.json?.code === "no_session", signedOutBig.json);
+check("…as is a big upload whose sign-in ran out", (await send("POST", here("/scans"), { declare: 5 * 1024 * 1024, timeoutMs: 3000 })).json?.code === "no_session");
 check("a PIN of 100 characters is refused before it is checked", (await send("POST", here("/auth/login"), { body: { userId: nobody, pin: "1".repeat(100) } })).status === 400);
 const prefs1mb = await send("POST", here("/auth/prefs"), { headers: withMe, body: { lang: "en", pad: "x".repeat(1_000_000) } });
 check("signed in, 1 MB is fine", prefs1mb.status === 200, prefs1mb.json);
@@ -239,8 +241,9 @@ for (let d = 0; d < 3; d++) for (let i = 0; i < 4; i++) await tryM1(device(`192.
 const capped = await tryM1(LAN2, M1_PIN);
 check("after 20 wrong PINs from other devices, other devices wait an hour for that person", capped.status === 429 && /60 min/.test(capped.json?.error ?? ""), capped.json);
 check("…but never the main computer", (await tryM1(device("127.0.0.1"), M1_PIN)).status === 200);
-const mems = (await MAIN.call("GET", "/users")).json as { membershipId: string; userId: string; isRoot: boolean }[];
+const mems = (await MAIN.call("GET", "/users")).json as { membershipId: string; userId: string; isRoot: boolean; lockedUntil: number | null }[];
 const m1Membership = mems.find((x) => x.userId === id("Manager 1"))!.membershipId;
+check("Users shows Manager 1 as locked, so the Unlock button is there", (mems.find((x) => x.userId === id("Manager 1"))!.lockedUntil ?? 0) > Math.floor(Date.now() / 1000));
 check("the Admin's Unlock lets them all try again", (await MAIN.call("PUT", `/users/${m1Membership}`, { unlock: true })).status === 200 && (await tryM1(LAN2, M1_PIN)).status === 200);
 const m1Lan = device("192.168.1.80");
 await tryM1(m1Lan, M1_PIN);
@@ -259,7 +262,7 @@ check("sign-in from another device works before", (await m1Lan.call("GET", "/aut
 check("the main computer switches sharing off", (await m1Main.call("PUT", "/cloud/network", { share: false })).status === 200);
 check("every sign-in made from another device ends", (await m1Lan.call("GET", "/auth/me")).status === 401 && (await LAN2.call("GET", "/auth/me")).status === 401);
 check("…the main computer's do not", (await m1Main.call("GET", "/auth/me")).status === 200);
-check("before signing in, 100 KB is refused here too", (await LAN1.call("POST", "/auth/login", big(100_000))).status === 413);
+check("before signing in, 100 KB is refused here too", (await LAN1.call("POST", "/auth/login", big(100_000))).json?.code === "no_session");
 
 /* ------------------------------------------------------------ 3. over the real network */
 

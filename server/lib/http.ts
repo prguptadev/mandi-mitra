@@ -159,7 +159,9 @@ export function requestGuard(shared: boolean) {
    sheet upload is up to ten pages of 12 MB each. */
 const KB = 1024, MB = 1024 * KB;
 const tooBig = (c: Context) => c.json({ error: "That is too big to send.", code: "too_large" }, 413);
-const limitSignedOut = bodyLimit({ maxSize: 64 * KB, onError: tooBig });
+// signed out with more than a name and a PIN: most likely a sign-in that ran out mid-upload
+const signInFirst = (c: Context) => c.json({ error: "Please sign in", code: "no_session" }, 401);
+const limitSignedOut = bodyLimit({ maxSize: 64 * KB, onError: signInFirst });
 const limitSignedIn = bodyLimit({ maxSize: 50 * MB, onError: tooBig });
 const limitUpload = bodyLimit({ maxSize: 10 * 12 * MB + 4 * MB, onError: tooBig });
 export async function bodyLimits(c: Context<Env>, next: Next) {

@@ -4,7 +4,7 @@ import { eq, and, asc, inArray } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
-import { hashPin, weakPin, clearRemoteFailures } from "../lib/auth.ts";
+import { hashPin, weakPin, clearRemoteFailures, remoteLockedUntil } from "../lib/auth.ts";
 import { PERMISSIONS, PERMISSION_GROUPS, ALL_PERMISSIONS, effectivePermissions } from "../lib/rbac.ts";
 import { param, can, actor, notFound, bad, HttpError, fromThisComputer, type Env } from "../lib/http.ts";
 import { toHinglish } from "../lib/translit.ts";
@@ -54,8 +54,11 @@ userRoutes.get("/", can("users.read"), async (c) => {
 
   return c.json(rows.map((r) => {
     const ovs = overrides.filter((o) => o.membershipId === r.membershipId);
+    // locked out from another device shows as locked too, so Unlock is there for it
+    const elsewhere = remoteLockedUntil(r.userId);
     return {
       ...r,
+      lockedUntil: elsewhere > (r.lockedUntil ?? 0) ? elsewhere : r.lockedUntil,
       overrides: ovs.map((o) => ({ permission: o.permission, effect: o.effect })),
       effectivePermissions: [...effectivePermissions(permsByRole.get(r.roleId) ?? [], ovs)],
     };
