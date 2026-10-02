@@ -256,7 +256,7 @@ function RatesCard({ bizId }: { bizId: string | null }) {
     }
     return (
       <Card className="mb-5">
-        <CardHeader title={t("portal.title")} sub={t("portal.notSetUp")}
+        <CardHeader title={t("portal.title")}
           action={<Link href="/settings?tab=business"><Button size="sm" variant="ghost">{t("portal.moreSettings")}</Button></Link>} />
         <div className="space-y-3 p-4">
           {storeAlert}
@@ -277,7 +277,6 @@ function RatesCard({ bizId }: { bizId: string | null }) {
               {t("portal.saveAndSignIn")}
             </Button>
           </div>
-          <p className="text-[11px] leading-snug text-faint">{t("portal.cardNote")}</p>
         </div>
       </Card>
     );
@@ -322,7 +321,7 @@ function RatesCard({ bizId }: { bizId: string | null }) {
 
   return (
     <Card className="mb-5">
-      <CardHeader title={t("portal.title")} sub={t("portal.subStock")}
+      <CardHeader title={t("portal.title")}
         action={
           <span className="flex flex-wrap items-center justify-end gap-2">
             <Badge tone={!s ? "neutral" : s.signedIn ? "ok" : "neutral"} title={s?.checkedAt ? t("portal.checkedAt", { time: hhmm(s.checkedAt) }) : undefined}>
@@ -478,15 +477,8 @@ function RatesCard({ bizId }: { bizId: string | null }) {
             {/* the stock failing for the reason already said above is not said again */}
             {readStock && stock.isError && !(problem && (STOPS.has(stockErr ?? "") || stockErr === problem.code))
               && <p className="text-[12px] leading-snug text-warn">{t("portal.stockFailed", { why: say(stock.error) })}</p>}
-            {stockState === "ready" && stock.data && !lines!.length
-              && <p className="text-[12px] leading-snug text-muted">{t("portal.stockNone")}</p>}
             {stockForeign && <p className="text-[12px] leading-snug text-warn">{t("portal.stockOtherLicence")}</p>}
             {asking && <p className="text-[12px] leading-snug text-muted">{t("portal.stockHeld")}</p>}
-            {(rates.data || stock.data) && (
-              <p className="text-[11px] leading-snug text-faint">
-                {t("portal.readTimes", { rates: hhmm(rates.data?.at), stock: readStock ? hhmm(stock.data?.at) : "—" })}
-              </p>
-            )}
           </>
         )}
 

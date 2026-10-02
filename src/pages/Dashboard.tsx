@@ -19,7 +19,7 @@ import { RaceChart, type RacePoint } from "@/components/RaceChart.tsx";
 import { Card, CardHeader, Badge, Select, Input, Button } from "@/components/ui/index.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
 import { notAfterToday, suppliersNow, dashboardPeriod, type DashPeriod as Period } from "@/lib/asOfToday.ts";
-import { moneyTiles, moneyWords, moneyNotes } from "@/lib/moneyFigures.ts";
+import { moneyTiles } from "@/lib/moneyFigures.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* One picture of the business: what came in, what went out to each mill,
@@ -58,7 +58,8 @@ interface DashboardData {
 }
 interface LedgerTop { rows: { id: string; nameHi: string; nameHinglish: string; slips: number; balancePaise: number }[]; totals: { toPayPaise: number; paidAheadPaise: number } }
 
-function Kpi({ icon: Icon, label, value, lines, tone, href }: {
+/* A figure and its name only: the dashboard is for reading at a glance. */
+function Kpi({ icon: Icon, label, value, tone, href }: {
   icon: typeof Truck; label: string; value: React.ReactNode; lines: React.ReactNode[]; tone?: "bad"; href?: string;
 }) {
   const body = (
@@ -68,7 +69,6 @@ function Kpi({ icon: Icon, label, value, lines, tone, href }: {
         <p className="text-[12px] font-medium uppercase tracking-wide text-muted">{label}</p>
       </div>
       <p className={cn("num text-2xl font-semibold tracking-tight", tone === "bad" ? "text-bad" : "text-ink")}>{value}</p>
-      <div className="mt-1 space-y-0.5 text-[12px] text-muted">{lines.map((l, i) => <p key={i}>{l}</p>)}</div>
     </div>
   );
   return href ? <Link href={href}>{body}</Link> : body;
@@ -109,7 +109,7 @@ function FlagsCard({ flags }: { flags: Flag[] }) {
   const Icon = { bad: CircleAlert, warn: AlertTriangle, info: Info };
   return (
     <Card>
-      <CardHeader title={t("dash.attention")} sub={t("dash.attentionSub")}
+      <CardHeader title={t("dash.attention")}
         action={<div className="flex gap-1.5">{bad > 0 && <Badge tone="bad">{bad}</Badge>}{warn > 0 && <Badge tone="warn">{warn}</Badge>}</div>} />
       {!flags.length ? (
         <p className="flex items-center gap-2 p-4 text-[14px] text-ok"><CheckCircle2 className="h-4 w-4" />{t("dash.allGood")}</p>
@@ -165,8 +165,6 @@ function MoneyCard({ qs }: { qs: string }) {
   if (q.isError) return <Card className="mt-5"><LoadError error={q.error} onRetry={() => void q.refetch()} /></Card>;
   if (!m) return <Card className="mt-5"><SkeletonTable rows={3} /></Card>;
   const { millsOwe: toReceive, weOwe: toPay, cash, net } = moneyTiles(m);
-  const words = moneyWords(t, new URLSearchParams(qs).get("to") ?? todayISO(), todayISO());
-  const notes = moneyNotes(t, f.money, m, words.span);
   // goods in hand and unbilled trucks, valued on the server as of the period's end
   const stockPaise = m.stock.valuePaise;
   const unbilledPaise = m.stock.unbilledGoodsPaise;
@@ -176,29 +174,25 @@ function MoneyCard({ qs }: { qs: string }) {
     ...m.billed.parts.map((p, i) => ({ key: p.key, label: pick(p.label, p.labelHi), amountPaise: p.amountPaise, tone: ["bg-ok", "bg-warn", "bg-sky-500", "bg-violet-500", "bg-rose-400", "bg-amber-600", "bg-teal-500", "bg-fuchsia-500"][i % 8] })),
     ...(m.billed.otherPaise ? [{ key: "other", label: t("dash.otherPart"), amountPaise: m.billed.otherPaise, tone: "bg-faint" }] : []),
   ];
-  const tile = (label: string, value: number, sub: string, href?: string, tone?: string) => {
+  const tile = (label: string, value: number, href?: string, tone?: string) => {
     const body = (
       <div className="h-full rounded-lg border border-line bg-surface px-3 py-2.5 transition-colors hover:border-faint/60">
         <p className="text-[11px] font-medium uppercase tracking-wide text-muted">{label}</p>
         <p className={cn("num text-xl font-semibold", tone)}>{f.money(value)}</p>
-        <p className="text-[11px] text-faint">{sub}</p>
       </div>
     );
     return href ? <Link href={href}>{body}</Link> : body;
   };
   return (
     <Card className="mt-5">
-      <CardHeader title={t("dash.money")} sub={words.sub} />
+      <CardHeader title={t("dash.money")} />
       <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
-        {/* each balance is up to the period's end, as Mill accounts and the ledger show it; its note
-            (opening + bills − cuts − received − held back + received ahead) adds up to it */}
-        {tile(t("dash.millsOwe"), toReceive, notes.millsOwe, "/mill-accounts", "text-brand")}
-        {tile(t("dash.weOwe"), toPay, notes.weOwe, "/ledger")}
-        {tile(t("dash.stockValue"), stockPaise + unbilledPaise,
-          (unbilledPaise ? t("dash.stockValueSub2", { u: f.money(unbilledPaise) }) : t("dash.stockValueSub"))
-            + (m.stock.unpricedGrams > 0 ? ` · ${t("dash.unpricedStock", { q: f.weight(m.stock.unpricedGrams) })}` : ""), "/stock")}
-        {tile(t("dash.cash"), cash, t("dash.cashSub", { r: f.money(m.cash.receivedFromMillsPaise), p: f.money(m.cash.paidToSuppliersPaise), w: words.span }), undefined, cash < 0 ? "text-warn" : undefined)}
-        {tile(t("dash.net"), net, t("dash.netSub"), undefined, net < 0 ? "text-bad" : "text-ok")}
+        {/* each balance is up to the period's end, as Mill accounts and the ledger show it */}
+        {tile(t("dash.millsOwe"), toReceive, "/mill-accounts", "text-brand")}
+        {tile(t("dash.weOwe"), toPay, "/ledger")}
+        {tile(t("dash.stockValue"), stockPaise + unbilledPaise, "/stock")}
+        {tile(t("dash.cash"), cash, undefined, cash < 0 ? "text-warn" : undefined)}
+        {tile(t("dash.net"), net, undefined, net < 0 ? "text-bad" : "text-ok")}
       </div>
       {grand > 0 && (
         <div className="border-t border-line p-4">
@@ -216,7 +210,6 @@ function MoneyCard({ qs }: { qs: string }) {
               </p>
             ))}
           </div>
-          {m.mills.shortagePaise > 0 && <p className="mt-2 text-[12px] text-warn">{t("dash.cutsNote", { amt: f.money(m.mills.shortagePaise) })}</p>}
         </div>
       )}
     </Card>
