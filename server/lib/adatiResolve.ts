@@ -18,6 +18,9 @@ const SUGGEST_FLOOR = 0.6;
 /** The reader's pick from the list counts only if it looks this much like what it wrote. */
 const PICK_CLOSE = 0.75;
 
+/** Hindi name order: what localeCompare(b, "hi") gives, without building a collator for every comparison. */
+const hindiOrder = new Intl.Collator("hi").compare;
+
 /** Loaded once per batch so a 30-row sheet does not hit the DB 30 times. */
 export async function loadResolver(businessId: string) {
   const all = await db.select().from(schema.adati)
@@ -28,7 +31,7 @@ export async function loadResolver(businessId: string) {
     .groupBy(schema.purchaseSlips.adatiId);
   const used = new Map(usage.map((u) => [u.id, u.n]));
   const suppliers = all.sort((a, b) => (used.get(b.id) ?? 0) - (used.get(a.id) ?? 0)
-    || a.nameHi.localeCompare(b.nameHi, "hi"));
+    || hindiOrder(a.nameHi, b.nameHi));
   const aliases = await db.select().from(schema.adatiAliases)
     .where(eq(schema.adatiAliases.businessId, businessId));
 

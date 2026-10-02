@@ -24,6 +24,8 @@ export const paymentRoutes = new Hono<Env>();
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 export const PAY_MODES = ["cash", "bank", "upi", "cheque"] as const;
+/** Hindi name order: what localeCompare(b, "hi") gives, without building a collator for every comparison. */
+const hindiOrder = new Intl.Collator("hi").compare;
 
 /** Purchases and payments per supplier, optionally before a day, from a day, or up to (and including) one. */
 async function sums(businessId: string, opts: { before?: string; from?: string; upTo?: string; adatiId?: string } = {}) {
@@ -98,7 +100,7 @@ async function ledgerList(biz: string, opts: { from?: string; asOf?: string } = 
     };
   // a supplier settled and made inactive is still on the list for a period in which he was paid
   }).filter((r) => r.active || r.balancePaise !== 0 || r.slips > 0 || r.paymentsPaise !== 0);
-  rows.sort((a, b) => b.balancePaise - a.balancePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
+  rows.sort((a, b) => b.balancePaise - a.balancePaise || hindiOrder(a.nameHi, b.nameHi));
   const total = (k: "openingBalancePaise" | "broughtForwardPaise" | "goodsPaise" | "commissionPaise" | "gaushalaPaise" | "purchasesPaise" | "paymentsPaise" | "balancePaise") =>
     rows.reduce((s, r) => s + r[k], 0);
   const totals = {
@@ -184,7 +186,7 @@ ledgerRoutes.get("/sheet", canAll("export.data", "ledger.read"), async (c) => {
     payablePaise: r.purchasesPaise, paidPaise: r.paymentsPaise,
     // paid ahead is money to recover, not money to pay: it never lowers the total
     toPayPaise: Math.max(0, r.balancePaise),
-  })).sort((a, b) => b.toPayPaise - a.toPayPaise || b.payablePaise - a.payablePaise || a.nameHi.localeCompare(b.nameHi, "hi"));
+  })).sort((a, b) => b.toPayPaise - a.toPayPaise || b.payablePaise - a.payablePaise || hindiOrder(a.nameHi, b.nameHi));
 
   const money = (p: number) => `₹${(p / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const notes: string[] = [];

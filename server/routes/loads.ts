@@ -179,8 +179,10 @@ loadRoutes.get("/", can("load.read"), async (c) => {
 
   // parcha money (grand total, advance, dara) is for those who may read parchas
   const bills = c.get("auth")!.permissions.has("parcha.read");
+  const linesOf = new Map<string, typeof lines>();
+  for (const x of lines) { const a = linesOf.get(x.loadId); if (a) a.push(x); else linesOf.set(x.loadId, [x]); }
   return c.json(rows.map((r) => {
-    const mine = lines.filter((x) => x.loadId === r.l.id);
+    const mine = linesOf.get(r.l.id) ?? [];
     const p = parchaByLoad.get(r.l.id) ?? null;
     return {
       ...r.l,

@@ -1,5 +1,6 @@
 import { eq, and, ne, asc, desc, sql, gte, lte, inArray, type SQL } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
+import { rowsOf } from "../db/rows.ts";
 import { ChargeConfigSchema, computeParcha, bardanaKg, type ChargeConfig, type ParchaResult } from "./charges.ts";
 import { amountPaise, roundHalfUp, avgFromSums } from "./money.ts";
 import { fyStartOf, fyRange } from "./vouchers.ts";
@@ -124,7 +125,7 @@ export function sameNumberCount(all: { parchaNo: string; status: string; invoice
  */
 export function revisions(all: { id: string; loadId: string }[]) {
   const byLoad = new Map<string, string[]>();
-  for (const p of all) byLoad.set(p.loadId, [...(byLoad.get(p.loadId) ?? []), p.id]);
+  for (const p of all) { const a = byLoad.get(p.loadId); if (a) a.push(p.id); else byLoad.set(p.loadId, [p.id]); }
   const out = new Map<string, { revision: number; previousId: string | null }>();
   for (const ids of byLoad.values()) {
     ids.sort();
@@ -257,31 +258,34 @@ export function resolveWeights(lines: { netGrams: number | null }[], millNetGram
  * Every truck row matching `where`, with its weight resolved against its
  * truck's mill net. The basis of stock and PO balances.
  */
+const lineFields = {
+  id: schema.loadLines.id, loadId: schema.loadLines.loadId, poId: schema.loadLines.poId,
+  jinsId: schema.loadLines.jinsId, stockDate: schema.loadLines.stockDate,
+  netGrams: schema.loadLines.netGrams, sort: schema.loadLines.sort, createdAt: schema.loadLines.createdAt,
+  ratePaisePerQtl: schema.loadLines.ratePaisePerQtl,
+  merchantId: schema.loads.merchantId, millNetGrams: schema.loads.millNetGrams,
+  status: schema.loads.status, truckNo: schema.loads.truckNo, loadDate: schema.loads.loadDate,
+};
+const siblingFields = {
+  loadId: schema.loadLines.loadId, id: schema.loadLines.id, netGrams: schema.loadLines.netGrams,
+  sort: schema.loadLines.sort, createdAt: schema.loadLines.createdAt,
+};
+
 export async function linesWithWeights(where: SQL | undefined) {
-  const rows = await db.select({
-    id: schema.loadLines.id, loadId: schema.loadLines.loadId, poId: schema.loadLines.poId,
-    jinsId: schema.loadLines.jinsId, stockDate: schema.loadLines.stockDate,
-    netGrams: schema.loadLines.netGrams, sort: schema.loadLines.sort, createdAt: schema.loadLines.createdAt,
-    ratePaisePerQtl: schema.loadLines.ratePaisePerQtl,
-    merchantId: schema.loads.merchantId, millNetGrams: schema.loads.millNetGrams,
-    status: schema.loads.status, truckNo: schema.loads.truckNo, loadDate: schema.loads.loadDate,
-  })
+  const rows = await rowsOf(db.select(lineFields)
     .from(schema.loadLines)
     .innerJoin(schema.loads, eq(schema.loads.id, schema.loadLines.loadId))
     .where(where)
-    .orderBy(asc(schema.loadLines.sort), asc(schema.loadLines.createdAt));
+    .orderBy(asc(schema.loadLines.sort), asc(schema.loadLines.createdAt)), lineFields);
   // resolve per truck: the blank row depends on its siblings
   const byLoad = new Map<string, typeof rows>();
-  for (const r of rows) byLoad.set(r.loadId, [...(byLoad.get(r.loadId) ?? []), r]);
+  for (const r of rows) { const a = byLoad.get(r.loadId); if (a) a.push(r); else byLoad.set(r.loadId, [r]); }
   // a blank row needs every sibling, even ones the filter left out
   const partial = [...byLoad.keys()];
-  const siblings = partial.length ? await db.select({
-    loadId: schema.loadLines.loadId, id: schema.loadLines.id, netGrams: schema.loadLines.netGrams,
-    sort: schema.loadLines.sort, createdAt: schema.loadLines.createdAt,
-  }).from(schema.loadLines).where(inArray(schema.loadLines.loadId, partial))
-    .orderBy(asc(schema.loadLines.sort), asc(schema.loadLines.createdAt)) : [];
+  const siblings = partial.length ? await rowsOf(db.select(siblingFields).from(schema.loadLines).where(inArray(schema.loadLines.loadId, partial))
+    .orderBy(asc(schema.loadLines.sort), asc(schema.loadLines.createdAt)), siblingFields) : [];
   const siblingsOf = new Map<string, typeof siblings>();
-  for (const sb of siblings) siblingsOf.set(sb.loadId, [...(siblingsOf.get(sb.loadId) ?? []), sb]);
+  for (const sb of siblings) { const a = siblingsOf.get(sb.loadId); if (a) a.push(sb); else siblingsOf.set(sb.loadId, [sb]); }
   const weightById = new Map<string, number>();
   for (const loadId of partial) {
     const all = siblingsOf.get(loadId) ?? [];

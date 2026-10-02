@@ -6,7 +6,8 @@ import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } from "../lib/http.ts";
 import { amountPaise } from "../lib/money.ts";
-import { revisions, type ParchaDoc } from "../lib/parcha.ts";
+import { revisions } from "../lib/parcha.ts";
+import { figuresOf } from "../lib/parchaFigures.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 import { nextVoucherNo } from "../lib/vouchers.ts";
 
@@ -42,12 +43,14 @@ export async function billed(biz: string, r: Range = {}) {
   const rows = await db.select({
     id: Pa.id, parchaNo: Pa.parchaNo, version: Pa.version, loadId: Pa.loadId, merchantId: L.merchantId,
     date: billDay, grandTotalPaise: Pa.grandTotalPaise, truckNo: L.truckNo, netGrams: L.millNetGrams,
-    createdAt: Pa.createdAt, deductionGrams: L.millDeductionGrams, deductionNote: L.millDeductionNote, snapshot: Pa.snapshot,
+    createdAt: Pa.createdAt, deductionGrams: L.millDeductionGrams, deductionNote: L.millDeductionNote,
+    bytes: sql<number>`octet_length(${Pa.snapshot})`,
   }).from(Pa).innerJoin(L, eq(L.id, Pa.loadId)).where(and(...w));
   /* Weight the mill cut on arrival lowers what it owes: the cut, at the rate
      the parcha billed the goods (the challan screen shows the same figure). */
-  return rows.map(({ snapshot, ...r }) => {
-    const rate = r.deductionGrams ? (JSON.parse(snapshot) as ParchaDoc).totals.ratePaisePerQtl : 0;
+  const frozen = figuresOf(rows.filter((r) => r.deductionGrams));
+  return rows.map(({ bytes: _b, ...r }) => {
+    const rate = r.deductionGrams ? frozen.get(r.id)!.totals.ratePaisePerQtl : 0;
     return { ...r, deductionRatePaisePerQtl: rate, shortagePaise: r.deductionGrams ? amountPaise(r.deductionGrams, rate) : 0 };
   });
 }
@@ -65,6 +68,8 @@ export async function receipts(biz: string, r: Range & { withVoid?: boolean } = 
 }
 
 const settled = (x: { amountPaise: number; deductionPaise: number }) => x.amountPaise + x.deductionPaise;
+/** 9 before 10: what localeCompare(b, undefined, { numeric: true }) gives, with one collator instead of one per comparison. */
+const numberOrder = new Intl.Collator(undefined, { numeric: true }).compare;
 
 /** One line of what a mill still owes: the opening balance (no parcha) or one approved parcha. */
 export interface DueLine {
@@ -108,7 +113,7 @@ export function settle(
       billPaise: openingPaise, againstPaise: 0, fromAccountPaise: 0, duePaise: openingPaise });
   } else pool += -openingPaise;
   // the same number on the same day (two computers gave it): the truck decides, so every computer pays the same one first
-  const oldestFirst = [...bills].sort((x, y) => x.date.localeCompare(y.date) || x.parchaNo.localeCompare(y.parchaNo, undefined, { numeric: true })
+  const oldestFirst = [...bills].sort((x, y) => x.date.localeCompare(y.date) || numberOrder(x.parchaNo, y.parchaNo)
     || (x.loadId < y.loadId ? -1 : x.loadId > y.loadId ? 1 : 0));
   for (const b of oldestFirst) {
     const bill = b.grandTotalPaise - b.shortagePaise;
