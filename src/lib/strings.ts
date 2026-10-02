@@ -641,7 +641,7 @@ export const STRINGS = {
 
     "ledger.title": "Supplier ledger", "ledger.sub": "What each adati is owed: opening + purchases − payments, day by day",
     "ledger.toPay": "to pay", "ledger.paidAhead": "paid ahead",
-    "ledger.totalToPay": "Owed to suppliers", "ledger.totalPaidAhead": "Paid ahead (to recover)", "ledger.proof": "Brought forward + net amount − payments, 1 April to date",
+    "ledger.totalToPay": "Owed to suppliers", "ledger.totalPaidAhead": "Paid ahead (to recover)", "ledger.proof": "Brought forward + net amount − payments, 1 April to date", "ledger.proofYear": "Brought forward + net amount − payments, 1 April to 31 March",
     "ledger.search": "Search name or village", "ledger.empty": "No suppliers", "ledger.slips": "slips",
     "ledger.pick": "Pick a supplier", "ledger.pickSub": "Their statement shows every purchase and payment with the running balance.",
     "ledger.allTime": "All time", "ledger.opening": "Opening balance", "ledger.broughtForward": "Brought forward",
@@ -1375,7 +1375,7 @@ export const STRINGS = {
 
     "ledger.title": "आढ़ती खाता", "ledger.sub": "हर आढ़ती का कितना देना है: प्रारंभिक + खरीद − भुगतान, दिन-वार",
     "ledger.toPay": "देना", "ledger.paidAhead": "लेना",
-    "ledger.totalToPay": "आढ़तियों का देना", "ledger.totalPaidAhead": "ज़्यादा दिया (लेना)", "ledger.proof": "पिछला शेष + कुल देय − भुगतान, 1 अप्रैल से आज तक",
+    "ledger.totalToPay": "आढ़तियों का देना", "ledger.totalPaidAhead": "ज़्यादा दिया (लेना)", "ledger.proof": "पिछला शेष + कुल देय − भुगतान, 1 अप्रैल से आज तक", "ledger.proofYear": "पिछला शेष + कुल देय − भुगतान, 1 अप्रैल से 31 मार्च तक",
     "ledger.search": "नाम या गाँव खोजें", "ledger.empty": "कोई आढ़ती नहीं", "ledger.slips": "पर्चियाँ",
     "ledger.pick": "एक आढ़ती चुनें", "ledger.pickSub": "उनके खाते में हर खरीद और भुगतान चालू शेष के साथ दिखता है।",
     "ledger.allTime": "शुरू से", "ledger.opening": "प्रारंभिक शेष", "ledger.broughtForward": "पिछला शेष",

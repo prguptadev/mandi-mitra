@@ -41,7 +41,7 @@ export function moneyWords(t: T, to: string, today: string) {
     : { sub: t("dash.moneySub"), span: t("dash.allTimeW") };
 }
 
-/** The ledger page's "brought forward + net amount − payments" card: what period it covers. */
-export function ledgerProof(t: T, _fy: { current: boolean }) {
-  return t("ledger.proof");
+/** The ledger page's "brought forward + net amount − payments" card: a past year runs to its 31 March. */
+export function ledgerProof(t: T, fy: { current: boolean }) {
+  return fy.current ? t("ledger.proof") : t("ledger.proofYear");
 }
