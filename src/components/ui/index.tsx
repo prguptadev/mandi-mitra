@@ -296,7 +296,7 @@ export function Dialog({
      "fixed" box is trapped in that bar instead of covering the screen. */
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 sm:p-6">
-      <div className="fixed inset-0 bg-black/45 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/45" onClick={onClose} />
       <div
         role="dialog" aria-modal="true"
         className={cn(
@@ -338,12 +338,14 @@ export function Th({ children, className, align = "left", numeric, sortDir, onSo
 }) {
   const right = align === "right" || numeric;
   return (
+    // a plain fill, no see-through blur: rows scroll under a stuck heading, and a blur is
+    // worked out again on every frame of the scroll — slow on a shop computer's graphics
     <th
       onClick={onSort}
       title={title}
       aria-sort={sortDir === "asc" ? "ascending" : sortDir === "desc" ? "descending" : undefined}
       className={cn(
-        "sticky top-0 z-10 bg-raised/90 backdrop-blur px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted border-b border-line whitespace-nowrap",
+        "sticky top-0 z-10 bg-raised px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted border-b border-line whitespace-nowrap",
         right ? "text-right" : align === "center" ? "text-center" : "text-left",
         onSort && "group cursor-pointer select-none hover:text-ink",
         sortDir && "text-ink",

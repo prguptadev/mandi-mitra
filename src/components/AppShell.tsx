@@ -246,7 +246,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
   return (
     <div className="flex h-full bg-bg">
       <aside className={cn(
-        "hidden shrink-0 border-r border-line bg-surface transition-[width] duration-200 lg:block",
+        "hidden shrink-0 border-r border-line bg-surface lg:block",
         collapsed ? "w-0 overflow-hidden border-r-0" : "w-60",
       )}>
         {!collapsed && sidebar}
@@ -295,7 +295,7 @@ export function AppShell({ children, onAddBusiness }: { children: ReactNode; onA
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface/85 px-3 backdrop-blur sm:px-5">
+        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface/85 px-3 sm:px-5">
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Menu">
             <Menu className="h-4.5 w-4.5" />
           </Button>
