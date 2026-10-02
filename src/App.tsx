@@ -112,9 +112,21 @@ export default function App() {
     queryKey: ["bootstrap"],
     queryFn: () => api.get<{ needsSignup: boolean }>("/auth/bootstrap"),
     enabled: !me,
-    retry: 1,
+    // no books to open (the server says why): shown at once, not after retries
+    retry: (n, e) => !(e instanceof ApiError && e.code === "books_unavailable") && n < 1,
   });
 
+  // no books could be opened (damaged or missing, and no good backup): the reason, plainly, and nothing else
+  const down = [error, bootstrap.error].find((e): e is ApiError => e instanceof ApiError && e.code === "books_unavailable");
+  if (down) {
+    return (
+      <div className="flex min-h-full items-center justify-center p-6">
+        <Card className="max-w-md">
+          <EmptyState icon={<ShieldAlert className="h-8 w-8" />} title={down.message} />
+        </Card>
+      </div>
+    );
+  }
   if (error || (bootstrap.isError && !me)) {
     return (
       <div className="flex min-h-full items-center justify-center p-6">

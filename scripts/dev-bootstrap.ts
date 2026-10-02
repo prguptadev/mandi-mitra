@@ -1,6 +1,8 @@
 import "./_guard.ts";
 /* Rebuilds a usable dev database from nothing: owner signup, then the seed.
- * Usage: rm -f data/mandi.db* && npm run db:push && npx tsx scripts/dev-bootstrap.ts
+ * Usage: point MANDI_DATA_DIR at a new, empty test folder (a folder that held books
+ * puts its newest backup back instead of starting empty), then npm run db:push &&
+ * npx tsx scripts/dev-bootstrap.ts
  */
 const BASE = process.env.MANDI_API!;
 const PIN = process.env.MANDI_PIN ?? "482915";

@@ -14,6 +14,8 @@ import { sayServer } from "@/lib/serverHi.ts";
 
 interface BackupState {
   folder: string | null; lastAt: string | null; lastError: string | null; copiedAt: string | null;
+  /** The backup on this computer itself failing (also shown above every screen). */
+  localError?: string | null;
   /** Scan pictures in the second folder after the last backup, of how many on this computer. */
   pictures?: { inFolder: number; here: number; at: string } | null;
   folders?: { data: string; db: string; scans: string; backups: string };
@@ -57,6 +59,7 @@ export function BackupCard() {
         action={<Button size="sm" variant="primary" loading={run.isPending} icon={<DatabaseBackup className="h-3.5 w-3.5" />} onClick={() => run.mutate()}>{t("backup.now")}</Button>} />
       <div className="space-y-3 p-4 text-[13px]">
         {err && <Alert tone="bad">{err}</Alert>}
+        {b?.localError && <Alert tone="bad">{sayServer(b.localError, lang)}</Alert>}
         {b?.lastError && <Alert tone="warn">{sayServer(b.lastError, lang)}</Alert>}
         <p className="text-muted">{b?.lastAt ? t("backup.last", { when: when(b.lastAt) }) : t("backup.never")}</p>
         <Field label={t("backup.folder")} hint={t("backup.folderHint")}>

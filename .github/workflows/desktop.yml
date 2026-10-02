@@ -59,6 +59,9 @@ jobs:
           if ($null -eq $j.windows) { throw "the scanner check said nothing about this computer" }
       - run: npm run build
       - run: npm run build:desktop-server
+      # made with this computer's Node (the fixture script opens the books itself)
+      - name: Books as the release before left them (for the update check below)
+        run: npx tsx scripts/make-upgrade-fixture.ts upgrade-fixture
       - name: Build the installer
         run: npx electron-builder --win --publish never
 
@@ -70,6 +73,26 @@ jobs:
           $exe = (Get-ChildItem release/win-unpacked -Filter MandiMitra.exe | Select-Object -First 1).FullName
           $p = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -Wait -NoNewWindow
           if ($p.ExitCode -ne 0) { throw "smoke test failed with exit code $($p.ExitCode)" }
+
+      - name: The packaged app updates the release before's books
+        shell: pwsh
+        run: |
+          # books one database update behind (made above), opened by the packaged app's smoke test: a copy
+          # kept first, the update applied, no new first-run books. The smoke test checks all of this itself
+          # (MANDI_SMOKE_EXPECT_UPDATE) and works on a throwaway copy, never on %APPDATA%.
+          $exe = (Get-ChildItem release/win-unpacked -Filter MandiMitra.exe | Select-Object -First 1).FullName
+          $env:MANDI_SMOKE_FROM = (Resolve-Path upgrade-fixture/mandi.db).Path
+          $env:MANDI_SMOKE_EXPECT_UPDATE = "1"
+          $p = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -Wait -NoNewWindow -RedirectStandardOutput upgrade-out.txt -RedirectStandardError upgrade-err.txt
+          Remove-Item Env:MANDI_SMOKE_FROM
+          Remove-Item Env:MANDI_SMOKE_EXPECT_UPDATE
+          $out = ((Get-Content upgrade-out.txt -Raw), (Get-Content upgrade-err.txt -Raw)) -join "`n"
+          Write-Host $out
+          if ($p.ExitCode -ne 0) { throw "the app did not start on last release's books (exit code $($p.ExitCode))" }
+          if ($out -notmatch "backed up before update") { throw "no copy of the books was made before the update" }
+          if ($out -notmatch "migrations up to date") { throw "the books were not updated" }
+          if ($out -match "first run") { throw "new books were made instead of opening the old ones" }
+          if ($out -notmatch "before-update copy made") { throw "no before-update backup file" }
 
       - name: Tricks to get into the app do nothing (fuses and refused switches)
         shell: pwsh

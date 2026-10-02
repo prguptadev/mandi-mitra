@@ -2,11 +2,19 @@ import { serve } from "@hono/node-server";
 import { createApp } from "./app.ts";
 import { runMigrations } from "./db/migrate.ts";
 import { recoverInterruptedScans, fingerprintOldPagesLater } from "./routes/scans.ts";
-import { DB_PATH, sqlite } from "./db/client.ts";
+import { DB_PATH, closeBooks, sqlite } from "./db/client.ts";
 import { startAutoBackups } from "./lib/backup.ts";
 import { startCloudSync } from "./lib/cloud.ts";
 import { syncNewPermissions } from "./lib/rbacSync.ts";
 import { seedFirstRun } from "./lib/businessSetup.ts";
+
+/** Everything into the main database file, then closed: nothing is left only in the -wal file. */
+function shutdown() {
+  closeBooks();
+}
+/* Set before anything else runs, so the desktop app can close the books
+   cleanly even when start-up stops half way (an update that was rolled back). */
+(globalThis as { __mandiShutdown?: () => void }).__mandiShutdown = shutdown;
 
 const port = Number(process.env.PORT ?? 8787);
 runMigrations();
@@ -27,9 +35,4 @@ startCloudSync();
 console.log(`  api   http://localhost:${port}`);
 console.log(`  db    ${DB_PATH}`);
 
-/** Everything into the main database file, then closed: nothing is left only in the -wal file. */
-function shutdown() {
-  try { sqlite.pragma("wal_checkpoint(TRUNCATE)"); sqlite.close(); } catch { /* closed already */ }
-}
-(globalThis as { __mandiShutdown?: () => void }).__mandiShutdown = shutdown;
 for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => { shutdown(); process.exit(0); });

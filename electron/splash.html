@@ -64,8 +64,10 @@
   <script>
     // the app fills these in as it starts: setStatus("Opening your data…"), setVersion("0.2.1"),
     // and setError("Mandi Mitra could not open your books.", "C:\\…\\logs\\main.log") when it cannot
+    // (an update that could not open the books names the first button "Go back to version …" instead of Try again)
     window.setStatus = (text, bad) => { const s = document.getElementById("status"); s.textContent = text; s.className = bad ? "bad" : ""; };
-    window.setError = (text, logFile) => {
+    window.setError = (text, logFile, first) => {
+      document.getElementById("again").textContent = first || "Try again";
       window.setStatus(text, true);
       document.getElementById("log").textContent = logFile ? "Details: " + logFile : "";
       document.body.classList.add("err");

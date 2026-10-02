@@ -13,7 +13,9 @@
  *
  * `--smoke-test` starts everything off-screen on a throwaway data folder,
  * checks it, prints SMOKE OK or SMOKE FAIL and exits 0 or 1: the build
- * pipeline uses it to prove the packaged app runs and is locked down.
+ * pipeline uses it to prove the packaged app runs and is locked down. With
+ * `--smoke-quit` as well, a passing run then closes the way a normal close
+ * does (the closing backup, then the books closed) and checks that too.
  */
 "use strict";
 const { app, BrowserWindow, shell, dialog, Menu, nativeTheme, session, utilityProcess, ipcMain } = require("electron");
@@ -23,11 +25,13 @@ const os = require("node:os");
 const net = require("node:net");
 const crypto = require("node:crypto");
 const { pathToFileURL } = require("node:url");
+const { spawn } = require("node:child_process");
 const lockdown = require("./lockdown.cjs");
 const { openLog, mirrorConsole } = require("./log.cjs");
 
 const argv = process.argv;
 const smoke = argv.includes("--smoke-test");
+const smokeQuit = smoke && argv.includes("--smoke-quit");
 /** The installed app, or a dev run started with --locked to try the lock-down. */
 const locked = app.isPackaged || argv.includes("--locked");
 const dev = !app.isPackaged;
@@ -57,6 +61,8 @@ fs.mkdirSync(userData, { recursive: true });
 app.setPath("userData", userData);
 const DATA_DIR = dev && !smoke && process.env.MANDI_DATA_DIR ? path.resolve(process.env.MANDI_DATA_DIR) : path.join(userData, "data");
 const DB_PATH = path.join(DATA_DIR, "mandi.db");
+/** There while the server has the books open; its clean close removes it (server/db/client.ts). */
+const OPEN_MARK = path.join(DATA_DIR, "books-open.json");
 
 /* 3. The log: start-up steps, errors and the server's own output. */
 const log = openLog(path.join(userData, "logs"));
@@ -137,16 +143,23 @@ function setStatus(s, text) {
   if (!s || s.isDestroyed()) return Promise.resolve();
   return s.webContents.executeJavaScript(`setStatus(${JSON.stringify(text)}, false)`).catch(() => undefined);
 }
-/** One plain sentence, Try again, Close, and where the log is. */
-async function showError(text, err) {
+/**
+ * One plain sentence, Try again, Close, and where the log is. After an update
+ * that could not open the books, the first button goes back to the version
+ * kept from before (`goBack`) instead of trying again.
+ */
+let splashGoBack = null;
+async function showError(text, err, { goBack = null } = {}) {
   if (err) console.error("[app]", text, err);
   else info(text);
   if (smoke) return;
   if (!splash || splash.s.isDestroyed()) splash = createSplash();
   splashError = true;
+  splashGoBack = goBack;
   await splash.ready;
   if (splash.s.isDestroyed()) return;
-  await splash.s.webContents.executeJavaScript(`setError(${JSON.stringify(text)}, ${JSON.stringify(log.file)})`).catch(() => undefined);
+  const first = goBack ? `Go back to version ${goBack.version}` : null;
+  await splash.s.webContents.executeJavaScript(`setError(${JSON.stringify(text)}, ${JSON.stringify(log.file)}, ${JSON.stringify(first)})`).catch(() => undefined);
   splash.s.show();
   splash.s.focus();
 }
@@ -154,6 +167,7 @@ function closeSplash() {
   if (splash && !splash.s.isDestroyed()) splash.s.destroy();
   splash = null;
   splashError = false;
+  splashGoBack = null;
 }
 
 /** The main window, hidden until its first paint. */
@@ -304,6 +318,42 @@ function rememberPort(port) {
   try { fs.writeFileSync(PORT_FILE, JSON.stringify({ port })); } catch { /* next start probes again */ }
 }
 
+/* ---------------- installers ---------------- */
+
+/**
+ * Starts an update's installer quietly from this process (the app's own, as
+ * before v0.3.19; the books server's process ends with the app). Resolves once
+ * Windows has started it and rejects if it could not, so nothing is closed
+ * for an installer that never ran.
+ */
+function runInstaller(file, args) {
+  info(`starting the installer ${path.basename(String(file))} ${args.join(" ")}`);
+  return new Promise((resolve, reject) => {
+    let child;
+    try { child = spawn(file, args, { detached: true, stdio: "ignore", windowsHide: false }); } catch (e) { reject(e); return; }
+    child.once("error", (e) => { console.error("[app] the installer did not start:", e); reject(e); });
+    child.once("spawn", () => { child.unref(); resolve(); });
+  });
+}
+
+/** Start-up failed because an update could not open the books: back to the version kept from before, then this app leaves. */
+let goingBack = false;
+async function goBack(back) {
+  if (goingBack) return;
+  goingBack = true;
+  try {
+    // /S = no questions; --force-run = open it when done; --updated = it waits for this app to leave by itself
+    await runInstaller(back.file, ["/S", "--force-run", "--updated"]);
+  } catch {
+    goingBack = false;
+    await showError("Windows did not start the earlier version. Try again in a minute.", null, { goBack: back });
+    return;
+  }
+  info(`going back to version ${back.version}; closing`);
+  quitting = true;
+  app.exit(0);
+}
+
 /* ---------------- the server ---------------- */
 
 const server = { mode: null, child: null, port: 0, share: false, up: false, restarts: 0, stopping: false, restarting: false, portTaken: false, closingForUpdate: false };
@@ -372,6 +422,14 @@ function startUtility(port, share) {
       } else if (m.type === "relaunch") {
         info("restarting to finish putting back a backup");
         relaunch();
+      } else if (m.type === "install") {
+        // the server's update (or Go back) asks for its installer; the answer says whether Windows started it
+        const reply = (r) => { try { child.postMessage({ type: "install-result", id: m.id, ...r }); } catch { /* it is gone */ } };
+        runInstaller(m.file, Array.isArray(m.args) ? m.args.map(String) : []).then(
+          () => reply({ ok: true }),
+          (e) => reply({ ok: false, error: String((e && e.message) || e) }));
+      } else if (m.type === "closed") {
+        if (m.backup) info(`closing backup ${m.backup}`);
       }
     });
     child.once("exit", (code) => {
@@ -386,12 +444,25 @@ async function startInProcess(port, share) {
   Object.assign(process.env, serverEnv(port, share));
   // "Restore a backup" finishes on a fresh start, before the database is opened
   globalThis.__mandiRelaunch = () => relaunch();
+  // an update's installer: started from here; the updater then closes the books and the app leaves
+  globalThis.__mandiRunInstaller = runInstaller;
+  globalThis.__mandiExit = () => { quitting = true; app.exit(0); };
   try {
     await import(pathToFileURL(SERVER_BUNDLE).href);
     return { ok: true };
   } catch (e) {
-    return { fatal: { message: String((e && e.message) || e), code: e && e.code, name: e && e.constructor && e.constructor.name }, why: String(e && e.message), error: e };
+    // books that were opened (an update that was rolled back) are closed cleanly
+    try { globalThis.__mandiShutdown?.(); } catch { /* not open */ }
+    return { fatal: fatalOf(e), why: String(e && e.message), error: e };
   }
+}
+/** What the start-up screen needs to know about a server that refused to start (as server-host.cjs sends it). */
+function fatalOf(e) {
+  return {
+    message: String((e && e.message) || e), code: e && e.code, name: e && e.constructor && e.constructor.name,
+    mandiUpdateFailed: Boolean(e && e.mandiUpdateFailed), diskFull: Boolean(e && e.diskFull),
+    goBack: e && e.goBack && e.goBack.file ? { version: String(e.goBack.version), file: String(e.goBack.file) } : null,
+  };
 }
 
 function waitGone(child, ms) {
@@ -467,14 +538,25 @@ async function restartServer() {
   if (lastLoadFailed && win && !win.isDestroyed()) win.webContents.reload();
 }
 
-/** Asks the server to write everything into the books file and close it, then waits for it (at most `ms`). */
-function stopServer(ms = 5000) {
-  if (server.mode === "inprocess") { try { globalThis.__mandiShutdown?.(); } catch { /* closed already */ } return Promise.resolve(); }
+/**
+ * Asks the server to write everything into the books file and close it, then
+ * waits for it (at most `ms`). With `backup` (a normal close), the day's work
+ * goes into a backup first when one is due (server/lib/backup.ts backupOnQuit:
+ * local only, skipped when the last is under 2 h old or the books are huge).
+ */
+function stopServer(ms = 5000, { backup = false } = {}) {
+  if (server.mode === "inprocess") {
+    if (backup) {
+      try { const b = globalThis.__mandiBackupOnQuit?.(); if (b) info(`closing backup ${b}`); } catch (e) { console.error("[app] closing backup:", e); }
+    }
+    try { globalThis.__mandiShutdown?.(); } catch { /* closed already */ }
+    return Promise.resolve();
+  }
   const c = server.child;
   if (!c) return Promise.resolve();
   server.stopping = true;
   const gone = waitGone(c, ms);
-  try { c.postMessage({ type: "shutdown" }); } catch { /* it is gone */ }
+  try { c.postMessage({ type: "shutdown", backup }); } catch { /* it is gone */ }
   return gone;
 }
 
@@ -513,7 +595,8 @@ function endSession(why) {
   server.stopping = true;
   const pid = c.pid;
   try { c.postMessage({ type: "shutdown" }); } catch { /* gone */ }
-  const ok = waitSync(4000, () => !fs.existsSync(`${DB_PATH}-wal`) || !alive(pid));
+  // closed = the side file folded in and the clean-close mark removed (then nothing is checked at the next start)
+  const ok = waitSync(4000, () => !alive(pid) || (!fs.existsSync(`${DB_PATH}-wal`) && !fs.existsSync(OPEN_MARK)));
   info(`${why}: books ${ok ? "closed" : "NOT confirmed closed"} in ${Date.now() - t0} ms`);
 }
 
@@ -540,14 +623,23 @@ app.on("second-instance", () => {
   }
 });
 app.on("window-all-closed", () => { if (!smoke) app.quit(); });
-// the books are written into the main file and closed (nothing waits in the -wal side file), then the app ends
+/* A normal close: the day's work into a backup first (quick, this computer
+   only, when the last one is over 2 h old), then the books written into the
+   main file and closed (nothing waits in the -wal side file), then the app
+   ends. Not for a Windows shutdown (endSession), a restart (relaunch) or an
+   update (the server has closed the books itself and gone). */
 let serverClosed = false;
 app.on("will-quit", (e) => {
   quitting = true;
   if (serverClosed || !server.mode) return;
-  if (server.mode === "inprocess") { serverClosed = true; try { globalThis.__mandiShutdown?.(); } catch { /* closed already */ } return; }
   e.preventDefault();
-  void stopServer(5000).then(() => { serverClosed = true; info("closed"); app.quit(); });
+  // the backup runs in the server's process; the windows are already gone, so a big book may take a few seconds
+  void stopServer(30_000, { backup: true }).then(() => {
+    serverClosed = true;
+    info("closed");
+    if (smokeQuit) void smokeQuitDone();
+    else app.quit();
+  });
 });
 app.on("child-process-gone", (_e, d) => {
   console.warn(`[app] ${d.type} process gone: ${d.reason} (code ${d.exitCode})${d.name ? ` ${d.name}` : ""}`);
@@ -559,7 +651,11 @@ app.on("child-process-gone", (_e, d) => {
 });
 let gpuFailures = 0;
 
-ipcMain.on("mandi:try-again", (e) => { if (splash && e.sender === splash.s.webContents) void relaunch(); });
+ipcMain.on("mandi:try-again", (e) => {
+  if (!splash || e.sender !== splash.s.webContents) return;
+  if (splashGoBack) void goBack(splashGoBack);
+  else void relaunch();
+});
 ipcMain.on("mandi:close", (e) => { if (splash && e.sender === splash.s.webContents) { quitting = true; app.quit(); } });
 
 function readShare() {
@@ -569,12 +665,17 @@ function readShare() {
   try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "network.json"), "utf8")).share === true; } catch { return false; }
 }
 
-/** The plain words on the splash for a server that refused to start. */
+/**
+ * The plain words on the splash for a server that refused to start. An update
+ * that could not open the books left them exactly as they were (it is rolled
+ * back), so going back to the version kept from before is safe and offered.
+ */
 function startFailure(fatal) {
-  if (fatal && fatal.name === "MigrationError") return "This update could not open your books. Nothing was lost.";
-  if (fatal && /^SQLITE_(CORRUPT|NOTADB)/.test(String(fatal.code))) return "Your books file could not be opened.";
-  if (fatal && /SQLITE_FULL|ENOSPC/.test(`${fatal.code} ${fatal.message}`)) return "This computer's disk is full. Free some space and try again.";
-  return "Mandi Mitra could not open your books.";
+  const f = fatal || {};
+  if (f.diskFull || /SQLITE_FULL|ENOSPC/.test(`${f.code} ${f.message}`)) return { text: "This computer's disk is full. Free some space and try again." };
+  if (f.mandiUpdateFailed || f.name === "MigrationError") return { text: "This version could not open your books; they are as they were.", goBack: f.goBack || null };
+  if (/^SQLITE_(CORRUPT|NOTADB)/.test(String(f.code))) return { text: "Your books file could not be opened." };
+  return { text: "Mandi Mitra could not open your books." };
 }
 
 /** Server up (port picked, started, answering). Retries another port if this one turns out taken. */
@@ -616,8 +717,10 @@ app.whenReady().then(async () => {
   const up = await bringUpServer(share);
   if (splash && !splash.s.isDestroyed()) splash.s.setClosable(true);
   if (!up.ok) {
-    if (up.fatal) await showError(startFailure(up.fatal), up.error || up.fatal.message);
-    else await showError("Mandi Mitra could not start.", up.why);
+    if (up.fatal) {
+      const { text, goBack: back } = startFailure(up.fatal);
+      await showError(text, up.error || up.fatal.message, { goBack: back });
+    } else await showError("Mandi Mitra could not start.", up.why);
     return;
   }
   try { fs.writeFileSync(LAST, JSON.stringify({ version: app.getVersion() })); } catch { /* says "updating" once more */ }
@@ -681,11 +784,31 @@ async function smokeTest() {
     const up = await bringUpServer(false);
     checks.server = Boolean(up.ok);
     checks.mode = server.mode;
-    if (!up.ok) throw new Error(`server: ${up.why}`);
+    if (!up.ok) {
+      // what the start-up screen would offer (an update that could not apply: going back), for the build pipeline and tests
+      const f = up.fatal || {};
+      console.error(`SMOKE FAIL start ${JSON.stringify({ message: f.message || up.why, updateFailed: Boolean(f.mandiUpdateFailed), diskFull: Boolean(f.diskFull), goBack: (f.goBack && f.goBack.version) || null })}`);
+      throw new Error(`server: ${up.why}`);
+    }
     if (process.env.MANDI_SMOKE_FROM) {
       const backups = fs.existsSync(path.join(DATA_DIR, "backups")) ? fs.readdirSync(path.join(DATA_DIR, "backups")) : [];
+      const copied = backups.some((n) => /^before-update-.*\.db$/.test(n));
       checks.olderBooksOpened = true;
-      info(`older books opened; before-update copy ${backups.some((n) => n.startsWith("before-update-")) ? "made" : "not needed"}`);
+      info(`older books opened; before-update copy ${copied ? "made" : "not needed"}`);
+      /* MANDI_SMOKE_EXPECT_UPDATE: these books are known to be older (desktop.yml's
+         fixture), so the update must have run on them: a checked copy made first,
+         the update applied, and no new first-run books made in their place. */
+      if (process.env.MANDI_SMOKE_EXPECT_UPDATE === "1") {
+        // (the server's own lines reach the log through its output pipe, a moment after it says it is ready)
+        let said = "";
+        for (let i = 0; i < 60; i++) {
+          try { said = fs.readFileSync(log.file, "utf8"); } catch { /* not yet */ }
+          if (/migrations up to date/.test(said)) break;
+          await sleep(50);
+        }
+        checks.olderBooksUpdated = copied && /backed up before update/.test(said) && /migrations up to date/.test(said) && !/first run/.test(said);
+        if (!checks.olderBooksUpdated) console.error(`SMOKE update: copy ${copied}, log ${JSON.stringify(said.slice(-1500))}`);
+      }
     }
     checks.icon = fs.existsSync(ICON);
     // off-screen: the splash (with its two buttons) and the main window both load
@@ -766,8 +889,11 @@ async function smokeTest() {
       while (Date.now() < until && !(server.child && server.child.pid !== before && !server.restarting)) await sleep(50);
       checks.restart = Boolean(server.child) && (await answers(10_000));
       // Windows shutting down: the books are written into the main file and closed before the app ends
-      endSession("smoke session-end");
-      checks.sessionEnd = !fs.existsSync(`${DB_PATH}-wal`);
+      // (--smoke-quit closes the normal way instead, below)
+      if (!smokeQuit) {
+        endSession("smoke session-end");
+        checks.sessionEnd = !fs.existsSync(`${DB_PATH}-wal`) && !fs.existsSync(OPEN_MARK);
+      }
     }
   } catch (e) {
     fail("error", e);
@@ -777,7 +903,24 @@ async function smokeTest() {
   console.log(`${ok ? "SMOKE OK" : "SMOKE FAIL"} ${base} ${JSON.stringify(checks)}`);
   quitting = true;
   try { if (w && !w.isDestroyed()) w.destroy(); } catch { /* closing */ }
+  // --smoke-quit: leave the way a normal close does (will-quit: the closing backup, then the books closed; smokeQuitDone checks it)
+  if (ok && smokeQuit) { app.quit(); return; }
   await stopServer(3000);
+  try { fs.rmSync(userData, { recursive: true, force: true }); } catch { /* the OS clears its temp folder */ }
+  app.exit(ok ? 0 : 1);
+}
+
+/** After a --smoke-quit close: a closing backup was made, and the books were folded into one file and closed cleanly. */
+async function smokeQuitDone() {
+  let names = [];
+  try { names = fs.readdirSync(path.join(DATA_DIR, "backups")); } catch { /* none */ }
+  const checks = {
+    closingBackup: names.some((n) => /^auto-\d{8}-\d{6}\.db$/.test(n)),
+    walFolded: !fs.existsSync(`${DB_PATH}-wal`),
+    markRemoved: !fs.existsSync(OPEN_MARK),
+  };
+  const ok = Object.values(checks).every(Boolean);
+  console.log(`${ok ? "SMOKE QUIT OK" : "SMOKE QUIT FAIL"} ${JSON.stringify(checks)}`);
   try { fs.rmSync(userData, { recursive: true, force: true }); } catch { /* the OS clears its temp folder */ }
   app.exit(ok ? 0 : 1);
 }
