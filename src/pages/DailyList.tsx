@@ -29,6 +29,7 @@ import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
 import { rstKey, numberOnly, grossOdd, rateOdd, DEFAULT_RATE_RANGE, type GrossOdd, type RateRange } from "@server/lib/slipChecks.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 import { dailyListFrom, dailyListQuery } from "@/lib/dailyList.ts";
+import { findSuppliers } from "@/lib/ledgerList.ts";
 import {
   Button, Card, Select, Input, Badge, Alert, EmptyState, Dialog, Field, Spinner, Checkbox,
 } from "@/components/ui/index.tsx";
@@ -467,6 +468,14 @@ export function DailyListPage() {
     () => sortSlips(rows, P.sortOrder, (r) => (nameCol === "adatiHi" ? r.adatiNameHi : r.adatiNameHinglish || r.adatiNameHi)),
     [rows, P.sortOrder, nameCol],
   );
+  /* The day's rows of one adati: typed in Hinglish or Hindi, spelt loosely,
+     found the way the supplier ledger finds a name. The totals stay the day's. */
+  const [nameQuery, setNameQuery] = useState("");
+  const named = useMemo(() => {
+    if (!nameQuery.trim()) return ordered;
+    const list = ordered.map((r) => ({ id: r.id, nameHi: r.adatiNameHi, nameHinglish: r.adatiNameHinglish, balancePaise: 0, r }));
+    return findSuppliers(list, nameQuery).map((x) => x.r);
+  }, [ordered, nameQuery]);
 
   /* Clicking the name or RST heading sorts by it: up, down, then back to
      the order entered. The choice lasts for this browser, like the gear's. */
@@ -475,7 +484,7 @@ export function DailyListPage() {
   };
   /* Every other column sorts on the screen only (up, down, off); name and
      RST keep using the list's own order, which downloads follow too. */
-  const colSort = useSort(ordered, {
+  const colSort = useSort(named, {
     village: (r) => r.adatiVillage, mill: (r) => r.merchantCode, jins: (r) => r.jinsCode, gross: (r) => r.grossGrams,
     katauti: (r) => r.katautiUnits, deduction: (r) => r.katautiGrams, net: (r) => r.netGrams,
     rate: (r) => (r.ratePending ? null : r.ratePaisePerQtl), amount: (r) => (r.ratePending ? null : r.amountPaise),
@@ -791,8 +800,9 @@ export function DailyListPage() {
           </div>
 
           <div className="ml-auto flex items-center gap-2 text-[11px] text-faint">
-            <Badge tone="neutral">{t("daily.perBag", { kg: katautiCfg.kgPerUnit })}</Badge>
-            {dayInfo && <Badge tone="brand">{t("daily.rowCount", { n: dayInfo.n })}</Badge>}
+            <Input value={nameQuery} onChange={(e) => setNameQuery(e.target.value)} placeholder={t("daily.searchName")}
+              aria-label={t("daily.searchName")} className="h-8 w-[170px] text-[13px]" />
+            {dayInfo && <Badge tone="brand">{nameQuery.trim() ? t("daily.foundOf", { n: named.length, of: rows.length }) : t("daily.rowCount", { n: dayInfo.n })}</Badge>}
           </div>
         </div>
       </Card>

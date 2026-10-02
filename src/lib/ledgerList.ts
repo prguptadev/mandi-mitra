@@ -10,10 +10,10 @@ export interface LedgerListRow {
   id: string; nameHi: string; nameHinglish: string; balancePaise: number;
 }
 
-/** "Raam  Lal" and "RAMLAL" are one name: letters only, a long vowel written once. */
-const latinKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "").replace(/([aeiou])\1+/g, "$1");
+/** "Raam  Lal" and "RAMLAL" are one name: letters only, a long vowel written once, "ph" heard as "f". */
+const latinKey = (s: string) => s.toLowerCase().replace(/ph/g, "f").replace(/[^a-z0-9]/g, "").replace(/([aeiou])\1+/g, "$1");
 /** The consonants only: "dharmpal", "radhey" and "ramvir" still find DHARAMPAL, RADHE and RAMVEER. */
-const skeleton = (s: string) => s.toLowerCase().replace(/y\b/g, "").replace(/[^a-z]/g, "").replace(/[aeiou]/g, "");
+const skeleton = (s: string) => s.toLowerCase().replace(/ph/g, "f").replace(/y\b/g, "").replace(/[^a-z]/g, "").replace(/[aeiou]/g, "");
 /** From each word of the name to its end, so a loose spelling is only matched from the start of a word. */
 const fromEachWord = (name: string, key: (w: string) => string) => {
   const words = name.split(/\s+/).map(key);
