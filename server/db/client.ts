@@ -288,8 +288,10 @@ function openBooks(): Database.Database {
     }
   }
   if (db) {
-    // readable, so it stays where it is and is checked again at the next start (the mark stays)
+    // readable, so it stays where it is and is checked again at the next start (the mark stays);
+    // nothing writes to it meanwhile: no automatic backups (they would fail) and no sync
     mode = "readOnly";
+    process.env.MANDI_NO_AUTO_BACKUP = "1";
     notice({ kind: "readOnly", why: "damaged", detail: lastDetail });
     console.error("[db] the books file is damaged and no good backup was found: open for reading only");
     markOpen();

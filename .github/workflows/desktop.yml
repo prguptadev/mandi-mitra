@@ -45,6 +45,9 @@ jobs:
           if ($null -eq $j.windows) { throw "the scanner check said nothing about this computer" }
       - run: npm run build
       - run: npm run build:desktop-server
+      # before electron-builder, which rebuilds better-sqlite3 for Electron
+      - name: Books as the release before left them (for the update check below)
+        run: npx tsx scripts/make-upgrade-fixture.ts upgrade-fixture
       - name: Build the installer
         run: npx electron-builder --win --publish never
       - name: The packaged app starts and answers
@@ -53,6 +56,22 @@ jobs:
           $exe = Get-ChildItem release/win-unpacked -Filter MandiMitra.exe | Select-Object -First 1
           $p = Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -PassThru -Wait -NoNewWindow
           if ($p.ExitCode -ne 0) { throw "smoke test failed with exit code $($p.ExitCode)" }
+      - name: The packaged app updates the release before's books
+        shell: pwsh
+        run: |
+          $data = Join-Path $env:APPDATA "mandi-mitra\data"
+          if (Test-Path $data) { Remove-Item -Recurse -Force $data }
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          Copy-Item upgrade-fixture\mandi.db (Join-Path $data "mandi.db")
+          $exe = Get-ChildItem release/win-unpacked -Filter MandiMitra.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -PassThru -Wait -NoNewWindow -RedirectStandardOutput upgrade-out.txt -RedirectStandardError upgrade-err.txt
+          $out = ((Get-Content upgrade-out.txt -Raw), (Get-Content upgrade-err.txt -Raw)) -join "`n"
+          Write-Host $out
+          if ($p.ExitCode -ne 0) { throw "the app did not start on last release's books (exit code $($p.ExitCode))" }
+          if ($out -notmatch "backed up before update") { throw "no copy of the books was made before the update" }
+          if ($out -notmatch "migrations up to date") { throw "the books were not updated" }
+          if ($out -match "first run") { throw "new books were made instead of opening the old ones" }
+          if (-not (Get-ChildItem (Join-Path $data "backups") -Filter "before-update-*.db")) { throw "no before-update backup file" }
       - uses: actions/upload-artifact@v4
         with:
           name: MandiMitra-Windows-installer

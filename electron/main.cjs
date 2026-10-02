@@ -51,6 +51,35 @@ function freePort(preferred) {
   });
 }
 
+/*
+ * Everything the app says (the server's start-up lines, a refused restore, a
+ * failed start with its details) also goes to logs/main.log beside the data,
+ * rolled over at about 1 MB: opened from the desktop icon there is no
+ * console, and this is what to send to support.
+ */
+function logToFile() {
+  const dir = path.join(app.getPath("userData"), "logs");
+  const file = path.join(dir, "main.log");
+  let size = 0;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    size = fs.existsSync(file) ? fs.statSync(file).size : 0;
+  } catch { return; }
+  const util = require("node:util");
+  for (const level of ["log", "warn", "error"]) {
+    const say = console[level].bind(console);
+    console[level] = (...args) => {
+      say(...args);
+      try {
+        if (size > 1024 * 1024) { fs.renameSync(file, `${file}.1`); size = 0; }
+        const line = `${new Date().toISOString()} ${level} ${util.format(...args)}\n`;
+        fs.appendFileSync(file, line);
+        size += Buffer.byteLength(line);
+      } catch { /* the console still has it */ }
+    };
+  }
+}
+
 async function startServer() {
   const root = app.getAppPath();
   const unpacked = root.replace(/app\.asar$/, "app.asar.unpacked");
@@ -134,6 +163,8 @@ async function startFailed(e) {
 }
 
 app.whenReady().then(async () => {
+  logToFile();
+  console.log(`[app] Mandi Mitra ${app.getVersion()} starting${smoke ? " (smoke test)" : ""}`);
   // the splash first, and painted, before the database work holds up this process
   const splash = smoke ? null : createSplash();
   const openedAt = Date.now();
