@@ -136,7 +136,7 @@ export function DailyListPage() {
   const canSlip = can("slip.write") && !dayClosed;
   const canDel = can("slip.delete") && !dayClosed;
   const tallyFlags = useTallyFlags("slip", date, date);
-  // the dashboard's day-rate card links a mill's line here as /daily?date=…&mill=<id>
+  // the dashboard's day-rate card and a mill's stock page link here as /daily?date=…&mill=<id>&jins=<id>
   const [merchantId, setMerchantId] = useState<string>(opened.mill);
   /** Commodity new rows get. */
   const [jinsId, setJinsId] = useState<string>(opened.jins);

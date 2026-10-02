@@ -5,18 +5,29 @@
 
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-/** A line of the dashboard's day's-rate card: one mill, one commodity, one day. */
-export const dayRateLink = (date: string, line: { millId: string | null; jinsId: string }) =>
-  `/daily?date=${date}&mill=${line.millId ?? ""}`;
+const link = (date: string, mill: string, jins: string) =>
+  `/daily?${new URLSearchParams({ date, ...(mill ? { mill } : {}), ...(jins ? { jins } : {}) })}`;
 
-/** A day row on a mill's stock page (id "none" = slips with no mill), with the commodity picked there ("" = all). */
-export const stockDayLink = (date: string, _millId: string, _jinsId: string) => `/daily?date=${date}`;
+/**
+ * A line of the dashboard's day's-rate card: one mill, one commodity, one day.
+ * The list it opens is that mill's slips of that commodity, so its net,
+ * average and amount are the line's.
+ */
+export const dayRateLink = (date: string, line: { millId: string | null; jinsId: string }) => link(date, line.millId ?? "", line.jinsId);
+
+/**
+ * A day row on a mill's stock page, with the commodity picked there ("" = all):
+ * the list it opens is that mill's slips of that day and commodity, the row's
+ * own. Slips with no mill (id "none") cannot be picked on the list, so that
+ * row opens the whole day for the commodity.
+ */
+export const stockDayLink = (date: string, millId: string, jinsId: string) => link(date, millId === "none" ? "" : millId, jinsId);
 
 /** What the daily list opens on, from its address: the day, the mill and the commodity ("" = all). */
 export function dailyListFrom(search: string) {
   const p = new URLSearchParams(search);
   const d = p.get("date");
-  return { date: d && ISO_DAY.test(d) ? d : null, mill: p.get("mill") ?? "", jins: "" };
+  return { date: d && ISO_DAY.test(d) ? d : null, mill: p.get("mill") ?? "", jins: p.get("jins") ?? "" };
 }
 
 /** The slips the daily list shows for a day, a mill ("" = all) and a commodity ("" = all). */
