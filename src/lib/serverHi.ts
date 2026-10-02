@@ -52,6 +52,7 @@ const EXACT: Record<string, string> = {
   "PIN is too common": "यह PIN बहुत आम है, कोई दूसरा चुनें",
   "Wrong PIN. Account locked for 5 minutes.": "ग़लत PIN। 5 मिनट के लिए रोक दिया गया।",
   "This can be done only on the main computer.": "यह सिर्फ़ मुख्य कंप्यूटर पर हो सकता है।",
+  "This computer no longer shares its books on the network.": "यह कंप्यूटर अब अपना हिसाब नेटवर्क पर नहीं बाँटता।",
   "That is too big to send.": "यह भेजने के लिए बहुत बड़ा है।",
   "Enter your name": "अपना नाम लिखें",
   "Enter the business name": "व्यापार का नाम लिखें",

@@ -1,10 +1,12 @@
 import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
 import type { Context, Next } from "hono";
 import { z } from "zod";
 import { getCookie } from "hono/cookie";
 import { bodyLimit } from "hono/body-limit";
-import { getConnInfo } from "@hono/node-server/conninfo";
 import { resolveSession, type AuthContext } from "./auth.ts";
+import { DB_PATH } from "../db/client.ts";
 import type { AuditActor } from "./audit.ts";
 
 export const COOKIE = "mandi_session";
@@ -28,12 +30,24 @@ export const notFound = (m = "Not found") => new HttpError(404, m);
    another laptop or phone on the shop's Wi-Fi reaches this server too; the
    main computer's own window always comes from 127.0.0.1. */
 
-/** The device this request came from (an IP address), or null for a request made inside this process. */
+/**
+ * A connection whose address can no longer be read (the device reset it
+ * before the request was looked at): neither this computer nor the shop's
+ * network, so it is refused and never taken for the main computer.
+ */
+export const UNKNOWN_ADDRESS = "unknown";
+
+/**
+ * The device this request came from (an IP address). null only when there is
+ * no connection at all: a request made inside this process (app.request /
+ * app.fetch). A connection without a readable address is UNKNOWN_ADDRESS.
+ */
 export function clientAddress(c: Context): string | null {
-  try {
-    const a = getConnInfo(c).remote.address;
-    return a ? a.replace(/^::ffff:/i, "").toLowerCase() : null;
-  } catch { return null; }
+  const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming;
+  if (!incoming) return null;
+  let a: string | undefined;
+  try { a = incoming.socket?.remoteAddress; } catch { a = undefined; }
+  return a ? a.replace(/^::ffff:/i, "").toLowerCase() : UNKNOWN_ADDRESS;
 }
 
 export const isLoopback = (a: string) => a === "::1" || /^127\./.test(a);
@@ -132,6 +146,8 @@ export function requestGuard(shared: boolean) {
   return async (c: Context<Env>, next: Next) => {
     const addr = clientAddress(c);
     if (addr && !isLanAddress(addr)) return nope(c, "Not allowed from here", "bad_network");
+    // listening on the network since start-up, but sharing has been switched off since: this computer only
+    if (shared && addr && !isLoopback(addr) && sharingSwitchedOff()) return nope(c, NOT_SHARED, "not_shared");
     const host = parseHost(c.req.header("host"));
     const named = (n: string) => LOOPBACK_NAMES.has(n) || (shared && isOwnName(n));
     if (!host || !named(host.name) || host.port !== appPort(c)) return nope(c, "Not allowed from here", "bad_host");
@@ -152,6 +168,22 @@ export function requestGuard(shared: boolean) {
     await next();
   };
 }
+
+/* The server listens on the network from start-up when sharing is on
+   (MANDI_HOST); switching sharing off in Settings writes network.json and
+   takes effect on the next start. Until then other devices are refused here.
+   No network.json at all (MANDI_HOST set by hand, the tests) changes nothing. */
+export const NOT_SHARED = "This computer no longer shares its books on the network.";
+let shareRead: { at: number; off: boolean } | null = null;
+function sharingSwitchedOff(): boolean {
+  if (shareRead && Date.now() - shareRead.at < 2_000) return shareRead.off;
+  let off = false;
+  try { off = JSON.parse(fs.readFileSync(path.join(path.dirname(DB_PATH), "network.json"), "utf8")).share === false; } catch { /* no file: as started */ }
+  shareRead = { at: Date.now(), off };
+  return off;
+}
+/** Settings › network sharing changed (routes/cloud.ts): read network.json again at the next request. */
+export function sharingChanged() { shareRead = null; }
 
 /* ------------------------------------------------ how much may be sent
 

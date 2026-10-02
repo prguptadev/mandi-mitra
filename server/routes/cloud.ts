@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { db, schema, DB_PATH } from "../db/client.ts";
 import { audit } from "../lib/audit.ts";
-import { can, actor, bad, requireAuth, HttpError, mainComputerOnly, type Env } from "../lib/http.ts";
+import { can, actor, bad, requireAuth, HttpError, mainComputerOnly, sharingChanged, type Env } from "../lib/http.ts";
 import { endRemoteSessions } from "../lib/auth.ts";
 import {
   FREE_BYTES, CloudError, clashList, clearClashes, cloudBusy, cloudDevices, connectCloud, disconnectCloud,
@@ -170,6 +170,7 @@ cloudRoutes.get("/host", requireAuth, (c) => c.json({
 cloudRoutes.put("/network", can("backup.manage"), mainComputerOnly, async (c) => {
   const { share } = z.object({ share: z.boolean() }).parse(await c.req.json());
   fs.writeFileSync(NETWORK_FILE(), JSON.stringify({ share }, null, 2));
+  sharingChanged();
   // switched off: whoever signed in from another device is signed out now, not at the end of their day
   if (!share) await endRemoteSessions();
   await audit({

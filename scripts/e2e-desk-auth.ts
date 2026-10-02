@@ -1,5 +1,6 @@
 import "./_guard.ts";
 import http from "node:http";
+import net from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,7 +15,8 @@ import Database from "better-sqlite3";
  *      the owner changes them), with requests arriving from the main computer
  *      and from other devices
  *   3. that new install served on this computer's own network address and
- *      reached over the network (skipped when there is no network)
+ *      reached over the network, including connections the device resets
+ *      (skipped when there is no network)
  * Run through: npm run test:e2e
  */
 const API = process.env.MANDI_API!;
@@ -134,7 +136,7 @@ const app = createApp();
 const HOST = `${lanIp ?? "127.0.0.1"}:8787`;
 
 /** A device on the network (or the main computer, 127.0.0.1), with its own cookie. */
-function device(addr: string) {
+function device(addr: string | undefined) {
   let jar = "";
   async function call(method: string, p: string, body?: unknown, headers: Record<string, string> = {}): Promise<Reply> {
     const res = await app.fetch(new Request(`http://${HOST}/api${p}`, {
@@ -145,7 +147,7 @@ function device(addr: string) {
         ...(method !== "GET" ? { origin: `http://${HOST}`, "sec-fetch-site": "same-origin" } : {}), ...headers,
       },
       body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
-    }), { incoming: { socket: { remoteAddress: addr, remotePort: 50123, remoteFamily: addr.includes(":") ? "IPv6" : "IPv4", localPort: 8787 } }, outgoing: {} });
+    }), { incoming: { socket: { remoteAddress: addr, remotePort: 50123, remoteFamily: addr?.includes(":") ? "IPv6" : "IPv4", localPort: 8787 } }, outgoing: {} });
     const sc = res.headers.get("set-cookie") ?? "";
     if (sc) jar = /max-age=0/i.test(sc) ? "" : sc.split(";")[0];
     const text = await res.text();
@@ -156,6 +158,8 @@ function device(addr: string) {
   return { call, get cookie() { return jar; }, set cookie(v: string) { jar = v; } };
 }
 const MAIN = device("127.0.0.1");
+/** A connection the device has reset: its address can no longer be read. */
+const CUT = device(undefined as unknown as string);
 const LAN1 = device("192.168.1.50");
 const LAN2 = device("192.168.1.51");
 const FAR = device("8.8.8.8");
@@ -171,6 +175,13 @@ check("…or its computer name, bare or .local", (await LAN1.call("GET", "/auth/
   && (await LAN1.call("GET", "/auth/users", undefined, { host: `${pcName}.local:8787` })).status === 200);
 check("…but not a public site that borrows the computer's name", (await LAN1.call("GET", "/auth/users", undefined, { host: `${pcName}.com:8787` })).json?.code === "bad_host");
 check("a change from another site's page is refused", (await LAN1.call("POST", "/auth/login", { userId: id("Admin"), pin: "7747" }, { origin: "http://rebind.example:8787", "sec-fetch-site": "cross-site" })).json?.code === "bad_origin");
+
+console.log("\nA connection whose address cannot be read (the device reset it)");
+const cut = await CUT.call("GET", "/auth/users");
+check("is refused, never taken for the main computer", cut.status === 403 && cut.json?.code === "bad_network", cut);
+const cutLogin = await CUT.call("POST", "/auth/login", { userId: id("Manager 2"), pin: "135790" });
+check("…a wrong PIN sent that way is not counted against the main computer", cutLogin.status === 403
+  && q<{ n: number }>("select failed_attempts as n from users where id = ?", id("Manager 2"))[0]?.n === 0, cutLogin);
 
 console.log("\nThe first PIN (7747), kept until the owner changes it");
 const remote7747 = await LAN1.call("POST", "/auth/login", { userId: id("Admin"), pin: "7747" });
@@ -262,10 +273,17 @@ check("…and the Admin signs in with it", (await device("127.0.0.1").call("POST
 
 console.log("\nSharing switched off");
 check("sign-in from another device works before", (await m1Lan.call("GET", "/auth/me")).status === 200);
-check("the main computer switches sharing off", (await m1Main.call("PUT", "/cloud/network", { share: false })).status === 200);
-check("every sign-in made from another device ends", (await m1Lan.call("GET", "/auth/me")).status === 401 && (await LAN2.call("GET", "/auth/me")).status === 401);
-check("…the main computer's do not", (await m1Main.call("GET", "/auth/me")).status === 200);
 check("before signing in, 100 KB is refused here too", (await LAN1.call("POST", "/auth/login", big(100_000))).json?.code === "no_session");
+check("the main computer switches sharing off", (await m1Main.call("PUT", "/cloud/network", { share: false })).status === 200);
+const { resolveSession } = await import("../server/lib/auth.ts");
+check("every sign-in made from another device ends", (await resolveSession(m1Lan.cookie.split("=")[1], true)) === null);
+const offAnswer = await m1Lan.call("GET", "/auth/me");
+check("…and other devices are refused at once, before the next start (one plain sentence)", offAnswer.status === 403 && offAnswer.json?.code === "not_shared"
+  && offAnswer.json?.error === "This computer no longer shares its books on the network.", offAnswer);
+check("…they cannot sign back in meanwhile", (await LAN2.call("POST", "/auth/login", { userId: id("Manager 1"), pin: M1_PIN })).json?.code === "not_shared");
+check("…the main computer's sign-ins go on", (await m1Main.call("GET", "/auth/me")).status === 200);
+check("switched back on, other devices are answered again", (await m1Main.call("PUT", "/cloud/network", { share: true })).status === 200
+  && (await LAN2.call("POST", "/auth/login", { userId: id("Manager 1"), pin: M1_PIN })).status === 200);
 
 /* ------------------------------------------------------------ 3. over the real network */
 
@@ -296,6 +314,31 @@ if (!lanIp) {
     check("…with the new install's people", !!admin, people);
     const r = await send("POST", there("/auth/login"), { body: { userId: admin?.id, pin: "7747" } });
     check("reached over the network, a person on 7747 signs in for the working day (the address comes from the connection)", r.status === 200 && /max-age=43200/i.test(r.setCookie), r.json);
+    /* A device that sends a request and at once resets the connection
+       (TCP RST): its address must still be known, or the request refused,
+       and never be taken for the main computer. */
+    const people2 = people as { id: string; name: string }[];
+    const m2 = people2.find((x) => x.name === "Manager 2")!;
+    const mgr = await send("POST", there("/auth/login"), { body: { userId: people2.find((x) => x.name === "Manager 1")!.id, pin: "7747" } });
+    // reset a few milliseconds after sending: the server has read the request but not yet looked at its address
+    const resetAfter = (ms: number, method: string, p: string, body: unknown, cookie = "") => new Promise<void>((resolve) => {
+      const data = JSON.stringify(body);
+      const sock = net.connect(Number(NET_PORT), lanIp, () => {
+        sock.write(`${method} /api${p} HTTP/1.1\r\nHost: ${lanIp}:${NET_PORT}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(data)}\r\n${cookie ? `Cookie: ${cookie}\r\n` : ""}\r\n${data}`);
+        setTimeout(() => { sock.resetAndDestroy(); resolve(); }, ms);
+      });
+      sock.on("error", () => resolve());
+    });
+    for (const ms of [2, 5, 10, 2, 5, 10]) await resetAfter(ms, "POST", "/auth/login", { userId: m2.id, pin: "135790" });
+    for (const ms of [2, 5, 10]) await resetAfter(ms, "PUT", "/cloud/device", { name: "CUT-FROM-LAN" }, mgr.cookie);
+    await new Promise((r) => setTimeout(r, 1000));
+    const row = qOne<{ n: number; until: number | null }>(NET_DIR, "select failed_attempts as n, locked_until as until from users where id = ?", m2.id)[0];
+    check("wrong PINs sent with a reset connection never lock the person out at the main computer", row?.n === 0 && !row?.until, row);
+    const asMain = qOne<{ n: number }>(NET_DIR, "select count(*) as n from audit_log where action = 'login.failed' and (ip is null or ip like '127.%')")[0];
+    check("…and none is recorded as coming from the main computer", asMain?.n === 0, asMain);
+    let device2 = "";
+    try { device2 = fs.readFileSync(path.join(NET_DIR, "cloud.json"), "utf8"); } catch { /* never written */ }
+    check("a main-computer-only change sent with a reset connection is not made", !device2.includes("CUT-FROM-LAN"));
     check("a made-up name is refused over the network too", (await send("GET", there("/auth/users"), { headers: { host: `rebind.example:${NET_PORT}` } })).status === 403);
     check("this computer's name on another port is refused", (await send("GET", there("/auth/users"), { headers: { host: `${lanIp}:1` } })).status === 403);
   } finally {

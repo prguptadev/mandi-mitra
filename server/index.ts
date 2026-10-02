@@ -29,7 +29,11 @@ if (recovered) console.log(`[scan] reset ${recovered} interrupted read(s)`);
 // older sheets' pages get their fingerprints, so another computer notices the same picture again
 fingerprintOldPagesLater();
 // this computer only; MANDI_HOST=0.0.0.0 opens it to the local network on purpose
-serve({ fetch: createApp().fetch, port, hostname: process.env.MANDI_HOST ?? "127.0.0.1" });
+const listening = serve({ fetch: createApp().fetch, port, hostname: process.env.MANDI_HOST ?? "127.0.0.1" });
+/* Each connection's address is read the moment it is accepted, so it is
+   known for every request on it even if the device later resets the
+   connection (lib/http.ts refuses a request whose address cannot be read). */
+listening.on("connection", (socket: { remoteAddress?: string }) => { void socket.remoteAddress; });
 startAutoBackups();
 startCloudSync();
 console.log(`  api   http://localhost:${port}`);

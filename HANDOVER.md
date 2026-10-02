@@ -587,7 +587,11 @@ device name, network on/off, sign-up — are refused from other devices
 ("This can be done only on the main computer."), and the Settings tab there
 shows that one sentence. A sign-in from another device lasts 12 hours, the
 main PC's month-long one is never accepted from another device, and
-switching sharing off signs every other device out. Wrong PINs from other
+switching sharing off signs every other device out and refuses them at once
+("This computer no longer shares its books on the network."), although the
+server keeps listening on the network until the next start. A connection
+whose address cannot be read (a device that reset it) is refused, never
+taken for the main computer. Wrong PINs from other
 devices are counted per person and device (5 tries, then 5 min, 15 min,
 1 hour; 20 a day per person over all devices, then an hour) and never lock
 the main PC; the audit trail names the device's address. Requests are capped
