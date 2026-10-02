@@ -5,12 +5,14 @@ import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const PORT = "8799";
+// several copies can run side by side (one per worktree): E2E_PORT_OFFSET=100 moves every port up by 100
+const OFF = Number(process.env.E2E_PORT_OFFSET ?? 0);
+const PORT = String(8799 + OFF);
 const DATA = path.resolve("data-test");
 // Gemini is a local stand-in: no real key, no real read
-const FAKE_GEMINI = 8797;
+const FAKE_GEMINI = 8797 + OFF;
 // a stand-in for the UP e-Mandi portal: the real mandi site is never called
-const FAKE_EMANDI = 8795;
+const FAKE_EMANDI = 8795 + OFF;
 // a stand-in scanner: every "scan" returns this small JPEG
 const FAKE_PAGE = path.join(DATA, "fake-scanner-page.jpg");
 const env = {
@@ -19,18 +21,18 @@ const env = {
   MANDI_EMANDI_BASE: `http://127.0.0.1:${FAKE_EMANDI}`,
   MANDI_FAKE_SCANNER: FAKE_PAGE, MANDI_NO_AUTO_BACKUP: "1",
   // a real Postgres in-process, standing in for Supabase
-  MANDI_FAKE_PG: "postgresql://postgres:test-only@127.0.0.1:8796/postgres",
+  MANDI_FAKE_PG: `postgresql://postgres:test-only@127.0.0.1:${8796 + OFF}/postgres`,
   MANDI_NO_GITHUB: "1",
   // A is set up by sign-up below, like the first computer before v0.3
   MANDI_NO_SEED: "1",
   // two more "computers" for the sync test: B is a new install (Admin / 7747),
   // C an empty one that joins from the first screen
-  MANDI_API_B: "http://127.0.0.1:8802/api", MANDI_DATA_DIR_B: path.resolve("data-test-b"),
-  MANDI_API_C: "http://127.0.0.1:8803/api", MANDI_DATA_DIR_C: path.resolve("data-test-c"),
+  MANDI_API_B: `http://127.0.0.1:${8802 + OFF}/api`, MANDI_DATA_DIR_B: path.resolve("data-test-b"),
+  MANDI_API_C: `http://127.0.0.1:${8803 + OFF}/api`, MANDI_DATA_DIR_C: path.resolve("data-test-c"),
 };
 // its own process: execFileSync below blocks this one while each test runs
 const fake = spawn("npx", ["tsx", "scripts/fake-gemini.ts", String(FAKE_GEMINI)], { stdio: "ignore" });
-const fakePg = spawn("npx", ["tsx", "scripts/fake-postgres.ts", "8796"], { stdio: "ignore" });
+const fakePg = spawn("npx", ["tsx", "scripts/fake-postgres.ts", String(8796 + OFF)], { stdio: "ignore" });
 const fakeEmandi = spawn("npx", ["tsx", "scripts/fake-emandi.ts", String(FAKE_EMANDI)], { stdio: "ignore" });
 
 const OTHERS = [env.MANDI_DATA_DIR_B, env.MANDI_DATA_DIR_C];
@@ -42,8 +44,8 @@ let log = "";
 server.stdout.on("data", (d) => { log += d; });
 server.stderr.on("data", (d) => { log += d; });
 const others = [
-  spawn("npx", ["tsx", "server/index.ts"], { env: { ...env, MANDI_DATA_DIR: env.MANDI_DATA_DIR_B, PORT: "8802", MANDI_NO_SEED: "0" }, stdio: ["ignore", "pipe", "pipe"] }),
-  spawn("npx", ["tsx", "server/index.ts"], { env: { ...env, MANDI_DATA_DIR: env.MANDI_DATA_DIR_C, PORT: "8803" }, stdio: ["ignore", "pipe", "pipe"] }),
+  spawn("npx", ["tsx", "server/index.ts"], { env: { ...env, MANDI_DATA_DIR: env.MANDI_DATA_DIR_B, PORT: String(8802 + OFF), MANDI_NO_SEED: "0" }, stdio: ["ignore", "pipe", "pipe"] }),
+  spawn("npx", ["tsx", "server/index.ts"], { env: { ...env, MANDI_DATA_DIR: env.MANDI_DATA_DIR_C, PORT: String(8803 + OFF) }, stdio: ["ignore", "pipe", "pipe"] }),
 ];
 for (const o of others) { o.stdout!.on("data", (d) => { log += d; }); o.stderr!.on("data", (d) => { log += d; }); }
 

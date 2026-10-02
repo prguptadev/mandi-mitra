@@ -11,6 +11,8 @@ import { backupNow } from "./backup.ts";
 import { newId } from "./ids.ts";
 import { fyNumberLabel } from "./parchaLabels.ts";
 import { fyRange } from "./vouchers.ts";
+import { repairSuppliersAfterPull } from "./repairSuppliers.ts";
+import { repairTrucksAfterPull, parchaUniqueClash } from "./repairTrucks.ts";
 
 /* Two-way sync of several computers through one cloud Postgres (Supabase).
  *
@@ -390,6 +392,7 @@ async function doSync(): Promise<SyncResult> {
       if (pulled.applied) {
         const moved = await settleVoucherNumbers();
         if (moved.length) markAll();
+        repairAfterPull();
       }
       let pushed = await push(client, cfg);
       if (pushed.waiting) {
@@ -397,6 +400,7 @@ async function doSync(): Promise<SyncResult> {
         // version in (the later edit wins), then send ours
         const again = await pull(client, readCloudConfig());
         pulled.applied += again.applied; pulled.clashes += again.clashes;
+        if (again.applied) repairAfterPull();
         const p2 = await push(client, readCloudConfig());
         pushed = { sent: pushed.sent + p2.sent, waiting: p2.waiting };
       }
@@ -424,6 +428,11 @@ async function doSync(): Promise<SyncResult> {
   } finally {
     await p.end();
   }
+}
+
+/** Repairs every computer works out the same way from the same records, so all agree after a pull. */
+function repairAfterPull() {
+  return repairSuppliersAfterPull() + repairTrucksAfterPull();
 }
 
 /**
@@ -618,6 +627,9 @@ function applyRemote(rows: RemoteRow[], me: string, retrying = false) {
           const msg = String((e as Error).message);
           if (/UNIQUE/i.test(msg) && REPLACEABLE.has(r.tbl)) {
             sqlite.prepare(`insert or replace into "${r.tbl}" (${keys.map((k) => `"${k}"`).join(", ")}) values (${keys.map(() => "?").join(", ")})`).run(...vals);
+          } else if (/UNIQUE/i.test(msg) && r.tbl === "parchas" && parchaUniqueClash(r.data) === "take-incoming") {
+            // one truck approved on two computers: the local live parcha was just voided
+            sqlite.prepare(sqlUpsert).run(...vals);
           } else {
             // e.g. the same mill code made on two computers: this one's is kept and the
             // other's is listed for the owner, then tried again every sync (it arrives
