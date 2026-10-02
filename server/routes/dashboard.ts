@@ -233,8 +233,10 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
   if (asOf && !ISO_DATE.test(asOf)) throw bad("Date must be YYYY-MM-DD");
   const canMoney = auth.permissions.has("millledger.read");
   const owed = canMoney ? await millBalances(biz, asOf) : null;
+  // paid in the period, but never after ?asOf= (today): a post-dated cheque is not paid yet, as on the money card
+  const paidTo = asOf && (!f.to || asOf < f.to) ? asOf : f.to;
   const payments = await db.select({ p: sql<number>`coalesce(sum(${schema.payments.amountPaise}), 0)` }).from(schema.payments)
-    .where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt), ...(f.from ? [gte(schema.payments.payDate, f.from)] : []), ...(f.to ? [lte(schema.payments.payDate, f.to)] : [])));
+    .where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt), ...(f.from ? [gte(schema.payments.payDate, f.from)] : []), ...(paidTo ? [lte(schema.payments.payDate, paidTo)] : [])));
 
   const kpis = {
     slips: inRows.reduce((s, r) => s + r.slips, 0),
