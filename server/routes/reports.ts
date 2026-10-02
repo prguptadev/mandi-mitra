@@ -29,6 +29,8 @@ function range(c: { req: { query: (k: string) => string | undefined } }) {
  * The daily report to a mill ("dara"): its slips for the day or range,
  * in the office's chosen order and columns, with total and average rate.
  * ?merchantId=&date= | &from=&to=  [&jinsId=] [&cols=a,b] [&names=hi|latin] [&sort=] [&format=xlsx|csv|json]
+ * format=jins answers only which commodities the mill bought in the period
+ * (slips and net of each), so the dara can start on one it bought.
  */
 reportRoutes.get("/mill", can("export.data"), async (c) => {
   const auth = c.get("auth")!;
@@ -37,6 +39,13 @@ reportRoutes.get("/mill", can("export.data"), async (c) => {
   if (!merchantId) throw bad("Pick a mill", "no_mill");
   const { from, to } = range(c);
   const jinsId = c.req.query("jinsId") || null;
+  if (c.req.query("format") === "jins") {
+    const S = schema.purchaseSlips;
+    const jins = await db.select({ jinsId: S.jinsId, slips: sql<number>`count(*)`, netGrams: sql<number>`sum(${S.netGrams})` }).from(S)
+      .where(and(eq(S.businessId, biz), eq(S.merchantId, merchantId), gte(S.slipDate, from), lte(S.slipDate, to)))
+      .groupBy(S.jinsId);
+    return c.json({ from, to, jins });
+  }
 
   const [user] = await db.select({ prefs: schema.users.prefs }).from(schema.users).where(eq(schema.users.id, auth.user.id)).limit(1);
   const prefs = parsePrefs(user?.prefs).dailyList;

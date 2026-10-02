@@ -18,7 +18,8 @@ import { OwnFirm } from "@/components/OwnFirm.tsx";
 import { NewLoadDialog } from "@/pages/Loads.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
-import { millNow, millsNow } from "@/lib/asOfToday.ts";
+import { millNow, millsNow, stockRange } from "@/lib/asOfToday.ts";
+import { stockDayLink } from "@/lib/dailyList.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* Stock per mill = what was bought for it − what trucks took from it. Every
@@ -33,10 +34,7 @@ function useStockFilters() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const jins = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins") });
-  const qs = new URLSearchParams();
-  if (jinsId) qs.set("jinsId", jinsId);
-  if (from) qs.set("from", from);
-  if (to) qs.set("to", to);
+  const qs = stockRange({ jinsId, from, to });
   return { jins, jinsId, setJinsId, from, setFrom, to, setTo, qs };
 }
 
@@ -398,7 +396,7 @@ export function MillAccountPage({ id }: { id: string }) {
             <tbody>
               {daySort.sorted.map((d) => (
                 <tr key={d.date} className="border-b border-line/70 align-top">
-                  <td className="whitespace-nowrap px-3 py-2"><Link href={`/daily?date=${d.date}`} className="hover:text-brand">{dmy(d.date)}</Link></td>
+                  <td className="whitespace-nowrap px-3 py-2"><Link href={stockDayLink(d.date, id, s.jinsId)} className="hover:text-brand">{dmy(d.date)}</Link></td>
                   <td className="num px-3 py-2 text-right">{d.slips}</td>
                   <td className="num px-3 py-2 text-right">{f.weight(d.boughtNet)}</td>
                   <td className="num px-3 py-2 text-right">

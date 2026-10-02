@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useFYRange } from "@/lib/fy.tsx";
+import { useFYRange, fyStartOf, financialYear } from "@/lib/fy.tsx";
 import { useFYRangeToToday } from "@/lib/fyToday.ts";
-import { millNow, millsNow } from "@/lib/asOfToday.ts";
+import { millNow, millsNow, millStatementRange } from "@/lib/asOfToday.ts";
 import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -170,6 +170,9 @@ export function ReceiptDialog({ onClose, merchantId: presetMill, loadId: presetL
                 ...(heldPaise ? [{ label: t("mm.heldShort"), value: f.money(heldPaise) }] : []),
                 { label: t("mm.amountIn"), value: f.money(amountPaise), big: true },
               ],
+              // a date in another financial year: the receipt takes that year's next number
+              warnings: editing?.voucherNo && fyStartOf(v.receiptDate) !== fyStartOf(editing.receiptDate)
+                ? [t("vch.newYear", { no: `RV-${editing.voucherNo}`, fy: financialYear(fyStartOf(v.receiptDate)).label })] : undefined,
             })) save.mutate();
           }}>{t("common.save")}</Button>
       </>}>
@@ -425,10 +428,8 @@ export function MillStatementPage({ id }: { id: string }) {
   const [receiving, setReceiving] = useState<null | { loadId?: string; editing?: ReceiptRow }>(null);
   const [voiding, setVoiding] = useState<MillEntry | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const qs = new URLSearchParams();
-  if (from) qs.set("from", from);
-  if (to) qs.set("to", to);
-  const st = useQuery({ queryKey: ["mill-ledger", id, qs.toString()], queryFn: () => api.get<MillStatement>(`/mill-ledger/${id}?${qs}`) });
+  const qs = millStatementRange(from, to);
+  const st = useQuery({ queryKey: ["mill-ledger", id, qs], queryFn: () => api.get<MillStatement>(`/mill-ledger/${id}?${qs}`) });
   const voidIt = useMutation({
     mutationFn: ({ rid, reason }: { rid: string; reason: string }) => api.post(`/mill-receipts/${rid}/void`, { reason }),
     onSuccess: async () => { setVoiding(null); setErr(null); await invalidateMillMoney(qc); },
@@ -445,7 +446,7 @@ export function MillStatementPage({ id }: { id: string }) {
     deductionPaise: e.deductionPaise ?? 0, deductionNote: e.deductionNote ?? null, mode: e.mode ?? "bank",
     reference: e.reference ?? null, notes: e.notes ?? null, voidedAt: null, voidReason: null,
     millCode: s?.mill.code ?? "", millName: s?.mill.name ?? "", millNameHi: s?.mill.nameHi ?? null,
-    truckNo: e.truckNo ?? null, parchaNo: e.parchaNo ?? null, createdByName: null,
+    truckNo: e.truckNo ?? null, parchaNo: e.parchaNo ?? null, createdByName: null, voucherNo: e.voucherNo ?? null,
   });
 
   const download = () => {
@@ -460,7 +461,7 @@ export function MillStatementPage({ id }: { id: string }) {
         dmy(e.date),
         e.kind === "parcha" ? `Parcha #${e.parchaNo}${e.truckNo ? ` · ${e.truckNo}` : ""}`
           : e.kind === "shortage" ? `Mill cut on #${e.parchaNo} · ${fmtQtl(e.deductionGrams ?? 0)} qtl${e.deductionNote ? ` · ${e.deductionNote}` : ""}`
-          : `${e.voucherNo ? `RV-${e.voucherNo} · ` : ""}Receipt · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.parchaNo ? ` · for #${e.parchaNo}` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
+          : `${e.voucherNo ? `RV-${e.voucherNo} · ` : ""}Receipt · ${e.mode}${e.reference ? ` · ${e.reference}` : ""}${e.parchaNo ? ` · for #${e.parchaNo}` : e.truckNo ? ` · ${e.truckNo}, no parcha yet` : ""}${e.voided ? ` · CANCELLED (${e.voidReason ?? ""})` : ""}`,
         e.netGrams != null ? fmtQtl(e.netGrams) : "",
         e.debitPaise ? (e.debitPaise / 100).toFixed(2) : "",
         e.kind === "receipt" && !e.voided ? ((e.amountPaise ?? 0) / 100).toFixed(2) : "",
@@ -549,7 +550,8 @@ export function MillStatementPage({ id }: { id: string }) {
                         <Td className="text-ok">
                           <span className={cn(e.voided && "line-through")}>
                             {e.voucherNo ? <span className="num">RV-{e.voucherNo} · </span> : null}{t("mm.receipt")} · {t(`mm.mode.${e.mode ?? "bank"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}
-                            {e.parchaNo ? <span className="text-muted"> · {t("mm.forParcha", { no: e.parchaNo })}</span> : null}
+                            {e.parchaNo ? <span className="text-muted"> · {t("mm.forParcha", { no: e.parchaNo })}</span>
+                              : e.truckNo ? <span className="text-muted"> · {t("mm.truckNoParcha", { truck: e.truckNo })}</span> : null}
                             {e.deductionNote ? <span className="text-faint"> · {e.deductionNote}</span> : null}
                           </span>
                           {e.voided && <span className="block text-[11px] text-bad">{t("money.cancelledBecause", { why: e.voidReason ?? "" })}</span>}

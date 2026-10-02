@@ -93,6 +93,7 @@ try {
   run("scripts/e2e-desk-auth.ts");
   run("scripts/e2e-desk-desk.ts");
   run("scripts/e2e-desk-safe.ts");
+  run("scripts/e2e-math-fixes.ts");
   run("scripts/e2e-sync-scans.ts");
   run("scripts/e2e-sync-single.ts");
   run("scripts/e2e-sync-restore.ts");

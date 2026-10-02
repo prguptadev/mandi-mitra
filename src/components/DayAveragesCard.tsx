@@ -10,6 +10,7 @@ import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { OwnFirm } from "@/components/OwnFirm.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
 import { dmy, shiftDay } from "@server/lib/parchaLabels.ts";
+import { dayRateLink } from "@/lib/dailyList.ts";
 
 /** "Sunday" / "रविवार", from the browser itself. */
 const weekday = (iso: string, lang: string) =>
@@ -114,7 +115,7 @@ export function DayAveragesCard() {
                       <tr key={`${l.millId ?? "none"}|${l.jinsId}`} className="border-t border-line/70">
                         <td className={td}>
                           {l.millCode
-                            ? <Link href={`/daily?date=${d.date}&mill=${l.millId}`} className="inline-flex items-center gap-1.5 hover:underline">
+                            ? <Link href={dayRateLink(d.date, l)} className="inline-flex items-center gap-1.5 hover:underline">
                                 <Badge tone="neutral" className="num">{l.millCode}</Badge>
                                 <span className="text-muted">{pick(l.millName ?? "", l.millNameHi ?? "")}</span>
                               </Link>

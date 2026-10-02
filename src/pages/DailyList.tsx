@@ -28,6 +28,7 @@ import { slipCharges, defaultSupplierCharges, supplierTermsOf, type SupplierChar
 import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
 import { rstKey, numberOnly, grossOdd, rateOdd, DEFAULT_RATE_RANGE, type GrossOdd, type RateRange } from "@server/lib/slipChecks.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
+import { dailyListFrom, dailyListQuery } from "@/lib/dailyList.ts";
 import {
   Button, Card, Select, Input, Badge, Alert, EmptyState, Dialog, Field, Spinner, Checkbox,
 } from "@/components/ui/index.tsx";
@@ -119,10 +120,8 @@ export function DailyListPage() {
 
   // a link like /daily?date=2026-09-20 (from the dashboard's flags) opens that day
   const search = useSearch();
-  const [date, setDate] = useState(() => {
-    const d = new URLSearchParams(search).get("date");
-    return d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : todayISO();
-  });
+  const [opened] = useState(() => dailyListFrom(search));
+  const [date, setDate] = useState(() => opened.date ?? todayISO());
   // another financial year chosen in the top bar: open a day inside it
   const { fy } = useFY();
   const fyFirst = useRef(true);
@@ -137,12 +136,12 @@ export function DailyListPage() {
   const canSlip = can("slip.write") && !dayClosed;
   const canDel = can("slip.delete") && !dayClosed;
   const tallyFlags = useTallyFlags("slip", date, date);
-  // the dashboard's day-rate card links a mill's line here as /daily?date=…&mill=<id>
-  const [merchantId, setMerchantId] = useState<string>(() => new URLSearchParams(search).get("mill") ?? "");
+  // the dashboard's day-rate card and a mill's stock page link here as /daily?date=…&mill=<id>&jins=<id>
+  const [merchantId, setMerchantId] = useState<string>(opened.mill);
   /** Commodity new rows get. */
-  const [jinsId, setJinsId] = useState<string>("");
+  const [jinsId, setJinsId] = useState<string>(opened.jins);
   /** Commodity the list shows; "" = all of them. */
-  const [filterJins, setFilterJins] = useState<string>("");
+  const [filterJins, setFilterJins] = useState<string>(opened.jins);
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   /** `grossShown` is the gross as the edit box first showed it: if it is not touched, the stored grams stay exactly as they are. */
   const [editing, setEditing] = useState<{ id: string; draft: Draft; grossShown?: string } | null>(null);
@@ -199,8 +198,7 @@ export function DailyListPage() {
 
   const sheet = useQuery({
     queryKey: ["slips", { date, merchantId, jinsId: filterJins }],
-    queryFn: () => api.get<{ rows: Row[]; totals: Totals }>(
-      `/slips?${new URLSearchParams({ date, ...(merchantId ? { merchantId } : {}), ...(filterJins ? { jinsId: filterJins } : {}) })}`),
+    queryFn: () => api.get<{ rows: Row[]; totals: Totals }>(dailyListQuery(date, merchantId, filterJins)),
   });
 
   /* A different day, mill or commodity is a different list: nothing ticked,

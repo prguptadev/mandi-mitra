@@ -8,7 +8,7 @@ import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } 
 import { amountPaise } from "../lib/money.ts";
 import { revisions, type ParchaDoc } from "../lib/parcha.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
-import { nextVoucherNo } from "../lib/vouchers.ts";
+import { nextVoucherNo, fyStartOf, voucherInYear } from "../lib/vouchers.ts";
 
 /* The mill side of the money, Tally-style, like the supplier ledger:
      what a mill owes us = its opening + every approved kaccha parcha (grand
@@ -219,6 +219,11 @@ millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
   };
   // a receipt names its truck's parcha even when that parcha is dated after the period
   const truckOf = new Map((to ? await billed(biz, { merchantId }) : allBills).map((b) => [b.loadId, b]));
+  // money against a truck with no live parcha yet (a draft, or one voided and not approved again): the truck alone
+  const bare = [...new Set(recs.map((r) => r.loadId).filter((x): x is string => x != null && !truckOf.has(x)))];
+  const bareTruck = new Map(bare.length
+    ? (await db.select({ id: L.id, truckNo: L.truckNo }).from(L).where(and(eq(L.businessId, biz), inArray(L.id, bare)))).map((l) => [l.id, l.truckNo])
+    : []);
   // a parcha approved again after a void is a revised paper: the statement says so beside its number
   const revOf = revisions(bills.length ? await db.select({ id: Pa.id, loadId: Pa.loadId }).from(Pa).where(inArray(Pa.loadId, bills.map((b) => b.loadId))) : []);
   const entries: Entry[] = [
@@ -238,7 +243,7 @@ millLedgerRoutes.get("/:merchantId", can("millledger.read"), async (c) => {
       mode: r.mode, reference: r.reference, notes: r.notes, deductionNote: r.deductionNote,
       amountPaise: r.amountPaise, deductionPaise: r.deductionPaise, loadId: r.loadId,
       parchaNo: r.loadId ? truckOf.get(r.loadId)?.parchaNo : undefined,
-      truckNo: r.loadId ? truckOf.get(r.loadId)?.truckNo : undefined,
+      truckNo: r.loadId ? truckOf.get(r.loadId)?.truckNo ?? bareTruck.get(r.loadId) : undefined,
       voided: r.voidedAt != null, voidReason: r.voidReason,
       debitPaise: 0, creditPaise: r.voidedAt != null ? 0 : settled(r),
     })),
@@ -397,10 +402,19 @@ millReceiptRoutes.put("/:id", can("millreceipt.write"), async (c) => {
   };
   if (patch.amountPaise + patch.deductionPaise <= 0) throw bad("Enter the amount received", "zero");
   const code = await checkRefs(biz, patch.merchantId, patch.loadId);
-  await db.update(R).set(patch).where(eq(R.id, id));
-  await audit({ actor: actor(c), action: "mill_receipt.update", entity: "mill_receipt", entityId: id, entityLabel: label(code, patch), before, after: { ...before, ...patch } });
-  await enqueueSync(biz, "mill_receipt", id, "update", patch);
-  return c.json({ ok: true });
+  /* moved into another financial year: it takes that year's next number, as a
+     new receipt would, so neither year has a number twice. No other receipt is
+     renumbered; the number it leaves behind stays unused. */
+  const newYear = fyStartOf(patch.receiptDate) !== fyStartOf(before.receiptDate);
+  const set = { ...patch, voucherNo: before.voucherNo };
+  db.transaction((tx) => {
+    if (newYear) set.voucherNo = nextVoucherNo("mill_receipts", biz, patch.receiptDate);
+    tx.update(R).set(set).where(eq(R.id, id)).run();
+  });
+  const renumbered = newYear ? ` · ${voucherInYear("receipt", before.voucherNo, before.receiptDate)} → ${voucherInYear("receipt", set.voucherNo, set.receiptDate)}` : "";
+  await audit({ actor: actor(c), action: "mill_receipt.update", entity: "mill_receipt", entityId: id, entityLabel: label(code, patch) + renumbered, before, after: { ...before, ...set } });
+  await enqueueSync(biz, "mill_receipt", id, "update", set);
+  return c.json({ ok: true, voucherNo: set.voucherNo });
 });
 
 millReceiptRoutes.post("/:id/void", can("millreceipt.write"), async (c) => {

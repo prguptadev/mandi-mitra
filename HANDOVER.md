@@ -529,6 +529,27 @@ mean confidence                          : 0.90
   `src/lib/auditWords.ts`) with the raw JSON behind a toggle, and has "Check
   the books": `server/lib/booksCheck.ts`, the same independent re-working as
   `scripts/money-check.ts`, on the live books (`GET /api/audit/books-check`).
+- **Maths audit fixes (fix/math)**: a payment or receipt whose date moves into
+  another financial year takes that year's next number (the audit line names
+  the old one; the confirm box says so first); the post-sync voucher repair
+  groups by financial year. The dashboard's "Mills owe us" / "We owe
+  suppliers" tiles show the same figures as Mill accounts, the follow-up and
+  the ledger (paid ahead not counted; each note adds it back by name, "+ ₹X
+  received ahead" / "+ ₹Y paid ahead", so it adds up to the tile; the net
+  position still nets it). "Paid in this period" stops at today; a supplier
+  or mill statement with only To emptied runs to today; the stock page with
+  no dates and the dashboard's "All time" stop at today too (a later-dated
+  entry shows on its day, or when later dates are picked); a past period's
+  money card and ledger card name their end date. The mill statement names
+  the truck of money received before its parcha. A day's-rate line and a
+  stock day row open the daily list for that mill and commodity
+  (`src/lib/dailyList.ts`); the dara starts on a commodity the mill bought.
+  The server's "today" is India's date whatever zone the computer is set to
+  (`officeToday()` in `server/lib/parchaLabels.ts`; the screens still use the
+  computer's date). `sync_outbox` is no longer written (nothing read it; cloud
+  sync uses `_sync_dirty`) and is emptied in the background after start-up.
+  Checks: `scripts/e2e-math-fixes.ts` (its London check runs a server of its
+  own with `scripts/fake-clock.mjs`).
 - **Two businesses are two sets of books**: `scripts/e2e-isolation.ts` records
   everything business A shows, does a day of work in business B (same names,
   codes, RST and parcha numbers), and requires A to be byte-for-byte the same

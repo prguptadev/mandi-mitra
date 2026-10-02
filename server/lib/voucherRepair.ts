@@ -25,10 +25,12 @@ export interface Renumber { table: string; id: string; from: number; to: number 
 export async function settleVoucherNumbers(): Promise<Renumber[]> {
   const done: Renumber[] = [];
   for (const [table, meta] of Object.entries(TABLES)) {
+    // by financial year (1 April to 31 March), the year a number belongs to: two vouchers
+    // either side of 1 January can share one, and the same number in two years is no clash
     const clashing = sqlite.prepare(
-      `select business_id, voucher_no, ${meta.date} as d from ${table}
+      `select business_id, voucher_no, min(${meta.date}) as d from ${table}
         where voucher_no is not null
-        group by business_id, voucher_no, substr(${meta.date}, 1, 4)
+        group by business_id, voucher_no, cast(substr(${meta.date}, 1, 4) as integer) - (substr(${meta.date}, 6, 2) < '04')
         having count(*) > 1`).all() as { business_id: string; voucher_no: number; d: string }[];
     if (!clashing.length) continue;
     for (const c of clashing) {

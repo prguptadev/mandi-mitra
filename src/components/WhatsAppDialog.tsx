@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageCircle, Copy, Download, Check } from "lucide-react";
-import { ApiError, type Merchant, type Jins } from "@/lib/api.ts";
+import { useQuery } from "@tanstack/react-query";
+import { api, ApiError, type Merchant, type Jins } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { usePrefs, MILL_REPORT_COLUMNS } from "@/lib/prefs.tsx";
 import { Button, Dialog, Field, Input, Select, Tabs, Alert, Spinner } from "@/components/ui/index.tsx";
 import { ExportPreview } from "@/components/ExportPreview.tsx";
+import { daraStartJins, daraJinsQuery } from "@/lib/dailyList.ts";
 import { buildListTable, buildDaraTable, csvOf, whatsappText, whatsappLink, type ExportTable } from "@/lib/exportTable.ts";
 import type { SlipSortOrder } from "@server/lib/slipOrder.ts";
 
@@ -34,7 +36,6 @@ export function WhatsAppDialog({ open, onClose, date, merchantId, mills, jinsId 
   const [to, setTo] = useState(date);
   const [mill, setMill] = useState(merchantId);
   const [jins, setJins] = useState(jinsId);
-  const daraJins = jins || jinsList.find((j) => j.code === "1509")?.id || jinsList[0]?.id || "";
   // Hinglish lines up in a fixed-width block; Hindi is there for those who want it
   const [names, setNames] = useState<"hi" | "latin">("latin");
   const [sort, setSort] = useState<SlipSortOrder>(P.sortOrder);
@@ -49,6 +50,14 @@ export function WhatsAppDialog({ open, onClose, date, merchantId, mills, jinsId 
   const t0 = span === "day" ? day : to;
   const daraMill = mill || mills[0]?.id || "";
   const bad = !f0 || !t0 || f0 > t0 || (kind === "dara" && !daraMill);
+  // a dara is one commodity's rate: it starts on one the mill bought in the period
+  const bought = useQuery({
+    queryKey: ["dara-jins", daraMill, f0, t0],
+    queryFn: () => api.get<{ jins: { jinsId: string }[] }>(daraJinsQuery(daraMill, f0, t0)),
+    enabled: open && kind === "dara" && !jins && !bad,
+  });
+  const daraJins = jins || daraStartJins(jinsList, bought.data?.jins.map((x) => x.jinsId));
+  const waiting = kind === "dara" && !jins && bought.isFetching;
 
   // the mill's saved number, until the operator types one
   useEffect(() => {
@@ -62,6 +71,8 @@ export function WhatsAppDialog({ open, onClose, date, merchantId, mills, jinsId 
   useEffect(() => {
     if (!open || bad) { setTable(null); return; }
     const my = ++seq.current;
+    // the commodity the dara starts on is still being worked out
+    if (waiting) { setBusy(true); return; }
     setBusy(true); setErr(null);
     const job = kind === "list"
       ? buildListTable({ from: f0, to: t0, merchantId: mill || undefined, jinsId: jins || undefined, names, sort, prefs: P, mills, jinsList })
@@ -71,7 +82,7 @@ export function WhatsAppDialog({ open, onClose, date, merchantId, mills, jinsId 
       .catch((e) => { if (my === seq.current) { setTable(null); setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")); } })
       .finally(() => { if (my === seq.current) setBusy(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, kind, f0, t0, mill, daraMill, jins, daraJins, names, sort, bad]);
+  }, [open, kind, f0, t0, mill, daraMill, jins, daraJins, names, sort, bad, waiting]);
 
   const msg = table ? whatsappText(table) : null;
   const empty = table !== null && table.rows.length === 0;

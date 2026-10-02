@@ -18,7 +18,8 @@ import { PortalRatesCard } from "@/components/PortalRatesCard.tsx";
 import { RaceChart, type RacePoint } from "@/components/RaceChart.tsx";
 import { Card, CardHeader, Badge, Select, Input, Button } from "@/components/ui/index.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
-import { notAfterToday, suppliersNow } from "@/lib/asOfToday.ts";
+import { notAfterToday, suppliersNow, dashboardPeriod, type DashPeriod as Period } from "@/lib/asOfToday.ts";
+import { moneyTiles, moneyWords, moneyNotes } from "@/lib/moneyFigures.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* One picture of the business: what came in, what went out to each mill,
@@ -56,20 +57,6 @@ interface DashboardData {
   flags: Flag[];
 }
 interface LedgerTop { rows: { id: string; nameHi: string; nameHinglish: string; slips: number; balancePaise: number }[]; totals: { toPayPaise: number; paidAheadPaise: number } }
-
-type Period = "fy" | "all" | "today" | "week" | "month" | "custom";
-
-function periodRange(p: Period, from: string, to: string, fy: { from: string; to: string }): { from?: string; to?: string } {
-  const today = todayISO();
-  // the year so far (a year already over: to its 31 March), as the ledger page counts it
-  if (p === "fy") return { from: fy.from, to: notAfterToday(fy.to, today) };
-  const d = new Date(today + "T00:00:00Z");
-  if (p === "today") return { from: today, to: today };
-  if (p === "week") { d.setUTCDate(d.getUTCDate() - 6); return { from: d.toISOString().slice(0, 10), to: today }; }
-  if (p === "month") return { from: today.slice(0, 8) + "01", to: today };
-  if (p === "custom") return { from: from || undefined, to: to || undefined };
-  return {};
-}
 
 function Kpi({ icon: Icon, label, value, lines, tone, href }: {
   icon: typeof Truck; label: string; value: React.ReactNode; lines: React.ReactNode[]; tone?: "bad"; href?: string;
@@ -177,13 +164,12 @@ function MoneyCard({ qs }: { qs: string }) {
   const m = q.data;
   if (q.isError) return <Card className="mt-5"><LoadError error={q.error} onRetry={() => void q.refetch()} /></Card>;
   if (!m) return <Card className="mt-5"><SkeletonTable rows={3} /></Card>;
-  const toReceive = m.mills.toReceivePaise - m.mills.paidAheadPaise;
-  const toPay = m.suppliers.toPayPaise - m.suppliers.paidAheadPaise;
-  const cash = m.cash.receivedFromMillsPaise - m.cash.paidToSuppliersPaise;
+  const { millsOwe: toReceive, weOwe: toPay, cash, net } = moneyTiles(m);
+  const words = moneyWords(t, new URLSearchParams(qs).get("to") ?? todayISO(), todayISO());
+  const notes = moneyNotes(t, f.money, m, words.span);
   // goods in hand and unbilled trucks, valued on the server as of the period's end
   const stockPaise = m.stock.valuePaise;
   const unbilledPaise = m.stock.unbilledGoodsPaise;
-  const net = toReceive + stockPaise + unbilledPaise + cash - toPay;
   const grand = m.billed.grandTotalPaise;
   const parts = [
     { key: "goods", label: t("dash.goodsPart"), amountPaise: m.billed.goodsPaise, tone: "bg-brand" },
@@ -202,17 +188,16 @@ function MoneyCard({ qs }: { qs: string }) {
   };
   return (
     <Card className="mt-5">
-      <CardHeader title={t("dash.money")} sub={t("dash.moneySub")} />
+      <CardHeader title={t("dash.money")} sub={words.sub} />
       <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-5">
-        {/* each balance is all time, so its explanation adds up to it: opening + bills − cuts − received − held back */}
-        {tile(t("dash.millsOwe"), toReceive, t("dash.millsOweSub", { o: f.money(m.mills.allTime.openingPaise), b: f.money(m.mills.allTime.billedPaise), c: f.money(m.mills.allTime.shortagePaise), r: f.money(m.mills.allTime.receivedPaise), h: f.money(m.mills.allTime.deductedPaise) })
-          + (m.mills.paidAheadPaise ? ` · ${t("dash.millsAhead", { a: f.money(m.mills.paidAheadPaise) })}` : ""), "/mill-accounts", "text-brand")}
-        {tile(t("dash.weOwe"), toPay, t("dash.weOweSub", { o: f.money(m.suppliers.allTime.openingPaise), p: f.money(m.suppliers.allTime.purchasesPaise), d: f.money(m.suppliers.allTime.paidPaise) })
-          + (m.suppliers.paidAheadPaise ? ` · ${t("dash.supAhead", { a: f.money(m.suppliers.paidAheadPaise) })}` : ""), "/ledger")}
+        {/* each balance is up to the period's end, as Mill accounts and the ledger show it; its note
+            (opening + bills − cuts − received − held back + received ahead) adds up to it */}
+        {tile(t("dash.millsOwe"), toReceive, notes.millsOwe, "/mill-accounts", "text-brand")}
+        {tile(t("dash.weOwe"), toPay, notes.weOwe, "/ledger")}
         {tile(t("dash.stockValue"), stockPaise + unbilledPaise,
           (unbilledPaise ? t("dash.stockValueSub2", { u: f.money(unbilledPaise) }) : t("dash.stockValueSub"))
             + (m.stock.unpricedGrams > 0 ? ` · ${t("dash.unpricedStock", { q: f.weight(m.stock.unpricedGrams) })}` : ""), "/stock")}
-        {tile(t("dash.cash"), cash, t("dash.cashSub", { r: f.money(m.cash.receivedFromMillsPaise), p: f.money(m.cash.paidToSuppliersPaise) }), undefined, cash < 0 ? "text-warn" : undefined)}
+        {tile(t("dash.cash"), cash, t("dash.cashSub", { r: f.money(m.cash.receivedFromMillsPaise), p: f.money(m.cash.paidToSuppliersPaise), w: words.span }), undefined, cash < 0 ? "text-warn" : undefined)}
         {tile(t("dash.net"), net, t("dash.netSub"), undefined, net < 0 ? "text-bad" : "text-ok")}
       </div>
       {grand > 0 && (
@@ -305,7 +290,7 @@ export function DashboardPage() {
 
   const jins = useQuery({ queryKey: ["jins"], queryFn: () => api.get<Jins[]>("/jins"), enabled: can("jins.read") });
   const { fy } = useFY();
-  const r = periodRange(period, from, to, fy);
+  const r = dashboardPeriod(period, from, to, fy);
   const qs = new URLSearchParams();
   if (r.from) qs.set("from", r.from);
   if (r.to) qs.set("to", r.to);
