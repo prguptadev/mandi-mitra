@@ -10,22 +10,16 @@ import { seedFirstRun } from "./lib/businessSetup.ts";
 
 const port = Number(process.env.PORT ?? 8787);
 const upToDate = runMigrations();
-/* Fresh statistics for the query planner (only re-analyses what changed).
-   They only ever change which index a query reads, never what it returns.
-   Right after an update (new indexes) it runs now; otherwise once the first
-   screen is up, the statistics kept from the last run serving until then.
-   Never sampled (analysis_limit): a sample of the first few hundred rows of
-   an index sees one business, and the planner would then think a business
-   has a few hundred slips. */
-if (!upToDate) sqlite.pragma("optimize=0x10002");
-setTimeout(() => {
-  if (upToDate) {
-    try { sqlite.pragma("optimize=0x10002"); } catch { /* closing */ }
-    // the note about records pointing at something long gone (see runMigrations)
-    reportBrokenLinks();
-  }
-}, 8_000).unref();
+/* Fresh statistics for the query planner (cheap; only re-analyses what
+   changed: a millisecond on books analysed at the last start). Before the
+   first screen, as always: rows that tie in a list come back in the order
+   the planner's choice of index gives, and that must not change while the
+   app is open. Never sampled (analysis_limit): a sample of the first few
+   hundred rows of an index sees one business only. */
+sqlite.pragma("optimize=0x10002");
 setInterval(() => { try { sqlite.pragma("optimize"); } catch { /* closing */ } }, 6 * 3600_000).unref();
+// the note about records pointing at something long gone, once the app is answering (see runMigrations)
+if (upToDate) setTimeout(reportBrokenLinks, 8_000).unref();
 if (await seedFirstRun()) console.log("[setup] first run: Vijay Laxmi Dal Mill and V C Enterprises, Admin + 2 Managers (PIN 7747)");
 const granted = syncNewPermissions();
 if (granted) console.log(`[rbac] granted ${granted} new permission(s) to the stock roles`);
