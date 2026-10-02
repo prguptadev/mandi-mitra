@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, and, gte, lte, lt, desc, sql, isNull, inArray } from "drizzle-orm";
+import { eq, and, gte, lte, lt, desc, sql, isNull, inArray, getTableColumns } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
+import { rowsOf } from "../db/rows.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } from "../lib/http.ts";
@@ -41,12 +42,13 @@ export async function billed(biz: string, r: Range = {}) {
   if (r.upTo) w.push(sql`${billDay} <= ${r.upTo}`);
   if (r.from) w.push(sql`${billDay} >= ${r.from}`);
   if (r.to) w.push(sql`${billDay} <= ${r.to}`);
-  const rows = await db.select({
+  const fields = {
     id: Pa.id, parchaNo: Pa.parchaNo, version: Pa.version, loadId: Pa.loadId, merchantId: L.merchantId,
     date: billDay, grandTotalPaise: Pa.grandTotalPaise, truckNo: L.truckNo, netGrams: L.millNetGrams,
     createdAt: Pa.createdAt, deductionGrams: L.millDeductionGrams, deductionNote: L.millDeductionNote,
     bytes: sql<number>`octet_length(${Pa.snapshot})`,
-  }).from(Pa).innerJoin(L, eq(L.id, Pa.loadId)).where(and(...w));
+  };
+  const rows = await rowsOf(db.select(fields).from(Pa).innerJoin(L, eq(L.id, Pa.loadId)).where(and(...w)), fields);
   /* Weight the mill cut on arrival lowers what it owes: the cut, at the rate
      the parcha billed the goods (the challan screen shows the same figure). */
   const frozen = figuresOf(rows.filter((r) => r.deductionGrams));
@@ -65,7 +67,8 @@ export async function receipts(biz: string, r: Range & { withVoid?: boolean } = 
   if (r.upTo) w.push(lte(R.receiptDate, r.upTo));
   if (r.from) w.push(gte(R.receiptDate, r.from));
   if (r.to) w.push(lte(R.receiptDate, r.to));
-  return db.select().from(R).where(and(...w));
+  const fields = getTableColumns(R);
+  return rowsOf(db.select(fields).from(R).where(and(...w)), fields);
 }
 
 const settled = (x: { amountPaise: number; deductionPaise: number }) => x.amountPaise + x.deductionPaise;

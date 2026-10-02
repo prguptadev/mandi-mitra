@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { and, eq, gte, lte, isNull, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
+import { rowsOf } from "../db/rows.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
 import { amountPaise } from "../lib/money.ts";
@@ -87,15 +88,17 @@ export async function build(biz: string, from: string, to: string, kinds0: Kind[
   if (kinds.includes("slip")) {
     const S = schema.purchaseSlips;
     // only what a voucher and its fingerprint read (the same rows, by the same index, in the same order)
-    const slips = await db.select({
-      s: { id: S.id, slipDate: S.slipDate, rstNo: S.rstNo, adatiId: S.adatiId, netGrams: S.netGrams, ratePaisePerQtl: S.ratePaisePerQtl,
-        amountPaise: S.amountPaise, commissionPaise: S.commissionPaise, gaushalaPaise: S.gaushalaPaise, payablePaise: S.payablePaise },
+    const slipFields = {
+      id: S.id, slipDate: S.slipDate, rstNo: S.rstNo, adatiId: S.adatiId, netGrams: S.netGrams, ratePaisePerQtl: S.ratePaisePerQtl,
+      amountPaise: S.amountPaise, commissionPaise: S.commissionPaise, gaushalaPaise: S.gaushalaPaise, payablePaise: S.payablePaise,
       jins: schema.jins.code, millCode: schema.merchants.code,
-    }).from(S)
+    };
+    const slips = (await rowsOf(db.select(slipFields).from(S)
       .innerJoin(schema.jins, eq(schema.jins.id, S.jinsId))
       .leftJoin(schema.merchants, eq(schema.merchants.id, S.merchantId))
       .where(and(eq(S.businessId, biz), gte(S.slipDate, from), lte(S.slipDate, to),
-        party.adatiId ? eq(S.adatiId, party.adatiId) : undefined, party.merchantId ? eq(S.merchantId, party.merchantId) : undefined));
+        party.adatiId ? eq(S.adatiId, party.adatiId) : undefined, party.merchantId ? eq(S.merchantId, party.merchantId) : undefined)), slipFields))
+      .map(({ jins, millCode, ...s }) => ({ s, jins, millCode }));
     const pricedAll = slips.filter((x) => x.s.ratePaisePerQtl > 0);
     unpriced = slips.length - pricedAll.length;
     const priced = fresh("slip", pricedAll, (x) => x.s.id);
@@ -284,11 +287,13 @@ export async function tallyStatus(biz: string, from: string, to: string, kinds: 
 
   if (kinds.includes("slip")) {
     const S = schema.purchaseSlips;
-    const rows = await db.select({ s: { id: S.id, slipDate: S.slipDate, adatiId: S.adatiId, amountPaise: S.amountPaise, commissionPaise: S.commissionPaise, gaushalaPaise: S.gaushalaPaise, payablePaise: S.payablePaise, ratePaisePerQtl: S.ratePaisePerQtl }, m: M })
+    // read straight into rows (a whole season of slips); no mark comes back as a mark of nothing, which put() reads alike
+    const fields = { id: S.id, slipDate: S.slipDate, adatiId: S.adatiId, amountPaise: S.amountPaise, commissionPaise: S.commissionPaise, gaushalaPaise: S.gaushalaPaise, payablePaise: S.payablePaise, ratePaisePerQtl: S.ratePaisePerQtl, ...M };
+    const rows = await rowsOf(db.select(fields)
       .from(S).leftJoin(TE, mark("slip", S.id))
       .where(and(eq(S.businessId, biz), gte(S.slipDate, from), lte(S.slipDate, to),
-        party.adatiId ? eq(S.adatiId, party.adatiId) : undefined, party.merchantId ? eq(S.merchantId, party.merchantId) : undefined));
-    for (const r of rows) put("slip", r.s.id, r.s.slipDate, r.s.ratePaisePerQtl > 0 ? fpSlip(r.s as typeof S.$inferSelect) : null, r.m);
+        party.adatiId ? eq(S.adatiId, party.adatiId) : undefined, party.merchantId ? eq(S.merchantId, party.merchantId) : undefined)), fields);
+    for (const r of rows) put("slip", r.id, r.slipDate, r.ratePaisePerQtl > 0 ? fpSlip(r) : null, r);
   }
   if (kinds.includes("payment") && !party.merchantId) {
     const P = schema.payments;
