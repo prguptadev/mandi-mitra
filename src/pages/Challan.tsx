@@ -8,6 +8,7 @@ import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFormat, GRAMS_PER_QTL } from "@/lib/format.tsx";
 import { useSort } from "@/lib/useSort.ts";
+import { useRowWindow, RowSpacer } from "@/lib/useRowWindow.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { SkeletonTable } from "@/components/Skeletons.tsx";
 import { NumCell } from "@/pages/Loads.tsx";
@@ -99,6 +100,7 @@ export function ChallanPage() {
     cut: (r) => r.deductionGrams, finalNet: (r) => r.finalNetGrams, cutValue: (r) => r.deductionValuePaise,
     finalGoods: (r) => r.finalGoodsPaise, parcha: (r) => r.parchaNo, advance: (r) => r.advancePaise, grand: (r) => r.grandTotalPaise, finalTotal: (r) => r.finalTotalPaise,
   }, { storageKey: "challan" });
+  const win = useRowWindow(s.sorted);
   const editable = can("challan.write");
   const T = list.data?.totals;
 
@@ -177,8 +179,9 @@ export function ChallanPage() {
                   <Th numeric {...s.th("finalTotal")} title={t("ch.finalTotalHint")}>{t("ch.finalTotal")}</Th>
                 </tr>
               </thead>
-              <tbody>
-                {s.sorted.map((r) => (
+              <tbody ref={win.bodyRef}>
+                <RowSpacer at="top" height={win.topHeight} cols={17} />
+                {win.rows.map((r) => (
                   <Tr key={r.loadId} className={cn(r.mismatch && "bg-bad-soft/30")}>
                     <Td className="whitespace-nowrap">{dmy(r.loadDate)}</Td>
                     <Td className="whitespace-nowrap font-mono"><Link href={`/loads/${r.loadId}`} className="text-brand hover:underline">{r.truckNo ?? "—"}</Link>
@@ -224,6 +227,7 @@ export function ChallanPage() {
                     <Td numeric className="font-semibold text-brand">{r.finalTotalPaise != null ? f.money(r.finalTotalPaise) : <span className="text-faint">—</span>}</Td>
                   </Tr>
                 ))}
+                <RowSpacer at="bottom" height={win.bottomHeight} cols={17} />
               </tbody>
               {T && (
                 <tfoot>

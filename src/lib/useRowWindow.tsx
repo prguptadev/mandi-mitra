@@ -71,9 +71,16 @@ export function useRowWindow<T>(list: readonly T[], opts: { from?: number; overs
     let j = i;
     while (j < count && y < toY) { y += h(j); j++; }
     let s = Math.max(0, i - overscan);
+    let e = Math.min(count, Math.max(j + overscan, s + FIRST));
+    // a row being typed in stays drawn however far the list scrolls from it: its box saves on leaving
+    const a = document.activeElement;
+    if (a && a !== body && body.contains(a)) {
+      const drawn = (Array.from(body.children) as HTMLElement[]).filter((el) => el.dataset.spacer === undefined);
+      const k = drawn.findIndex((el) => el.contains(a));
+      if (k >= 0) { s = Math.min(s, start + k); e = Math.max(e, start + k + 1); }
+    }
     // one spacer row above: an odd first row keeps every row on its own odd/even step
     if (s > 0 && s % 2 === 0) s -= 1;
-    const e = Math.min(count, Math.max(j + overscan, s + FIRST));
     setRange((r) => (r.start === s && r.end === e ? r : { start: s, end: e }));
   };
 
