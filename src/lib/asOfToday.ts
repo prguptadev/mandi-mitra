@@ -32,13 +32,12 @@ export function statementRange(from: string, to: string, today = todayISO()) {
   return qs.toString();
 }
 
-/** One mill's statement for the dates in its From and To boxes. */
-export function millStatementRange(from: string, to: string, _today = todayISO()) {
-  const qs = new URLSearchParams();
-  if (from) qs.set("from", from);
-  if (to) qs.set("to", to);
-  return qs.toString();
-}
+/**
+ * One mill's statement for the dates in its From and To boxes: the same rule
+ * as a supplier's. A From with the To box emptied runs to today, as its CSV
+ * and print say; both boxes empty ("All time") asks for every date.
+ */
+export const millStatementRange = (from: string, to: string, today = todayISO()) => statementRange(from, to, today);
 
 /**
  * The stock page's (and a mill's stock page's) commodity and dates. With no
