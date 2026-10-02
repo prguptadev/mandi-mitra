@@ -14,8 +14,6 @@ import Database from "better-sqlite3";
 const PG = process.env.MANDI_FAKE_PG!;
 const PG_SWITCH = `http://127.0.0.1:${Number(new URL(PG).port) + 2000}`;
 const PIN = process.env.MANDI_PIN ?? "482915";
-/** What B's people choose at their first sign-in (a test PIN on a test install). */
-const OWN_PIN = "582047";
 let bad = 0;
 const check = (label: string, ok: boolean, got?: unknown) => {
   if (!ok) bad++;
@@ -56,10 +54,7 @@ function computer(name: string, base: string, dir: string) {
     const users = await call("GET", "/auth/users");
     const u = users.find((x: any) => x.name === user);
     if (!u) throw new Error(`${name}: nobody called ${user} (${users.map((x: any) => x.name).join(", ")})`);
-    const r = await raw("POST", "/auth/login", { userId: u.id, pin });
-    // a new install's people are on 7747 until they choose their own PIN
-    if (r.status === 409 && r.json?.code === "new_pin") await call("POST", "/auth/first-pin", { userId: u.id, pin, newPin: OWN_PIN });
-    else if (r.status >= 400) throw new Error(`${name}: POST /auth/login -> ${r.status} ${JSON.stringify(r.json)}`);
+    await call("POST", "/auth/login", { userId: u.id, pin });
     const me = await call("GET", "/auth/me");
     const vldm = me.businesses.find((b: any) => b.shortCode === "VLDM");
     if (vldm && me.activeBusinessId !== vldm.businessId) await call("POST", "/auth/switch-business", { businessId: vldm.businessId });

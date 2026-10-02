@@ -561,14 +561,13 @@ can be exercised.
 An empty database starts with **Vijay Laxmi Dal Mill** and **V C
 Enterprises**, and three people, all on PIN **7747** with full access in both
 firms: **Admin** (root) and **Manager 1**, **Manager 2**. Only the Admin can
-add a business. The PIN is in this public repository, so it only opens the
-first sign-in, and only at the main computer: the sign-in screen then asks
-each person to choose their own (one small box: new PIN, again, Save), and
-7747, 0000, 1234 and the like are refused as anyone's PIN. People on an older
-install still on 7747 are asked the same at their next sign-in. From another
-device on the shop's network 7747 is refused outright ("First choose your own
-PIN on the main computer."). A forgotten Admin PIN is reset at the main
-computer by another Owner of both firms (Users › edit Admin). A second
+add a business. The owner's rule: everyone stays on 7747 until the owner
+changes the PINs himself (click your name › Change PIN, or Users), so the
+sign-in never forces a new PIN and nobody is refused for still being on
+7747, on the main computer or on another device. Only a NEW PIN is checked
+(4 to 6 digits, not 1234, 0000, 1111, a run or one digit repeated). A
+forgotten Admin PIN is reset at the main computer by another Owner of both
+firms (Users › edit Admin). A second
 computer then joins the office's cloud from Settings › Cloud sync, which
 replaces this starting data with the office's. `MANDI_NO_SEED=1` turns the
 starting data off (the tests use it for their first computer).

@@ -146,44 +146,14 @@ async function startSession(c: Context<Env>, user: User) {
   });
 }
 
-/** Said to another device when the person is still on the first PIN (7747) or another everyone-knows PIN. */
-const PIN_ON_MAIN = "First choose your own PIN on the main computer.";
-
 const LoginBody = z.object({ userId: z.string().max(64), pin: z.string().max(12) });
 
+/* The right PIN lets the person in, on the main computer or another device:
+   a new install's people stay on 7747 until the owner changes their PINs
+   himself (Change PIN, or Users), and nobody is stopped for still being on it. */
 authRoutes.post("/login", async (c) => {
   const body = LoginBody.parse(await c.req.json());
   const user = await checkPin(c, body.userId, body.pin);
-  /* Still on the PIN every new install starts with (7747), or another one
-     everybody guesses: no way in until the person picks their own. At the
-     main computer the sign-in screen asks for it (POST /first-pin); from the
-     network it is refused, so nobody on the Wi-Fi can claim a person first. */
-  if (weakPin(body.pin)) {
-    if (!fromThisComputer(c)) throw new HttpError(403, PIN_ON_MAIN, "pin_on_main");
-    throw new HttpError(409, "Choose your own PIN.", "new_pin");
-  }
-  await startSession(c, user);
-  return c.json({ ok: true });
-});
-
-/** The person still on 7747 picks their own PIN, at the main computer, and is signed in. */
-authRoutes.post("/first-pin", async (c) => {
-  const body = LoginBody.extend({ newPin: z.string().max(12) }).parse(await c.req.json());
-  if (!fromThisComputer(c)) throw new HttpError(403, PIN_ON_MAIN, "pin_on_main");
-  const user = await checkPin(c, body.userId, body.pin);
-  if (!weakPin(body.pin)) throw bad("Sign in with your PIN.", "not_needed");
-  const weak = weakPin(body.newPin);
-  if (weak) throw bad(weak, "weak_pin");
-  const { hash, salt } = hashPin(body.newPin);
-  await db.update(schema.users).set({ pinHash: hash, pinSalt: salt, failedAttempts: 0, lockedUntil: null, updatedAt: nowSec() })
-    .where(eq(schema.users.id, user.id));
-  // a sign-in made with the old PIN (before this version) ends everywhere
-  await db.delete(schema.sessions).where(eq(schema.sessions.userId, user.id));
-  clearRemoteFailures(user.id);
-  await audit({
-    actor: { userId: user.id, userName: user.name, businessId: await resumeBusiness(user), ip: clientAddress(c) },
-    action: "pin.change", entity: "user", entityId: user.id, entityLabel: user.name,
-  });
   await startSession(c, user);
   return c.json({ ok: true });
 });

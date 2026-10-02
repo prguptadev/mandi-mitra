@@ -21,7 +21,7 @@ runMigrations();
 // fresh statistics for the query planner (cheap; only re-analyses what changed)
 sqlite.pragma("optimize=0x10002");
 setInterval(() => { try { sqlite.pragma("optimize"); } catch { /* closing */ } }, 6 * 3600_000).unref();
-if (await seedFirstRun()) console.log("[setup] first run: Vijay Laxmi Dal Mill and V C Enterprises, Admin + 2 Managers (each chooses a PIN at first sign-in)");
+if (await seedFirstRun()) console.log("[setup] first run: Vijay Laxmi Dal Mill and V C Enterprises, Admin + 2 Managers (PIN 7747)");
 const granted = syncNewPermissions();
 if (granted) console.log(`[rbac] granted ${granted} new permission(s) to the stock roles`);
 const recovered = recoverInterruptedScans();

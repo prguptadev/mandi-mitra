@@ -4,7 +4,7 @@ import { Wheat, Sun, Moon, Languages, ArrowRight, Delete } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useTheme } from "@/lib/theme.tsx";
-import { Button, Field, Input, Alert, Card, Spinner, Dialog } from "@/components/ui/index.tsx";
+import { Button, Field, Input, Alert, Card, Spinner } from "@/components/ui/index.tsx";
 import { HindiInput } from "@/components/HindiInput.tsx";
 import { cn } from "@/lib/utils.ts";
 
@@ -204,20 +204,17 @@ export function LoginPage() {
 
   useEffect(() => { if (userId) pinRef.current?.focus(); }, [userId]);
 
-  // still on the PIN every new install starts with: the person picks their own before going in
-  const [firstPin, setFirstPin] = useState<string | null>(null);
   const m = useMutation({
-    mutationFn: (typed: string) => api.post("/auth/login", { userId, pin: typed }),
+    mutationFn: () => api.post("/auth/login", { userId, pin }),
     onSuccess: async () => { await qc.invalidateQueries(); },
-    onError: (e, typed) => {
-      if (e instanceof ApiError && e.code === "new_pin") setFirstPin(typed);
-      else setErr(e instanceof ApiError ? e.message : t("common.somethingWrong"));
+    onError: (e) => {
+      setErr(e instanceof ApiError ? e.message : t("common.somethingWrong"));
       setPin("");
       pinRef.current?.focus();
     },
   });
 
-  const submit = (e: React.FormEvent) => { e.preventDefault(); setErr(null); m.mutate(pin); };
+  const submit = (e: React.FormEvent) => { e.preventDefault(); setErr(null); m.mutate(); };
   const selected = users.data?.find((u) => u.id === userId);
 
   if (users.isLoading) {
@@ -300,42 +297,6 @@ export function LoginPage() {
           )}
         </div>
       </Card>
-      {firstPin !== null && userId && (
-        <OwnPinDialog userId={userId} pin={firstPin} onClose={() => { setFirstPin(null); pinRef.current?.focus(); }} />
-      )}
     </AuthChrome>
-  );
-}
-
-/** One small box: the new PIN twice, then Save signs the person in. */
-function OwnPinDialog({ userId, pin, onClose }: { userId: string; pin: string; onClose: () => void }) {
-  const { t } = useI18n();
-  const qc = useQueryClient();
-  const [f, setF] = useState({ newPin: "", again: "" });
-  const [err, setErr] = useState<string | null>(null);
-  const save = useMutation({
-    mutationFn: () => api.post("/auth/first-pin", { userId, pin, newPin: f.newPin }),
-    onSuccess: async () => { await qc.invalidateQueries(); },
-    onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
-  });
-  const digits = (v: string) => v.replace(/\D/g, "").slice(0, 6);
-  const ready = f.newPin.length >= 4 && f.newPin === f.again;
-  return (
-    <Dialog open onClose={onClose} title={t("auth.ownPin")} sub={t("auth.ownPinSub")}
-      footer={<Button variant="primary" loading={save.isPending} disabled={!ready}
-        onClick={() => { setErr(null); save.mutate(); }}>{t("common.save")}</Button>}>
-      <form className="space-y-3.5" onSubmit={(e) => { e.preventDefault(); if (ready) { setErr(null); save.mutate(); } }}>
-        {err && <Alert tone="bad">{err}</Alert>}
-        <Field label={t("auth.newPin")} hint={t("auth.pinHelp")}>
-          <Input value={f.newPin} type="password" mono inputMode="numeric" maxLength={6} autoFocus autoComplete="new-password"
-            onChange={(e) => setF((p) => ({ ...p, newPin: digits(e.target.value) }))} />
-        </Field>
-        <Field label={t("auth.pinAgain")} error={f.again && f.again !== f.newPin ? t("auth.pinMismatch") : undefined}>
-          <Input value={f.again} type="password" mono inputMode="numeric" maxLength={6} autoComplete="new-password"
-            onChange={(e) => setF((p) => ({ ...p, again: digits(e.target.value) }))} />
-        </Field>
-        <button type="submit" hidden />
-      </form>
-    </Dialog>
   );
 }

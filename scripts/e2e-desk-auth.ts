@@ -10,8 +10,9 @@ import Database from "better-sqlite3";
  *   1. the test server (this computer only): Host and Origin, request sizes,
  *      the sign-in endpoints that need no PIN
  *   2. a copy of the app run inside this script, shared on the network, on
- *      its own new install (Admin, Manager 1, Manager 2 on 7747), with
- *      requests arriving from the main computer and from other devices
+ *      its own new install (Admin, Manager 1, Manager 2 on 7747, kept until
+ *      the owner changes them), with requests arriving from the main computer
+ *      and from other devices
  *   3. that new install served on this computer's own network address and
  *      reached over the network (skipped when there is no network)
  * Run through: npm run test:e2e
@@ -171,23 +172,21 @@ check("…or its computer name, bare or .local", (await LAN1.call("GET", "/auth/
 check("…but not a public site that borrows the computer's name", (await LAN1.call("GET", "/auth/users", undefined, { host: `${pcName}.com:8787` })).json?.code === "bad_host");
 check("a change from another site's page is refused", (await LAN1.call("POST", "/auth/login", { userId: id("Admin"), pin: "7747" }, { origin: "http://rebind.example:8787", "sec-fetch-site": "cross-site" })).json?.code === "bad_origin");
 
-console.log("\nThe first PIN (7747)");
+console.log("\nThe first PIN (7747), kept until the owner changes it");
 const remote7747 = await LAN1.call("POST", "/auth/login", { userId: id("Admin"), pin: "7747" });
-check("from another device, the Admin on 7747 is not let in", remote7747.status === 403 && remote7747.json?.code === "pin_on_main" && !remote7747.cookie, remote7747);
-check("…and cannot choose the Admin's PIN from there", (await LAN1.call("POST", "/auth/first-pin", { userId: id("Admin"), pin: "7747", newPin: "639184" })).json?.code === "pin_on_main");
+check("from another device, the Admin still on 7747 signs in", remote7747.status === 200 && !!remote7747.cookie, remote7747.json);
+await LAN1.call("POST", "/auth/logout");
 const main7747 = await MAIN.call("POST", "/auth/login", { userId: id("Admin"), pin: "7747" });
-check("on the main computer, 7747 asks for an own PIN and lets nobody in yet", main7747.status === 409 && main7747.json?.code === "new_pin" && !main7747.cookie, main7747);
-check("…7747 itself is refused as the new PIN", (await MAIN.call("POST", "/auth/first-pin", { userId: id("Admin"), pin: "7747", newPin: "7747" })).json?.code === "weak_pin");
-check("…and so are 1234, 0000 and 2580", (await Promise.all(["1234", "0000", "2580"].map((p) => MAIN.call("POST", "/auth/first-pin", { userId: id("Admin"), pin: "7747", newPin: p })))).every((r) => r.json?.code === "weak_pin"));
+check("on the main computer, 7747 signs straight in (no box asking for an own PIN)", main7747.status === 200 && !!main7747.cookie && (await MAIN.call("GET", "/auth/me")).json?.user?.name === "Admin", main7747.json);
+check("there is no forced first-PIN step any more", (await device("127.0.0.1").call("POST", "/auth/first-pin", { userId: id("Admin"), pin: "7747", newPin: "639184" })).status === 404);
 const ADMIN_PIN = "639184", M1_PIN = "471526";
-const chosen = await MAIN.call("POST", "/auth/first-pin", { userId: id("Admin"), pin: "7747", newPin: ADMIN_PIN });
-check("a PIN of one's own is saved and signs the person in", chosen.status === 200 && !!chosen.cookie && (await MAIN.call("GET", "/auth/me")).json?.user?.name === "Admin", chosen.json);
-check("7747 no longer opens the Admin", (await device("127.0.0.1").call("POST", "/auth/login", { userId: id("Admin"), pin: "7747" })).status === 401);
-check("a signed-in change back to 7747 is refused", (await MAIN.call("POST", "/auth/change-pin", { currentPin: ADMIN_PIN, newPin: "7747" })).json?.code === "weak_pin");
-check("the weak-PIN rule refuses 7747, 0000, 1234, 1111 and keeps a real PIN", ["7747", "0000", "1234", "1111"].every((p) => weakPin(p)) && weakPin("582047") === null);
+check("an obviously weak new PIN is still refused when changing it", (await MAIN.call("POST", "/auth/change-pin", { currentPin: "7747", newPin: "1234" })).json?.code === "weak_pin");
+check("the owner changes the Admin's PIN himself", (await MAIN.call("POST", "/auth/change-pin", { currentPin: "7747", newPin: ADMIN_PIN })).status === 200);
+check("…then 7747 no longer opens the Admin", (await device("127.0.0.1").call("POST", "/auth/login", { userId: id("Admin"), pin: "7747" })).status === 401);
+check("the weak-PIN rule (new PINs only) refuses 0000, 1234, 1111 and allows 7747 and a real PIN", ["0000", "1234", "1111"].every((p) => weakPin(p)) && weakPin("582047") === null && weakPin("7747") === null);
 const m1 = device("127.0.0.1");
-check("Manager 1 is asked too", (await m1.call("POST", "/auth/login", { userId: id("Manager 1"), pin: "7747" })).json?.code === "new_pin");
-check("…and chooses a PIN", (await m1.call("POST", "/auth/first-pin", { userId: id("Manager 1"), pin: "7747", newPin: M1_PIN })).status === 200);
+check("Manager 1 signs in on 7747 too", (await m1.call("POST", "/auth/login", { userId: id("Manager 1"), pin: "7747" })).status === 200);
+check("…and the PIN is changed to another", (await m1.call("POST", "/auth/change-pin", { currentPin: "7747", newPin: M1_PIN })).status === 200);
 
 console.log("\nSign-ins from other devices");
 const lanLogin = await LAN1.call("POST", "/auth/login", { userId: id("Admin"), pin: ADMIN_PIN });
@@ -296,7 +295,7 @@ if (!lanIp) {
     const admin = people.find?.((x) => x.name === "Admin");
     check("…with the new install's people", !!admin, people);
     const r = await send("POST", there("/auth/login"), { body: { userId: admin?.id, pin: "7747" } });
-    check("reached over the network, 7747 is refused (the address comes from the connection)", r.status === 403 && r.json?.code === "pin_on_main" && !r.cookie, r.json);
+    check("reached over the network, a person on 7747 signs in for the working day (the address comes from the connection)", r.status === 200 && /max-age=43200/i.test(r.setCookie), r.json);
     check("a made-up name is refused over the network too", (await send("GET", there("/auth/users"), { headers: { host: `rebind.example:${NET_PORT}` } })).status === 403);
     check("this computer's name on another port is refused", (await send("GET", there("/auth/users"), { headers: { host: `${lanIp}:1` } })).status === 403);
   } finally {

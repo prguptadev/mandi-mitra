@@ -26,17 +26,15 @@ export function verifyPin(pin: string, hash: string, salt: string) {
 export const PIN_RE = /^\d{4,6}$/;
 
 /**
- * Reject the PINs everyone picks first. 7747 is the PIN every new install
- * starts with (lib/businessSetup.ts) and is published, so it is never a PIN
- * of one's own: a person still on it, or on any PIN refused here, chooses a
- * new one at sign-in (routes/auth.ts).
+ * A NEW PIN (sign-up, Change PIN, a PIN set in Users) is refused when it is
+ * one everybody guesses. Never checked at sign-in: whatever PIN a person has
+ * (the first-run 7747 included, until the owner changes it) lets them in.
  */
 export function weakPin(pin: string): string | null {
   if (!PIN_RE.test(pin)) return "PIN must be 4 to 6 digits";
   if (/^(\d)\1+$/.test(pin)) return "PIN cannot be the same digit repeated";
   if ("0123456789".includes(pin) || "9876543210".includes(pin)) return "PIN cannot be a run of digits";
-  if (["7747", "1234", "0000", "1111", "1212", "1122", "1313", "2580", "0852", "1010", "2020",
-    "123456", "111111", "121212", "112233", "123123"].includes(pin)) return "PIN is too common";
+  if (["1234", "0000", "1111", "1212", "123456", "111111"].includes(pin)) return "PIN is too common";
   return null;
 }
 

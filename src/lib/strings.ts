@@ -215,7 +215,6 @@ export const STRINGS = {
     "auth.wrongPin": "Wrong PIN", "auth.signOut": "Sign out",
     "auth.changePin": "Change PIN", "auth.currentPin": "Current PIN", "auth.newPin": "New PIN",
     "auth.switchUser": "Switch user",
-    "auth.ownPin": "Choose your own PIN", "auth.ownPinSub": "Pick a PIN only you know.",
 
     "biz.switch": "Switch business", "biz.add": "Add business",
     "biz.addSub": "A second firm, e.g. V C Enterprise. Suppliers, mills and stock stay separate.",
@@ -956,7 +955,6 @@ export const STRINGS = {
     "auth.wrongPin": "पिन गलत है", "auth.signOut": "लॉगआउट",
     "auth.changePin": "पिन बदलें", "auth.currentPin": "वर्तमान पिन", "auth.newPin": "नया पिन",
     "auth.switchUser": "उपयोगकर्ता बदलें",
-    "auth.ownPin": "अपना पिन चुनें", "auth.ownPinSub": "ऐसा पिन चुनें जो सिर्फ़ आप जानें।",
 
     "biz.switch": "व्यापार बदलें", "biz.add": "व्यापार जोड़ें",
     "biz.addSub": "दूसरी फर्म, जैसे V C Enterprise। आढ़ती, मिल और स्टॉक अलग रहेंगे।",
