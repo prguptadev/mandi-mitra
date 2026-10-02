@@ -343,6 +343,8 @@ export const measureCloudNext = () => { measureNext = true; };
 export interface SyncResult { pushed: number; pulled: number; clashes: number; paused?: string }
 export const cloudBusy = () => running !== null;
 export const syncEnabled = () => { const c = readCloudConfig(); return Boolean(c.enc && c.live); };
+/** Connected to a cloud, whether sync is running or only held. */
+export const cloudConnected = () => Boolean(readCloudConfig().enc);
 
 /** One pull + push. One at a time; a second call waits for the running one. */
 export function syncNow(): Promise<SyncResult> {
@@ -371,8 +373,10 @@ async function doSync(): Promise<SyncResult> {
       const meta = await client.query("select value from mm_meta where key = 'schema'");
       const cloudSchema = meta.rows[0] ? Number(meta.rows[0].value.migrations) : 0;
       if (cloudSchema > mine) {
-        const v = meta.rows[0].value.version ?? "the newest";
-        const reason = `Another computer runs a newer Mandi Mitra (${v}). Update this computer to keep syncing — its work is kept here meanwhile.`;
+        // a build whose database changed without a new version number: name no version rather than this one's own
+        const v = meta.rows[0].value.version;
+        const named = v && v !== appVersion() ? ` (${v})` : "";
+        const reason = `Another computer runs a newer Mandi Mitra${named}. Update this computer to keep syncing — its work is kept here meanwhile.`;
         patchConfig({ pausedReason: reason, lastError: null });
         return { pushed: 0, pulled: 0, clashes: 0, paused: reason };
       }
@@ -698,7 +702,8 @@ export async function restoreFromCloud() {
   } catch (e) { throw explain(e); } finally { await p.end(); }
   if (!byTable.size) throw new CloudError("The cloud is empty — there is nothing to bring down.");
 
-  const backup = await backupNow("manual");
+  // kept apart from "Back up now" copies, so twenty of those never push out this computer's own data from before
+  const backup = await backupNow("before-cloud");
   installTriggers();
   const tables = syncedTables();
   const counts: Record<string, number> = {};

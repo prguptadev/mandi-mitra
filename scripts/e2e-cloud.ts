@@ -145,11 +145,13 @@ check("a cloud with data asks to join, naming the computer already on it", bJoin
 check("…and does not start syncing on its own", (await B.call("GET", "/cloud/status")).enabled === false);
 check("joining needs JOIN typed", (await B.raw("POST", "/cloud/join", { connection: PG, confirm: "yes" })).status === 400);
 const joined = await B.call("POST", "/cloud/join", { connection: PG, confirm: "JOIN" });
-check("a backup of what was there is taken first", /^manual-/.test(joined.backup), joined.backup);
+check("a backup of what was there is taken first", /^before-cloud-/.test(joined.backup), joined.backup);
 check("no broken links after joining", joined.brokenLinks === 0, joined.brokenLinks);
 check("everyone signs in again after joining", (await B.raw("GET", "/auth/me")).status === 401);
 check("the office's people are now here (Admin was replaced)", (await B.call("GET", "/auth/users")).some((u: any) => u.name === "Test Owner"));
 await B.login();
+check("the backup taken before joining is listed apart from the ones made by hand",
+  (await B.call("GET", "/backup")).backups.some((b: any) => b.name === joined.backup && b.kind === "before-cloud"));
 check("the new install's own firm is gone", !(await B.call("GET", "/auth/me")).businesses.some((b: any) => b.shortCode === "SF"));
 
 console.log("\nAn empty install joins from the first screen");
@@ -365,7 +367,15 @@ const meta = (await cloud("select value from mm_meta where key = 'schema'"))[0].
 await cloud("update mm_meta set value = $1::jsonb where key = 'schema'", [JSON.stringify({ migrations: meta.migrations + 1, version: "9.9.9" })]);
 const paused = await C.sync();
 check("a computer on an older version pauses", Boolean(paused.paused) && paused.pushed === 0 && paused.pulled === 0, paused);
-check("…and says to update", (await C.call("GET", "/cloud/status")).state === "paused");
+const pausedSays = (await C.call("GET", "/cloud/status")) as { state: string; pausedReason: string };
+check("…and says to update", pausedSays.state === "paused");
+check("  ...naming the newer version", /\(9\.9\.9\)/.test(pausedSays.pausedReason), pausedSays.pausedReason);
+// a build whose database changed before its version number did: never "newer (the same version as here)"
+const ownVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version as string;
+await cloud("update mm_meta set value = $1::jsonb where key = 'schema'", [JSON.stringify({ migrations: meta.migrations + 1, version: ownVersion })]);
+await C.sync();
+const sameNo = (await C.call("GET", "/cloud/status")).pausedReason as string;
+check("  ...and not this computer's own version number", sameNo.includes("newer Mandi Mitra") && !sameNo.includes(`(${ownVersion})`), sameNo);
 await cloud("update mm_meta set value = $1::jsonb where key = 'schema'", [JSON.stringify(meta)]);
 check("once the versions match it carries on", !(await C.sync()).paused);
 
@@ -375,11 +385,22 @@ await B.sync();
 const devs = (await A.call("GET", "/cloud")).devices;
 check("every computer is listed, with its name", devs.length === 3 && devs.some((d: any) => d.name === "Munshi laptop"), devs.map((d: any) => d.name));
 
+console.log("\nA backup is not put back on a computer that syncs");
+const kept = await A.call("POST", "/backup/run");
+const restoreLive = await A.raw("POST", "/backup/restore", { name: kept.name, confirm: "RESTORE" });
+check("refused while sync is on", restoreLive.status === 400 && restoreLive.json.code === "sync_on", restoreLive.json);
+await A.call("POST", "/cloud/live", { on: false });
+const restoreHeld = await A.raw("POST", "/backup/restore", { name: kept.name, confirm: "RESTORE" });
+check("  ...and while sync is only held", restoreHeld.status === 400 && restoreHeld.json.code === "sync_on", restoreHeld.json);
+check("  ...pointing to Bring all data down", /Bring all data down/.test(restoreHeld.json.error), restoreHeld.json);
+check("  ...so nothing waits for the next start", !fs.existsSync(path.join(process.env.MANDI_DATA_DIR!, "restore-pending.json")));
+await A.call("POST", "/cloud/live", { on: true });
+
 console.log("\nBring everything down again (a computer's data replaced by the cloud's)");
 check("needs RESTORE typed", (await A.raw("POST", "/cloud/restore", { confirm: "yes" })).status === 400);
 const before = fingerprint(A);
 const r = await A.call("POST", "/cloud/restore", { confirm: "RESTORE" });
-check("a backup is taken first", /^manual-/.test(r.backup), r.backup);
+check("a backup is taken first", /^before-cloud-/.test(r.backup), r.backup);
 check("no broken links", r.brokenLinks === 0, r.brokenLinks);
 const after = fingerprint(A);
 check("every record comes back the same", Object.keys(before).every((t) => before[t] === after[t]), Object.keys(before).filter((t) => before[t] !== after[t]));

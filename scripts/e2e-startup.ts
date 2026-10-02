@@ -62,6 +62,39 @@ const out2 = execFileSync("npx", ["tsx", "server/db/migrate.ts"], {
 });
 check("books with nothing dangling are not told about links", !/no longer there/.test(out2), out2.trim());
 
+/* A restore waiting for the next start (asked for by v0.3.17 while sync was
+   only held, or just before connecting) must not land on a computer that
+   syncs: its old records would be sent up over the other computers' newer work. */
+console.log("\nA backup waiting to be put back, on a computer that syncs");
+function startWithPendingRestore(sub: string, cloud: Record<string, unknown> | null) {
+  const d = path.join(dir, sub);
+  fs.mkdirSync(d, { recursive: true });
+  execFileSync("sqlite3", [source, `.backup ${path.join(d, "mandi.db")}`]);
+  const old = path.join(d, "old.db");
+  execFileSync("sqlite3", [source, `.backup ${old}`]);
+  execFileSync("sqlite3", [old, "create table _from_the_backup (x)"]);
+  if (cloud) fs.writeFileSync(path.join(d, "cloud.json"), JSON.stringify(cloud));
+  fs.writeFileSync(path.join(d, "restore-pending.json"), JSON.stringify({ file: old, at: new Date().toISOString() }));
+  execFileSync("npx", ["tsx", "server/db/migrate.ts"], {
+    env: { ...process.env, MANDI_DATA_DIR: d, MANDI_NO_AUTO_BACKUP: "1" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  });
+  const db = new Database(path.join(d, "mandi.db"), { readonly: true });
+  const restored = Boolean(db.prepare("select 1 from sqlite_master where name = '_from_the_backup'").get());
+  db.close();
+  let note: string | null = null;
+  try { note = JSON.parse(fs.readFileSync(path.join(d, "backup.json"), "utf8")).lastError ?? null; } catch { /* none */ }
+  return { restored, stillWaiting: fs.existsSync(path.join(d, "restore-pending.json")), note };
+}
+const held = startWithPendingRestore("held", { enc: "connected", live: false, cursor: 120 });
+check("sync only held: the backup is not put back", !held.restored && !held.stillWaiting, held);
+check("  ...and the backup card says why", /Not gone back to old\.db/.test(held.note ?? "") && /Bring all data down/.test(held.note ?? ""), held.note);
+const live = startWithPendingRestore("live", { enc: "connected", live: true, cursor: 120 });
+check("sync on: the backup is not put back either", !live.restored && !live.stillWaiting, live);
+const off = startWithPendingRestore("off", { enc: null, live: false, cursor: 0 });
+check("sync turned off: the backup is put back", off.restored && !off.stillWaiting && off.note === null, off);
+const never = startWithPendingRestore("never", null);
+check("never connected: the backup is put back", never.restored && !never.stillWaiting, never);
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(bad === 0 ? "\nStart-up survives an old dangling link." : `\n${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

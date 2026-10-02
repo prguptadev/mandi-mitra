@@ -16,7 +16,7 @@ interface BackupState {
   /** Scan pictures in the second folder after the last backup, of how many on this computer. */
   pictures?: { inFolder: number; here: number; at: string } | null;
   folders?: { data: string; db: string; scans: string; backups: string };
-  backups: { name: string; kind: "auto" | "before-update" | "manual" | "before-restore"; bytes: number; at: string }[];
+  backups: { name: string; kind: "auto" | "before-update" | "manual" | "before-restore" | "before-cloud"; bytes: number; at: string }[];
 }
 
 export function BackupCard() {

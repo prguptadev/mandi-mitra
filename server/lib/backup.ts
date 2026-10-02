@@ -11,6 +11,8 @@ import { sqlite, DB_PATH, RESTORE_PENDING } from "../db/client.ts";
                       one a week for half a year)
      before-update-…  just before a database update is applied (20 kept)
      manual-…         "Back up now" (20 kept)
+     before-cloud-…   this computer's own data, just before the cloud's
+                      replaced it (joining, or "Bring all data down"; 10 kept)
    The scan pictures are files beside the database (data/scans), not in it:
    they go into the second folder only, below, next to the database copies.
    Each is written under a temporary name, checked, then renamed: a file with
@@ -25,9 +27,9 @@ import { sqlite, DB_PATH, RESTORE_PENDING } from "../db/client.ts";
 const DATA_DIR = path.dirname(DB_PATH);
 export const BACKUP_DIR = path.join(DATA_DIR, "backups");
 const CFG_PATH = path.join(DATA_DIR, "backup.json");
-const KEEP = { auto: 30, "before-update": 20, manual: 20, "before-restore": 10 } as const;
+const KEEP = { auto: 30, "before-update": 20, manual: 20, "before-restore": 10, "before-cloud": 10 } as const;
 export type BackupKind = keyof typeof KEEP;
-export const BACKUP_NAME = /^(auto|before-update|manual|before-restore)-\d{8}-\d{6}\.db$/;
+export const BACKUP_NAME = /^(auto|before-update|manual|before-restore|before-cloud)-\d{8}-\d{6}\.db$/;
 
 export interface BackupConfig {
   folder: string | null; lastAt: string | null; lastError: string | null; copiedAt: string | null;
