@@ -7,7 +7,8 @@
  * same Windows computer as the scanner.
  *
  * `--smoke-test` starts the server, checks it answers, and exits 0 or 1:
- * the build pipeline uses it to prove the packaged app actually runs.
+ * the build pipeline uses it to prove the packaged app actually runs. With
+ * `--smoke-quit` as well, a passing run then closes as a normal close does.
  */
 const { app, BrowserWindow, shell, dialog, Menu, nativeTheme } = require("electron");
 const path = require("node:path");
@@ -206,6 +207,9 @@ app.whenReady().then(async () => {
     }
     const ok = Object.values(checks).every(Boolean);
     console.log(`${ok ? "SMOKE OK" : "SMOKE FAIL"} ${base} ${JSON.stringify(checks)}`);
+    // --smoke-quit: leave the way a normal close does (will-quit: the closing backup, then the books closed)
+    if (ok && process.argv.includes("--smoke-quit")) { app.quit(); return; }
+    closeBooks();
     app.exit(ok ? 0 : 1);
     return;
   }
