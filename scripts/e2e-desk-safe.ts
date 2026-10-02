@@ -14,7 +14,8 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
  */
 
 const OFF = Number(process.env.E2E_PORT_OFFSET ?? 0);
-const PORT = 8804 + OFF;
+// its own port: the desktop and maths scripts run their servers on 8804 and 8806
+const PORT = 8805 + OFF;
 const PIN = process.env.MANDI_PIN ?? "482915";
 const ROOT = path.resolve("data-test-desk");
 const SRC = path.join(process.env.MANDI_DATA_DIR!, "mandi.db");

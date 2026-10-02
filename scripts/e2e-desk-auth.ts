@@ -294,7 +294,8 @@ if (!lanIp) {
   const NET_DIR = path.resolve("data-test-auth-net");
   fs.rmSync(NET_DIR, { recursive: true, force: true });
   fs.mkdirSync(NET_DIR, { recursive: true });
-  const NET_PORT = String(8804 + OFF);
+  // its own port: other scripts run their extra servers on 8804-8806
+  const NET_PORT = String(8807 + OFF);
   const env = { ...process.env, MANDI_DATA_DIR: NET_DIR, PORT: NET_PORT, MANDI_HOST: lanIp, MANDI_NO_AUTO_BACKUP: "1" };
   delete (env as Record<string, string | undefined>).MANDI_NO_SEED;
   const srv = spawn("npx", ["tsx", "server/index.ts"], { env, stdio: ["ignore", "pipe", "pipe"] });

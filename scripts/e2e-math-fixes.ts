@@ -462,7 +462,8 @@ console.log("\nA computer set to London, at night in India");
      rows, then started again at 01:00 in India with the zone set to London
      (20:30 the evening before there). */
   const OFF = Number(new URL(process.env.MANDI_API!).port) - 8799;
-  const port = 8804 + OFF;
+  // its own port: the desktop scripts run their servers on 8804 and 8805
+  const port = 8806 + OFF;
   const dir = path.resolve("data-test-tz");
   fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });

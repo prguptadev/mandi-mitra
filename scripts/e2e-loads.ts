@@ -2,7 +2,7 @@ import "./_guard.ts";
 import ExcelJS from "exceljs";
 import { sqlite } from "../server/db/client.ts";
 import { parchaXlsx } from "../server/lib/parchaXlsx.ts";
-import { screenLines, paperShowsDara, roundOffPaise } from "../server/lib/parchaLabels.ts";
+import { screenLines, paperShowsDara, roundOffPaise, officeToday } from "../server/lib/parchaLabels.ts";
 /* End-to-end: PO -> truck -> mill weighment -> kaccha parcha -> stock, through
  * the HTTP API, on the test database only. The real L.B sheet of 20-09-2026
  * goes into L.B's stock; truck UP25CT5038 takes the mill's 310.74 qtl from it
@@ -265,7 +265,7 @@ const ap2 = await call("POST", `/loads/${t1.id}/approve`);
 check("re-approved as 196 v2 with the new advance", ap2.parchaNo === "196" && ap2.version === 2 && ap2.grandTotalPaise === 112_785_122 + 200_000, ap2);
 const revSt = await call("GET", `/loads/${t1.id}`);
 check("the new paper is REVISED 2, dated the day it was approved again",
-  ap2.revision === 2 && revSt.approved.doc.revision === 2 && revSt.approved.doc.revisedOn === new Date().toLocaleDateString("en-CA"),
+  ap2.revision === 2 && revSt.approved.doc.revision === 2 && revSt.approved.doc.revisedOn === officeToday(),
   { revision: ap2.revision, on: revSt.approved.doc.revisedOn });
 const revX = await raw("GET", `/loads/${t1.id}/parcha.xlsx`);
 const revWb = new ExcelJS.Workbook();
