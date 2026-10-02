@@ -93,6 +93,7 @@ try {
   run("scripts/e2e-sync-scans.ts");
   run("scripts/e2e-sync-single.ts");
   run("scripts/e2e-sync-restore.ts");
+  run("scripts/e2e-sync-trucks.ts");
   run("scripts/e2e-emandi.ts");
   run("scripts/e2e-startup.ts");
   run("scripts/e2e-dates.ts");

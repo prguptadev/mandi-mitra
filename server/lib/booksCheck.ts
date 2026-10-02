@@ -197,6 +197,31 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     if (!pBad) ok(`${approved.length} approved parcha(s): every row, charge, total and grand total re-adds exactly (${parchas.length - approved.length} voided kept aside)`);
     ok(`billed ₹${rs(billed)} = goods ₹${rs(goodsBilled)} + charges ₹${rs([...parts.values()].reduce((s, v) => s + v, 0))} + advance/rounding ₹${rs(billed - goodsBilled - [...parts.values()].reduce((s, v) => s + v, 0))}`);
     for (const [label, v] of parts) note(`${label}: ₹${rs(v)}`);
+    /* 3b. each truck in step with its parcha. A truck and its parcha are
+       separate records, and two computers can settle them apart: a draft
+       truck beside a live parcha is counted both unbilled and owed, a billed
+       one with none is locked and owed nothing, and a stored net other than
+       the billed one puts stock off by the difference. */
+    {
+      const trucks = all<{ id: string; truck_no: string | null; load_date: string; status: string; mill_net_grams: number | null }>(
+        "select id, truck_no, load_date, status, mill_net_grams from loads where business_id = ?", biz.id);
+      const liveOf = new Map(approved.map((p) => [p.load_id, p]));
+      const named = (l: { id: string; truck_no: string | null; load_date: string }) => `${l.truck_no ?? `truck ${l.id.slice(-6)}`} of ${dm(l.load_date)}`;
+      const draftLive = trucks.filter((l) => l.status !== "billed" && liveOf.has(l.id));
+      const billedNone = trucks.filter((l) => l.status === "billed" && !liveOf.has(l.id));
+      const netOff: string[] = [];
+      for (const l of trucks) {
+        const p = liveOf.get(l.id);
+        const billedNet = p ? (JSON.parse(p.snapshot) as ParchaDoc).weights?.netGrams : undefined;
+        if (typeof billedNet === "number" && l.mill_net_grams !== billedNet) {
+          netOff.push(`${named(l)}: stored ${l.mill_net_grams == null ? "none" : qt(l.mill_net_grams)}, parcha #${p!.parcha_no} billed ${qt(billedNet)} qtl`);
+        }
+      }
+      if (draftLive.length) bad(`${draftLive.length} draft truck(s) have a live parcha, so they count both as unbilled and as owed by the mill: ${some(draftLive.map((l) => `${named(l)} (#${liveOf.get(l.id)!.parcha_no})`))}`);
+      if (billedNone.length) bad(`${billedNone.length} truck(s) are marked billed but have no live parcha, so they are locked and the mill owes nothing for them: ${some(billedNone.map(named))}`);
+      if (netOff.length) bad(`${netOff.length} truck(s) store a net weight other than what their parcha billed, so stock is off by the difference: ${some(netOff)}`);
+      if (!draftLive.length && !billedNone.length && !netOff.length) ok(`${trucks.length} truck(s): each is billed exactly when it has a live parcha, and stores the net that parcha billed`);
+    }
 
     // 4. mills
     section("4. Mill accounts (what mills owe us)");

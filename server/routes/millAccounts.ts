@@ -107,7 +107,9 @@ export function settle(
     lines.push({ loadId: null, parchaNo: null, date: null, truckNo: null, grandTotalPaise: openingPaise, shortagePaise: 0,
       billPaise: openingPaise, againstPaise: 0, fromAccountPaise: 0, duePaise: openingPaise });
   } else pool += -openingPaise;
-  const oldestFirst = [...bills].sort((x, y) => x.date.localeCompare(y.date) || x.parchaNo.localeCompare(y.parchaNo, undefined, { numeric: true }));
+  // the same number on the same day (two computers gave it): the truck decides, so every computer pays the same one first
+  const oldestFirst = [...bills].sort((x, y) => x.date.localeCompare(y.date) || x.parchaNo.localeCompare(y.parchaNo, undefined, { numeric: true })
+    || (x.loadId < y.loadId ? -1 : x.loadId > y.loadId ? 1 : 0));
   for (const b of oldestFirst) {
     const bill = b.grandTotalPaise - b.shortagePaise;
     const got = against.get(b.loadId) ?? 0;

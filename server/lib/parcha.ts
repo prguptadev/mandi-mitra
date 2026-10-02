@@ -159,13 +159,16 @@ export async function suggestInvoiceNo(businessId: string, exceptLoadId?: string
   return nums.length ? String(Math.max(...nums) + 1) : null;
 }
 
+/* A truck entered before bags were split into katte and bore has only the
+   total, read as katte. Emptying both boxes clears that total too (PUT
+   /loads), so an emptied box never bills the old bags, nor cleared bore as katte. */
+function bagCounts(l: LoadRow) {
+  return { katte: l.katteCount ?? (l.boreCount == null ? (l.bags ?? 0) : 0), bore: l.boreCount ?? 0 };
+}
+
 /** Bardana: typed weight if the operator gave one, else bags x kg per bag. */
 function weighment(l: LoadRow, cfg: ChargeConfig) {
-  /* A truck entered before bags were split into katte and bore has only the
-     total, read as katte. Emptying both boxes clears that total too (PUT
-     /loads), so an emptied box never bills the old bags, nor cleared bore as katte. */
-  const katte = l.katteCount ?? (l.boreCount == null ? (l.bags ?? 0) : 0);
-  const bore = l.boreCount ?? 0;
+  const { katte, bore } = bagCounts(l);
   const katteBardanaGrams = l.katteBardanaGrams ?? bardanaKg(katte, cfg.millBardanaKgPerBag);
   const boreBardanaGrams = l.boreBardanaGrams ?? bardanaKg(bore, cfg.millBoreBardanaKgPerBag);
   const bardanaGrams = katteBardanaGrams + boreBardanaGrams;
@@ -178,6 +181,46 @@ function weighment(l: LoadRow, cfg: ChargeConfig) {
 export function storedWeighment(l: LoadRow, cfg: ChargeConfig) {
   const w = weighment(l, cfg);
   return { bags: w.bags, millBardanaGrams: w.bardanaGrams, millNetGrams: w.netGrams };
+}
+
+/**
+ * What a billed truck's own fields must hold: the figures its live parcha
+ * froze. Stock, PO balances and the dashboard read the truck; the mill
+ * account reads the parcha. Two computers settle a truck and its parcha as
+ * separate records, so after a sync the truck is put back in step with the
+ * paper — the mill's weighbridge gross, the bags and their bardana, the net,
+ * the number, date and advance. A bag count or typed bardana that already
+ * reads the same is left as it is (an old truck's bags count as katte).
+ */
+export function billedFigures(l: LoadRow, p: { parchaNo: string; invoiceDate: string | null; snapshot: string }): Partial<LoadRow> {
+  const doc = JSON.parse(p.snapshot) as ParchaDoc;
+  const w = doc.weights;
+  const num = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+  const out: Partial<LoadRow> = { status: "billed", invoiceNo: p.parchaNo };
+  const day = p.invoiceDate ?? doc.invoiceDate;
+  if (typeof day === "string" && day) out.invoiceDate = day;
+  if (num(doc.result?.advancePaise)) out.advancePaise = doc.result.advancePaise;
+  // a dara typed on the truck is what the paper carries; any other kind is worked out by the terms
+  if (doc.config?.dara?.mode === "manual" && num(doc.result?.daraPaise)) out.daraPaise = doc.result.daraPaise;
+  if (!w) return out;
+  if (num(w.grossGrams)) out.millGrossGrams = w.grossGrams;
+  if (num(w.bardanaGrams)) out.millBardanaGrams = w.bardanaGrams;
+  if (num(w.netGrams)) out.millNetGrams = w.netGrams;
+  if (!num(w.katte) || !num(w.bore)) return out;
+  out.bags = w.katte + w.bore;
+  const was = bagCounts(l);
+  if (was.katte !== w.katte || was.bore !== w.bore) { out.katteCount = w.katte; out.boreCount = w.bore; }
+  const cfg = ChargeConfigSchema.safeParse(doc.config);
+  if (!cfg.success || !num(w.katteBardanaGrams) || !num(w.boreBardanaGrams)) return out;
+  // a bardana the paper worked out from the mill's kg a bag is left blank, so a later void follows the terms again
+  const now = weighment({ ...l, ...out }, cfg.data);
+  if (now.katteBardanaGrams !== w.katteBardanaGrams) {
+    out.katteBardanaGrams = bardanaKg(w.katte, cfg.data.millBardanaKgPerBag) === w.katteBardanaGrams ? null : w.katteBardanaGrams;
+  }
+  if (now.boreBardanaGrams !== w.boreBardanaGrams) {
+    out.boreBardanaGrams = bardanaKg(w.bore, cfg.data.millBoreBardanaKgPerBag) === w.boreBardanaGrams ? null : w.boreBardanaGrams;
+  }
+  return out;
 }
 
 /**

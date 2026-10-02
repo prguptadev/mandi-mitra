@@ -12,7 +12,7 @@ import { newId } from "./ids.ts";
 import { fyNumberLabel } from "./parchaLabels.ts";
 import { fyRange } from "./vouchers.ts";
 import { repairSuppliersAfterPull } from "./repairSuppliers.ts";
-import { repairTrucksAfterPull, parchaUniqueClash } from "./repairTrucks.ts";
+import { repairTrucksAfterPull, parchaUniqueClash, APPROVED_TWICE } from "./repairTrucks.ts";
 import { settleRecentAddedSheets } from "./sheetSlips.ts";
 
 /* Two-way sync of several computers through one cloud Postgres (Supabase).
@@ -378,9 +378,9 @@ export function disconnectCloud() {
   try { state().exec("delete from pushed; delete from retry;"); } catch { /* ignore */ }
 }
 
-/** Parcha numbers approved before sync began are claimed, so no other computer reuses them. */
+/** Parcha numbers approved before sync began are claimed, so no other computer reuses them. A voided parcha holds no number. */
 async function backfillClaims(conn: string) {
-  const rows = sqlite.prepare("select p.business_id, p.parcha_no, p.load_id, coalesce(p.invoice_date, l.load_date) as day from parchas p join loads l on l.id = p.load_id").all() as { business_id: string; parcha_no: string; load_id: string; day: string }[];
+  const rows = sqlite.prepare("select p.business_id, p.parcha_no, p.load_id, coalesce(p.invoice_date, l.load_date) as day from parchas p join loads l on l.id = p.load_id where p.status = 'approved'").all() as { business_id: string; parcha_no: string; load_id: string; day: string }[];
   if (!rows.length) return;
   const p = pool(conn);
   try {
@@ -694,6 +694,11 @@ function applyRemote(rows: RemoteRow[], me: string, retrying = false) {
           } else if (/UNIQUE/i.test(msg) && r.tbl === "parchas" && parchaUniqueClash(r.data) === "take-incoming") {
             // one truck approved on two computers: the local live parcha was just voided
             sqlite.prepare(sqlUpsert).run(...vals);
+            if (!retrying) {
+              const voided = sqlite.prepare("select * from parchas where load_id = ? and id <> ? and void_reason = ? order by id desc").get(r.data.load_id, r.row_id, APPROVED_TWICE);
+              clash.run(now, r.tbl, r.row_id, "theirs", r.device, JSON.stringify(voided ?? null), APPROVED_TWICE);
+              clashes++;
+            }
           } else {
             // e.g. the same mill code made on two computers: this one's is kept and the
             // other's is listed for the owner, then tried again every sync (it arrives
@@ -701,7 +706,7 @@ function applyRemote(rows: RemoteRow[], me: string, retrying = false) {
             toRetry.run(r.tbl, r.row_id);
             if (!retrying) {
               clash.run(now, r.tbl, r.row_id, "mine", r.device, JSON.stringify(r.data),
-                /UNIQUE/i.test(msg) ? "the same code or number was made on two computers — this computer's record is kept; rename one of them and the other arrives by itself"
+                /UNIQUE/i.test(msg) ? (r.tbl === "parchas" ? APPROVED_TWICE : "the same code or number was made on two computers — this computer's record is kept; rename one of them and the other arrives by itself")
                   : `could not be applied here (${msg.slice(0, 120)})`);
               clashes++;
             }
@@ -817,42 +822,63 @@ export async function restoreFromCloud() {
  * updated before the other neither can take the other's number unwarned.
  */
 
-/** Where the truck holding a claim stands on this computer. */
-function holderHere(businessId: string, holder: string | null, parchaNo: string, onDate: string, claimedHere: boolean): "live" | "free" | "away" {
+/**
+ * Where the truck holding a claim stands on this computer. A void seen here
+ * frees the number only if it came after the claim: the same truck approved
+ * again renews its claim, and a void from before that says nothing about the
+ * live parcha this computer has not pulled yet.
+ */
+function holderHere(businessId: string, holder: string | null, parchaNo: string, onDate: string, claimedHere: boolean, claimedAt: number): "live" | "free" | "away" {
   if (!holder) return "away";
   const rows = sqlite.prepare(
-    "select p.status, coalesce(p.invoice_date, l.load_date) as day from parchas p join loads l on l.id = p.load_id where p.business_id = ? and p.load_id = ? and p.parcha_no = ?",
-  ).all(businessId, holder, parchaNo) as { status: string; day: string }[];
+    "select p.status, p.voided_at, coalesce(p.invoice_date, l.load_date) as day from parchas p join loads l on l.id = p.load_id where p.business_id = ? and p.load_id = ? and p.parcha_no = ?",
+  ).all(businessId, holder, parchaNo) as { status: string; voided_at: number | null; day: string }[];
   const { from, to } = fyRange(onDate);
-  if (rows.some((r) => r.status === "approved" && r.day >= from && r.day <= to)) return "live";
-  // its parcha with this number was voided (or is another year's), or this computer claimed it and then used another
-  return rows.length || claimedHere ? "free" : "away";
+  const thisYear = rows.filter((r) => r.day >= from && r.day <= to);
+  if (thisYear.some((r) => r.status === "approved")) return "live";
+  // a void in the same second as the claim may be the earlier one: it is not taken as freeing the number
+  if (thisYear.some((r) => r.status === "void" && r.voided_at != null && r.voided_at > claimedAt)) return "free";
+  // the number is another year's on that truck, or this computer claimed it and then used another
+  return (rows.length && !thisYear.length) || claimedHere ? "free" : "away";
 }
 
 /**
  * Claims the number for this truck; returns who holds it when another truck
  * does. A claim whose truck has no live parcha with the number here passes to
- * this truck; a plain (v0.3.17) claim made before this financial year is an
- * earlier year's number.
+ * this truck; a plain (v0.3.17) claim made before this financial year, or held
+ * by a truck whose year-labelled claim of that number is another year's, is an
+ * earlier year's number (a 31-03 #250 and a 01-04 #250 are two numbers).
  */
 async function claimNumber(client: pg.PoolClient, device: string, businessId: string, parchaNo: string, onDate: string, loadId: string) {
   const no = parchaNo.trim();
-  for (const [value, plain] of [[fyNumberLabel(onDate, no), false], [no, true]] as const) {
+  const label = fyNumberLabel(onDate, no);
+  for (const [value, plain] of [[label, false], [no, true]] as const) {
     const got = await client.query(
       "insert into mm_claims (business_id, kind, value, load_id, device) values ($1, 'parcha', $2, $3, $4) on conflict do nothing returning load_id",
       [businessId, value, loadId, device]);
     if (got.rows.length) continue;
     const who = (await client.query(
-      "select load_id, device, at >= $3::date as this_year from mm_claims where business_id = $1 and kind = 'parcha' and value = $2",
-      [businessId, value, fyRange(onDate).from])).rows[0] as { load_id: string | null; device: string | null; this_year: boolean } | undefined;
-    if (!who || who.load_id === loadId) continue;
-    const here = holderHere(businessId, who.load_id, no, onDate, who.device === device);
+      "select load_id, device, at >= $3::date as this_year, extract(epoch from at)::float8 as at_s from mm_claims where business_id = $1 and kind = 'parcha' and value = $2",
+      [businessId, value, fyRange(onDate).from])).rows[0] as { load_id: string | null; device: string | null; this_year: boolean; at_s: number } | undefined;
+    if (!who) continue;
+    if (who.load_id === loadId) {
+      // the same truck approved again: the claim is renewed, so a void of its earlier parcha does not free it elsewhere
+      await client.query("update mm_claims set device = $3, at = now() where business_id = $1 and kind = 'parcha' and value = $2", [businessId, value, device]);
+      continue;
+    }
+    const here = holderHere(businessId, who.load_id, no, onDate, who.device === device, Number(who.at_s));
     if (here === "free") {
       await client.query("update mm_claims set load_id = $3, device = $4, at = now() where business_id = $1 and kind = 'parcha' and value = $2",
         [businessId, value, loadId, device]);
       continue;
     }
-    if (here === "away" && plain && !who.this_year) continue;
+    if (here === "away" && plain) {
+      if (!who.this_year) continue;
+      const otherYear = await client.query(
+        "select 1 from mm_claims where business_id = $1 and kind = 'parcha' and load_id = $2 and value <> $3 and left(value, length($4)) = $4 limit 1",
+        [businessId, who.load_id, label, `${no} (`]);
+      if (otherYear.rows.length) continue;
+    }
     return { loadId: who.load_id, device: who.device };
   }
   return null;
@@ -867,9 +893,13 @@ async function claimNumber(client: pg.PoolClient, device: string, businessId: st
  * in the clashes list — loudly, afterwards, rather than blocking the operator now.
  */
 export async function claimParchaNumber(businessId: string, parchaNo: string, onDate: string, loadId: string) {
-  if (!syncEnabled()) return;
   const cfg = readCloudConfig();
-  const conn = decryptSecret(cfg.enc!);
+  if (!cfg.enc) return;
+  const wait = () => state().prepare("insert or replace into claims_waiting (business_id, value, load_id, at) values (?, ?, ?, ?)")
+    .run(businessId, fyNumberLabel(onDate, parchaNo), loadId, new Date().toISOString());
+  // sync held here (the connection kept): nothing goes up now, so the claim waits for it, as with no internet
+  if (!cfg.live) { wait(); return; }
+  const conn = decryptSecret(cfg.enc);
   if (!conn) return;
   const p = pool(conn);
   try {
@@ -890,10 +920,33 @@ export async function claimParchaNumber(businessId: string, parchaNo: string, on
     const err = explain(e);
     if (!err.offline) throw err;
     // no internet: take the number now, claim it when there is
-    state().prepare("insert or replace into claims_waiting (business_id, value, load_id, at) values (?, ?, ?, ?)")
-      .run(businessId, fyNumberLabel(onDate, parchaNo), loadId, new Date().toISOString());
+    wait();
     return;
   } finally { await p.end(); }
+}
+
+/**
+ * An approval refused after its number was claimed (the truck changed, or was
+ * approved a moment ago) gives the claim back, so no other computer is warned
+ * about a number no parcha carries. A claim the truck's live parcha holds stays.
+ */
+export async function releaseParchaNumber(businessId: string, parchaNo: string, onDate: string, loadId: string) {
+  const no = parchaNo.trim();
+  const label = fyNumberLabel(onDate, no);
+  const { from, to } = fyRange(onDate);
+  const live = sqlite.prepare("select 1 from parchas where load_id = ? and parcha_no = ? and status = 'approved' and coalesce(invoice_date, ?) between ? and ?")
+    .get(loadId, no, onDate, from, to);
+  if (live) return;
+  state().prepare("delete from claims_waiting where business_id = ? and value = ? and load_id = ?").run(businessId, label, loadId);
+  if (!syncEnabled()) return;
+  const cfg = readCloudConfig();
+  const conn = decryptSecret(cfg.enc!);
+  if (!conn) return;
+  const p = pool(conn);
+  try {
+    await p.query("delete from mm_claims where business_id = $1 and kind = 'parcha' and load_id = $2 and device = $3 and value in ($4, $5)",
+      [businessId, loadId, cfg.deviceId, label, no]);
+  } catch { /* no internet: the claim stays, and only ever brings a warning */ } finally { await p.end(); }
 }
 
 /** Sends the claims that were waiting for the internet. Called after each sync. */
@@ -913,7 +966,7 @@ async function sendWaitingClaims(client: pg.PoolClient) {
     const who = live ? await claimNumber(client, cfg.deviceId, w.business_id, live.parcha_no, live.day, w.load_id) : null;
     if (who) {
       clash.run(new Date().toISOString(), "parchas", w.load_id, "theirs", who.device ?? null, JSON.stringify({ parchaNo: w.value }),
-        `Parcha #${w.value} was approved here while the internet was off, but another computer had already used that number. Void this parcha, give it the next free number and approve again.`);
+        `Parcha #${w.value} was approved here while the internet was off or sync was held, but another computer had already used that number. Void this parcha, give it the next free number and approve again.`);
     }
     done.run(w.business_id, w.value);
     sent++;
