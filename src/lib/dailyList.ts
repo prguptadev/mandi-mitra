@@ -34,10 +34,19 @@ export function dailyListFrom(search: string) {
 export const dailyListQuery = (date: string, merchantId: string, jinsId: string) =>
   `/slips?${new URLSearchParams({ date, ...(merchantId ? { merchantId } : {}), ...(jinsId ? { jinsId } : {}) })}`;
 
+/** What the dara dialog asks: the commodities a mill bought in the period. */
+export const daraJinsQuery = (merchantId: string, from: string, to: string) =>
+  `/reports/mill?${new URLSearchParams({ merchantId, from, to, format: "jins" })}`;
+
 /**
  * The commodity a dara starts on when the list shows every commodity: a dara
- * is one commodity's rate, never a blend of paddy and wheat.
+ * is one commodity's rate, never a blend of paddy and wheat. 1509 when the
+ * mill bought it in the period, else the first commodity it did buy; with
+ * nothing bought (or not known yet), 1509 as before.
  */
-export function daraStartJins(jinsList: { id: string; code: string }[], _bought?: string[] | null) {
-  return jinsList.find((j) => j.code === "1509")?.id || jinsList[0]?.id || "";
+export function daraStartJins(jinsList: { id: string; code: string }[], bought?: string[] | null) {
+  const usual = jinsList.find((j) => j.code === "1509") ?? jinsList[0];
+  const has = new Set(bought ?? []);
+  if (!has.size || (usual && has.has(usual.id))) return usual?.id ?? "";
+  return jinsList.find((j) => has.has(j.id))?.id ?? usual?.id ?? "";
 }

@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { Download, FileSpreadsheet, Eye } from "lucide-react";
-import { ApiError, type Merchant, type Jins } from "@/lib/api.ts";
+import { useQuery } from "@tanstack/react-query";
+import { api, ApiError, type Merchant, type Jins } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { usePrefs, MILL_REPORT_COLUMNS } from "@/lib/prefs.tsx";
 import { Button, Dialog, Field, Input, Select, Tabs, Alert, Badge } from "@/components/ui/index.tsx";
 import type { SlipSortOrder } from "@server/lib/slipOrder.ts";
 import { buildListTable, buildDaraTable, csvOf, type ExportTable } from "@/lib/exportTable.ts";
 import { ExportPreview } from "@/components/ExportPreview.tsx";
-import { daraStartJins } from "@/lib/dailyList.ts";
+import { daraStartJins, daraJinsQuery } from "@/lib/dailyList.ts";
 
 /* Everything that leaves the daily list: the list itself as CSV, and the
    report sent to a mill ("dara") as Excel or CSV. Either for one day or a
@@ -62,8 +63,6 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
   const [to, setTo] = useState(date);
   const [mill, setMill] = useState(merchantId);
   const [jins, setJins] = useState(jinsId);
-  // a dara is one commodity's rate: never a blend of paddy and wheat
-  const daraJins = jins || daraStartJins(jinsList);
   const [names, setNames] = useState<"hi" | "latin">(P.exportNameLang);
   const [sort, setSort] = useState<SlipSortOrder>(P.sortOrder);
   const [format, setFormat] = useState<"xlsx" | "csv">("xlsx");
@@ -74,6 +73,14 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
   const t0 = span === "day" ? day : to;
   const daraMill = mill || mills[0]?.id || "";
   const bad = !f0 || !t0 || f0 > t0 || (kind === "dara" && !daraMill);
+  // a dara is one commodity's rate, never a blend of paddy and wheat: it starts on one the mill bought in the period
+  const bought = useQuery({
+    queryKey: ["dara-jins", daraMill, f0, t0],
+    queryFn: () => api.get<{ jins: { jinsId: string }[] }>(daraJinsQuery(daraMill, f0, t0)),
+    enabled: open && kind === "dara" && !jins && !bad,
+  });
+  const daraJins = jins || daraStartJins(jinsList, bought.data?.jins.map((x) => x.jinsId));
+  const waiting = kind === "dara" && !jins && bought.isFetching;
 
   const listOpts = () => ({ from: f0, to: t0, merchantId: mill || undefined, jinsId: jins || undefined, names, sort, prefs: P, mills, jinsList });
   const daraOpts = () => ({
@@ -91,7 +98,7 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
     catch (e) { setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")); }
     finally { setBusy(false); }
   };
-  useEffect(() => { setPreview(null); }, [kind, f0, t0, mill, jins, names, sort]);
+  useEffect(() => { setPreview(null); }, [kind, f0, t0, mill, jins, daraJins, names, sort]);
 
   const dara = () => downloadDara({ ...daraOpts(), format });
 
@@ -114,8 +121,8 @@ export function DownloadDialog({ open, onClose, date, merchantId, mills, jinsId 
     <Dialog open={open} onClose={onClose} wide title={t("dl.title")} sub={t("dl.sub")}
       footer={<>
         <Button onClick={onClose}>{t("common.cancel")}</Button>
-        <Button variant="secondary" disabled={bad || busy} icon={<Eye className="h-4 w-4" />} onClick={showPreview}>{t("dl.preview")}</Button>
-        <Button variant="primary" loading={busy} disabled={bad}
+        <Button variant="secondary" disabled={bad || busy || waiting} icon={<Eye className="h-4 w-4" />} onClick={showPreview}>{t("dl.preview")}</Button>
+        <Button variant="primary" loading={busy} disabled={bad || waiting}
           icon={kind === "dara" && format === "xlsx" ? <FileSpreadsheet className="h-4 w-4" /> : <Download className="h-4 w-4" />}
           onClick={go}>{t("dl.download")}</Button>
       </>}>
