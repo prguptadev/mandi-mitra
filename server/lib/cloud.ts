@@ -13,6 +13,7 @@ import { fyNumberLabel } from "./parchaLabels.ts";
 import { fyRange } from "./vouchers.ts";
 import { repairSuppliersAfterPull } from "./repairSuppliers.ts";
 import { repairTrucksAfterPull, parchaUniqueClash } from "./repairTrucks.ts";
+import { settleRecentAddedSheets } from "./sheetSlips.ts";
 
 /* Two-way sync of several computers through one cloud Postgres (Supabase).
  *
@@ -432,7 +433,8 @@ async function doSync(): Promise<SyncResult> {
 
 /** Repairs every computer works out the same way from the same records, so all agree after a pull. */
 function repairAfterPull() {
-  return repairSuppliersAfterPull() + repairTrucksAfterPull();
+  // a sheet whose slips arrived is added, even if a tick on this computer won its status
+  return repairSuppliersAfterPull() + repairTrucksAfterPull() + settleRecentAddedSheets();
 }
 
 /**

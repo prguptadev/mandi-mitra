@@ -286,8 +286,9 @@ ledgerRoutes.get("/:adatiId", can("ledger.read"), async (c) => {
     })),
   ];
   // day by day; within a day purchases first, then payments, each in the order entered
+  // (the same second by id, so every computer shows the same running balance on each line)
   entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1
-    : a.kind !== b.kind ? (a.kind === "purchase" ? -1 : 1) : a.at - b.at));
+    : a.kind !== b.kind ? (a.kind === "purchase" ? -1 : 1) : a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)));
   let run = broughtForward;
   for (const e of entries) { run += e.creditPaise - e.debitPaise; e.balancePaise = run; }
 

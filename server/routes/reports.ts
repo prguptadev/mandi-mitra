@@ -70,6 +70,7 @@ reportRoutes.get("/mill", can("export.data"), async (c) => {
   ];
   if (jinsId) where.push(eq(schema.purchaseSlips.jinsId, jinsId));
   const raw = await db.select({
+    id: schema.purchaseSlips.id,
     slipDate: schema.purchaseSlips.slipDate, rstNo: schema.purchaseSlips.rstNo,
     nameHi: schema.adati.nameHi, nameLatin: schema.adati.nameHinglish,
     villageHi: schema.adati.villageHi, village: schema.adati.village,
