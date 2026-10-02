@@ -477,11 +477,8 @@ function RatesCard({ bizId }: { bizId: string | null }) {
             {/* the stock failing for the reason already said above is not said again */}
             {readStock && stock.isError && !(problem && (STOPS.has(stockErr ?? "") || stockErr === problem.code))
               && <p className="text-[12px] leading-snug text-warn">{t("portal.stockFailed", { why: say(stock.error) })}</p>}
-            {stockState === "ready" && stock.data && (lines!.length
-              ? <p className="text-[12px] leading-snug text-muted">
-                  {t("portal.stockWindow", { from: stock.data.from, to: stock.data.to })} {t("portal.stockCount", { n: lines!.length })}
-                </p>
-              : <p className="text-[12px] leading-snug text-muted">{t("portal.stockNone")}</p>)}
+            {stockState === "ready" && stock.data && !lines!.length
+              && <p className="text-[12px] leading-snug text-muted">{t("portal.stockNone")}</p>}
             {stockForeign && <p className="text-[12px] leading-snug text-warn">{t("portal.stockOtherLicence")}</p>}
             {asking && <p className="text-[12px] leading-snug text-muted">{t("portal.stockHeld")}</p>}
             {(rates.data || stock.data) && (
@@ -504,7 +501,6 @@ function RatesCard({ bizId }: { bizId: string | null }) {
             </p>
           </>
         )}
-        <p className="text-[11px] leading-snug text-faint">{t("portal.note")}</p>
       </div>
     </Card>
   );

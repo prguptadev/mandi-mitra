@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
-import { CalendarCheck, PhoneCall } from "lucide-react";
+import { CalendarCheck } from "lucide-react";
 import { api } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
@@ -18,21 +18,15 @@ export function AttentionStrip() {
   const { thisYear } = useFY();
   const today = todayISO();
   const yesterday = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toLocaleDateString("en-CA"); })();
-  const fu = useQuery({
-    queryKey: ["mill-followup"], queryFn: () => api.get<{ totals: { dueToday: number } }>("/mill-followup"),
-    enabled: can("millledger.read"), staleTime: 60_000,
-  });
   const days = useQuery({
     queryKey: ["days", "list", thisYear.from, yesterday],
     queryFn: () => api.get<{ days: { day: string; closed: unknown }[] }>(`/days?from=${thisYear.from}&to=${yesterday}`),
     enabled: can("day.close") && yesterday >= thisYear.from, staleTime: 60_000,
   });
-  const calls = fu.data?.totals.dueToday ?? 0;
   const open = (days.data?.days ?? []).filter((d) => !d.closed).length;
   const items = [
-    calls > 0 && { href: "/mill-followup", icon: PhoneCall, text: t("att.calls", { n: calls }), tone: "text-warn" },
     open > 0 && { href: "/day-close", icon: CalendarCheck, text: t("att.openDays", { n: open }), tone: "text-warn" },
-  ].filter(Boolean) as { href: string; icon: typeof PhoneCall; text: string; tone: string }[];
+  ].filter(Boolean) as { href: string; icon: typeof CalendarCheck; text: string; tone: string }[];
   if (!items.length) return null;
   return (
     <div className="mb-4 flex flex-wrap gap-2">
