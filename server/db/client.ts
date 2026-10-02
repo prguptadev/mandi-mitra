@@ -158,6 +158,10 @@ function restorePending() {
  * readable but not saved to, or, if they cannot be opened at all, the screens
  * say so and nothing is opened. A full check of the file (quick_check) runs
  * only after a run that did not close cleanly (power cut, crash, killed).
+ * Nothing writes to damaged books before they are kept as they were: the check
+ * reads them without writing a byte (not even folding the -wal in), a damaged
+ * index is rebuilt on a copy that goes in only if it then checks whole, and
+ * books kept read only are copied into backups/ before they are opened.
  */
 interface Good { file: string; name: string; at: string }
 function journalLength() {
@@ -196,6 +200,88 @@ function quickCheck(db: Database.Database) {
     if (isDamage(e)) return false;
     console.warn("[db] could not check the books file:", e);
     return true; // cannot tell: open as before
+  }
+}
+/** The books checked through without writing a byte to them: a read-only connection never folds the -wal in, not even on closing. */
+function checkUntouched(): boolean {
+  let d: Database.Database | null = null;
+  try {
+    d = new Database(DB_PATH, { readonly: true, fileMustExist: true });
+    return quickCheck(d);
+  } catch (e) {
+    if (isDamage(e)) return false;
+    console.warn("[db] could not check the books file:", e);
+    return true; // cannot tell: open as before
+  } finally {
+    try { d?.close(); } catch { /* not open */ }
+  }
+}
+/** Books that can be read at all (a damaged header cannot), looked at without writing to them. */
+function readable(): boolean {
+  try {
+    const d = new Database(DB_PATH, { readonly: true, fileMustExist: true });
+    try { d.pragma("schema_version"); return true; } finally { d.close(); }
+  } catch { return false; }
+}
+/** A byte-for-byte copy of the books and their -wal (it holds the latest changes) as `to` in backups/: both whole, or neither. */
+function copyAsTheyAre(to: string) {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const sides = ["", "-wal"].filter((s) => fs.existsSync(DB_PATH + s));
+  try {
+    for (const s of sides) { fs.copyFileSync(DB_PATH + s, `${to}${s}.tmp`); fsyncFile(`${to}${s}.tmp`); }
+    for (const s of sides) renameRetry(`${to}${s}.tmp`, to + s);
+  } catch (e) {
+    for (const s of sides) { fs.rmSync(`${to}${s}.tmp`, { force: true }); fs.rmSync(to + s, { force: true }); }
+    throw e;
+  }
+  fsyncDir(BACKUP_DIR);
+}
+/**
+ * A damaged index rebuilt from its table, with nothing lost, on a copy of the
+ * books: the copy goes in only if it then checks whole, and the books as they
+ * were (untouched, with their -wal) go to backups/. The name they are kept
+ * under, or null when the copy could not be mended (a damaged table, no room).
+ */
+function mendCopy(): string | null {
+  const tmp = `${DB_PATH}.mend`;
+  const clear = (sides: string[]) => { for (const s of sides) fs.rmSync(tmp + s, { force: true }); };
+  const all = ["", "-wal", "-shm", "-journal"];
+  clear(all);
+  try {
+    for (const s of ["", "-wal"]) if (fs.existsSync(DB_PATH + s)) fs.copyFileSync(DB_PATH + s, tmp + s);
+    let whole = false;
+    const d = new Database(tmp);
+    try {
+      d.exec("REINDEX");
+      whole = d.pragma("quick_check", { simple: true }) === "ok";
+      // into one file (closing folds in the rest and removes the copy's side files)
+      if (whole) d.pragma("wal_checkpoint(TRUNCATE)");
+    } finally { d.close(); }
+    if (!whole) { clear(all); return null; }
+    clear(["-wal", "-shm", "-journal"]);
+    fsyncFile(tmp);
+    return swapIn(tmp, path.join(BACKUP_DIR, `damaged-${stampNow()}.db`), false);
+  } catch (e) {
+    if (!isDamage(e)) console.warn(`[db] could not rebuild the books' indexes on a copy: ${plainError(e)}`);
+    clear(all);
+    return null;
+  }
+}
+/**
+ * Damaged books kept read only: sign-ins and closing still write to them, so a
+ * copy of them as they are goes to backups/ first, once (a start that finds
+ * them still damaged keeps the copy it made before).
+ */
+function keepReadOnlyCopy(): string | null {
+  const before = readStartNotice();
+  if (before?.kind === "readOnly" && before.keptAs && fs.existsSync(path.join(BACKUP_DIR, before.keptAs))) return before.keptAs;
+  const name = `damaged-${stampNow()}.db`;
+  try {
+    copyAsTheyAre(path.join(BACKUP_DIR, name));
+    return name;
+  } catch (e) {
+    console.error(`[db] could not keep a copy of the damaged books: ${plainError(e)}`);
+    return null;
   }
 }
 /** Pauses cloud sync, so records from the backup are not sent up over the other computers' newer ones. */
@@ -260,25 +346,28 @@ function openBooks(): Database.Database {
     const good = newestGoodBackup();
     if (!good || !putBack(good, "missing")) return unavailable("missing");
   }
-  let db: Database.Database | null = null;
   let damaged = false;
-  try {
-    db = new Database(DB_PATH);
-    db.pragma("busy_timeout = 5000");
-    // the first read of the file: a damaged header shows here
-    db.pragma("journal_mode = WAL");
-    if (unclean) console.warn("[db] the last run did not close cleanly: checking the books file");
-    if (unclean && !quickCheck(db)) {
-      // a damaged index is rebuilt from its table, with nothing lost
-      try { db.exec("REINDEX"); } catch { /* the table itself is damaged */ }
-      damaged = !quickCheck(db);
-      if (!damaged) console.warn("[db] the books file had a damaged index; it was rebuilt and nothing was lost");
+  if (unclean) {
+    console.warn("[db] the last run did not close cleanly: checking the books file");
+    if (!checkUntouched()) {
+      const keptAs = mendCopy();
+      if (keptAs) console.warn(`[db] the books file had a damaged index; it was rebuilt and nothing was lost (the file as it was is kept as backups/${keptAs})`);
+      else damaged = true;
     }
-  } catch (e) {
-    if (!isDamage(e)) throw e;
-    damaged = true;
-    try { db?.close(); } catch { /* not open */ }
-    db = null;
+  }
+  let db: Database.Database | null = null;
+  if (!damaged) {
+    try {
+      db = new Database(DB_PATH);
+      db.pragma("busy_timeout = 5000");
+      // the first read of the file: a damaged header shows here, before anything is written
+      db.pragma("journal_mode = WAL");
+    } catch (e) {
+      if (!isDamage(e)) throw e;
+      damaged = true;
+      try { db?.close(); } catch { /* not open */ }
+      db = null;
+    }
   }
   if (!damaged) {
     markOpen();
@@ -286,23 +375,22 @@ function openBooks(): Database.Database {
     if (readStartNotice()?.kind !== "restored") dismissStartNotice();
     return db!;
   }
+  // the damaged books have not been written to: they go aside as they are, and a good backup comes in
   const good = newestGoodBackup();
-  if (good) {
-    try { db?.close(); } catch { /* not open */ }
-    if (putBack(good, "damaged")) { markOpen(); return new Database(DB_PATH); }
-    if (fs.existsSync(DB_PATH)) {
-      try { db = new Database(DB_PATH); db.pragma("journal_mode = WAL"); } catch { db = null; }
-    }
-  }
-  if (db) {
+  if (good && putBack(good, "damaged")) { markOpen(); return new Database(DB_PATH); }
+  if (fs.existsSync(DB_PATH) && readable()) {
     // readable, so it stays where it is and is checked again at the next start (the mark stays);
-    // nothing writes to it meanwhile: no automatic backups (they would fail) and no sync
-    mode = "readOnly";
-    process.env.MANDI_NO_AUTO_BACKUP = "1";
-    notice({ kind: "readOnly", why: "damaged", detail: lastDetail });
-    console.error(`[db] the books file is damaged and no backup could be put back${lastDetail ? ` (${lastDetail})` : ""}: open for reading only`);
-    markOpen();
-    return db;
+    // nothing else writes to it meanwhile: no automatic backups (they would fail), no start-up jobs, no sync
+    const keptAs = keepReadOnlyCopy();
+    try { db = new Database(DB_PATH); db.pragma("journal_mode = WAL"); } catch { db = null; }
+    if (db) {
+      mode = "readOnly";
+      process.env.MANDI_NO_AUTO_BACKUP = "1";
+      notice({ kind: "readOnly", why: "damaged", keptAs, detail: lastDetail });
+      console.error(`[db] the books file is damaged and no backup could be put back${lastDetail ? ` (${lastDetail})` : ""}: open for reading only${keptAs ? `; a copy as it was is kept as backups/${keptAs}` : ""}`);
+      markOpen();
+      return db;
+    }
   }
   return unavailable("damaged");
 }

@@ -101,6 +101,33 @@ function walCommits(file: string) {
   }
   return n;
 }
+/**
+ * The newest rows only in the -wal side file, as a cut-off run leaves them: the
+ * books are copied while a connection that wrote them is still open.
+ */
+function hotWal(dir: string) {
+  const db = path.join(dir, "mandi.db");
+  const w = path.join(dir, "wal-src");
+  fs.mkdirSync(w, { recursive: true });
+  fs.copyFileSync(db, path.join(w, "mandi.db"));
+  const d = new Database(path.join(w, "mandi.db"));
+  d.pragma("journal_mode = WAL");
+  d.pragma("wal_autocheckpoint = 0");
+  d.exec("create table _desk_in_wal (x); insert into _desk_in_wal values (1);");
+  fs.copyFileSync(path.join(w, "mandi.db"), db);
+  fs.copyFileSync(path.join(w, "mandi.db-wal"), `${db}-wal`);
+  d.close();
+  fs.rmSync(w, { recursive: true, force: true });
+}
+/** The books file and its -wal, byte for byte. */
+const asTheyAre = (dir: string) => ({ db: fs.readFileSync(path.join(dir, "mandi.db")), wal: fs.readFileSync(path.join(dir, "mandi.db-wal")) });
+/** The one damaged-… copy in backups/ is exactly `was` (the books file and its -wal). */
+function keptExactly(dir: string, was: { db: Buffer; wal: Buffer }) {
+  const kept = inBackups(dir, /^damaged-\d{8}-\d{6}\.db$/);
+  if (kept.length !== 1) return false;
+  const f = path.join(dir, "backups", kept[0]);
+  try { return fs.readFileSync(f).equals(was.db) && fs.readFileSync(`${f}-wal`).equals(was.wal); } catch { return false; }
+}
 /** As if the last run was cut off (power cut, crash, killed): the clean-close mark is still there. */
 const cutOff = (dir: string) => fs.writeFileSync(path.join(dir, "books-open.json"), JSON.stringify({ pid: 1, at: new Date().toISOString() }));
 const notice = (dir: string) => { try { return JSON.parse(fs.readFileSync(path.join(dir, "start-notice.json"), "utf8")); } catch { return null; } };
@@ -253,26 +280,33 @@ try {
   {
     const d = books("page", { probe: true });
     backupInto(d, "auto-20260301-100000.db", "_from_good_backup");
+    hotWal(d);
     damagePage(path.join(d, "mandi.db"), "_desk_probe");
+    const was = asTheyAre(d);
     cutOff(d);
     const r = startup(d);
     check("a damaged page found after a cut-off run: the good backup is put back", r.code === 0 && hasTable(path.join(d, "mandi.db"), "_from_good_backup") && whole(path.join(d, "mandi.db")), r.out.slice(-800));
-    check("  ...the damaged file kept", inBackups(d, /^damaged-.*\.db$/).length === 1);
+    check("  ...the damaged file kept exactly as it was, with its -wal (nothing rebuilt or folded into it first)", keptExactly(d, was), inBackups(d, /^damaged-/));
   }
   {
     const d = books("index", { probe: true });
     const rows = count(path.join(d, "mandi.db"), "_desk_probe");
+    hotWal(d);
     damageIndexPage(path.join(d, "mandi.db"), "_desk_probe_idx");
     check("  (the copy's index is damaged)", !whole(path.join(d, "mandi.db")));
+    const was = asTheyAre(d);
     cutOff(d);
     const r = startup(d);
-    check("a damaged index is rebuilt in place, nothing lost and nothing put back",
-      r.code === 0 && whole(path.join(d, "mandi.db")) && count(path.join(d, "mandi.db"), "_desk_probe") === rows && inBackups(d, /^damaged-/).length === 0 && !notice(d), r.out.slice(-600));
+    check("a damaged index is rebuilt, nothing lost (the rows only in the -wal too) and nothing put back",
+      r.code === 0 && whole(path.join(d, "mandi.db")) && count(path.join(d, "mandi.db"), "_desk_probe") === rows && count(path.join(d, "mandi.db"), "_desk_in_wal") === 1 && !notice(d), r.out.slice(-600));
+    check("  ...on a copy: the file as it was is kept, byte for byte with its -wal", keptExactly(d, was), inBackups(d, /^damaged-/));
   }
   {
     const d = books("readonly", { probe: true });
+    hotWal(d);
     damagePage(path.join(d, "mandi.db"), "_desk_probe");
     const ino = fs.statSync(path.join(d, "mandi.db")).ino;
+    const was = asTheyAre(d);
     cutOff(d);
     const s = await serve(d);
     check("damaged, with no good backup: the app still opens", s.up, s.log().slice(-800));
@@ -284,7 +318,10 @@ try {
     check("  ...every screen is told", nt?.start?.kind === "readOnly", nt);
     await s.stop("SIGTERM");
     check("  ...the file stays where it is, and is checked again at the next start",
-      fs.statSync(path.join(d, "mandi.db")).ino === ino && inBackups(d, /^damaged-/).length === 0 && fs.existsSync(path.join(d, "books-open.json")));
+      fs.statSync(path.join(d, "mandi.db")).ino === ino && fs.existsSync(path.join(d, "books-open.json")));
+    check("  ...a copy of it as it was (with its -wal) is kept in backups/ before anything is written to it (sign-ins, closing)", keptExactly(d, was), inBackups(d, /^damaged-/));
+    const again = startup(d);
+    check("  ...once: the next start (still damaged) makes no second copy", /open for reading only/.test(again.out) && inBackups(d, /^damaged-\d{8}-\d{6}\.db$/).length === 1, { out: again.out.slice(-300), kept: inBackups(d, /^damaged-/) });
   }
   {
     // damage that came during a clean run: no check at start, so the start-up jobs are the first to meet it
