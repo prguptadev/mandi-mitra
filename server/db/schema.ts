@@ -558,6 +558,11 @@ export const auditLog = sqliteTable(
     bizIdx: index("audit_biz_idx").on(t.businessId, t.at),
     entIdx: index("audit_entity_idx").on(t.entity, t.entityId),
     userIdx: index("audit_user_idx").on(t.userId, t.at),
+    /* The Audit screen's filter lists (which records, which actions, who) read
+       from this alone, not from the trail's wide rows: on a big book the trail
+       is the largest table. Action comes second so the list of entries, which
+       never asks for an exact action, keeps reading in time order as before. */
+    facetsIdx: index("audit_facets_idx").on(t.businessId, t.action, t.entity, t.userId, t.userName),
   }),
 );
 
