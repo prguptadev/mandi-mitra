@@ -15,7 +15,7 @@ const ACTIONS: Record<string, [string, string]> = {
   "parcha.approve": ["Parcha approved", "पर्चा स्वीकृत"], "parcha.void": ["Parcha voided", "पर्चा रद्द"],
   "load.create": ["Truck added", "ट्रक जोड़ा"], "load.update": ["Truck changed", "ट्रक बदला"], "load.delete": ["Truck deleted", "ट्रक हटाया"],
   "load.add_line": ["Truck row added", "ट्रक की पंक्ति जोड़ी"], "load.update_line": ["Truck row changed", "ट्रक की पंक्ति बदली"], "load.remove_line": ["Truck row removed", "ट्रक की पंक्ति हटाई"],
-  "load.deduction": ["Mill weight cut entered", "मिल की वज़न कटौती भरी"],
+  "load.deduction": ["Mill weight cut entered", "मिल की वज़न कटौती भरी"], "load.resync": ["Truck put in step with its parcha after a sync", "सिंक के बाद ट्रक उसके पर्चे से मिलाया"],
   "po.create": ["PO added", "PO जोड़ा"], "po.update": ["PO changed", "PO बदला"], "po.delete": ["PO deleted", "PO हटाया"],
   "adati.create": ["Supplier added", "आढ़ती जोड़ा"], "adati.update": ["Supplier changed", "आढ़ती बदला"], "adati.delete": ["Supplier deleted", "आढ़ती हटाया"], "adati.deactivate": ["Supplier made inactive", "आढ़ती निष्क्रिय"],
   "adati.alias.create": ["Name spelling learned", "नाम की वर्तनी सीखी"], "adati.alias.reinforce": ["Name spelling confirmed", "नाम की वर्तनी पक्की"], "adati.alias.delete": ["Name spelling removed", "नाम की वर्तनी हटाई"], "adati.regenerate_hinglish": ["Hinglish names redone", "हिंग्लिश नाम फिर बनाए"],

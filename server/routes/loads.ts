@@ -12,7 +12,8 @@ import {
 import { billed, receipts, settle, type DueLine } from "./millAccounts.ts";
 import { parchaXlsx } from "../lib/parchaXlsx.ts";
 import { poLabel } from "./orders.ts";
-import { claimParchaNumber, CloudError } from "../lib/cloud.ts";
+import { claimParchaNumber, releaseParchaNumber, CloudError } from "../lib/cloud.ts";
+import { repairTrucks } from "../lib/repairTrucks.ts";
 import { can, actor, param, notFound, bad, HttpError, attachment, isoDay, LIMIT, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 
@@ -475,6 +476,8 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
   const now = await loadState(biz, id);
   if (!now || now.load.status !== "draft" || now.blockers.length || !now.doc || now.doc.invoiceNo !== parchaNo
     || now.doc.result.grandTotalPaise !== s.doc.result.grandTotalPaise || JSON.stringify(now.doc.lines) !== JSON.stringify(s.doc.lines)) {
+    // a refused approval gives its number back, so no other computer is warned about it
+    await releaseParchaNumber(biz, parchaNo, s.doc.invoiceDate, id).catch(() => undefined);
     return c.json({ error: "The truck changed while the parcha number was being reserved. Check it and approve again.", code: "changed" }, 409);
   }
   const s2 = now;
@@ -510,7 +513,10 @@ loadRoutes.post("/:id/approve", can("parcha.approve"), async (c) => {
     // the one-approved-parcha-per-truck rule
     if (!/UNIQUE/i.test(String((e as Error).message))) throw e;
   }
-  if (!frozen) return c.json({ error: "This truck was approved a moment ago.", code: "already_approved" }, 409);
+  if (!frozen) {
+    await releaseParchaNumber(biz, parchaNo, s.doc.invoiceDate, id).catch(() => undefined);
+    return c.json({ error: "This truck was approved a moment ago.", code: "already_approved" }, 409);
+  }
   const { version, doc } = frozen;
   const revision = doc.revision ?? 1;
   await audit({ actor: actor(c), action: "parcha.approve", entity: "parcha", entityId: pid,
@@ -643,13 +649,8 @@ parchaRoutes.post("/:id/void", can("parcha.void"), async (c) => {
       .where(eq(schema.parchas.id, id)).run();
     tx.update(schema.loads).set({ status: "draft", updatedAt: at }).where(eq(schema.loads.id, p.loadId)).run();
   });
-  // back to a draft: its stored mill figures follow today's terms again, as any draft's do
-  const again = await loadState(biz, p.loadId);
-  if (again) {
-    await db.update(schema.loads).set({
-      bags: again.weighment.bags, millBardanaGrams: again.weighment.bardanaGrams, millNetGrams: again.weighment.netGrams,
-    }).where(eq(schema.loads.id, p.loadId));
-  }
+  // back to a draft: its stored mill figures follow today's terms again, as any draft's do (the same rule sync uses)
+  repairTrucks([p.loadId], { audit: false });
   const rev = revisions(await db.select({ id: schema.parchas.id, loadId: schema.parchas.loadId }).from(schema.parchas).where(eq(schema.parchas.loadId, p.loadId))).get(id)?.revision ?? 1;
   await audit({ actor: actor(c), action: "parcha.void", entity: "parcha", entityId: id,
     entityLabel: `Parcha ${p.parchaNo}${rev > 1 ? ` revised ${rev}` : ""}`,
