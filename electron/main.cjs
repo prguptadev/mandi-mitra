@@ -112,9 +112,9 @@ let splash = null;
 let splashError = false;
 
 /** The small window with the logo, shown the moment the app is opened (kept hidden in a smoke test). */
-function createSplash(text, { hidden = smoke } = {}) {
+function createSplash(text, { hidden = smoke, closable = true } = {}) {
   const s = new BrowserWindow({
-    width: 440, height: 320, frame: false, resizable: false, maximizable: false, fullscreenable: false,
+    width: 440, height: 320, frame: false, resizable: false, maximizable: false, fullscreenable: false, closable,
     show: false, center: true, backgroundColor: BG(), icon: ICON, title: "Mandi Mitra",
     webPreferences: { contextIsolation: true, sandbox: true, devTools: !locked, spellcheck: false, preload: path.join(__dirname, "splash-preload.cjs") },
   });
@@ -608,9 +608,13 @@ app.whenReady().then(async () => {
   try { last = JSON.parse(fs.readFileSync(LAST, "utf8")).version; } catch { /* first start of this build */ }
   const updating = last ? last !== app.getVersion() : fs.existsSync(DB_PATH);
   // the splash first; the server starts at the same time in its own process
-  splash = createSplash(updating ? "Updating your data. Please keep the computer on…" : "Opening your data…");
+  /* While the books are being updated the splash cannot be closed (as when
+     the app used to sit still for it): closing would stop the update half way,
+     and although SQLite undoes a half-done update, it would only start again. */
+  splash = createSplash(updating ? "Updating your data. Please keep the computer on…" : "Opening your data…", { closable: !updating });
   const share = readShare();
   const up = await bringUpServer(share);
+  if (splash && !splash.s.isDestroyed()) splash.s.setClosable(true);
   if (!up.ok) {
     if (up.fatal) await showError(startFailure(up.fatal), up.error || up.fatal.message);
     else await showError("Mandi Mitra could not start.", up.why);
