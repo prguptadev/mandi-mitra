@@ -8,7 +8,7 @@ import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } 
 import { amountPaise } from "../lib/money.ts";
 import { revisions, type ParchaDoc } from "../lib/parcha.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
-import { nextVoucherNo } from "../lib/vouchers.ts";
+import { nextVoucherNo, fyStartOf, voucherInYear } from "../lib/vouchers.ts";
 
 /* The mill side of the money, Tally-style, like the supplier ledger:
      what a mill owes us = its opening + every approved kaccha parcha (grand
@@ -397,10 +397,19 @@ millReceiptRoutes.put("/:id", can("millreceipt.write"), async (c) => {
   };
   if (patch.amountPaise + patch.deductionPaise <= 0) throw bad("Enter the amount received", "zero");
   const code = await checkRefs(biz, patch.merchantId, patch.loadId);
-  await db.update(R).set(patch).where(eq(R.id, id));
-  await audit({ actor: actor(c), action: "mill_receipt.update", entity: "mill_receipt", entityId: id, entityLabel: label(code, patch), before, after: { ...before, ...patch } });
-  await enqueueSync(biz, "mill_receipt", id, "update", patch);
-  return c.json({ ok: true });
+  /* moved into another financial year: it takes that year's next number, as a
+     new receipt would, so neither year has a number twice. No other receipt is
+     renumbered; the number it leaves behind stays unused. */
+  const newYear = fyStartOf(patch.receiptDate) !== fyStartOf(before.receiptDate);
+  const set = { ...patch, voucherNo: before.voucherNo };
+  db.transaction((tx) => {
+    if (newYear) set.voucherNo = nextVoucherNo("mill_receipts", biz, patch.receiptDate);
+    tx.update(R).set(set).where(eq(R.id, id)).run();
+  });
+  const renumbered = newYear ? ` · ${voucherInYear("receipt", before.voucherNo, before.receiptDate)} → ${voucherInYear("receipt", set.voucherNo, set.receiptDate)}` : "";
+  await audit({ actor: actor(c), action: "mill_receipt.update", entity: "mill_receipt", entityId: id, entityLabel: label(code, patch) + renumbered, before, after: { ...before, ...set } });
+  await enqueueSync(biz, "mill_receipt", id, "update", set);
+  return c.json({ ok: true, voucherNo: set.voucherNo });
 });
 
 millReceiptRoutes.post("/:id/void", can("millreceipt.write"), async (c) => {

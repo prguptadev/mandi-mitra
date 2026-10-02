@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useFYRange } from "@/lib/fy.tsx";
+import { useFYRange, fyStartOf, financialYear } from "@/lib/fy.tsx";
 import { useFYRangeToToday } from "@/lib/fyToday.ts";
 import { findSuppliers, searchKeys, sortSuppliers, nextLedgerSort, ledgerSortOf, type LedgerSort } from "@/lib/ledgerList.ts";
 import { SheetViewer, type ScannedSheet } from "@/components/SheetViewer.tsx";
@@ -140,6 +140,9 @@ export function PaymentDialog({ onClose, editing, adatiId: presetAdati, adatiLab
                 ...(v.reference.trim() ? [{ label: t("pay.reference"), value: v.reference.trim() }] : []),
                 { label: t("pay.amount"), value: f.money(amountPaise), big: true },
               ],
+              // a date in another financial year: the payment takes that year's next number
+              warnings: editing?.voucherNo && fyStartOf(v.payDate) !== fyStartOf(editing.payDate)
+                ? [t("vch.newYear", { no: `PV-${editing.voucherNo}`, fy: financialYear(fyStartOf(v.payDate)).label })] : undefined,
             })) save.mutate();
           }}>{t("common.save")}</Button>
       </>}>
@@ -479,7 +482,7 @@ export function LedgerPage() {
                               <Button variant="ghost" size="icon" title={t("common.edit")} onClick={() => setPaying({
                                 editing: { id: e.id, adatiId: s.supplier.id, payDate: e.date, amountPaise: e.debitPaise, mode: e.mode ?? "cash",
                                   reference: e.reference ?? null, notes: e.notes ?? null, adatiNameHi: s.supplier.nameHi,
-                                  adatiNameHinglish: s.supplier.nameHinglish, createdByName: null },
+                                  adatiNameHinglish: s.supplier.nameHinglish, createdByName: null, voucherNo: e.voucherNo ?? null },
                               })}><Pencil className="h-3.5 w-3.5" /></Button>
                               <Button variant="ghost" size="icon" title={t("money.cancel")}
                                 onClick={() => { setErr(null); setVoiding({ id: e.id, amountPaise: e.debitPaise }); }}>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useFYRange } from "@/lib/fy.tsx";
+import { useFYRange, fyStartOf, financialYear } from "@/lib/fy.tsx";
 import { useFYRangeToToday } from "@/lib/fyToday.ts";
 import { millNow, millsNow } from "@/lib/asOfToday.ts";
 import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
@@ -170,6 +170,9 @@ export function ReceiptDialog({ onClose, merchantId: presetMill, loadId: presetL
                 ...(heldPaise ? [{ label: t("mm.heldShort"), value: f.money(heldPaise) }] : []),
                 { label: t("mm.amountIn"), value: f.money(amountPaise), big: true },
               ],
+              // a date in another financial year: the receipt takes that year's next number
+              warnings: editing?.voucherNo && fyStartOf(v.receiptDate) !== fyStartOf(editing.receiptDate)
+                ? [t("vch.newYear", { no: `RV-${editing.voucherNo}`, fy: financialYear(fyStartOf(v.receiptDate)).label })] : undefined,
             })) save.mutate();
           }}>{t("common.save")}</Button>
       </>}>
@@ -445,7 +448,7 @@ export function MillStatementPage({ id }: { id: string }) {
     deductionPaise: e.deductionPaise ?? 0, deductionNote: e.deductionNote ?? null, mode: e.mode ?? "bank",
     reference: e.reference ?? null, notes: e.notes ?? null, voidedAt: null, voidReason: null,
     millCode: s?.mill.code ?? "", millName: s?.mill.name ?? "", millNameHi: s?.mill.nameHi ?? null,
-    truckNo: e.truckNo ?? null, parchaNo: e.parchaNo ?? null, createdByName: null,
+    truckNo: e.truckNo ?? null, parchaNo: e.parchaNo ?? null, createdByName: null, voucherNo: e.voucherNo ?? null,
   });
 
   const download = () => {

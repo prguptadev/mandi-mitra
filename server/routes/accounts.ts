@@ -7,7 +7,7 @@ import { audit, enqueueSync } from "../lib/audit.ts";
 import { can, canAll, actor, param, notFound, bad, isoDay, attachment, LIMIT, HttpError, type Env } from "../lib/http.ts";
 import { weightedAvgRate } from "../lib/money.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
-import { nextVoucherNo, fyRange } from "../lib/vouchers.ts";
+import { nextVoucherNo, fyRange, fyStartOf, voucherInYear } from "../lib/vouchers.ts";
 import { parsePrefs, SUPPLIER_SHEET_COLUMNS, type SupplierSheetColumnKey } from "../lib/prefs.ts";
 import { readDevicePrefs } from "../lib/devicePrefs.ts";
 import { supplierChargesOf } from "../lib/supplierCharges.ts";
@@ -407,11 +407,20 @@ paymentRoutes.put("/:id", can("payment.write"), async (c) => {
     notes: body.notes === undefined ? before.notes : (body.notes ?? null),
   };
   const name = await supplierName(biz, patch.adatiId);
-  await db.update(schema.payments).set(patch).where(eq(schema.payments.id, id));
+  /* moved into another financial year: it takes that year's next number, as a
+     new payment would, so neither year has a number twice. No other payment is
+     renumbered; the number it leaves behind stays unused. */
+  const newYear = fyStartOf(patch.payDate) !== fyStartOf(before.payDate);
+  const set = { ...patch, voucherNo: before.voucherNo };
+  db.transaction((tx) => {
+    if (newYear) set.voucherNo = nextVoucherNo("payments", biz, patch.payDate);
+    tx.update(schema.payments).set(set).where(eq(schema.payments.id, id)).run();
+  });
+  const renumbered = newYear ? ` · ${voucherInYear("payment", before.voucherNo, before.payDate)} → ${voucherInYear("payment", set.voucherNo, set.payDate)}` : "";
   await audit({ actor: actor(c), action: "payment.update", entity: "payment", entityId: id,
-    entityLabel: `${patch.payDate} ${name} ₹${(patch.amountPaise / 100).toFixed(2)}`, before, after: { ...before, ...patch } });
-  await enqueueSync(biz, "payment", id, "update", patch);
-  return c.json({ ok: true });
+    entityLabel: `${patch.payDate} ${name} ₹${(patch.amountPaise / 100).toFixed(2)}${renumbered}`, before, after: { ...before, ...set } });
+  await enqueueSync(biz, "payment", id, "update", set);
+  return c.json({ ok: true, voucherNo: set.voucherNo });
 });
 
 /* A payment is never erased: cancelling keeps it on record, struck out, with
