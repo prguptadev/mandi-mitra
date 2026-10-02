@@ -63,15 +63,23 @@ export async function unchangedBooks(c: Context<Env>, next: Next) {
 
 let partsAt = "";
 const parts = new Map<string, Promise<unknown>>();
+/** Plenty for every screen of two businesses; a long evening of picking dates one by one gives the oldest back. */
+const MAX_PARTS = 48;
 
 /** `work()`'s answer, shared while the books are unchanged. `key` names the part and everything it depends on. */
 export function sharedPart<T>(key: string, work: () => Promise<T>): Promise<T> {
   const stamp = stampNow();
   if (stamp !== partsAt) { parts.clear(); partsAt = stamp; }
   const hit = parts.get(key);
-  if (hit) return hit as Promise<T>;
+  if (hit) {
+    // the most recently used are the last to give back
+    parts.delete(key);
+    parts.set(key, hit);
+    return hit as Promise<T>;
+  }
   const p = work().then((v) => (Array.isArray(v) ? Object.freeze(v) : v) as T);
   parts.set(key, p);
+  while (parts.size > MAX_PARTS) parts.delete(parts.keys().next().value!);
   // an answer that saw a change while it was being worked out is not handed out again
   p.then(() => { if (stampNow() !== stamp && parts.get(key) === p) parts.delete(key); }, () => { if (parts.get(key) === p) parts.delete(key); });
   return p;
