@@ -610,9 +610,30 @@ MANDI_DATA_DIR=/tmp/bigbooks-test MANDI_API=http://127.0.0.1:12610/api npx tsx s
 ```
 
 The folder must be new and its name must contain "test" (`BIG_SCALE=0.05` for
-a small one). Time screens on a copy of it, never on the real books. On it,
-the screens that add up the whole book are slow first: the dashboard and money
-card, stock, the ledger list, challans and the books check.
+a small one). Time screens on a copy of it, never on the real books. On it the
+home screen right after a slip is saved takes about 0.2 s on a recent Mac (1.4 s
+on v0.3.18); the slowest left are the books check (0.35 s, on purpose a
+fresh pass over everything) and the Tally preview (70 ms).
+
+### Whole-book answers are kept while nothing changes
+
+The screens that add up a whole business (dashboard, money card, stock,
+ledger list, mill accounts, challans, trucks, parchas) share their parts —
+every purchase day, every truck row with its weight, every truck priced, each
+mill's balance, each supplier's sums — through `sharedPart()`
+(`server/lib/unchangedBooks.ts`), and whole answers are kept per address. Both
+are good only while SQLite says nothing changed: `total_changes()` on the app's
+connection and `data_version` for any other. So:
+
+- every write must go through SQLite (it does); a write that is *not* the
+  books (sync clearing its own marks) is told to `notBooksWritten()`;
+- a shared part is only read: its lists are frozen, so code that sorts or
+  pushes into one fails loudly instead of changing another screen's figures;
+- a cached screen reads nothing but the books and its address (no clock,
+  no files).
+
+Compare any change to these screens against the before on the big book: same
+answers, field for field.
 
 ### Gemini
 
