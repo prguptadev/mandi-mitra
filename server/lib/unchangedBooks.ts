@@ -43,3 +43,35 @@ export async function unchangedBooks(c: Context<Env>, next: Next) {
   kept.set(key, { stamp, body, type: c.res.headers.get("content-type") ?? "application/json" });
   while (kept.size > MAX_KEPT) kept.delete(kept.keys().next().value!);
 }
+
+/* The same rule for the parts several screens are added up from: every
+   purchase day of a business, every truck row with its weight, every truck
+   priced. Worked out once while the books stay as they are and handed to each
+   screen that asks meanwhile (the home screen asks for three at once, and the
+   next screen opened usually needs the same parts). Anything written here or
+   by another connection, and the next ask works them out afresh. A part asked
+   for while it is still being worked out waits for that work instead of
+   repeating it. The screens only read what they are handed: a list is frozen,
+   so changing one would fail loudly rather than alter another screen's
+   figures. */
+
+let partsAt = "";
+const parts = new Map<string, Promise<unknown>>();
+
+/** `work()`'s answer, shared while the books are unchanged. `key` names the part and everything it depends on. */
+export function sharedPart<T>(key: string, work: () => Promise<T>): Promise<T> {
+  const stamp = stampNow();
+  if (stamp !== partsAt) { parts.clear(); partsAt = stamp; }
+  const hit = parts.get(key);
+  if (hit) return hit as Promise<T>;
+  const p = work().then((v) => (Array.isArray(v) ? Object.freeze(v) : v) as T);
+  parts.set(key, p);
+  // an answer that saw a change while it was being worked out is not handed out again
+  p.then(() => { if (stampNow() !== stamp && parts.get(key) === p) parts.delete(key); }, () => { if (parts.get(key) === p) parts.delete(key); });
+  return p;
+}
+
+/** Whether that part is in hand (or being worked out) for the books as they are now. */
+export function partInHand(key: string): boolean {
+  return stampNow() === partsAt && parts.has(key);
+}

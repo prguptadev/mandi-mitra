@@ -14,6 +14,7 @@ import { parchaXlsx } from "../lib/parchaXlsx.ts";
 import { poLabel } from "./orders.ts";
 import { claimParchaNumber, releaseParchaNumber, CloudError } from "../lib/cloud.ts";
 import { repairTrucks } from "../lib/repairTrucks.ts";
+import { bookLines, bookLinesInHand } from "../lib/tracking.ts";
 import { can, actor, param, notFound, bad, HttpError, attachment, isoDay, LIMIT, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 
@@ -167,7 +168,13 @@ loadRoutes.get("/", can("load.read"), async (c) => {
     .limit(20_000);
 
   const ids = rows.map((r) => r.l.id);
-  const lines = ids.length ? await linesWithWeights(inArray(schema.loadLines.loadId, ids), { wholeTrucks: true }) : [];
+  /* Each truck's rows, in their order: from the business's rows when they are
+     in hand or the list is long (the same rows and weights), else read for
+     these trucks alone. */
+  const these = new Set(ids);
+  const lines = !ids.length ? []
+    : bookLinesInHand(biz) || ids.length > 1000 ? (await bookLines(biz)).filter((x) => these.has(x.loadId))
+      : await linesWithWeights(inArray(schema.loadLines.loadId, ids), { wholeTrucks: true });
   const jinsCodes = new Map((await db.select({ id: schema.jins.id, code: schema.jins.code }).from(schema.jins).where(eq(schema.jins.businessId, biz))).map((j) => [j.id, j.code]));
   const parchas = ids.length ? await db.select({
     loadId: schema.parchas.loadId, id: schema.parchas.id, parchaNo: schema.parchas.parchaNo,

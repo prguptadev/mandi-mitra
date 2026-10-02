@@ -2,11 +2,11 @@ import { Hono } from "hono";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { can, bad, notFound, HttpError, type Env } from "../lib/http.ts";
-import { incoming, trucks, race, worstAhead, slipDays, averagesOf, incomingOf, type AvgOf, type Filter, type SlipDay, type TruckSummary } from "../lib/tracking.ts";
+import { incoming, trucks, race, worstAhead, incomingOf, bookSlipDays, bookAverages, bookLines, bookTrucks, type AvgOf, type Filter, type SlipDay, type TruckSummary } from "../lib/tracking.ts";
 import { linesWithWeights } from "../lib/parcha.ts";
 import { dispatchedByPo, poLabel } from "./orders.ts";
 import { amountPaise, avgFromSums } from "../lib/money.ts";
-import { millBalances } from "./millAccounts.ts";
+import { sharedMillBalances } from "./millAccounts.ts";
 import { figuresOf } from "../lib/parchaFigures.ts";
 
 /* The owner's control panel: what came in, what went out, what is left per
@@ -48,9 +48,10 @@ async function flags(biz: string, jinsId: string | null, opts: { all: TruckSumma
   const S = schema.purchaseSlips;
   const slipDayRows = jinsId ? opts.days.filter((d) => d.jinsId === jinsId) : opts.days;
   const inDays = slipDayRows.map((d) => ({ merchantId: d.merchantId, jinsId: d.jinsId, date: d.date, netGrams: d.netGrams }));
-  const lw = [eq(schema.loadLines.businessId, biz)];
-  if (jinsId) lw.push(eq(schema.loadLines.jinsId, jinsId));
-  const rows = await linesWithWeights(and(...lw));
+  // every truck row (of the commodity), in this query's order; the whole business's is shared with the other screens
+  const rows = jinsId
+    ? await linesWithWeights(and(eq(schema.loadLines.businessId, biz), eq(schema.loadLines.jinsId, jinsId)))
+    : await bookLines(biz);
 
   const pairs = new Set([...inDays.filter((d) => d.merchantId).map((d) => `${d.merchantId}|${d.jinsId}`), ...rows.map((r) => `${r.merchantId}|${r.jinsId}`)]);
   // each pair's days and truck rows, in their own order, gathered once (not once per pair)
@@ -200,10 +201,10 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
 
   // everything once, then split by date in memory: one pass over the slips gives what came in,
   // each purchase day's average (the trucks' rates) and the checks below
-  const days = await slipDays(biz);
-  const avg = averagesOf(days);
+  const days = await bookSlipDays(biz);
+  const avg = await bookAverages(biz);
   const allIn = incomingOf(days, f.jinsId);
-  const allOut = await trucks(biz, { jinsId: f.jinsId }, { avg });
+  const allOut = await bookTrucks(biz, f.jinsId);
   const inRange = (d: string) => (!f.from || d >= f.from) && (!f.to || d <= f.to);
   const inRows = allIn.filter((r) => inRange(r.date));
   const outRows = allOut.filter((r) => inRange(r.loadDate));
@@ -256,7 +257,7 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
   const asOf = c.req.query("asOf") || undefined;
   if (asOf && !ISO_DATE.test(asOf)) throw bad("Date must be YYYY-MM-DD");
   const canMoney = auth.permissions.has("millledger.read");
-  const owed = canMoney ? await millBalances(biz, asOf) : null;
+  const owed = canMoney ? await sharedMillBalances(biz, asOf) : null;
   const payments = await db.select({ p: sql<number>`coalesce(sum(${schema.payments.amountPaise}), 0)` }).from(schema.payments)
     .where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt), ...(f.from ? [gte(schema.payments.payDate, f.from)] : []), ...(f.to ? [lte(schema.payments.payDate, f.to)] : [])));
 
@@ -455,7 +456,7 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
     .from(P).where(and(eq(P.businessId, biz), isNull(P.voidedAt), ...inPeriod(P.payDate)));
 
   // mills
-  const mills = await millBalances(biz, f.to);
+  const mills = await sharedMillBalances(biz, f.to);
   const { billed, receipts } = await import("./millAccounts.ts");
   const bills = await billed(biz, { from: f.from, to: f.to });
   const recs = await receipts(biz, { from: f.from, to: f.to });
@@ -488,43 +489,47 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
      average rate — slips with no mill included. Trucks loaded but not yet
      billed (drafts, of any date up to `to`) are counted at their goods value. */
   const upTo = f.to ? [lte(S.slipDate, f.to)] : [];
-  // every purchase day up to `to`, from one pass over the slips (the trucks' day averages come from it too)
-  const allDays = await slipDays(biz);
-  const avg = averagesOf(allDays);
-  const days = allDays.filter((x) => !f.to || x.date <= f.to)
+  // every purchase day up to `to`, from one pass over the slips (shared with the dashboard)
+  const days = (await bookSlipDays(biz)).filter((x) => !f.to || x.date <= f.to)
     .map((x) => ({ m: x.merchantId, j: x.jinsId, d: x.date, net: x.netGrams, pricedNet: x.pricedNet, pricedValue: x.pricedValue }));
   /* Trucks billed as of `to` (their parcha's date). A parcha can be dated
      before its truck was loaded; from that date the mill owes it, so its
      goods are off stock from then too — never in hand and owed at once. */
   const billedBy = f.to ? new Set((await billed(biz, { upTo: f.to })).map((b) => b.loadId)) : null;
-  const loadedLines = (await linesWithWeights(eq(schema.loads.businessId, biz), { wholeTrucks: true }))
+  // every truck row of the business (only added up here, so their order does not matter)
+  const loadedLines = (await bookLines(biz))
     .filter((l) => !f.to || l.loadDate <= f.to || billedBy!.has(l.loadId));
   const dayKey = (m: string | null, j: string, d: string) => `${m ?? "-"}|${j}|${d}`;
+  // each row's purchase day and each day's, named once
+  const lineDay = loadedLines.map((l) => dayKey(l.merchantId, l.jinsId, l.stockDate));
+  const dayOf = days.map((x) => dayKey(x.m, x.j, x.d));
   const loaded = new Map<string, number>();
-  for (const l of loadedLines) loaded.set(dayKey(l.merchantId, l.jinsId, l.stockDate), (loaded.get(dayKey(l.merchantId, l.jinsId, l.stockDate)) ?? 0) + l.weightGrams);
+  loadedLines.forEach((l, i) => loaded.set(lineDay[i], (loaded.get(lineDay[i]) ?? 0) + l.weightGrams));
   let stockValue = 0, stockLeft = 0, unpricedLeft = 0;
-  for (const x of days) {
-    const left = x.net - (loaded.get(dayKey(x.m, x.j, x.d)) ?? 0);
-    if (left === 0) continue;
+  days.forEach((x, i) => {
+    const left = x.net - (loaded.get(dayOf[i]) ?? 0);
+    if (left === 0) return;
     stockLeft += left;
-    if (!x.pricedNet) { unpricedLeft += left; continue; }
+    if (!x.pricedNet) { unpricedLeft += left; return; }
     stockValue += amountPaise(left, avgFromSums(x.pricedValue, x.pricedNet));
-  }
+  });
   /* A truck row taken from a day with no purchases (loaded before its slips
      were entered, or while they sit under no mill) is stock gone out that was
      never counted in: take it off too — at the row's own typed rate, else as
      unpriced — or the same goods would count again among the unbilled trucks. */
-  const boughtDays = new Set(days.map((x) => dayKey(x.m, x.j, x.d)));
-  for (const l of loadedLines) {
-    if (boughtDays.has(dayKey(l.merchantId, l.jinsId, l.stockDate)) || !l.weightGrams) continue;
+  const boughtDays = new Set(dayOf);
+  loadedLines.forEach((l, i) => {
+    if (boughtDays.has(lineDay[i]) || !l.weightGrams) return;
     stockLeft -= l.weightGrams;
     if (l.ratePaisePerQtl) stockValue -= amountPaise(l.weightGrams, l.ratePaisePerQtl);
     else unpricedLeft -= l.weightGrams;
-  }
+  });
   /* Not billed as of `to`: a draft, or a truck whose parcha is dated after
      `to` — loaded, off stock, and not yet in what the mill owes, so it counts
-     here at its frozen parcha goods. */
-  const drafts = (await trucks(biz, { to: f.to }, { avg })).filter((t) => t.status !== "billed" || (billedBy != null && !billedBy.has(t.loadId)));
+     here at its frozen parcha goods. Every truck loaded up to `to` (only added
+     up and counted here). */
+  const drafts = (await bookTrucks(biz)).filter((t) => (!f.to || t.loadDate <= f.to)
+    && (t.status !== "billed" || (billedBy != null && !billedBy.has(t.loadId))));
 
   // what the supplier ledger is made of, all time up to `to` (the "we owe" figure is all time)
   const [boughtAll] = await db.select({ p: sql<number>`coalesce(sum(${S.payablePaise}), 0)` }).from(S)

@@ -8,6 +8,7 @@ import { can, actor, param, notFound, bad, isoDay, LIMIT, HttpError, type Env } 
 import { amountPaise } from "../lib/money.ts";
 import { revisions } from "../lib/parcha.ts";
 import { figuresOf } from "../lib/parchaFigures.ts";
+import { sharedPart } from "../lib/unchangedBooks.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 import { nextVoucherNo } from "../lib/vouchers.ts";
 
@@ -174,10 +175,14 @@ export async function millBalances(biz: string, asOf?: string) {
   };
 }
 
+/** millBalances(biz, asOf), shared by the screens asked for while the books are unchanged (read, never changed). */
+export const sharedMillBalances = (biz: string, asOf?: string) =>
+  sharedPart(`millBalances|${biz}|${asOf ?? ""}`, () => millBalances(biz, asOf));
+
 millLedgerRoutes.get("/", can("millledger.read"), async (c) => {
   const asOf = c.req.query("asOf");
   if (asOf && !ISO_DATE.test(asOf)) throw bad("Date must be YYYY-MM-DD");
-  return c.json(await millBalances(c.get("auth")!.businessId!, asOf));
+  return c.json(await sharedMillBalances(c.get("auth")!.businessId!, asOf || undefined));
 });
 
 /**

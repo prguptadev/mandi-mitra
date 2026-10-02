@@ -4,6 +4,7 @@ import { rowsOf } from "../db/rows.ts";
 import { amountPaise, avgFromSums } from "./money.ts";
 import { linesWithWeights, rateOf } from "./parcha.ts";
 import { figuresOf } from "./parchaFigures.ts";
+import { sharedPart, partInHand } from "./unchangedBooks.ts";
 
 /* Reconciliation: what came in for each mill against what went out to it.
    Incoming is the slips (by purchase date); outgoing is the truck rows (by
@@ -47,6 +48,23 @@ export async function slipDays(businessId: string): Promise<SlipDay[]> {
   return rowsOf(db.select(fields).from(S).where(eq(S.businessId, businessId)).groupBy(S.merchantId, S.jinsId, S.slipDate), fields);
 }
 
+/* The parts the whole-book screens share while the books are unchanged (see
+   sharedPart): each is exactly what the function named would give. */
+
+/** slipDays(businessId). */
+export const bookSlipDays = (businessId: string) => sharedPart(`slipDays|${businessId}`, () => slipDays(businessId));
+/** dayAverages(businessId): every mill's, from bookSlipDays(). */
+export const bookAverages = (businessId: string) => sharedPart(`averages|${businessId}`, async () => averagesOf(await bookSlipDays(businessId)));
+/** Every truck row of a business with its weight: linesWithWeights() for the business, in that query's order. */
+const linesKey = (businessId: string) => `lines|${businessId}`;
+export const bookLines = (businessId: string) =>
+  sharedPart(linesKey(businessId), () => linesWithWeights(eq(schema.loadLines.businessId, businessId), { wholeTrucks: true }));
+/** Whether bookLines(businessId) is in hand for the books as they are now. */
+export const bookLinesInHand = (businessId: string) => partInHand(linesKey(businessId));
+/** trucks(businessId, { jinsId }): every truck of a business, priced. */
+export const bookTrucks = (businessId: string, jinsId?: string | null) =>
+  sharedPart(`trucks|${businessId}|${jinsId ?? ""}`, () => trucks(businessId, { jinsId }));
+
 /** dayAverages(), from slipDays() rows. */
 export function averagesOf(days: SlipDay[]): AvgOf {
   const m = new Map<string, number>();
@@ -76,11 +94,12 @@ export function incomingOf(days: SlipDay[], jinsId?: string | null) {
  *  With `merchantId`, only that mill's days are worked out (the others answer 0). */
 export async function dayAverages(businessId: string, merchantId?: string): Promise<AvgOf> {
   const S = schema.purchaseSlips;
-  const rows = await db.select({
+  const fields = {
     merchantId: S.merchantId, jinsId: S.jinsId, date: S.slipDate,
     pricedNet: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} else 0 end)`,
     pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
-  }).from(S).where(and(eq(S.businessId, businessId), ...(merchantId ? [eq(S.merchantId, merchantId)] : []))).groupBy(S.merchantId, S.jinsId, S.slipDate);
+  };
+  const rows = await rowsOf(db.select(fields).from(S).where(and(eq(S.businessId, businessId), ...(merchantId ? [eq(S.merchantId, merchantId)] : []))).groupBy(S.merchantId, S.jinsId, S.slipDate), fields);
   const m = new Map<string, number>();
   for (const r of rows) if (r.pricedNet) m.set(key(r.merchantId, r.jinsId, r.date), avgFromSums(r.pricedValue, r.pricedNet));
   return (mill: string | null, jins: string, date: string) => m.get(key(mill, jins, date)) ?? 0;
@@ -137,17 +156,32 @@ export async function trucks(businessId: string, f: Filter & { before?: string }
   const loadFields = getTableColumns(L);
   const allLoads = await rowsOf(db.select(loadFields).from(L).where(and(...w)), loadFields);
   if (!allLoads.length) return [];
-  const allLines = await linesWithWeights(inArray(schema.loadLines.loadId, allLoads.map((l) => l.id)), { wholeTrucks: true });
+  /* Every row of these trucks: from the business's rows when they are in hand
+     or when no one mill is asked for (each truck's rows the same, in the same
+     order), else read for these trucks alone. */
+  let allLines: Awaited<ReturnType<typeof linesWithWeights>>;
+  if (!f.merchantId || bookLinesInHand(businessId)) {
+    const these = new Set(allLoads.map((l) => l.id));
+    allLines = (await bookLines(businessId)).filter((x) => these.has(x.loadId));
+  } else {
+    allLines = await linesWithWeights(inArray(schema.loadLines.loadId, allLoads.map((l) => l.id)), { wholeTrucks: true });
+  }
   const lines = f.jinsId ? allLines.filter((x) => x.jinsId === f.jinsId) : allLines;
   const withLines = f.jinsId ? new Set(lines.map((x) => x.loadId)) : null;
   const loads = withLines ? allLoads.filter((l) => withLines.has(l.id)) : allLoads;
   if (!loads.length) return [];
   const ids = loads.map((l) => l.id);
   const jinsCode = f.jinsId ? (await db.select({ code: schema.jins.code }).from(schema.jins).where(eq(schema.jins.id, f.jinsId)))[0]?.code : null;
-  // every truck here is of f.merchantId when it is given: only that mill's day averages are ever asked for
-  const avg = shared.avg ?? await dayAverages(businessId, f.merchantId);
-  const parchas = await db.select({ id: schema.parchas.id, loadId: schema.parchas.loadId, parchaNo: schema.parchas.parchaNo, bytes: sql<number>`octet_length(${schema.parchas.snapshot})`, grand: schema.parchas.grandTotalPaise })
-    .from(schema.parchas).where(and(inArray(schema.parchas.loadId, ids), eq(schema.parchas.status, "approved")));
+  /* Every truck here is of f.merchantId when it is given: only that mill's day
+     averages are ever asked for, and the business's give the same figures. */
+  const avg = shared.avg ?? (!f.merchantId || partInHand(`averages|${businessId}`) ? await bookAverages(businessId) : await dayAverages(businessId, f.merchantId));
+  // a truck has one live parcha at most (parcha_one_approved_uq); for many trucks, the business's, kept for these
+  const P = schema.parchas;
+  const parchaFields = { id: P.id, loadId: P.loadId, parchaNo: P.parchaNo, bytes: sql<number>`octet_length(${P.snapshot})`, grand: P.grandTotalPaise };
+  const idSet = new Set(ids);
+  const parchas = ids.length > 500
+    ? (await rowsOf(db.select(parchaFields).from(P).where(and(eq(P.businessId, businessId), eq(P.status, "approved"))), parchaFields)).filter((p) => idSet.has(p.loadId))
+    : await rowsOf(db.select(parchaFields).from(P).where(and(inArray(P.loadId, ids), eq(P.status, "approved"))), parchaFields);
   const parchaOf = new Map(parchas.map((p) => [p.loadId, p]));
   const frozen = figuresOf([...parchaOf.values()]);
 

@@ -7,6 +7,7 @@ import { sortSlips, type SlipSortOrder } from "../lib/slipOrder.ts";
 import { can, bad, notFound, attachment, type Env } from "../lib/http.ts";
 import { boughtByDay, linesWithWeights } from "../lib/parcha.ts";
 import { avgFromSums } from "../lib/money.ts";
+import { bookLines, bookLinesInHand } from "../lib/tracking.ts";
 
 /* Reports sent out of the office, and the mill stock that proves them. */
 
@@ -155,13 +156,13 @@ stockRoutes.get("/", can("stock.read"), async (c) => {
     pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
   }).from(S).where(and(...where)).groupBy(S.merchantId);
 
-  // loaded in the period: rows on trucks whose own date is in it
-  const L = schema.loadLines;
-  const lw = [eq(L.businessId, biz)];
-  if (f.jinsId) lw.push(eq(L.jinsId, f.jinsId));
-  if (f.from) lw.push(gte(schema.loads.loadDate, f.from));
-  if (f.to) lw.push(lte(schema.loads.loadDate, f.to));
-  const lines = await linesWithWeights(and(...lw));
+  /* Loaded in the period: rows on trucks whose own date is in it. A row's
+     weight does not depend on which rows are asked for (a blank row is worked
+     out from its whole truck), and here rows are only added up, so they come
+     from the business's rows shared with the other screens. */
+  const book = await bookLines(biz);
+  const ofJins = (x: (typeof book)[number]) => !f.jinsId || x.jinsId === f.jinsId;
+  const lines = book.filter((x) => ofJins(x) && (!f.from || x.loadDate >= f.from) && (!f.to || x.loadDate <= f.to));
 
   // what was in hand when the period starts: slips before it − trucks loaded before it
   const atStart = new Map<string | null, number>();
@@ -171,18 +172,18 @@ stockRoutes.get("/", can("stock.read"), async (c) => {
     for (const r of await db.select({ m: S.merchantId, g: sql<number>`sum(${S.netGrams})` }).from(S).where(and(...bw)).groupBy(S.merchantId)) {
       atStart.set(r.m, (atStart.get(r.m) ?? 0) + r.g);
     }
-    const ow = [eq(L.businessId, biz), lt(schema.loads.loadDate, f.from)];
-    if (f.jinsId) ow.push(eq(L.jinsId, f.jinsId));
-    for (const x of await linesWithWeights(and(...ow))) atStart.set(x.merchantId, (atStart.get(x.merchantId) ?? 0) - x.weightGrams);
+    for (const x of book) if (ofJins(x) && x.loadDate < f.from) atStart.set(x.merchantId, (atStart.get(x.merchantId) ?? 0) - x.weightGrams);
   }
 
   const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code, name: schema.merchants.name, nameHi: schema.merchants.nameHi })
     .from(schema.merchants).where(eq(schema.merchants.businessId, biz));
   const keys = new Set<string | null>([...bought.map((b) => b.merchantId), ...lines.map((x) => x.merchantId),
     ...[...atStart].filter(([, g]) => g !== 0).map(([m]) => m)]);
+  const linesOf = new Map<string | null, typeof lines>();
+  for (const x of lines) { const a = linesOf.get(x.merchantId); if (a) a.push(x); else linesOf.set(x.merchantId, [x]); }
   const out = [...keys].map((mid) => {
     const b = bought.find((x) => x.merchantId === mid);
-    const mine = lines.filter((x) => x.merchantId === mid);
+    const mine = linesOf.get(mid) ?? [];
     const loaded = mine.reduce((s, x) => s + x.weightGrams, 0);
     const opening = atStart.get(mid) ?? 0;
     const m = mills.find((x) => x.id === mid);
@@ -239,7 +240,8 @@ stockRoutes.get("/:merchantId", can("stock.read"), async (c) => {
   if (f.jinsId) lw.push(eq(L.jinsId, f.jinsId));
   if (f.from) lw.push(gte(L.stockDate, f.from));
   if (f.to) lw.push(lte(L.stockDate, f.to), lte(schema.loads.loadDate, f.to));
-  const lines = await linesWithWeights(and(...lw));
+  // the whole of each truck when nothing narrows its rows
+  const lines = await linesWithWeights(and(...lw), { wholeTrucks: !f.jinsId && !f.from && !f.to });
   const loadIds = [...new Set(lines.map((x) => x.loadId))];
   const parchas = loadIds.length ? await db.select({
     loadId: schema.parchas.loadId, parchaNo: schema.parchas.parchaNo, grandTotalPaise: schema.parchas.grandTotalPaise,
@@ -247,9 +249,12 @@ stockRoutes.get("/:merchantId", can("stock.read"), async (c) => {
   const parchaOf = new Map(parchas.map((p) => [p.loadId, p]));
 
   const dates = [...new Set([...days.keys(), ...lines.map((x) => x.stockDate)])].sort().reverse();
+  // each purchase day's truck rows, in their order
+  const takenOn = new Map<string, typeof lines>();
+  for (const x of lines) { const a = takenOn.get(x.stockDate); if (a) a.push(x); else takenOn.set(x.stockDate, [x]); }
   const dayList = dates.map((d) => {
     const b = days.get(d);
-    const taken = lines.filter((x) => x.stockDate === d);
+    const taken = takenOn.get(d) ?? [];
     const trucks = new Map<string, { loadId: string; truckNo: string | null; loadDate: string; status: string; parchaNo: string | null; grams: number }>();
     for (const x of taken) {
       const t = trucks.get(x.loadId) ?? { loadId: x.loadId, truckNo: x.truckNo, loadDate: x.loadDate, status: x.status,
@@ -277,10 +282,16 @@ stockRoutes.get("/:merchantId", can("stock.read"), async (c) => {
   const [allIn] = await db.select({ g: sql<number>`coalesce(sum(${S.netGrams}), 0)` }).from(S).where(and(...cw));
   let allOut = 0;
   if (mid !== "none") {
-    const ow = [eq(schema.loadLines.businessId, biz), eq(schema.loads.merchantId, mid)];
-    if (f.jinsId) ow.push(eq(schema.loadLines.jinsId, f.jinsId));
-    if (f.to) ow.push(lte(schema.loads.loadDate, f.to));
-    allOut = (await linesWithWeights(and(...ow))).reduce((x, r) => x + r.weightGrams, 0);
+    // only added up: the business's rows when they are in hand (each row's weight is the same)
+    const mine = (x: { merchantId: string; jinsId: string; loadDate: string }) => x.merchantId === mid && (!f.jinsId || x.jinsId === f.jinsId) && (!f.to || x.loadDate <= f.to);
+    if (bookLinesInHand(biz)) {
+      allOut = (await bookLines(biz)).reduce((x, r) => x + (mine(r) ? r.weightGrams : 0), 0);
+    } else {
+      const ow = [eq(schema.loadLines.businessId, biz), eq(schema.loads.merchantId, mid)];
+      if (f.jinsId) ow.push(eq(schema.loadLines.jinsId, f.jinsId));
+      if (f.to) ow.push(lte(schema.loads.loadDate, f.to));
+      allOut = (await linesWithWeights(and(...ow))).reduce((x, r) => x + r.weightGrams, 0);
+    }
   }
   const closingNet = (allIn?.g ?? 0) - allOut;
   const daysLeft = dayList.reduce((s, d) => s + d.stockNet, 0);
