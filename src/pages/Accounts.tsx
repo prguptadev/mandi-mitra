@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useFYRange } from "@/lib/fy.tsx";
 import { useFYRangeToToday } from "@/lib/fyToday.ts";
 import { findSuppliers, searchKeys, sortSuppliers, nextLedgerSort, ledgerSortOf, type LedgerSort } from "@/lib/ledgerList.ts";
@@ -10,7 +10,7 @@ import { BookOpen, Wallet, Plus, Pencil, Ban, Download, Printer, Search } from "
 import { api, ApiError, type Adati } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
-import { useFormat } from "@/lib/format.tsx";
+import { useFormat, RupeeMark } from "@/lib/format.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { NumberInput } from "@/components/NumberInput.tsx";
 import { SupplierPicker } from "@/components/SupplierPicker.tsx";
@@ -68,13 +68,15 @@ interface PaymentRow {
 }
 
 /** "₹12,500.00 to pay" / "₹2,000.00 paid ahead" — the sign in words, as a munshi says it. */
-function Balance({ paise, className }: { paise: number; className?: string }) {
+function Balance({ paise, className, bare }: { paise: number; className?: string; bare?: boolean }) {
   const { t } = useI18n();
   const f = useFormat();
-  if (paise === 0) return <span className={cn("num text-muted", className)}>{f.money(0)}</span>;
+  // bare: in a column whose heading carries the currency sign
+  const show = (p: number) => (bare ? f.amount(p) : f.money(p));
+  if (paise === 0) return <span className={cn("num text-muted", className)}>{show(0)}</span>;
   return (
     <span className={cn("num whitespace-nowrap", paise < 0 && "text-warn", className)}>
-      {f.money(Math.abs(paise))} <span className="text-[11px] font-normal text-muted">{paise > 0 ? t("ledger.toPay") : t("ledger.paidAhead")}</span>
+      {show(Math.abs(paise))} <span className="text-[11px] font-normal text-muted">{paise > 0 ? t("ledger.toPay") : t("ledger.paidAhead")}</span>
     </span>
   );
 }
@@ -217,6 +219,12 @@ export function LedgerPage() {
   const qc = useQueryClient();
   const search = new URLSearchParams(useSearch());
   const [selected, setSelected] = useState<string | null>(search.get("adati"));
+  // a supplier picked from the list: their statement, under the list, comes into view
+  const statementRef = useRef<HTMLDivElement>(null);
+  const pickSupplier = (id: string) => {
+    setSelected(id);
+    requestAnimationFrame(() => statementRef.current?.scrollIntoView({ block: "start" }));
+  };
   const [q, setQ] = useState("");
   // the chosen financial year from 1 April up to today, until other dates are picked
   const { from, setFrom, to, setTo, fy } = useFYRangeToToday();
@@ -338,7 +346,8 @@ export function LedgerPage() {
         </div>
       )}
 
-      <div className="grid gap-5 xl:grid-cols-[380px_minmax(0,1fr)]">
+      {/* the list above the statement at every width: a statement's columns need the whole width */}
+      <div className="grid gap-5">
         <Card className="self-start">
           <div className="border-b border-line p-3">
             <div className="relative">
@@ -349,7 +358,7 @@ export function LedgerPage() {
           {list.isPending ? <SkeletonTable rows={8} /> : list.isError ? <LoadError error={list.error} onRetry={() => void list.refetch()} /> : !rows.length ? (
             <EmptyState icon={<BookOpen className="h-5 w-5" />} title={q.trim() ? t("common.noResults") : t("ledger.empty")} />
           ) : (
-            <div className="max-h-[40vh] overflow-y-auto xl:max-h-[70vh]">
+            <div className="max-h-[40vh] overflow-y-auto">
               <table className="w-full border-collapse text-[13px]">
                 <thead>
                   <tr>
@@ -360,12 +369,12 @@ export function LedgerPage() {
                 <tbody ref={win.bodyRef}>
                   <RowSpacer at="top" height={win.topHeight} cols={2} />
                   {win.rows.map((r) => (
-                    <tr key={r.id} tabIndex={0} onClick={() => setSelected(r.id)}
-                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelected(r.id); } }}
+                    <tr key={r.id} tabIndex={0} onClick={() => pickSupplier(r.id)}
+                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickSupplier(r.id); } }}
                       className={cn("cursor-pointer border-b border-line/70 transition-colors hover:bg-raised/60 focus-visible:bg-raised/60 focus-visible:outline-none", selected === r.id && "bg-brand/5")}>
-                      <td className="px-3 py-2"><span lang={lang === "hi" ? "hi" : undefined} className="block break-words text-[14px] leading-snug text-ink">{nameOf(r)}</span></td>
+                      <td className="px-2 py-2"><span lang={lang === "hi" ? "hi" : undefined} className="block break-words text-[14px] leading-snug text-ink">{nameOf(r)}</span></td>
                       {/* paid ahead shows as a minus, in orange */}
-                      <td className={cn("num whitespace-nowrap px-3 py-2 text-right", r.balancePaise < 0 ? "text-warn" : r.balancePaise === 0 && "text-muted")}
+                      <td className={cn("num whitespace-nowrap px-2 py-2 text-right", r.balancePaise < 0 ? "text-warn" : r.balancePaise === 0 && "text-muted")}
                         title={r.balancePaise < 0 ? t("ledger.paidAhead") : undefined}>{f.money(r.balancePaise)}</td>
                     </tr>
                   ))}
@@ -376,7 +385,7 @@ export function LedgerPage() {
           )}
         </Card>
 
-        <div className="min-w-0">
+        <div className="min-w-0 scroll-mt-3" ref={statementRef}>
           {!selected ? (
             <Card><EmptyState icon={<BookOpen className="h-5 w-5" />} title={t("ledger.pick")} sub={t("ledger.pickSub")} /></Card>
           ) : st.isPending ? <Card><SkeletonTable rows={8} /></Card> : !s ? (
@@ -429,22 +438,25 @@ export function LedgerPage() {
                 {s.totals.unpriced > 0 && <Alert tone="warn" className="m-3">{t("ledger.unpriced", { n: s.totals.unpriced })}</Alert>}
                 <Table>
                   <thead>
+                    {/* the figures used most come first; what each was made of (commodity, kanta, katauti,
+                        commission, gaushala) follows at the end, so the rest fits a laptop's width */}
                     <tr>
-                      <Th>{t("daily.date")}</Th><Th>{t("daily.rst")}</Th><Th>{t("load.mill")}</Th><Th>{t("load.jins")}</Th>
-                      <Th numeric>{t("daily.gross")}</Th><Th numeric>{t("load.katauti")}</Th><Th numeric>{t("load.net")}</Th>
-                      <Th numeric>{t("load.rate")}</Th><Th numeric>{t("daily.amount")}</Th>
-                      <Th numeric>{pick(L.commission, L.commissionHi)}</Th><Th numeric>{pick(L.gaushala, L.gaushalaHi)}</Th>
-                      <Th numeric>{pick(L.payable, L.payableHi)}</Th><Th numeric>{t("ledger.paid")}</Th>
-                      <Th numeric>{t("ledger.balance")}</Th><Th className="no-print w-16" />
+                      <Th>{t("daily.date")}</Th><Th>{t("daily.rst")}</Th><Th>{t("load.mill")}</Th>
+                      <Th numeric>{t("load.net")}</Th><Th numeric>{t("load.rate")}</Th><Th numeric>{t("daily.amount")}<RupeeMark /></Th>
+                      <Th numeric>{pick(L.payable, L.payableHi)}<RupeeMark /></Th><Th numeric>{t("ledger.paid")}<RupeeMark /></Th>
+                      <Th numeric>{t("ledger.balance")}<RupeeMark /></Th><Th className="no-print w-16" />
+                      <Th>{t("load.jins")}</Th><Th numeric>{t("daily.gross")}</Th><Th numeric>{t("load.katauti")}</Th>
+                      <Th numeric>{pick(L.commission, L.commissionHi)}<RupeeMark /></Th><Th numeric>{pick(L.gaushala, L.gaushalaHi)}<RupeeMark /></Th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr className="border-b border-line/70 bg-raised/30 text-[13px]">
-                      <td className="px-3 py-1.5" />
-                      <td className="px-3 py-1.5 text-muted" colSpan={3}>{s.from ? t("ledger.broughtForward") : t("ledger.opening")}</td>
-                      <td colSpan={9} />
-                      <td className="px-3 py-1.5 text-right"><Balance paise={s.broughtForwardPaise} /></td>
+                      <td className="px-2 py-1.5" />
+                      <td className="px-2 py-1.5 text-muted" colSpan={3}>{s.from ? t("ledger.broughtForward") : t("ledger.opening")}</td>
+                      <td colSpan={4} />
+                      <td className="px-2 py-1.5 text-right"><Balance bare paise={s.broughtForwardPaise} /></td>
                       <td className="no-print" />
+                      <td colSpan={5} />
                     </tr>
                     {s.entries.map((e) => (
                       <Tr key={`${e.kind}-${e.id}`} className={cn(e.voided && "opacity-60")}>
@@ -456,19 +468,14 @@ export function LedgerPage() {
                         </Td>
                         {e.kind === "purchase" ? (
                           <>
-                            <Td className="whitespace-nowrap font-mono">{e.rstNo}{!e.ratePaisePerQtl && <Badge tone="warn" className="ml-1.5 font-sans">{t("daily.ratePending")}</Badge>}</Td>
+                            <Td className="font-mono"><span className="whitespace-nowrap">{e.rstNo}</span>{!e.ratePaisePerQtl && <Badge tone="warn" className="ml-1.5 font-sans">{t("daily.ratePending")}</Badge>}</Td>
                             <Td>{e.millCode ? <Badge className="num">{e.millCode}</Badge> : <span className="text-faint">—</span>}</Td>
-                            <Td className="text-muted">{e.jinsCode}</Td>
-                            <Td numeric>{e.grossGrams != null ? f.weight(e.grossGrams) : ""}</Td>
-                            <Td numeric className="text-muted">{e.katautiUnits ?? ""}</Td>
                             <Td numeric>{e.netGrams != null ? f.weight(e.netGrams) : ""}</Td>
                             <Td numeric>{e.ratePaisePerQtl ? f.rate(e.ratePaisePerQtl) : ""}</Td>
                             <Td numeric>{e.ratePaisePerQtl ? f.amount(e.goodsPaise ?? 0) : ""}</Td>
-                            <Td numeric className="text-muted">{e.ratePaisePerQtl ? f.amount(e.commissionPaise ?? 0) : ""}</Td>
-                            <Td numeric className="text-muted">{e.ratePaisePerQtl ? f.amount(e.gaushalaPaise ?? 0) : ""}</Td>
                           </>
                         ) : (
-                          <Td className={cn("whitespace-nowrap text-ok", e.voided && "line-through")} colSpan={10}>
+                          <Td className={cn("text-ok", e.voided && "line-through")} colSpan={5}>
                             {e.voucherNo ? <span className="num">PV-{e.voucherNo} · </span> : null}{t("ledger.payment")} · {t(`pay.mode.${e.mode ?? "cash"}`)}{e.reference ? <span className="text-muted"> · {e.reference}</span> : null}
                             {e.notes ? <span className="text-faint"> · {e.notes}</span> : null}
                             {e.voided && <span className="ml-2 text-[11px] text-bad">{t("money.cancelledBecause", { why: e.voidReason ?? "" })}</span>}
@@ -476,7 +483,7 @@ export function LedgerPage() {
                         )}
                         <Td numeric>{e.creditPaise ? f.amount(e.creditPaise) : ""}</Td>
                         <Td numeric className="text-ok">{e.debitPaise ? f.amount(e.debitPaise) : ""}</Td>
-                        <Td numeric><Balance paise={e.balancePaise} /></Td>
+                        <Td numeric><Balance bare paise={e.balancePaise} /></Td>
                         <Td className="no-print whitespace-nowrap text-right">
                           {e.voided && <Badge tone="bad">{t("money.cancelled")}</Badge>}
                           {e.kind === "payment" && !e.voided && can("payment.write") && (
@@ -493,23 +500,33 @@ export function LedgerPage() {
                             </>
                           )}
                         </Td>
+                        {e.kind === "purchase" ? (
+                          <>
+                            <Td className="text-muted">{e.jinsCode}</Td>
+                            <Td numeric>{e.grossGrams != null ? f.weight(e.grossGrams) : ""}</Td>
+                            <Td numeric className="text-muted">{e.katautiUnits ?? ""}</Td>
+                            <Td numeric className="text-muted">{e.ratePaisePerQtl ? f.amount(e.commissionPaise ?? 0) : ""}</Td>
+                            <Td numeric className="text-muted">{e.ratePaisePerQtl ? f.amount(e.gaushalaPaise ?? 0) : ""}</Td>
+                          </>
+                        ) : <Td colSpan={5} />}
                       </Tr>
                     ))}
                   </tbody>
                   <tfoot>
                     <tr className="bg-raised/50 text-[13px] font-semibold">
-                      <td className="px-3 py-2" colSpan={4}>{t("load.total")} · {s.totals.slips} {t("ledger.slips")}</td>
-                      <td className="num px-3 py-2 text-right">{f.weight(s.totals.grossGrams)}</td>
-                      <td className="num px-3 py-2 text-right text-muted">{s.totals.katautiUnits}</td>
-                      <td className="num px-3 py-2 text-right">{f.weight(s.totals.netGrams)}</td>
-                      <td className="num px-3 py-2 text-right" title={t("load.avgRateHelp")}>{s.totals.avgRatePaisePerQtl ? f.rate(s.totals.avgRatePaisePerQtl) : ""}</td>
-                      <td className="num px-3 py-2 text-right">{f.amount(s.totals.goodsPaise)}</td>
-                      <td className="num px-3 py-2 text-right text-muted">{f.amount(s.totals.commissionPaise)}</td>
-                      <td className="num px-3 py-2 text-right text-muted">{f.amount(s.totals.gaushalaPaise)}</td>
-                      <td className="num px-3 py-2 text-right">{f.amount(s.totals.purchasesPaise)}</td>
-                      <td className="num px-3 py-2 text-right">{f.amount(s.totals.paymentsPaise)}</td>
-                      <td className="px-3 py-2 text-right"><Balance paise={s.totals.closingPaise} /></td>
+                      <td className="px-2 py-2" colSpan={3}>{t("load.total")} · {s.totals.slips} {t("ledger.slips")}</td>
+                      <td className="num px-2 py-2 text-right">{f.weight(s.totals.netGrams)}</td>
+                      <td className="num px-2 py-2 text-right" title={t("load.avgRateHelp")}>{s.totals.avgRatePaisePerQtl ? f.rate(s.totals.avgRatePaisePerQtl) : ""}</td>
+                      <td className="num px-2 py-2 text-right">{f.amount(s.totals.goodsPaise)}</td>
+                      <td className="num px-2 py-2 text-right">{f.amount(s.totals.purchasesPaise)}</td>
+                      <td className="num px-2 py-2 text-right">{f.amount(s.totals.paymentsPaise)}</td>
+                      <td className="px-2 py-2 text-right"><Balance bare paise={s.totals.closingPaise} /></td>
                       <td className="no-print" />
+                      <td />
+                      <td className="num px-2 py-2 text-right">{f.weight(s.totals.grossGrams)}</td>
+                      <td className="num px-2 py-2 text-right text-muted">{s.totals.katautiUnits}</td>
+                      <td className="num px-2 py-2 text-right text-muted">{f.amount(s.totals.commissionPaise)}</td>
+                      <td className="num px-2 py-2 text-right text-muted">{f.amount(s.totals.gaushalaPaise)}</td>
                     </tr>
                   </tfoot>
                 </Table>
@@ -645,13 +662,13 @@ export function PaymentsPage() {
             </tbody>
             <tfoot>
               <tr className="bg-raised/50 text-[13px] font-semibold">
-                <td className="px-3 py-2" colSpan={4}>
+                <td className="px-2 py-2" colSpan={4}>
                   {t("pay.totalN", { n: list.data!.totals.count })}
                   <span className="ml-3 font-normal text-muted">
                     {MODES.filter((m) => list.data!.totals.byMode[m]).map((m) => `${t(`pay.mode.${m}`)} ${f.money(list.data!.totals.byMode[m])}`).join(" · ")}
                   </span>
                 </td>
-                <td className="num px-3 py-2 text-right">{f.money(list.data!.totals.amountPaise)}</td>
+                <td className="num px-2 py-2 text-right">{f.money(list.data!.totals.amountPaise)}</td>
                 <td colSpan={2} />
               </tr>
             </tfoot>
