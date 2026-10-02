@@ -11,9 +11,12 @@ import { Badge } from "@/components/ui/index.tsx";
 
 const LOCAL = new Set(["localhost", "127.0.0.1", "[::1]", "::1", ""]);
 
+/** Opened over the shop's network, not on the main computer that holds the books. */
+export const onAnotherComputer = () => !LOCAL.has(window.location.hostname);
+
 export function OnAnotherComputer() {
   const { t } = useI18n();
-  const remote = !LOCAL.has(window.location.hostname);
+  const remote = onAnotherComputer();
   const q = useQuery({
     queryKey: ["cloud", "host"],
     queryFn: () => api.get<{ deviceName: string; shared: boolean }>("/cloud/host"),

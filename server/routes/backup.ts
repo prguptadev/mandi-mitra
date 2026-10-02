@@ -5,7 +5,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { DB_PATH, RESTORE_WHILE_CONNECTED } from "../db/client.ts";
 import { audit } from "../lib/audit.ts";
-import { can, actor, bad, param, notFound, attachment, type Env } from "../lib/http.ts";
+import { can, actor, bad, param, notFound, attachment, mainComputerOnly, type Env } from "../lib/http.ts";
 import { BACKUP_DIR, BACKUP_NAME, backupNow, checkFolder, listBackups, readBackupConfig, scheduleRestore, setBackupFolder } from "../lib/backup.ts";
 import { sqlite } from "../db/client.ts";
 import { cloudConnected } from "../lib/cloud.ts";
@@ -23,7 +23,7 @@ const folders = () => ({
 backupRoutes.get("/", can("backup.manage"), (c) => c.json({ ...readBackupConfig(), backups: listBackups().slice(0, 40), folders: folders() }));
 
 /** Opens one of those folders in Explorer (Finder on a Mac) on this computer. */
-backupRoutes.post("/open-folder", can("backup.manage"), async (c) => {
+backupRoutes.post("/open-folder", can("backup.manage"), mainComputerOnly, async (c) => {
   const { which } = z.object({ which: z.enum(["data", "scans", "backups"]) }).parse(await c.req.json());
   const dir = folders()[which];
   fs.mkdirSync(dir, { recursive: true });
@@ -34,7 +34,7 @@ backupRoutes.post("/open-folder", can("backup.manage"), async (c) => {
   return c.json({ ok: true, dir });
 });
 
-backupRoutes.put("/", can("backup.manage"), async (c) => {
+backupRoutes.put("/", can("backup.manage"), mainComputerOnly, async (c) => {
   const { folder } = z.object({ folder: z.string().trim().max(400).nullable() }).parse(await c.req.json());
   if (folder) {
     const problem = checkFolder(folder);
@@ -70,7 +70,7 @@ backupRoutes.get("/file/:name", can("backup.manage"), async (c) => {
  * here would be sent up over it (or never fetched again). The cloud's copy is
  * brought down instead; db/client.ts refuses the same at start-up.
  */
-backupRoutes.post("/restore", can("backup.manage"), async (c) => {
+backupRoutes.post("/restore", can("backup.manage"), mainComputerOnly, async (c) => {
   const { name, confirm } = z.object({ name: z.string(), confirm: z.string() }).parse(await c.req.json());
   if (confirm !== "RESTORE") throw bad("Type RESTORE to confirm", "confirm");
   if (cloudConnected()) throw bad(RESTORE_WHILE_CONNECTED, "sync_on");

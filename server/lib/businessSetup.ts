@@ -46,14 +46,19 @@ const FIRST_USERS = [
   { name: "Manager 1", nameHi: "मैनेजर 1", isRoot: false },
   { name: "Manager 2", nameHi: "मैनेजर 2", isRoot: false },
 ];
-/** Change it after the first sign-in (Settings › Change PIN). */
+/**
+ * Only for the very first sign-in: it is published, so the sign-in screen
+ * then asks each person to choose their own (routes/auth.ts /first-pin), and
+ * it is never accepted again as anyone's PIN (lib/auth.ts weakPin). From
+ * another device on the network it is refused outright.
+ */
 export const FIRST_PIN = "7747";
 
 /**
  * On a brand-new install (no users at all): both firms, the Admin and two
- * Managers, everyone on PIN 7747 with full access in both firms. Only the
- * Admin can add a further business. A computer that then joins the office's
- * cloud has all of this replaced by the cloud's data.
+ * Managers, everyone on PIN 7747 until their first sign-in, with full access
+ * in both firms. Only the Admin can add a further business. A computer that
+ * then joins the office's cloud has all of this replaced by the cloud's data.
  */
 export async function seedFirstRun() {
   if (process.env.MANDI_NO_SEED === "1") return false;

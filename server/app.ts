@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import fs from "node:fs";
 import path from "node:path";
 import { ZodError } from "zod";
-import { withSession, HttpError, type Env } from "./lib/http.ts";
+import { withSession, requestGuard, bodyLimits, HttpError, type Env } from "./lib/http.ts";
 import { authRoutes } from "./routes/auth.ts";
 import { adatiRoutes } from "./routes/adati.ts";
 import { merchantRoutes } from "./routes/merchants.ts";
@@ -33,24 +33,15 @@ import { millFollowupRoutes } from "./routes/millFollowup.ts";
 export function createApp() {
   const app = new Hono<Env>();
 
-  /* Only this computer's own pages may talk to the API. A web page elsewhere
-     can point a name at 127.0.0.1 (DNS rebinding) or post a form here; the
-     Host it asks for, and the Origin a browser adds to a change, give it away.
-     MANDI_HOST=0.0.0.0 (opened to the local network on purpose) switches this off. */
+  /* Only this computer's own pages may talk to the API: its own names and
+     port, and changes only from its own pages (lib/http.ts requestGuard).
+     MANDI_HOST=0.0.0.0 (opened to the shop's network on purpose) adds this
+     computer's network addresses to those names; it never switches the check off. */
   const LOCAL = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-  const hostOf = (h: string | undefined) => { try { return h ? new URL(`http://${h}`).hostname : ""; } catch { return ""; } };
-  const openToNetwork = process.env.MANDI_HOST && !LOCAL.has(process.env.MANDI_HOST);
-  app.use("/api/*", async (c, next) => {
-    if (!openToNetwork) {
-      if (!LOCAL.has(hostOf(c.req.header("host")))) return c.json({ error: "Not allowed from here", code: "bad_host" }, 403);
-      const origin = c.req.header("origin");
-      if (c.req.method !== "GET" && origin && origin !== "null" && !LOCAL.has(hostOf(origin.replace(/^https?:\/\//, "")))) {
-        return c.json({ error: "Not allowed from another site", code: "bad_origin" }, 403);
-      }
-    }
-    await next();
-  });
+  const openToNetwork = Boolean(process.env.MANDI_HOST && !LOCAL.has(process.env.MANDI_HOST));
+  app.use("/api/*", requestGuard(openToNetwork));
   app.use("/api/*", withSession);
+  app.use("/api/*", bodyLimits);
   // with sync on, a change made here goes up within a couple of seconds
   app.use("/api/*", async (c, next) => {
     await next();

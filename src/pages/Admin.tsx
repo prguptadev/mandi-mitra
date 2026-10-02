@@ -28,6 +28,7 @@ import { CloudCard } from "@/components/CloudCard.tsx";
 import { NetworkCard } from "@/components/NetworkCard.tsx";
 import { PortalCard } from "@/components/PortalCard.tsx";
 import { UpdateCard } from "@/components/UpdateCard.tsx";
+import { onAnotherComputer } from "@/components/OnAnotherComputer.tsx";
 
 /* ------------------------------------------------------------------- users */
 
@@ -761,7 +762,8 @@ export function SettingsPage() {
         </div>
       )}
       {tab === "scan" && <div className="max-w-3xl"><GeminiCard /></div>}
-      {tab === "data" && (
+      {tab === "data" && onAnotherComputer() && <Alert tone="neutral" closable={false} className="max-w-3xl">{t("set.mainOnly")}</Alert>}
+      {tab === "data" && !onAnotherComputer() && (
         <div className="grid items-start gap-4 lg:grid-cols-2">
           <BackupCard />
           <div className="space-y-4">

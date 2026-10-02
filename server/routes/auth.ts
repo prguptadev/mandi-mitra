@@ -4,11 +4,15 @@ import { z } from "zod";
 import { eq, and, asc, ne } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
-import { hashPin, verifyPin, weakPin, createSession, destroySession, registerFailure, clearFailures, lockRemaining } from "../lib/auth.ts";
+import type { Context } from "hono";
+import {
+  hashPin, verifyPin, weakPin, createSession, destroySession, registerFailure, clearFailures, lockRemaining,
+  remoteWait, registerRemoteFailure, clearRemoteFailures, REMOTE_SESSION_SECONDS,
+} from "../lib/auth.ts";
 import { seedRoles, seedJins } from "../lib/businessSetup.ts";
 import { audit } from "../lib/audit.ts";
 import { defaultChargeConfig } from "../lib/charges.ts";
-import { COOKIE, HttpError, bad, requireAuth, actor, type Env } from "../lib/http.ts";
+import { COOKIE, HttpError, bad, requireAuth, actor, clientAddress, fromThisComputer, mainComputerOnly, type Env } from "../lib/http.ts";
 import { toHinglish } from "../lib/translit.ts";
 import { toDevanagari, looksLatin, hasLatin } from "../lib/devanagari.ts";
 import { PrefsSchema, parsePrefs, defaultPrefs, DAILY_COLUMNS, DailyListPrefsSchema } from "../lib/prefs.ts";
@@ -25,17 +29,18 @@ authRoutes.get("/bootstrap", async (c) => {
   return c.json({ needsSignup: !u });
 });
 
-authRoutes.post("/signup", async (c) => {
+// the very first person is made at the main computer, never from the network
+authRoutes.post("/signup", mainComputerOnly, async (c) => {
   const [existing] = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
   if (existing) throw new HttpError(409, "Already set up. Please sign in.", "already_setup");
 
   const body = z.object({
-    name: z.string().trim().min(2, "Enter your name"),
-    nameHi: z.string().trim().optional(),
-    phone: z.string().trim().optional(),
-    pin: z.string(),
-    businessName: z.string().trim().min(2, "Enter the business name"),
-    businessNameHi: z.string().trim().optional(),
+    name: z.string().trim().min(2, "Enter your name").max(100),
+    nameHi: z.string().trim().max(100).optional(),
+    phone: z.string().trim().max(20).optional(),
+    pin: z.string().max(12),
+    businessName: z.string().trim().min(2, "Enter the business name").max(150),
+    businessNameHi: z.string().trim().max(150).optional(),
     shortCode: z.string().trim().min(1).max(12),
   }).parse(await c.req.json());
 
@@ -64,7 +69,7 @@ authRoutes.post("/signup", async (c) => {
   const token = await createSession(userId, businessId, c.req.header("user-agent"));
   setCookie(c, COOKIE, token, cookieOpts);
   await audit({
-    actor: { userId, userName: body.name, businessId, ip: c.req.header("x-forwarded-for") },
+    actor: { userId, userName: body.name, businessId, ip: clientAddress(c) },
     action: "signup", entity: "business", entityId: businessId, entityLabel: body.businessName,
     after: { name: body.businessName, shortCode: body.shortCode },
   });
@@ -79,39 +84,107 @@ authRoutes.get("/users", async (c) => {
   return c.json(rows);
 });
 
-authRoutes.post("/login", async (c) => {
-  const body = z.object({ userId: z.string(), pin: z.string() }).parse(await c.req.json());
-  const [user] = await db.select().from(schema.users).where(eq(schema.users.id, body.userId)).limit(1);
-  if (!user || !user.active) throw new HttpError(401, "Unknown user", "bad_credentials");
+type User = typeof schema.users.$inferSelect;
+const minutes = (s: number) => Math.ceil(s / 60);
+const plural = (n: number) => `${n} attempt${n === 1 ? "" : "s"}`;
 
-  const wait = lockRemaining(user);
-  if (wait > 0) throw new HttpError(429, `Too many wrong PINs. Try again in ${Math.ceil(wait / 60)} min.`, "locked");
-
-  if (!verifyPin(body.pin, user.pinHash, user.pinSalt)) {
-    await registerFailure(user.id);
-    const left = Math.max(0, 4 - user.failedAttempts);
-    await audit({
-      actor: { userId: user.id, userName: user.name, ip: c.req.header("x-forwarded-for") },
-      action: "login.failed", entity: "user", entityId: user.id, entityLabel: user.name,
-    });
-    throw new HttpError(401, left > 0 ? `Wrong PIN. ${left} attempt${left === 1 ? "" : "s"} left.` : "Wrong PIN. Account locked for 5 minutes.", "bad_credentials");
-  }
-  await clearFailures(user.id);
-
+/** The business a person comes back to: where they left off, not whichever row the DB returns first. */
+async function resumeBusiness(user: User) {
   const mems = await db.select().from(schema.memberships).where(and(
     eq(schema.memberships.userId, user.id), eq(schema.memberships.active, true),
   ));
-  // come back to where they left off, not to whichever row the DB returns first
   const remembered = parsePrefs(user.prefs).lastBusinessId;
-  const resume = mems.find((m) => m.businessId === remembered)?.businessId
-    ?? mems[0]?.businessId
-    ?? null;
-  const token = await createSession(user.id, resume, c.req.header("user-agent"));
-  setCookie(c, COOKIE, token, cookieOpts);
+  return mems.find((m) => m.businessId === remembered)?.businessId ?? mems[0]?.businessId ?? null;
+}
+
+/**
+ * The person and PIN, checked, with wrong PINs counted where they were
+ * typed: on the main computer against the person's row (as before), from
+ * another device per person and device (lib/auth.ts). The audit trail
+ * names the device.
+ */
+async function checkPin(c: Context<Env>, userId: string, pin: string): Promise<User> {
+  const [user] = await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1);
+  if (!user || !user.active) throw new HttpError(401, "Unknown user", "bad_credentials");
+  const here = fromThisComputer(c);
+  const ip = clientAddress(c);
+
+  const wait = here ? lockRemaining(user) : remoteWait(user.id, ip);
+  if (wait > 0) throw new HttpError(429, `Too many wrong PINs. Try again in ${minutes(wait)} min.`, "locked");
+
+  if (!verifyPin(pin, user.pinHash, user.pinSalt)) {
+    let msg: string;
+    if (here) {
+      await registerFailure(user.id);
+      const left = Math.max(0, 4 - user.failedAttempts);
+      msg = left > 0 ? `Wrong PIN. ${plural(left)} left.` : "Wrong PIN. Account locked for 5 minutes.";
+    } else {
+      const r = registerRemoteFailure(user.id, ip);
+      msg = r.wait > 0 ? `Wrong PIN. Try again in ${minutes(r.wait)} min.` : `Wrong PIN. ${plural(r.left)} left.`;
+    }
+    await audit({
+      actor: { userId: user.id, userName: user.name, businessId: await resumeBusiness(user), ip },
+      action: "login.failed", entity: "user", entityId: user.id,
+      entityLabel: here ? user.name : `${user.name} · ${ip}`,
+    });
+    throw new HttpError(401, msg, "bad_credentials");
+  }
+  if (here) await clearFailures(user.id);
+  else clearRemoteFailures(user.id, ip);
+  return user;
+}
+
+/** Signs the person in on this device: a month on the main computer, the working day from another. */
+async function startSession(c: Context<Env>, user: User) {
+  const remote = !fromThisComputer(c);
+  const resume = await resumeBusiness(user);
+  const token = await createSession(user.id, resume, c.req.header("user-agent"), remote);
+  setCookie(c, COOKIE, token, remote ? { ...cookieOpts, maxAge: REMOTE_SESSION_SECONDS } : cookieOpts);
   await audit({
-    actor: { userId: user.id, userName: user.name, businessId: mems[0]?.businessId, ip: c.req.header("x-forwarded-for") },
-    action: "login", entity: "user", entityId: user.id, entityLabel: user.name,
+    actor: { userId: user.id, userName: user.name, businessId: resume, ip: clientAddress(c) },
+    action: "login", entity: "user", entityId: user.id, entityLabel: remote ? `${user.name} · ${clientAddress(c)}` : user.name,
   });
+}
+
+/** Said to another device when the person is still on the first PIN (7747) or another everyone-knows PIN. */
+const PIN_ON_MAIN = "First choose your own PIN on the main computer.";
+
+const LoginBody = z.object({ userId: z.string().max(64), pin: z.string().max(12) });
+
+authRoutes.post("/login", async (c) => {
+  const body = LoginBody.parse(await c.req.json());
+  const user = await checkPin(c, body.userId, body.pin);
+  /* Still on the PIN every new install starts with (7747), or another one
+     everybody guesses: no way in until the person picks their own. At the
+     main computer the sign-in screen asks for it (POST /first-pin); from the
+     network it is refused, so nobody on the Wi-Fi can claim a person first. */
+  if (weakPin(body.pin)) {
+    if (!fromThisComputer(c)) throw new HttpError(403, PIN_ON_MAIN, "pin_on_main");
+    throw new HttpError(409, "Choose your own PIN.", "new_pin");
+  }
+  await startSession(c, user);
+  return c.json({ ok: true });
+});
+
+/** The person still on 7747 picks their own PIN, at the main computer, and is signed in. */
+authRoutes.post("/first-pin", async (c) => {
+  const body = LoginBody.extend({ newPin: z.string().max(12) }).parse(await c.req.json());
+  if (!fromThisComputer(c)) throw new HttpError(403, PIN_ON_MAIN, "pin_on_main");
+  const user = await checkPin(c, body.userId, body.pin);
+  if (!weakPin(body.pin)) throw bad("Sign in with your PIN.", "not_needed");
+  const weak = weakPin(body.newPin);
+  if (weak) throw bad(weak, "weak_pin");
+  const { hash, salt } = hashPin(body.newPin);
+  await db.update(schema.users).set({ pinHash: hash, pinSalt: salt, failedAttempts: 0, lockedUntil: null, updatedAt: nowSec() })
+    .where(eq(schema.users.id, user.id));
+  // a sign-in made with the old PIN (before this version) ends everywhere
+  await db.delete(schema.sessions).where(eq(schema.sessions.userId, user.id));
+  clearRemoteFailures(user.id);
+  await audit({
+    actor: { userId: user.id, userName: user.name, businessId: await resumeBusiness(user), ip: clientAddress(c) },
+    action: "pin.change", entity: "user", entityId: user.id, entityLabel: user.name,
+  });
+  await startSession(c, user);
   return c.json({ ok: true });
 });
 
@@ -278,14 +351,21 @@ authRoutes.delete("/device-prefs", requireAuth, (c) => {
 });
 
 /** Utility the UI calls while typing a Hindi name. */
-authRoutes.post("/transliterate", async (c) => {
-  const { text } = z.object({ text: z.string() }).parse(await c.req.json());
+authRoutes.post("/transliterate", requireAuth, async (c) => {
+  const { text } = z.object({ text: z.string().max(2000) }).parse(await c.req.json());
   return c.json({ hinglish: toHinglish(text) });
 });
 
-/** Latin -> Devanagari without a business context, for the signup screen. */
+/**
+ * Latin -> Devanagari without a business context: for the sign-up screen
+ * (nobody exists yet), and for anyone signed in whose /adati one is refused.
+ */
 authRoutes.post("/to-devanagari", async (c) => {
-  const { text } = z.object({ text: z.string() }).parse(await c.req.json());
+  if (!c.get("auth")) {
+    const [someone] = await db.select({ id: schema.users.id }).from(schema.users).limit(1);
+    if (someone) throw new HttpError(401, "Please sign in", "no_session");
+  }
+  const { text } = z.object({ text: z.string().max(2000) }).parse(await c.req.json());
   if (!hasLatin(text)) return c.json({ hindi: text, converted: false });
   return c.json({ hindi: toDevanagari(text), converted: true });
 });

@@ -4,9 +4,9 @@ import { eq, and, asc, inArray } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { newId, nowSec } from "../lib/ids.ts";
 import { audit } from "../lib/audit.ts";
-import { hashPin, weakPin } from "../lib/auth.ts";
+import { hashPin, weakPin, clearRemoteFailures } from "../lib/auth.ts";
 import { PERMISSIONS, PERMISSION_GROUPS, ALL_PERMISSIONS, effectivePermissions } from "../lib/rbac.ts";
-import { param, can, actor, notFound, bad, HttpError, type Env } from "../lib/http.ts";
+import { param, can, actor, notFound, bad, HttpError, fromThisComputer, type Env } from "../lib/http.ts";
 import { toHinglish } from "../lib/translit.ts";
 
 export const userRoutes = new Hono<Env>();
@@ -72,16 +72,19 @@ async function isOwnerRole(roleId: string) {
  * A person's name, phone and PIN are shared by every business they belong
  * to, so changing them needs the right to do so in all of them: the Admin,
  * or an Owner of each of that person's businesses. The Admin's own are
- * changed only by the Admin.
+ * changed by the Admin, or (so a forgotten Admin PIN is never the end) by an
+ * Owner of each of the Admin's businesses sitting at the main computer.
  */
 async function mayEditPerson(c: Context<Env>, target: { id: string; isRoot: boolean }) {
   const a = c.get("auth")!;
-  if (target.isRoot) return a.user.id === target.id;
-  if (a.user.isRoot || a.user.id === target.id) return true;
+  if (a.user.id === target.id) return true;
+  if (target.isRoot && !fromThisComputer(c)) return false;
+  if (a.user.isRoot) return true;
   const theirs = await db.select({ biz: schema.memberships.businessId }).from(schema.memberships).where(eq(schema.memberships.userId, target.id));
   const mine = await db.select({ biz: schema.memberships.businessId, key: schema.roles.key }).from(schema.memberships)
     .innerJoin(schema.roles, eq(schema.roles.id, schema.memberships.roleId))
     .where(and(eq(schema.memberships.userId, a.user.id), eq(schema.memberships.active, true)));
+  if (target.isRoot && !theirs.length) return false;
   return theirs.every((t) => mine.some((m) => m.biz === t.biz && m.key === "owner"));
 }
 
@@ -186,6 +189,8 @@ userRoutes.put("/:membershipId", can("users.manage"), async (c) => {
   if (Object.keys(userPatch).length > 1) {
     await db.update(schema.users).set(userPatch).where(eq(schema.users.id, m.userId));
   }
+  // wrong PINs counted from other devices are let go too
+  if (body.unlock || body.resetPin) clearRemoteFailures(m.userId);
   if (body.roleId || body.active !== undefined) {
     await db.update(schema.memberships).set({
       ...(body.roleId ? { roleId: body.roleId } : {}),

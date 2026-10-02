@@ -561,11 +561,38 @@ can be exercised.
 An empty database starts with **Vijay Laxmi Dal Mill** and **V C
 Enterprises**, and three people, all on PIN **7747** with full access in both
 firms: **Admin** (root) and **Manager 1**, **Manager 2**. Only the Admin can
-add a business. The PIN is in this public repository: change it after the
-first sign-in (click your name, top right). A second computer then joins the
-office's cloud from Settings › Cloud sync, which replaces this starting data
-with the office's. `MANDI_NO_SEED=1` turns the starting data off (the tests
-use it for their first computer).
+add a business. The PIN is in this public repository, so it only opens the
+first sign-in, and only at the main computer: the sign-in screen then asks
+each person to choose their own (one small box: new PIN, again, Save), and
+7747, 0000, 1234 and the like are refused as anyone's PIN. People on an older
+install still on 7747 are asked the same at their next sign-in. From another
+device on the shop's network 7747 is refused outright ("First choose your own
+PIN on the main computer."). A forgotten Admin PIN is reset at the main
+computer by another Owner of both firms (Users › edit Admin). A second
+computer then joins the office's cloud from Settings › Cloud sync, which
+replaces this starting data with the office's. `MANDI_NO_SEED=1` turns the
+starting data off (the tests use it for their first computer).
+
+### Sharing the books on the shop's network (Settings › Backup, cloud & updates)
+
+The server still listens on every network card (0.0.0.0) when sharing is on:
+a shop PC's address changes with the router (DHCP) and the Wi-Fi often comes
+up after the app, so a bind to one address would silently lose the second
+laptop. Instead every request is checked (lib/http.ts `requestGuard`): only
+private addresses (10.x, 172.16–31.x, 192.168.x, link-local) are answered,
+the Host must be this PC's own address, name or localhost on the app's port,
+and a change from a browser must come from that same address (no `null`, no
+other port). Install-wide changes — backup folder, restore, opening the data
+folder, update folder and install, cloud connect / join / hold / restore,
+device name, network on/off, sign-up — are refused from other devices
+("This can be done only on the main computer."), and the Settings tab there
+shows that one sentence. A sign-in from another device lasts 12 hours, the
+main PC's month-long one is never accepted from another device, and
+switching sharing off signs every other device out. Wrong PINs from other
+devices are counted per person and device (5 tries, then 5 min, 15 min,
+1 hour; 20 a day per person over all devices, then an hour) and never lock
+the main PC; the audit trail names the device's address. Requests are capped
+at 64 KB before sign-in, 50 MB after, 124 MB for a sheet upload.
 
 ### Dev logins (test databases only — the demo seed refuses the real data folder)
 

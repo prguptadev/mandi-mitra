@@ -1,6 +1,9 @@
+import os from "node:os";
 import type { Context, Next } from "hono";
 import { z } from "zod";
 import { getCookie } from "hono/cookie";
+import { bodyLimit } from "hono/body-limit";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { resolveSession, type AuthContext } from "./auth.ts";
 import type { AuditActor } from "./audit.ts";
 
@@ -17,10 +20,159 @@ export class HttpError extends Error {
 export const bad = (m: string, code?: string) => new HttpError(400, m, code);
 export const notFound = (m = "Not found") => new HttpError(404, m);
 
+/* ------------------------------------------------ who is asking, from where
+
+   The address comes from the connection itself, never from a header a
+   client can write (X-Forwarded-For was empty on a direct connection and
+   could be faked). With "Let this network's computers use these books" on,
+   another laptop or phone on the shop's Wi-Fi reaches this server too; the
+   main computer's own window always comes from 127.0.0.1. */
+
+/** The device this request came from (an IP address), or null for a request made inside this process. */
+export function clientAddress(c: Context): string | null {
+  try {
+    const a = getConnInfo(c).remote.address;
+    return a ? a.replace(/^::ffff:/i, "").toLowerCase() : null;
+  } catch { return null; }
+}
+
+export const isLoopback = (a: string) => a === "::1" || /^127\./.test(a);
+
+/** Loopback, or the private ranges a shop's router hands out (never an address on the open internet). */
+export function isLanAddress(a: string): boolean {
+  if (isLoopback(a)) return true;
+  const v4 = a.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+  if (v4) {
+    const x = Number(v4[1]), y = Number(v4[2]);
+    return x === 10 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 169 && y === 254);
+  }
+  const h = a.split("%")[0];
+  return /^f[cd][0-9a-f]{2}:/.test(h) || /^fe[89ab][0-9a-f]:/.test(h);
+}
+
+/**
+ * True for the main computer itself (its own window, or a browser on it).
+ * A request with no connection at all can only come from inside this
+ * process, so it counts as here.
+ */
+export function fromThisComputer(c: Context): boolean {
+  const a = clientAddress(c);
+  return a === null || isLoopback(a);
+}
+
+export const MAIN_ONLY = "This can be done only on the main computer.";
+
+/** Install-wide changes (backups, restore, updates, cloud, network): only at the main computer. */
+export async function mainComputerOnly(c: Context<Env>, next: Next) {
+  if (!fromThisComputer(c)) throw new HttpError(403, MAIN_ONLY, "main_computer_only");
+  await next();
+}
+
+/* ------------------------------------------------ which names this server answers to
+
+   A web page elsewhere can point a name at this computer (DNS rebinding) or
+   post a form here; the Host it asks for, and the Origin a browser adds to a
+   change, give it away. Only this computer's own names are answered: the
+   loopback names always, and with sharing on also its own network addresses
+   and its Windows computer name. */
+
+const LOOPBACK_NAMES = new Set(["127.0.0.1", "localhost", "::1"]);
+let own: { at: number; names: Set<string>; base: string } | null = null;
+function ownNames(fresh = false) {
+  // an address the router changes is picked up within seconds
+  if (own && Date.now() - own.at < (fresh ? 2_000 : 30_000)) return own;
+  const names = new Set(LOOPBACK_NAMES);
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const n of list ?? []) names.add(n.address.split("%")[0].toLowerCase());
+  }
+  own = { at: Date.now(), names, base: os.hostname().toLowerCase().split(".")[0] };
+  return own;
+}
+/** One of this computer's names: an address of its own, or its computer name with at most a one-word suffix (shop-pc, shop-pc.local, shop-pc.lan). */
+function isOwnName(name: string): boolean {
+  const known = (o: ReturnType<typeof ownNames>) => o.names.has(name)
+    || (!!o.base && (name === o.base || (name.startsWith(`${o.base}.`) && !name.slice(o.base.length + 1).includes("."))));
+  return known(ownNames()) || known(ownNames(true));
+}
+
+function parseHost(h: string | undefined | null): { name: string; port: string } | null {
+  if (!h) return null;
+  try {
+    const u = new URL(`http://${h}`);
+    if (u.pathname !== "/" || u.username || u.search) return null;
+    return { name: u.hostname.replace(/^\[|\]$/g, "").toLowerCase(), port: u.port || "80" };
+  } catch { return null; }
+}
+function parseOrigin(o: string): { name: string; port: string } | null {
+  try {
+    const u = new URL(o);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return { name: u.hostname.replace(/^\[|\]$/g, "").toLowerCase(), port: u.port || (u.protocol === "https:" ? "443" : "80") };
+  } catch { return null; }
+}
+/** The port this server listens on (the socket's own, else PORT). */
+function appPort(c: Context): string {
+  const local = (c.env as { incoming?: { socket?: { localPort?: number } } } | undefined)?.incoming?.socket?.localPort;
+  return String(local ?? process.env.PORT ?? 8787);
+}
+
+/**
+ * Guards every /api request. `shared` is true when the books are open to the
+ * shop's network (MANDI_HOST is not a loopback address).
+ *  - a device outside the private address ranges is never answered;
+ *  - the Host must be one of this computer's names, on the app's port;
+ *  - a change (anything but GET) carrying an Origin must come from this very
+ *    address: "null" (sandboxed frames, files) or another port is refused.
+ *    Requests with no Origin (scripts, the app itself) are not browsers.
+ */
+export function requestGuard(shared: boolean) {
+  const nope = (c: Context, error: string, code: string) => c.json({ error, code }, 403);
+  return async (c: Context<Env>, next: Next) => {
+    const addr = clientAddress(c);
+    if (addr && !isLanAddress(addr)) return nope(c, "Not allowed from here", "bad_network");
+    const host = parseHost(c.req.header("host"));
+    const named = (n: string) => LOOPBACK_NAMES.has(n) || (shared && isOwnName(n));
+    if (!host || !named(host.name) || host.port !== appPort(c)) return nope(c, "Not allowed from here", "bad_host");
+    if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+      const origin = c.req.header("origin");
+      const site = c.req.header("sec-fetch-site");
+      if (origin !== undefined) {
+        const o = parseOrigin(origin);
+        if (!o || !named(o.name)) return nope(c, "Not allowed from another site", "bad_origin");
+        // the browser says whether the page is this very site; without that word, the address must match exactly
+        if (site ? site !== "same-origin" : o.name !== host.name || o.port !== host.port) {
+          return nope(c, "Not allowed from another site", "bad_origin");
+        }
+      } else if (site && site !== "same-origin" && site !== "none") {
+        return nope(c, "Not allowed from another site", "bad_origin");
+      }
+    }
+    await next();
+  };
+}
+
+/* ------------------------------------------------ how much may be sent
+
+   The server runs inside the app's own process, so one huge request would
+   freeze the window. Before signing in only a few kilobytes are needed
+   (a name, a PIN); signed in, a season's tally marks run to ~10 MB; a
+   sheet upload is up to ten pages of 12 MB each. */
+const KB = 1024, MB = 1024 * KB;
+const tooBig = (c: Context) => c.json({ error: "That is too big to send.", code: "too_large" }, 413);
+const limitSignedOut = bodyLimit({ maxSize: 64 * KB, onError: tooBig });
+const limitSignedIn = bodyLimit({ maxSize: 50 * MB, onError: tooBig });
+const limitUpload = bodyLimit({ maxSize: 10 * 12 * MB + 4 * MB, onError: tooBig });
+export async function bodyLimits(c: Context<Env>, next: Next) {
+  if (c.req.method === "GET" || c.req.method === "HEAD") return next();
+  if (!c.get("auth")) return limitSignedOut(c, next);
+  if (c.req.method === "POST" && /^\/api\/scans\/?$/.test(c.req.path)) return limitUpload(c, next);
+  return limitSignedIn(c, next);
+}
+
 /** Attaches the session. Does not reject — routes opt in with requireAuth. */
 export async function withSession(c: Context<Env>, next: Next) {
   const token = getCookie(c, COOKIE);
-  const auth = await resolveSession(token);
+  const auth = await resolveSession(token, !fromThisComputer(c));
   if (auth) c.set("auth", auth);
   await next();
 }
@@ -74,7 +226,7 @@ export function actor(c: Context<Env>): AuditActor {
     userId: auth?.user.id ?? null,
     userName: auth?.user.name ?? null,
     businessId: auth?.businessId ?? null,
-    ip: c.req.header("x-forwarded-for") ?? null,
+    ip: clientAddress(c),
     userAgent: c.req.header("user-agent") ?? null,
   };
 }
