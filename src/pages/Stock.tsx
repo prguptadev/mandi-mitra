@@ -211,6 +211,8 @@ export function MillAccountPage({ id }: { id: string }) {
   const s = useStockFilters();
   const [truckFrom, setTruckFrom] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // the received-against-loaded graph starts folded; one click opens it
+  const [showRace, setShowRace] = useState(false);
   const isNone = id === "none";
 
   const acct = useQuery({
@@ -319,8 +321,10 @@ export function MillAccountPage({ id }: { id: string }) {
           </div>
 
           <Card className="mt-5">
-            <CardHeader title={t("stock.race")} sub={t("stock.raceSub")} />
-            <div className="px-3 pt-3 pb-2"><RaceChart points={a.series} height={260} /></div>
+            <CardHeader title={t("stock.race")} sub={showRace ? t("stock.raceSub") : undefined}
+              className={cn(!showRace && !a.worstAhead && "border-b-0")}
+              action={<Button size="sm" variant="ghost" aria-expanded={showRace} onClick={() => setShowRace((v) => !v)}>{t(showRace ? "stock.raceHide" : "stock.raceShow")}</Button>} />
+            {showRace && <div className="px-3 pt-3 pb-2"><RaceChart points={a.series} height={260} /></div>}
             {a.worstAhead && <p className="border-t border-line px-4 py-2 text-[12px] text-bad">{t("dash.worstAhead", { d: dmy(a.worstAhead.date), q: f.weight(a.worstAhead.grams) })}</p>}
           </Card>
 
