@@ -4,7 +4,7 @@ import { Link } from "wouter";
 import { Lock, LockOpen, CalendarCheck } from "lucide-react";
 import { api } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
-import { useFormat } from "@/lib/format.tsx";
+import { useFormat, RupeeMark } from "@/lib/format.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useFYRange } from "@/lib/fy.tsx";
 import { useDayActions, type DayRow } from "@/lib/dayClose.tsx";
@@ -103,14 +103,13 @@ export function DayClosePage() {
                 <Th>{t("dc.day")}</Th>
                 <Th numeric>{t("dc.slips")}</Th>
                 <Th numeric>{t("dc.weight")}</Th>
-                <Th numeric>{t("dc.payable")}</Th>
-                <Th numeric>{t("dc.paid")}</Th>
-                <Th numeric>{t("dc.billed")}</Th>
-                <Th numeric>{t("dc.received")}</Th>
+                <Th numeric>{t("dc.payable")}<RupeeMark /></Th>
+                <Th numeric>{t("dc.paid")}<RupeeMark /></Th>
+                <Th numeric>{t("dc.billed")}<RupeeMark /></Th>
+                <Th numeric>{t("dc.received")}<RupeeMark /></Th>
                 <Th>{t("dc.look")}</Th>
                 {canTally && <Th>{t("dc.tally")}</Th>}
                 <Th>{t("dc.status")}</Th>
-                <Th />
               </tr>
             </thead>
             <tbody>
@@ -119,39 +118,40 @@ export function DayClosePage() {
                 const warn = act.warningsOf(r);
                 return (
                   <Tr key={r.day}>
-                    <Td className="whitespace-nowrap">
-                      <Link href={`/daily?date=${r.day}`} className="num font-medium text-ink hover:text-brand hover:underline">{dmy(r.day)}</Link>
-                      <span className="ml-1.5 text-[11px] text-faint">{weekday(r.day, lang)}</span>
+                    <Td>
+                      <Link href={`/daily?date=${r.day}`} className="num whitespace-nowrap font-medium text-ink hover:text-brand hover:underline">{dmy(r.day)}</Link>{" "}
+                      <span className="ml-0.5 inline-block text-[11px] text-faint">{weekday(r.day, lang)}</span>
                     </Td>
                     <Td numeric>{r.slips || "—"}</Td>
                     <Td numeric>{r.netGrams ? f.weight(r.netGrams) : "—"}</Td>
-                    <Td numeric>{r.payablePaise ? f.money(r.payablePaise) : "—"}</Td>
-                    <Td numeric>{r.paidPaise ? f.money(r.paidPaise) : "—"}</Td>
-                    <Td numeric>{r.billedPaise ? f.money(r.billedPaise) : "—"}</Td>
-                    <Td numeric>{r.receivedPaise ? f.money(r.receivedPaise) : "—"}</Td>
+                    <Td numeric>{r.payablePaise ? f.amount(r.payablePaise) : "—"}</Td>
+                    <Td numeric>{r.paidPaise ? f.amount(r.paidPaise) : "—"}</Td>
+                    <Td numeric>{r.billedPaise ? f.amount(r.billedPaise) : "—"}</Td>
+                    <Td numeric>{r.receivedPaise ? f.amount(r.receivedPaise) : "—"}</Td>
                     <Td>
                       <div className="flex flex-wrap gap-1">
-                        {r.unpriced > 0 && <Badge tone="warn">{t("dc.bUnpriced", { n: r.unpriced })}</Badge>}
-                        {r.scansPending > 0 && <Badge tone="warn">{t("dc.bScans", { n: r.scansPending })}</Badge>}
-                        {r.draftTrucks > 0 && <Badge>{t("dc.bDrafts", { n: r.draftTrucks })}</Badge>}
+                        {r.unpriced > 0 && <Badge tone="warn" className="whitespace-normal">{t("dc.bUnpriced", { n: r.unpriced })}</Badge>}
+                        {r.scansPending > 0 && <Badge tone="warn" className="whitespace-normal">{t("dc.bScans", { n: r.scansPending })}</Badge>}
+                        {r.draftTrucks > 0 && <Badge className="whitespace-normal">{t("dc.bDrafts", { n: r.draftTrucks })}</Badge>}
                         {!warn.length && <span className="text-faint">—</span>}
                       </div>
                     </Td>
                     {canTally && <Td><TallyBadge s={tl} day={r.day} /></Td>}
-                    <Td className="whitespace-nowrap">
-                      {r.closed ? (
-                        <span className="inline-flex flex-wrap items-center gap-1">
-                          <Badge tone="ok" title={t("dc.closedBy", { by: r.closed.by ?? "—", at: new Date(r.closed.at * 1000).toLocaleString(lang === "hi" ? "hi-IN" : "en-IN") })}>
-                            <Lock className="h-3 w-3" />{t("dc.closed")}
-                          </Badge>
-                          {r.closed.changed && <Badge tone="bad" title={t("dc.changedAfterSub")}>{t("dc.changedAfter")}</Badge>}
-                        </span>
-                      ) : <Badge><LockOpen className="h-3 w-3" />{t("dc.open")}</Badge>}
-                    </Td>
-                    <Td align="right">
-                      {r.closed
-                        ? can("day.reopen") && <Button size="sm" variant="ghost" onClick={() => act.reopen(r.day)}>{t("dc.reopenBtn")}</Button>
-                        : can("day.close") && r.day <= today && <Button size="sm" variant="secondary" icon={<Lock className="h-3.5 w-3.5" />} loading={act.busy} onClick={() => void act.close(r)}>{t("dc.closeBtn")}</Button>}
+                    {/* the day's state and what can be done about it, in one cell: narrower on a laptop */}
+                    <Td>
+                      <span className="inline-flex flex-wrap items-center gap-1">
+                        {r.closed ? (
+                          <>
+                            <Badge tone="ok" title={t("dc.closedBy", { by: r.closed.by ?? "—", at: new Date(r.closed.at * 1000).toLocaleString(lang === "hi" ? "hi-IN" : "en-IN") })}>
+                              <Lock className="h-3 w-3" />{t("dc.closed")}
+                            </Badge>
+                            {r.closed.changed && <Badge tone="bad" title={t("dc.changedAfterSub")}>{t("dc.changedAfter")}</Badge>}
+                          </>
+                        ) : <Badge><LockOpen className="h-3 w-3" />{t("dc.open")}</Badge>}
+                        {r.closed
+                          ? can("day.reopen") && <Button size="sm" variant="ghost" onClick={() => act.reopen(r.day)}>{t("dc.reopenBtn")}</Button>
+                          : can("day.close") && r.day <= today && <Button size="sm" variant="secondary" icon={<Lock className="h-3.5 w-3.5" />} loading={act.busy} onClick={() => void act.close(r)}>{t("dc.closeBtn")}</Button>}
+                      </span>
                     </Td>
                   </Tr>
                 );
@@ -162,11 +162,11 @@ export function DayClosePage() {
                 <Td>{t("dc.total", { n: rows.length })}</Td>
                 <Td numeric>{sum("slips")}</Td>
                 <Td numeric>{f.weight(sum("netGrams"))}</Td>
-                <Td numeric>{f.money(sum("payablePaise"))}</Td>
-                <Td numeric>{f.money(sum("paidPaise"))}</Td>
-                <Td numeric>{f.money(sum("billedPaise"))}</Td>
-                <Td numeric>{f.money(sum("receivedPaise"))}</Td>
-                <Td colSpan={canTally ? 4 : 3} />
+                <Td numeric>{f.amount(sum("payablePaise"))}</Td>
+                <Td numeric>{f.amount(sum("paidPaise"))}</Td>
+                <Td numeric>{f.amount(sum("billedPaise"))}</Td>
+                <Td numeric>{f.amount(sum("receivedPaise"))}</Td>
+                <Td colSpan={canTally ? 3 : 2} />
               </tr>
             </tfoot>
           </Table>

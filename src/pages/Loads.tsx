@@ -21,7 +21,7 @@ import { PageHeader } from "@/components/AppShell.tsx";
 import { NumberInput } from "@/components/NumberInput.tsx";
 import { ParchaPaper } from "@/components/ParchaPaper.tsx";
 import { SkeletonTable, SkeletonForm } from "@/components/Skeletons.tsx";
-import { Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Checkbox, Textarea, Switch } from "@/components/ui/index.tsx";
+import { Button, Card, CardHeader, DateList, Field, Input, Select, Table, Th, Td, Tr, Badge, Dialog, EmptyState, Alert, Checkbox, Textarea, Switch } from "@/components/ui/index.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
@@ -243,7 +243,7 @@ export function LoadsPage() {
                   <Td className="font-mono font-medium">{r.truckNo ?? <span className="text-faint">—</span>}</Td>
                   <Td><Badge tone="brand" className="num">{r.millCode}</Badge></Td>
                   <Td>{(r.jinsCodes ?? [r.jinsCode]).join(" + ")}</Td>
-                  <Td className="whitespace-nowrap text-muted">{r.stockDates.map(dmy).join(", ") || "—"}</Td>
+                  <Td className="text-muted">{r.stockDates.length ? <DateList dates={r.stockDates.map(dmy)} /> : "—"}</Td>
                   <Td numeric>{r.loadedGrams ? f.weight(r.loadedGrams) : <span className="text-faint">—</span>}</Td>
                   <Td numeric>{r.millNetGrams == null ? <span className="text-faint">—</span> : f.weight(r.millNetGrams)}</Td>
                   <Td>
@@ -259,8 +259,8 @@ export function LoadsPage() {
             {billed.length > 0 && (
               <tfoot>
                 <tr className="bg-raised/50 text-[13px] font-medium">
-                  <td colSpan={8} className="px-3 py-2 text-right text-muted">{t("load.billedTotal", { n: billed.length })}</td>
-                  <td className="num px-3 py-2 text-right">{f.money(totalBilled)}</td>
+                  <td colSpan={8} className="px-2 py-2 text-right text-muted">{t("load.billedTotal", { n: billed.length })}</td>
+                  <td className="num px-2 py-2 text-right">{f.money(totalBilled)}</td>
                 </tr>
               </tfoot>
             )}
@@ -718,14 +718,14 @@ export function LoadDetailPage({ id }: { id: string }) {
                       </td>
                     )}
                     <td className="px-2 py-1.5">
-                      <select value={x.stockDate} disabled={!canEdit} className={cn(CELL, "min-w-[210px]")}
+                      <select value={x.stockDate} disabled={!canEdit} className={cn(CELL, "min-w-[160px]")}
                         onChange={(e) => lineSave.mutate({ lineId: x.id, patch: { stockDate: e.target.value } })}>
                         {!rowDays.some((d) => d.date === x.stockDate) && <option value={x.stockDate}>{dmy(x.stockDate)}</option>}
                         {rowDays.map((d) => <option key={d.date} value={d.date}>{dayLabel(f, t, d)}</option>)}
                       </select>
                     </td>
                     <td className="px-2 py-1.5">
-                      <select value={x.poId ?? ""} disabled={!canEdit} className={cn(CELL, "min-w-[120px]")}
+                      <select value={x.poId ?? ""} disabled={!canEdit} className={cn(CELL, "min-w-[96px]")}
                         onChange={(e) => lineSave.mutate({ lineId: x.id, patch: { poId: e.target.value || null } })}>
                         <option value="">—</option>
                         {rowPos.map((o) => <option key={o.id} value={o.id}>{o.poNo ? `PO ${o.poNo}` : poName(t, o)}</option>)}
@@ -744,8 +744,8 @@ export function LoadDetailPage({ id }: { id: string }) {
                         className={cn(!x.ratePaisePerQtlUsed && !billed && "border-warn")} />
                       <p className="mt-0.5 text-right text-[10px] text-faint">{x.rateTyped ? t("load.typed") : t("load.dayAverage")}</p>
                     </td>
-                    <td className="num px-3 py-1.5 text-right">{f.amount(x.amountPaise)}</td>
-                    <td className={cn("num px-3 py-1.5 text-right", x.day.leftGrams < 0 && "font-medium text-warn")}
+                    <td className="num px-2 py-1.5 text-right">{f.amount(x.amountPaise)}</td>
+                    <td className={cn("num px-2 py-1.5 text-right", x.day.leftGrams < 0 && "font-medium text-warn")}
                       title={t("load.dayLeftHelp", { bought: f.weight(x.day.boughtNetGrams), other: f.weight(x.day.otherTrucksGrams), mine: f.weight(x.day.thisTruckGrams) })}>
                       {f.weight(x.day.leftGrams)}
                     </td>
@@ -765,13 +765,13 @@ export function LoadDetailPage({ id }: { id: string }) {
               </tbody>
               <tfoot>
                 <tr className="bg-raised/50 text-[13px] font-semibold">
-                  <td className="px-3 py-2" colSpan={multi ? 3 : 2}>{t("load.total")}</td>
-                  <td className={cn("num px-3 py-2 text-right", w.netGrams != null && linesTotal !== w.netGrams && "text-bad")}>
+                  <td className="px-2 py-2" colSpan={multi ? 3 : 2}>{t("load.total")}</td>
+                  <td className={cn("num px-2 py-2 text-right", w.netGrams != null && linesTotal !== w.netGrams && "text-bad")}>
                     {f.weight(linesTotal)}
                     {w.netGrams != null && linesTotal !== w.netGrams && <span className="block text-[10px] font-normal">{t("load.millNetIs", { q: f.weight(w.netGrams) })}</span>}
                   </td>
-                  <td className="num px-3 py-2 text-right">{linesTotal ? f.rate(Math.round((goodsTotal * Q) / linesTotal)) : "—"}</td>
-                  <td className="num px-3 py-2 text-right">{f.amount(goodsTotal)}</td>
+                  <td className="num px-2 py-2 text-right">{linesTotal ? f.rate(Math.round((goodsTotal * Q) / linesTotal)) : "—"}</td>
+                  <td className="num px-2 py-2 text-right">{f.amount(goodsTotal)}</td>
                   <td colSpan={canEdit ? 2 : 1} />
                 </tr>
               </tfoot>
@@ -1097,12 +1097,12 @@ export function ParchaRegisterPage() {
             </tbody>
             <tfoot>
               <tr className="bg-raised/50 text-[13px] font-semibold">
-                <td colSpan={5} className="px-3 py-2 text-right text-muted">{t("parcha.registerTotal", { n: approved.length })}</td>
-                <td className="num px-3 py-2 text-right">{f.money(total)}</td>
+                <td colSpan={5} className="px-2 py-2 text-right text-muted">{t("parcha.registerTotal", { n: approved.length })}</td>
+                <td className="num px-2 py-2 text-right">{f.money(total)}</td>
                 {money && <>
-                  <td className="num px-3 py-2 text-right text-warn">{cutTotal ? `− ${f.money(cutTotal)}` : "—"}</td>
-                  <td className="num px-3 py-2 text-right text-ok">{f.money(paidTotal)}</td>
-                  <td className="num px-3 py-2 text-right">{f.money(dueTotal)}</td>
+                  <td className="num px-2 py-2 text-right text-warn">{cutTotal ? `− ${f.money(cutTotal)}` : "—"}</td>
+                  <td className="num px-2 py-2 text-right text-ok">{f.money(paidTotal)}</td>
+                  <td className="num px-2 py-2 text-right">{f.money(dueTotal)}</td>
                 </>}
                 <td />
               </tr>

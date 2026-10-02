@@ -187,7 +187,7 @@ export function TallyPage() {
                   <tbody>
                     {dq.data.days.map((d) => (
                       <Tr key={d.day}>
-                        <Td className="whitespace-nowrap"><span className="num font-medium text-ink">{dmy(d.day)}</span><span className="ml-1.5 text-[11px] text-faint">{weekday(d.day, lang)}</span></Td>
+                        <Td><span className="num whitespace-nowrap font-medium text-ink">{dmy(d.day)}</span>{" "}<span className="ml-0.5 inline-block text-[11px] text-faint">{weekday(d.day, lang)}</span></Td>
                         {KINDS.filter((k) => kinds.includes(k)).map((k) => {
                           const c = d.kinds[k];
                           const n = c ? c.new + c.sent + c.changed : 0;

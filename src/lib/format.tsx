@@ -138,6 +138,13 @@ export function FormatProvider({ children }: { children: ReactNode }) {
 
 export const useFormat = () => useContext(FormatCtx);
 
+/** The currency sign in a column's heading, for a column whose cells show bare amounts (f.amount):
+ *  the sign is said once instead of on every line, so the column is narrower. */
+export function RupeeMark() {
+  const f = useFormat();
+  return f.symbol ? <span className="ml-0.5 font-normal normal-case text-faint">{f.symbol}</span> : null;
+}
+
 /* ------------------------------------------------------- parsing user input */
 
 /** Accepts "1,08,190.36", "108190.36", "१०८" — returns paise. */

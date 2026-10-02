@@ -14,7 +14,7 @@ import { PageHeader } from "@/components/AppShell.tsx";
 import { SkeletonTable, SkeletonStats } from "@/components/Skeletons.tsx";
 import { downloadDara } from "@/components/DownloadDialog.tsx";
 import { RaceChart, type RacePoint } from "@/components/RaceChart.tsx";
-import { Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badge, EmptyState, Alert } from "@/components/ui/index.tsx";
+import { Button, Card, CardHeader, DateList, Field, Input, Select, Table, Th, Td, Tr, Badge, EmptyState, Alert } from "@/components/ui/index.tsx";
 import { OwnFirm } from "@/components/OwnFirm.tsx";
 import { NewLoadDialog } from "@/pages/Loads.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
@@ -168,14 +168,14 @@ export function StockPage() {
             </tbody>
             <tfoot>
               <tr className="bg-raised/50 text-[13px] font-semibold">
-                <td className="px-3 py-2">{t("load.total")}</td>
-                {withOpening && <td className="num px-3 py-2 text-right">{f.weight(total.opening)}</td>}
+                <td className="px-2 py-2">{t("load.total")}</td>
+                {withOpening && <td className="num px-2 py-2 text-right">{f.weight(total.opening)}</td>}
                 <td />
-                <td className="num px-3 py-2 text-right">{f.weight(total.bought)}</td>
+                <td className="num px-2 py-2 text-right">{f.weight(total.bought)}</td>
                 <td />
-                <td className="num px-3 py-2 text-right">{f.weight(total.loaded)}</td>
+                <td className="num px-2 py-2 text-right">{f.weight(total.loaded)}</td>
                 <td />
-                <td className={cn("num px-3 py-2 text-right", total.left < 0 && "text-bad")}>{f.weight(total.left)}</td>
+                <td className={cn("num px-2 py-2 text-right", total.left < 0 && "text-bad")}>{f.weight(total.left)}</td>
                 <td />
               </tr>
             </tfoot>
@@ -352,7 +352,7 @@ export function MillAccountPage({ id }: { id: string }) {
                     <Tr key={x.loadId} className={cn(x.mismatch && "bg-bad-soft/40")}>
                       <Td className="whitespace-nowrap">{dmy(x.loadDate)}</Td>
                       <Td className="font-mono"><Link href={`/loads/${x.loadId}`} className="text-brand hover:underline">{x.truckNo ?? "—"}</Link></Td>
-                      <Td className="whitespace-nowrap text-muted">{x.stockDates.map(dmy).join(", ") || "—"}</Td>
+                      <Td className="text-muted">{x.stockDates.length ? <DateList dates={x.stockDates.map(dmy)} /> : "—"}</Td>
                       <Td numeric>{f.weight(x.weightGrams)}</Td>
                       <Td numeric>{x.ratePaisePerQtl ? f.rate(x.ratePaisePerQtl) : "—"}</Td>
                       <Td numeric>{f.amount(x.goodsPaise)}</Td>
@@ -367,12 +367,12 @@ export function MillAccountPage({ id }: { id: string }) {
                 </tbody>
                 <tfoot>
                   <tr className="bg-raised/50 text-[13px] font-semibold">
-                    <td className="px-3 py-2" colSpan={3}>{t("load.total")}</td>
-                    <td className="num px-3 py-2 text-right">{f.weight(trucksTotal.weight)}</td>
-                    <td className="num px-3 py-2 text-right" title={t("stock.avgSaleHelp")}>{trucksTotal.weight ? f.rate(Math.floor((trucksTotal.goods * 100_000) / trucksTotal.weight + 0.5)) : "—"}</td>
-                    <td className="num px-3 py-2 text-right">{f.amount(trucksTotal.goods)}</td>
+                    <td className="px-2 py-2" colSpan={3}>{t("load.total")}</td>
+                    <td className="num px-2 py-2 text-right">{f.weight(trucksTotal.weight)}</td>
+                    <td className="num px-2 py-2 text-right" title={t("stock.avgSaleHelp")}>{trucksTotal.weight ? f.rate(Math.floor((trucksTotal.goods * 100_000) / trucksTotal.weight + 0.5)) : "—"}</td>
+                    <td className="num px-2 py-2 text-right">{f.amount(trucksTotal.goods)}</td>
                     <td />
-                    <td className="num px-3 py-2 text-right">{f.money(trucksTotal.billed)}</td>
+                    <td className="num px-2 py-2 text-right">{f.money(trucksTotal.billed)}</td>
                   </tr>
                 </tfoot>
               </Table>
@@ -404,14 +404,14 @@ export function MillAccountPage({ id }: { id: string }) {
               <RowSpacer at="top" height={dayWin.topHeight} cols={9} />
               {dayWin.rows.map((d) => (
                 <tr key={d.date} className="border-b border-line/70 align-top">
-                  <td className="whitespace-nowrap px-3 py-2"><Link href={`/daily?date=${d.date}`} className="hover:text-brand">{dmy(d.date)}</Link></td>
-                  <td className="num px-3 py-2 text-right">{d.slips}</td>
-                  <td className="num px-3 py-2 text-right">{f.weight(d.boughtNet)}</td>
-                  <td className="num px-3 py-2 text-right">
+                  <td className="whitespace-nowrap px-2 py-2"><Link href={`/daily?date=${d.date}`} className="hover:text-brand">{dmy(d.date)}</Link></td>
+                  <td className="num px-2 py-2 text-right">{d.slips}</td>
+                  <td className="num px-2 py-2 text-right">{f.weight(d.boughtNet)}</td>
+                  <td className="num px-2 py-2 text-right">
                     {!s.jinsId ? <span className="text-faint" title={t("stock.pickJinsForDara")}>—</span> : d.avgRatePaisePerQtl ? f.rate(d.avgRatePaisePerQtl) : "—"}
                     {d.unpriced > 0 && <span className="block text-[10px] text-warn">{t("stock.unpriced", { n: d.unpriced })}</span>}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="px-2 py-2">
                     <div className="flex flex-wrap gap-1">
                       {d.trucks.map((x) => (
                         <Link key={x.loadId} href={`/loads/${x.loadId}`}>
@@ -423,9 +423,9 @@ export function MillAccountPage({ id }: { id: string }) {
                       {!d.trucks.length && <span className="text-faint">—</span>}
                     </div>
                   </td>
-                  <td className="num px-3 py-2 text-right">{f.weight(d.loadedNet)}</td>
-                  <td className={cn("num px-3 py-2 text-right font-semibold", d.stockNet < 0 && "text-bad")}>{f.weight(d.stockNet)}</td>
-                  <td className={cn("num px-3 py-2 text-right text-muted", d.runningNet < 0 && "text-bad")}>{f.weight(d.runningNet)}</td>
+                  <td className="num px-2 py-2 text-right">{f.weight(d.loadedNet)}</td>
+                  <td className={cn("num px-2 py-2 text-right font-semibold", d.stockNet < 0 && "text-bad")}>{f.weight(d.stockNet)}</td>
+                  <td className={cn("num px-2 py-2 text-right text-muted", d.runningNet < 0 && "text-bad")}>{f.weight(d.runningNet)}</td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
                     {!isNone && can("load.write") && (
                       <Button size="sm" variant="ghost" icon={<Truck className="h-3.5 w-3.5" />} title={t("stock.truckFromDay")}
@@ -442,14 +442,14 @@ export function MillAccountPage({ id }: { id: string }) {
             </tbody>
             <tfoot>
               <tr className="bg-raised/50 text-[13px] font-semibold">
-                <td className="px-3 py-2">{t("load.total")}</td>
-                <td className="num px-3 py-2 text-right">{days.data.totals.slips}</td>
-                <td className="num px-3 py-2 text-right">{f.weight(days.data.totals.boughtNet)}</td>
+                <td className="px-2 py-2">{t("load.total")}</td>
+                <td className="num px-2 py-2 text-right">{days.data.totals.slips}</td>
+                <td className="num px-2 py-2 text-right">{f.weight(days.data.totals.boughtNet)}</td>
                 <td colSpan={2} />
-                <td className="num px-3 py-2 text-right">{f.weight(days.data.totals.loadedNet)}</td>
-                <td className={cn("num px-3 py-2 text-right", days.data.totals.stockNet < 0 && "text-bad")}>{f.weight(days.data.totals.stockNet)}</td>
+                <td className="num px-2 py-2 text-right">{f.weight(days.data.totals.loadedNet)}</td>
+                <td className={cn("num px-2 py-2 text-right", days.data.totals.stockNet < 0 && "text-bad")}>{f.weight(days.data.totals.stockNet)}</td>
                 {/* the running column ends at what is in hand on the last day, the card's figure */}
-                <td className={cn("num px-3 py-2 text-right text-muted", days.data.totals.closingNet < 0 && "text-bad")} title={t("stock.runningHint")}>{f.weight(days.data.totals.closingNet)}</td>
+                <td className={cn("num px-2 py-2 text-right text-muted", days.data.totals.closingNet < 0 && "text-bad")} title={t("stock.runningHint")}>{f.weight(days.data.totals.closingNet)}</td>
                 <td />
               </tr>
             </tfoot>

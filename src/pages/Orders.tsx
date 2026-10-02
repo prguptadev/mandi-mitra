@@ -186,9 +186,10 @@ export function OrdersPage() {
                 <Tr key={o.id}>
                   <Td className="font-mono font-medium">{o.poNo || <span className="font-sans font-normal text-faint">{t("po.noNumber")}</span>}</Td>
                   <Td className="whitespace-nowrap">{dmy(o.poDate)}</Td>
-                  <Td className="whitespace-nowrap">
+                  {/* a long mill name goes onto a second line rather than being cut short */}
+                  <Td>
                     <Badge tone="brand" className="num">{o.millCode}</Badge>
-                    <span className="ml-1.5 inline-block max-w-[180px] truncate align-middle text-muted" title={pick(o.millName, o.millNameHi)}>{pick(o.millName, o.millNameHi)}</span>
+                    <span className="ml-1.5 text-muted">{pick(o.millName, o.millNameHi)}</span>
                   </Td>
                   <Td className="whitespace-nowrap"><span title={pick(o.jinsName, o.jinsNameHi)}>{o.jinsCode}</span></Td>
                   <Td numeric>{f.weight(o.qtyGrams)}</Td>
@@ -202,7 +203,7 @@ export function OrdersPage() {
                   </Td>
                   <Td>
                     <Badge tone={o.status === "open" ? "ok" : "neutral"}>{t(`po.status.${o.status}`)}</Badge>
-                    {o.validTill && <span className="ml-1.5 text-[11px] text-faint">{t("po.till", { d: dmy(o.validTill) })}</span>}
+                    {o.validTill && <span className="ml-1.5 inline-block whitespace-nowrap text-[11px] text-faint">{t("po.till", { d: dmy(o.validTill) })}</span>}
                   </Td>
                   <Td className="whitespace-nowrap text-right">
                     {can("po.write") && (

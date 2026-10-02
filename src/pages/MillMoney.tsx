@@ -9,7 +9,7 @@ import { ArrowLeft, Download, Landmark, Pencil, Plus, Printer, Ban } from "lucid
 import { api, ApiError, type Merchant } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useSession } from "@/lib/session.tsx";
-import { useFormat } from "@/lib/format.tsx";
+import { useFormat, RupeeMark } from "@/lib/format.tsx";
 import { useSort } from "@/lib/useSort.ts";
 import { PageHeader } from "@/components/AppShell.tsx";
 import { NumberInput } from "@/components/NumberInput.tsx";
@@ -76,13 +76,15 @@ export interface ReceiptRow {
 }
 
 /** "₹12,500.00 to receive" / "₹2,000.00 received ahead". */
-export function MillBalance({ paise, className }: { paise: number; className?: string }) {
+export function MillBalance({ paise, className, bare }: { paise: number; className?: string; bare?: boolean }) {
   const { t } = useI18n();
   const f = useFormat();
-  if (paise === 0) return <span className={cn("num text-muted", className)}>{f.money(0)}</span>;
+  // bare: in a column whose heading carries the currency sign
+  const show = (p: number) => (bare ? f.amount(p) : f.money(p));
+  if (paise === 0) return <span className={cn("num text-muted", className)}>{show(0)}</span>;
   return (
     <span className={cn("num whitespace-nowrap", paise < 0 && "text-warn", className)}>
-      {f.money(Math.abs(paise))} <span className="text-[11px] font-normal text-muted">{paise > 0 ? t("mm.toReceive") : t("mm.receivedAhead")}</span>
+      {show(Math.abs(paise))} <span className="text-[11px] font-normal text-muted">{paise > 0 ? t("mm.toReceive") : t("mm.receivedAhead")}</span>
     </span>
   );
 }
@@ -394,9 +396,9 @@ export function ReceiptsList({ merchantId }: { merchantId?: string }) {
           </tbody>
           <tfoot>
             <tr className="bg-raised/50 text-[13px] font-semibold">
-              <td className="px-3 py-2" colSpan={merchantId ? 4 : 5}>{t("mm.totalN", { n: list.data!.totals.count })}</td>
-              <td className="num px-3 py-2 text-right">{f.money(list.data!.totals.amountPaise)}</td>
-              <td className="num px-3 py-2 text-right">{f.money(list.data!.totals.deductionPaise)}</td>
+              <td className="px-2 py-2" colSpan={merchantId ? 4 : 5}>{t("mm.totalN", { n: list.data!.totals.count })}</td>
+              <td className="num px-2 py-2 text-right">{f.money(list.data!.totals.amountPaise)}</td>
+              <td className="num px-2 py-2 text-right">{f.money(list.data!.totals.deductionPaise)}</td>
               <td colSpan={2} />
             </tr>
           </tfoot>
@@ -522,17 +524,17 @@ export function MillStatementPage({ id }: { id: string }) {
               <Table>
                 <thead>
                   <tr>
-                    <Th>{t("daily.date")}</Th><Th className="min-w-[18rem]">{t("ledger.particulars")}</Th><Th numeric>{t("load.net")}</Th>
-                    <Th numeric>{t("mm.billed")}</Th><Th numeric>{t("mm.received")}</Th><Th numeric>{t("mm.cutAndHeld")}</Th>
-                    <Th numeric>{t("ledger.balance")}</Th><Th className="no-print w-16" />
+                    <Th>{t("daily.date")}</Th><Th className="min-w-[15rem]">{t("ledger.particulars")}</Th><Th numeric>{t("load.net")}</Th>
+                    <Th numeric>{t("mm.billed")}<RupeeMark /></Th><Th numeric>{t("mm.received")}<RupeeMark /></Th><Th numeric>{t("mm.cutAndHeld")}<RupeeMark /></Th>
+                    <Th numeric>{t("ledger.balance")}<RupeeMark /></Th><Th className="no-print w-16" />
                   </tr>
                 </thead>
                 <tbody>
                   <tr className="border-b border-line/70 bg-raised/30 text-[13px]">
-                    <td className="px-3 py-1.5" />
-                    <td className="px-3 py-1.5 text-muted">{s.from ? t("ledger.broughtForward") : t("ledger.opening")}</td>
+                    <td className="px-2 py-1.5" />
+                    <td className="px-2 py-1.5 text-muted">{s.from ? t("ledger.broughtForward") : t("ledger.opening")}</td>
                     <td colSpan={4} />
-                    <td className="px-3 py-1.5 text-right"><MillBalance paise={s.broughtForwardPaise} /></td>
+                    <td className="px-2 py-1.5 text-right"><MillBalance bare paise={s.broughtForwardPaise} /></td>
                     <td className="no-print" />
                   </tr>
                   {s.entries.map((e) => (
@@ -559,7 +561,7 @@ export function MillStatementPage({ id }: { id: string }) {
                       <Td numeric>{e.debitPaise ? f.amount(e.debitPaise) : ""}</Td>
                       <Td numeric className={cn("text-ok", e.voided && "line-through")}>{e.kind === "receipt" && e.amountPaise ? f.amount(e.amountPaise) : ""}</Td>
                       <Td numeric className={cn("text-muted", e.voided && "line-through")}>{e.kind === "receipt" && e.deductionPaise ? f.amount(e.deductionPaise) : e.kind === "shortage" ? f.amount(e.creditPaise) : ""}</Td>
-                      <Td numeric><MillBalance paise={e.balancePaise} /></Td>
+                      <Td numeric><MillBalance bare paise={e.balancePaise} /></Td>
                       <Td className="no-print whitespace-nowrap text-right">
                         {e.kind === "receipt" && !e.voided && can("millreceipt.write") && (
                           <>
@@ -574,11 +576,11 @@ export function MillStatementPage({ id }: { id: string }) {
                 </tbody>
                 <tfoot>
                   <tr className="bg-raised/50 text-[13px] font-semibold">
-                    <td className="px-3 py-2" colSpan={3}>{t("load.total")}</td>
-                    <td className="num px-3 py-2 text-right">{f.amount(s.totals.billedPaise)}</td>
-                    <td className="num px-3 py-2 text-right">{f.amount(s.totals.receivedPaise)}</td>
-                    <td className="num px-3 py-2 text-right">{f.amount(s.totals.deductedPaise + s.totals.shortagePaise)}</td>
-                    <td className="px-3 py-2 text-right"><MillBalance paise={s.totals.closingPaise} /></td>
+                    <td className="px-2 py-2" colSpan={3}>{t("load.total")}</td>
+                    <td className="num px-2 py-2 text-right">{f.amount(s.totals.billedPaise)}</td>
+                    <td className="num px-2 py-2 text-right">{f.amount(s.totals.receivedPaise)}</td>
+                    <td className="num px-2 py-2 text-right">{f.amount(s.totals.deductedPaise + s.totals.shortagePaise)}</td>
+                    <td className="px-2 py-2 text-right"><MillBalance bare paise={s.totals.closingPaise} /></td>
                     <td className="no-print" />
                   </tr>
                 </tfoot>
@@ -607,11 +609,11 @@ export function MillStatementPage({ id }: { id: string }) {
                 <tbody>
                   {s.openingDue && (
                     <tr className="border-b border-line/70 text-[13px]">
-                      <td className="px-3 py-1.5 text-muted" colSpan={3}>{t("ledger.opening")}</td>
-                      <td className="num px-3 py-1.5 text-right">{f.money(s.openingDue.billPaise)}</td>
-                      <td className="px-3 py-1.5 text-right text-faint">—</td>
-                      <td className="num px-3 py-1.5 text-right text-ok">{s.openingDue.fromAccountPaise ? f.money(s.openingDue.fromAccountPaise) : "—"}</td>
-                      <td className="num px-3 py-1.5 text-right font-semibold">{s.openingDue.duePaise ? f.money(s.openingDue.duePaise) : <Badge tone="ok">{t("mm.paid")}</Badge>}</td>
+                      <td className="px-2 py-1.5 text-muted" colSpan={3}>{t("ledger.opening")}</td>
+                      <td className="num px-2 py-1.5 text-right">{f.money(s.openingDue.billPaise)}</td>
+                      <td className="px-2 py-1.5 text-right text-faint">—</td>
+                      <td className="num px-2 py-1.5 text-right text-ok">{s.openingDue.fromAccountPaise ? f.money(s.openingDue.fromAccountPaise) : "—"}</td>
+                      <td className="num px-2 py-1.5 text-right font-semibold">{s.openingDue.duePaise ? f.money(s.openingDue.duePaise) : <Badge tone="ok">{t("mm.paid")}</Badge>}</td>
                       <td />
                     </tr>
                   )}
@@ -639,19 +641,19 @@ export function MillStatementPage({ id }: { id: string }) {
                   ))}
                   {s.onAccount.totalPaise > 0 && (
                     <tr className="border-b border-line/70 bg-raised/30 text-[13px]">
-                      <td className="px-3 py-1.5" colSpan={6}>
+                      <td className="px-2 py-1.5" colSpan={6}>
                         {t("mm.onAccountRow")}
                         <span className="block text-[11px] text-muted">{t("mm.onAccountRowSub", { total: f.money(s.onAccount.totalPaise), applied: f.money(s.onAccount.appliedPaise), left: f.money(s.onAccount.leftPaise) })}</span>
                       </td>
-                      <td className="num px-3 py-1.5 text-right font-semibold text-warn">{s.onAccount.leftPaise ? `− ${f.money(s.onAccount.leftPaise)}` : "—"}</td>
+                      <td className="num px-2 py-1.5 text-right font-semibold text-warn">{s.onAccount.leftPaise ? `− ${f.money(s.onAccount.leftPaise)}` : "—"}</td>
                       <td />
                     </tr>
                   )}
                 </tbody>
                 <tfoot>
                   <tr className="bg-raised/50 text-[13px] font-semibold">
-                    <td className="px-3 py-2" colSpan={6}>{t("mm.stillDueLine")}</td>
-                    <td className="px-3 py-2 text-right"><MillBalance paise={s.stillDuePaise} /></td>
+                    <td className="px-2 py-2" colSpan={6}>{t("mm.stillDueLine")}</td>
+                    <td className="px-2 py-2 text-right"><MillBalance paise={s.stillDuePaise} /></td>
                     <td />
                   </tr>
                 </tfoot>

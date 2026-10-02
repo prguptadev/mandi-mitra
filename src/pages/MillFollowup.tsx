@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Copy, MessageCircle, PhoneCall, Plus, Trash2, Wallet } from "lucide-react";
 import { api, ApiError } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
-import { useFormat } from "@/lib/format.tsx";
+import { useFormat, RupeeMark } from "@/lib/format.tsx";
 import { useSession } from "@/lib/session.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { PageHeader } from "@/components/AppShell.tsx";
@@ -85,7 +85,7 @@ export function MillFollowupPage() {
                   <tr>
                     <Th />
                     <Th>{t("fu.mill")}</Th>
-                    <Th numeric>{t("fu.owes")}</Th>
+                    <Th numeric>{t("fu.owes")}<RupeeMark /></Th>
                     <Th>{t("fu.oldest")}</Th>
                     <Th>{t("fu.byAge")}</Th>
                     <Th>{t("fu.lastMoney")}</Th>
@@ -106,14 +106,14 @@ export function MillFollowupPage() {
                               </button>
                             )}
                           </Td>
-                          <Td className="min-w-[220px]">
+                          <Td className="min-w-[150px]">
                             <Link href={`/mill-accounts/${m.id}`} className="font-medium text-ink hover:text-brand hover:underline">{m.code} — {pick(m.name, m.nameHi)}</Link>
                             {(m.contactPerson || m.phone) && (
                               <p className="text-[11px] text-muted">{[m.contactPerson, m.phone].filter(Boolean).join(" · ")}</p>
                             )}
                           </Td>
                           <Td numeric>
-                            <span className={cn("font-semibold", m.balancePaise > 0 ? "text-ink" : "text-ok")}>{f.money(m.balancePaise)}</span>
+                            <span className={cn("font-semibold", m.balancePaise > 0 ? "text-ink" : "text-ok")}>{f.amount(m.balancePaise)}</span>
                             {m.aheadPaise > 0 && m.balancePaise <= 0 && <p className="text-[11px] text-ok">{t("fu.paidAhead")}</p>}
                           </Td>
                           <Td>
@@ -122,15 +122,15 @@ export function MillFollowupPage() {
                             ) : <span className="text-faint">—</span>}
                           </Td>
                           <Td className="min-w-[120px]">{m.duePaise > 0 ? <AgeBar buckets={m.buckets} labels={bucketLabels} /> : <span className="text-faint">—</span>}</Td>
-                          <Td className="whitespace-nowrap text-[12px]">
+                          <Td className="text-[12px]">
                             {m.lastReceipt ? (
                               <>
-                                <span className="num text-ink">{f.money(m.lastReceipt.amountPaise)}</span>
-                                <p className="text-muted">{dmy(m.lastReceipt.date)}{m.lastReceipt.days > 0 ? ` · ${t("fu.daysAgo", { n: m.lastReceipt.days })}` : ""}</p>
+                                <span className="num whitespace-nowrap text-ink">{f.money(m.lastReceipt.amountPaise)}</span>
+                                <p className="text-muted"><span className="whitespace-nowrap">{dmy(m.lastReceipt.date)}</span>{m.lastReceipt.days > 0 ? ` · ${t("fu.daysAgo", { n: m.lastReceipt.days })}` : ""}</p>
                               </>
                             ) : <span className="text-faint">{t("fu.never")}</span>}
                           </Td>
-                          <Td className="min-w-[160px] max-w-[260px] text-[12px]">
+                          <Td className="min-w-[140px] max-w-[260px] text-[12px]">
                             {m.followup ? (
                               <>
                                 {m.followup.nextDate && (
@@ -139,12 +139,12 @@ export function MillFollowupPage() {
                                   </Badge>
                                 )}
                                 {m.followup.promisedPaise ? <span className="ml-1 text-muted">{t("fu.promised", { a: f.money(m.followup.promisedPaise) })}</span> : null}
-                                {m.followup.note && <p className="mt-0.5 truncate text-muted" title={m.followup.note}>{m.followup.note}</p>}
+                                {m.followup.note && <p className="mt-0.5 break-words text-muted" title={m.followup.note}>{m.followup.note}</p>}
                               </>
                             ) : <span className="text-faint">{t("fu.noCall")}</span>}
                           </Td>
-                          <Td align="right" className="whitespace-nowrap">
-                            <div className="flex justify-end gap-1">
+                          <Td align="right">
+                            <div className="flex flex-wrap justify-end gap-1">
                               {can("millreceipt.write") && (
                                 <Button size="sm" variant="secondary" icon={<PhoneCall className="h-3.5 w-3.5" />} onClick={() => setNoting(m)}>{t("fu.noteCall")}</Button>
                               )}
