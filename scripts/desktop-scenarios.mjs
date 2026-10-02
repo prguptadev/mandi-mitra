@@ -2,15 +2,19 @@
  * Electron binary, `npm run build` and `npm run build:desktop-server`). Things
  * the packaged smoke test cannot do because they restart or close the app:
  *
- *   quit        closing the window writes the books into the main file and closes them
+ *   quit        closing the window takes the closing backup, writes the books into the main file and closes them
  *   restore     "Restore a backup" restarts the app, and the backup is put back
  *   crash       a crashed page is reloaded; a second crash restarts with software drawing
- *   damaged     damaged books: one plain sentence, Try again and Close on the splash
+ *   damaged     damaged books and no backup: the window says only why, and the file is left as it was
+ *   recover     damaged, then missing books: the newest good backup is put back and the first screen says so
+ *   badupdate   an update that cannot open the books: one sentence, "Go back to version …" and Close on the splash;
+ *               Go back starts the kept installer and the app leaves
  *   second      a second start only brings the first one forward
  *   freeze      (SCEN_BIG=<copy of a big mandi.db>) the window's process stays free while the server works
  *
  * usage: SCEN_DIR=<an empty folder whose name contains "test"> node scripts/desktop-scenarios.mjs [names…]
  *        SCEN_MAIN=<folder with another electron/main.cjs> runs an older copy of the app for comparison.
+ *        SCEN_ELECTRON=<the Electron binary> when it is not in node_modules/electron/dist.
  * Ports SCEN_PORT (default 13040) to +12. Test PINs only (a fresh first-run seed: Admin / 7747).
  */
 import { spawn } from "node:child_process";
@@ -24,7 +28,7 @@ const PORT = Number(process.env.SCEN_PORT ?? 13040);
 const CDP = PORT + 10;
 const INSPECT = PORT + 11;
 const APP = process.env.SCEN_MAIN ?? ROOT;
-const ELECTRON = path.join(ROOT, "node_modules", "electron", process.platform === "darwin" ? "dist/Electron.app/Contents/MacOS/Electron" : process.platform === "win32" ? "dist/electron.exe" : "dist/electron");
+const ELECTRON = process.env.SCEN_ELECTRON ?? path.join(ROOT, "node_modules", "electron", process.platform === "darwin" ? "dist/Electron.app/Contents/MacOS/Electron" : process.platform === "win32" ? "dist/electron.exe" : "dist/electron");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let bad = 0;
 const check = (label, ok, got) => {
@@ -98,6 +102,9 @@ const scenarios = {
     check("closing the window ends the app", code === 0, code);
     const db = path.join(ud, "data", "mandi.db");
     check("  ...with the books written into the main file and closed (no -wal side file left)", fs.existsSync(db) && !fs.existsSync(`${db}-wal`));
+    check("  ...cleanly (no check of the file at the next start)", !fs.existsSync(path.join(ud, "data", "books-open.json")));
+    const backups = (() => { try { return fs.readdirSync(path.join(ud, "data", "backups")); } catch { return []; } })();
+    check("  ...after the day's work went into a backup (taken by the books' own process)", backups.some((n) => /^auto-\d{8}-\d{6}\.db$/.test(n)) && /closing backup auto-/.test(logOf(ud)), backups);
     check("  ...and the log says so", /\[app\] closed/.test(logOf(ud)), logOf(ud).slice(-300));
     if (code !== 0) p.kill();
   },
@@ -149,34 +156,135 @@ const scenarios = {
   async damaged() {
     const ud = fresh("damaged");
     fs.mkdirSync(path.join(ud, "data"), { recursive: true });
-    fs.writeFileSync(path.join(ud, "data", "mandi.db"), "this is not a database ".repeat(400));
+    const db = path.join(ud, "data", "mandi.db");
+    const garbage = "this is not a database ".repeat(400);
+    fs.writeFileSync(db, garbage);
     const p = launch(ud);
+    const pg = await page();
+    const said = await until(async () => {
+      const t = await pg?.evaluate('document.body.innerText').catch(() => "");
+      return t && t.includes("could not be opened") ? t : null;
+    }, 20_000, 200);
+    check("damaged books and no backup: the window says only why", Boolean(said) && /The books file could not be opened and no backup could be put back/.test(said ?? ""), (said ?? "").slice(0, 200));
+    const shot = await pg?.send("Page.captureScreenshot", { format: "png" });
+    if (shot?.result?.data) fs.writeFileSync(path.join(DIR, "damaged-window.png"), Buffer.from(shot.result.data, "base64"));
+    check("  ...the technical detail is in the log", /SQLITE_NOTADB|file is not a database|nothing is opened/.test(logOf(ud)), logOf(ud).slice(-400));
+    await pg?.evaluate("window.close(), true").catch(() => undefined);
+    const code = await Promise.race([p.exited, sleep(15_000).then(() => "still running")]);
+    check("  ...the window closes the app as usual", code === 0, code);
+    check("  ...and the damaged file is left exactly as it was (nothing deleted, nothing written)", fs.readFileSync(db, "utf8") === garbage);
+    if (code !== 0) p.kill();
+  },
+
+  async recover() {
+    const ud = fresh("recover");
+    const db = path.join(ud, "data", "mandi.db");
+    // books with a backup of their own: a first start, a backup, a normal close
+    let p = launch(ud);
+    let pg = await page();
+    await until(() => /window shown/.test(logOf(ud)), 15_000);
+    check("signed in on the first-run books (test PIN)", (await signIn(pg)) === 200);
+    const backup = await pg.evaluate('fetch("/api/backup/run", { method: "POST" }).then((r) => r.json())');
+    check("a backup is taken", Boolean(backup?.name), backup);
+    await pg.evaluate("window.close(), true").catch(() => undefined);
+    let code = await Promise.race([p.exited, sleep(15_000).then(() => "still running")]);
+    if (code !== 0) p.kill();
+
+    const opened = async (why, notice) => {
+      const pg2 = await page();
+      const shown = await until(() => /window shown/.test(logOf(ud).split("[app] start v").pop() ?? ""), 20_000);
+      check(`  ...the app opens on it (in the books' own process)`, Boolean(pg2 && shown) && /server ready in its own process/.test(logOf(ud).split("[app] start v").pop() ?? ""));
+      check(`  ...the log says which backup was put back`, new RegExp(`the books file was ${why}: put back ${backup?.name}`).test(logOf(ud)), logOf(ud).slice(-500));
+      check("  ...signed in", (await signIn(pg2)) === 200);
+      const n = await pg2.evaluate('fetch("/api/backup/notice").then((r) => r.json())');
+      check("  ...the notice names the backup", n?.start?.kind === "restored" && n?.start?.why === why && n?.start?.backup === backup?.name, n);
+      await pg2.evaluate("location.reload(), true").catch(() => undefined);
+      const line = await until(async () => {
+        const t = await pg2.evaluate('(document.querySelector("[role=alert]") || {}).textContent || ""').catch(() => "");
+        return t && t.includes(notice) ? t : null;
+      }, 20_000, 300);
+      check("  ...and the first screen says it in one line", Boolean(line), line);
+      const shot = await pg2.send("Page.captureScreenshot", { format: "png" });
+      if (shot?.result?.data) fs.writeFileSync(path.join(DIR, `recover-${why}.png`), Buffer.from(shot.result.data, "base64"));
+      await pg2.evaluate("window.close(), true").catch(() => undefined);
+    };
+
+    // damaged: the file's first bytes overwritten
+    const fd = fs.openSync(db, "r+");
+    fs.writeSync(fd, Buffer.from("this is no longer a database file"), 0, 33, 0);
+    fs.closeSync(fd);
+    const damagedBytes = fs.readFileSync(db);
+    console.log("   (the books file damaged)");
+    p = launch(ud);
+    await opened("damaged", "The books file was damaged, so the backup from");
+    code = await Promise.race([p.exited, sleep(15_000).then(() => "still running")]);
+    if (code !== 0) p.kill();
+    const kept = (() => { try { return fs.readdirSync(path.join(ud, "data", "backups")).filter((n) => /^damaged-.*\.db$/.test(n)); } catch { return []; } })();
+    check("  ...the damaged file is kept in backups, byte for byte", kept.length === 1 && fs.readFileSync(path.join(ud, "data", "backups", kept[0])).equals(damagedBytes), kept);
+
+    // missing: the file gone
+    for (const side of ["", "-wal", "-shm"]) fs.rmSync(db + side, { force: true });
+    console.log("   (the books file deleted)");
+    p = launch(ud);
+    await opened("missing", "The books file was missing, so the backup from");
+    code = await Promise.race([p.exited, sleep(15_000).then(() => "still running")]);
+    check("  ...and closes as usual", code === 0, code);
+    if (code !== 0) p.kill();
+  },
+
+  async badupdate() {
+    const ud = fresh("badupdate");
+    const db = path.join(ud, "data", "mandi.db");
+    // books at this version's schema
+    let p = launch(ud);
+    let pg = await page();
+    await until(() => /window shown/.test(logOf(ud)), 15_000);
+    await pg?.evaluate("window.close(), true").catch(() => undefined);
+    let code = await Promise.race([p.exited, sleep(15_000).then(() => "still running")]);
+    if (code !== 0) p.kill();
+    // the next version's update fails half way (its SQL is wrong), and the version before is kept here
+    const mig = path.join(DIR, "badupdate-migrations");
+    fs.rmSync(mig, { recursive: true, force: true });
+    fs.cpSync(path.join(ROOT, "desktop-build", "migrations"), mig, { recursive: true });
+    const jp = path.join(mig, "meta", "_journal.json");
+    const j = JSON.parse(fs.readFileSync(jp, "utf8"));
+    const last = j.entries[j.entries.length - 1];
+    j.entries.push({ idx: last.idx + 1, version: last.version, when: last.when + 1000, tag: "0099_scen_bad", breakpoints: true });
+    fs.writeFileSync(jp, JSON.stringify(j, null, 2));
+    fs.writeFileSync(path.join(mig, "0099_scen_bad.sql"), "ALTER TABLE no_such_table ADD COLUMN x integer;");
+    const inst = path.join(DIR, "badupdate-installers");
+    fs.rmSync(inst, { recursive: true, force: true });
+    fs.mkdirSync(inst, { recursive: true });
+    const ran = path.join(DIR, "badupdate-installer-ran.txt");
+    fs.rmSync(ran, { force: true });
+    // a stand-in for the kept installer: it only writes down how it was started
+    fs.writeFileSync(path.join(inst, "MandiMitra-Setup-0.0.1.exe"), `#!/bin/sh\necho "$@" > "${ran}"\n`, { mode: 0o755 });
+    const before = { size: fs.statSync(db).size, ino: fs.statSync(db).ino };
+    p = launch(ud, { env: { MANDI_MIGRATIONS_DIR: mig, MANDI_INSTALLERS_DIR: inst } });
     const t = await cdpTarget((u) => u.startsWith("data:text/html"));
     const sp = t ? await connect(t.webSocketDebuggerUrl) : null;
     const text = await until(async () => {
-      const s = await sp?.evaluate('document.body.classList.contains("err") && document.getElementById("status").textContent').catch(() => null);
-      return s || null;
-    }, 20_000, 200);
-    check("damaged books: the splash says one plain sentence", text === "Your books file could not be opened.", text);
+      const s2 = await sp?.evaluate('document.body.classList.contains("err") && document.getElementById("status").textContent').catch(() => null);
+      return s2 || null;
+    }, 30_000, 200);
+    check("an update that cannot open the books: the splash says one plain sentence", text === "This version could not open your books; they are as they were.", text);
+    const buttons = await sp?.evaluate('[...document.querySelectorAll(".btns button")].map((b) => b.textContent).join(", ")');
+    check("  ...with Go back to the kept version, and Close", buttons === "Go back to version 0.0.1, Close", buttons);
     const shot = await sp?.send("Page.captureScreenshot", { format: "png" });
-    if (shot?.result?.data) fs.writeFileSync(path.join(DIR, "splash-error.png"), Buffer.from(shot.result.data, "base64"));
-    const buttons = await sp?.evaluate('[...document.querySelectorAll(".btns button")].map((b) => b.textContent + (b.offsetParent ? "" : " (hidden)")).join(", ")');
-    check("  ...with Try again and Close, and where the log is", buttons === "Try again, Close" && /main\.log/.test(await sp?.evaluate('document.getElementById("log").textContent')), buttons);
-    check("  ...the technical detail is in the log, not on screen", /SQLITE_NOTADB|file is not a database/.test(logOf(ud)));
+    if (shot?.result?.data) fs.writeFileSync(path.join(DIR, "badupdate-splash.png"), Buffer.from(shot.result.data, "base64"));
+    check("  ...the books are as they were (same file, nothing swapped)", fs.statSync(db).size === before.size && fs.statSync(db).ino === before.ino);
+    check("  ...and closed cleanly by the books' process before it left", !fs.existsSync(`${db}-wal`) && !fs.existsSync(path.join(ud, "data", "books-open.json")));
+    check("  ...the cause is in the log", /no_such_table|no such table/.test(logOf(ud)));
     await sp?.evaluate('document.getElementById("again").click(), true');
     sp?.close();
-    const code = await Promise.race([p.exited, sleep(10_000).then(() => "still running")]);
-    const again = await until(() => (logOf(ud).match(/\[app\] start v/g) ?? []).length >= 2, 15_000);
-    check("Try again starts the app again", code === 0 && Boolean(again), code);
-    const t2 = await cdpTarget((u) => u.startsWith("data:text/html"));
-    const sp2 = t2 ? await connect(t2.webSocketDebuggerUrl) : null;
-    await until(async () => (await sp2?.evaluate('document.body.classList.contains("err")').catch(() => false)) === true, 20_000, 200);
-    await sp2?.evaluate('document.getElementById("close").click(), true');
-    sp2?.close();
-    const pid2 = pidOf(logOf(ud), 1);
-    const closed = await until(() => { try { process.kill(pid2, 0); return false; } catch { return true; } }, 10_000);
-    check("Close ends the app", Boolean(closed));
-    if (!closed) kill(pid2);
+    code = await Promise.race([p.exited, sleep(10_000).then(() => "still running")]);
+    const args = await until(() => { try { return fs.readFileSync(ran, "utf8").trim(); } catch { return null; } }, 5000);
+    check("Go back starts the kept installer quietly, told to wait for the app", args === "/S --force-run --updated", args);
+    check("  ...and the app leaves", code === 0, code);
+    if (code !== 0) p.kill();
+    let upd = null;
+    try { upd = JSON.parse(fs.readFileSync(path.join(ud, "data", "update.json"), "utf8")); } catch { /* none */ }
+    check("  ...and this version is not offered again", Array.isArray(upd?.skip) && upd.skip.length === 1, upd);
   },
 
   async second() {

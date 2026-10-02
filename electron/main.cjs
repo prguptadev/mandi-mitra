@@ -362,7 +362,8 @@ function serverEnv(port, share) {
   return {
     MANDI_DATA_DIR: DATA_DIR,
     MANDI_STATIC_DIR: path.join(UNPACKED, "dist"),
-    MANDI_MIGRATIONS_DIR: path.join(UNPACKED, "desktop-build", "migrations"),
+    // a dev run may be given other migrations (scripts/desktop-scenarios.mjs badupdate); the installed app never is
+    MANDI_MIGRATIONS_DIR: dev && !smoke && process.env.MANDI_MIGRATIONS_DIR ? path.resolve(process.env.MANDI_MIGRATIONS_DIR) : path.join(UNPACKED, "desktop-build", "migrations"),
     MANDI_HOST: share ? "0.0.0.0" : "127.0.0.1",
     MANDI_DESKTOP: "1",
     MANDI_APP_VERSION: app.getVersion(),
@@ -632,13 +633,21 @@ let serverClosed = false;
 app.on("will-quit", (e) => {
   quitting = true;
   if (serverClosed || !server.mode) return;
+  if (server.mode === "inprocess" || !server.child) {
+    // nothing to wait for: inside the app the backup and the close happen right here (none when the server has gone)
+    serverClosed = true;
+    void stopServer(0, { backup: true });
+    info("closed");
+    if (smokeQuit) { e.preventDefault(); void smokeQuitDone(); }
+    return;
+  }
   e.preventDefault();
   // the backup runs in the server's process; the windows are already gone, so a big book may take a few seconds
   void stopServer(30_000, { backup: true }).then(() => {
     serverClosed = true;
     info("closed");
-    if (smokeQuit) void smokeQuitDone();
-    else app.quit();
+    // once Electron has finished with this will-quit (a quit asked for during it is ignored)
+    setImmediate(() => { if (smokeQuit) void smokeQuitDone(); else app.quit(); });
   });
 });
 app.on("child-process-gone", (_e, d) => {
