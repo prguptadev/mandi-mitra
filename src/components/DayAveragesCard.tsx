@@ -88,7 +88,7 @@ export function DayAveragesCard() {
 
   return (
     <Card className="mb-5">
-      <CardHeader title={t("dash.dayRate")} sub={t("dash.dayRateSub")} />
+      <CardHeader title={t("dash.dayRate")} />
       {picker}
       <div className="space-y-4 p-3">
         {!days.length && (

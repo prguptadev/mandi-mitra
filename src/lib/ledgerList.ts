@@ -39,14 +39,24 @@ export function findSuppliers<T extends LedgerListRow>(rows: T[], query: string,
   const asHindi = looksLatin(q) ? toDevanagari(q) : hasDevanagari(q) ? q : "";
   const hiKey = asHindi ? normKey(asHindi) : "";
   const asLatin = hasDevanagari(q) ? latinKey(toHinglish(q)) : "";
-  return rows.filter((r) => {
-    const k = keys.get(r.id) ?? searchKeys([r]).get(r.id)!;
+  const typedHindi = hasDevanagari(q);
+  const keyOf = (r: T) => keys.get(r.id) ?? searchKeys([r]).get(r.id)!;
+  // the name as written, in either script, or its Hindi key when Hindi was typed
+  const close = rows.filter((r) => {
+    const k = keyOf(r);
     return k.hi.includes(q) || k.latin.includes(lower)
       || (qLatinKey.length > 0 && k.latinKey.includes(qLatinKey))
-      || (qSkel.length > 2 && k.skel.some((w) => w.startsWith(qSkel)))
       || (asHindi.length > 0 && k.hi.includes(asHindi))
-      || (hiKey.length > 2 && k.hiKey.some((w) => w.startsWith(hiKey)))
+      || (typedHindi && hiKey.length > 2 && k.hiKey.some((w) => w.startsWith(hiKey)))
       || (asLatin.length > 2 && k.latinKey.includes(asLatin));
+  });
+  if (close.length) return close;
+  /* Nothing written that way: then the loose match, consonants only, which
+     finds "dharmpal" for DHARAMPAL but alone would also find SINGH NISHAD for "sohan". */
+  return rows.filter((r) => {
+    const k = keyOf(r);
+    return (qSkel.length > 2 && k.skel.some((w) => w.startsWith(qSkel)))
+      || (hiKey.length > 2 && k.hiKey.some((w) => w.startsWith(hiKey)));
   });
 }
 
