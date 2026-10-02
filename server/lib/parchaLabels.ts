@@ -78,6 +78,15 @@ export function screenLines(
   return out;
 }
 
+/**
+ * What the truck screen prints beside the goods value. One row is net × its
+ * rate, exactly. Several rows are each worked at their own day's rate and
+ * added, so their rate is an average that net × average need not come back
+ * to: it is shown as an average, never as a sum to multiply.
+ */
+export const goodsAt = (doc: { lines: unknown[]; totals: { netGrams: number; ratePaisePerQtl: number } }) =>
+  ({ netGrams: doc.totals.netGrams, ratePaisePerQtl: doc.totals.ratePaisePerQtl, average: doc.lines.length > 1 });
+
 /** 1060695.45 -> "10,60,695.45": Indian grouping, always two decimals. */
 export function indianMoney(paise: number): string {
   const neg = paise < 0;

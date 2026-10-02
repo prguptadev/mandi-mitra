@@ -18,6 +18,7 @@ import { PortalRatesCard } from "@/components/PortalRatesCard.tsx";
 import { RaceChart, type RacePoint } from "@/components/RaceChart.tsx";
 import { Card, CardHeader, Badge, Select, Input, Button } from "@/components/ui/index.tsx";
 import { cn, todayISO } from "@/lib/utils.ts";
+import { notAfterToday, suppliersNow } from "@/lib/asOfToday.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* One picture of the business: what came in, what went out to each mill,
@@ -60,7 +61,8 @@ type Period = "fy" | "all" | "today" | "week" | "month" | "custom";
 
 function periodRange(p: Period, from: string, to: string, fy: { from: string; to: string }): { from?: string; to?: string } {
   const today = todayISO();
-  if (p === "fy") return { from: fy.from, to: fy.to };
+  // the year so far (a year already over: to its 31 March), as the ledger page counts it
+  if (p === "fy") return { from: fy.from, to: notAfterToday(fy.to, today) };
   const d = new Date(today + "T00:00:00Z");
   if (p === "today") return { from: today, to: today };
   if (p === "week") { d.setUTCDate(d.getUTCDate() - 6); return { from: d.toISOString().slice(0, 10), to: today }; }
@@ -164,7 +166,9 @@ function FlagsCard({ flags }: { flags: Flag[] }) {
 
 /**
  * Where the money stands, and where the billed money comes from. Balances
- * are all-time; flows (paid, received, billed) follow the period chosen.
+ * are as of the period's end, never after today ("who owes whom today": a
+ * post-dated slip, payment or cheque does not count yet); flows (paid,
+ * received, billed) follow the period chosen up to that day.
  */
 function MoneyCard({ qs }: { qs: string }) {
   const { t, pick } = useI18n();
@@ -306,9 +310,16 @@ export function DashboardPage() {
   if (r.from) qs.set("from", r.from);
   if (r.to) qs.set("to", r.to);
   if (jinsId) qs.set("jinsId", jinsId);
-  const dash = useQuery({ queryKey: ["dashboard", qs.toString()], queryFn: () => api.get<DashboardData>(`/dashboard?${qs}`) });
+  // what each mill owes is as of today, whatever the period, like "to pay suppliers today"
+  const dashQs = new URLSearchParams(qs);
+  dashQs.set("asOf", todayISO());
+  const dash = useQuery({ queryKey: ["dashboard", dashQs.toString()], queryFn: () => api.get<DashboardData>(`/dashboard?${dashQs}`) });
+  // the money card: who owes whom as of the period's end, never after today
+  const moneyQs = new URLSearchParams(qs);
+  moneyQs.set("to", notAfterToday(r.to));
+  if (r.from && r.from > moneyQs.get("to")!) moneyQs.set("from", moneyQs.get("to")!);
   // owed as of today, as the ledger page shows it: an entry dated ahead is not owed yet
-  const ledger = useQuery({ queryKey: ["ledger", "asOf", todayISO()], queryFn: () => api.get<LedgerTop>(`/ledger?asOf=${todayISO()}`), enabled: can("ledger.read") });
+  const ledger = useQuery({ queryKey: ["ledger", "asOf", todayISO()], queryFn: () => api.get<LedgerTop>(suppliersNow()), enabled: can("ledger.read") });
   const d = dash.data;
   const k = d?.kpis;
   const top = (ledger.data?.rows ?? []).filter((x) => x.balancePaise > 0).slice(0, 8);
@@ -375,7 +386,7 @@ export function DashboardPage() {
         </div>
       )}
 
-      {can("ledger.read") && can("millledger.read") && k && <MoneyCard qs={qs.toString()} />}
+      {can("ledger.read") && can("millledger.read") && k && <MoneyCard qs={moneyQs.toString()} />}
 
       <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
         {d ? <FlagsCard flags={d.flags} /> : dash.isError ? null : <Card><SkeletonTable rows={4} /></Card>}

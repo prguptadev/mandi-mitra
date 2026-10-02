@@ -25,6 +25,7 @@ import { LoadError } from "@/components/LoadError.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { defaultSupplierCharges, type SupplierCharges } from "@server/lib/supplierTerms.ts";
 import { cn, todayISO, fmtQtl } from "@/lib/utils.ts";
+import { owedBeforePayment, suppliersNow } from "@/lib/asOfToday.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* Supplier ledger and payments. What is owed to a supplier is always
@@ -100,11 +101,13 @@ export function PaymentDialog({ onClose, editing, adatiId: presetAdati, adatiLab
     notes: editing?.notes ?? "",
   }));
   const [err, setErr] = useState<string | null>(null);
-  const ledger = useQuery({ queryKey: ["ledger", "all"], queryFn: () => api.get<LedgerList>("/ledger") });
+  // owed as of today, as the ledger page shows it: a slip or payment dated after today does not count yet
+  const ledger = useQuery({ queryKey: ["ledger", "asOf", todayISO()], queryFn: () => api.get<LedgerList>(suppliersNow()) });
   const row = ledger.data?.rows.find((r) => r.id === v.adatiId);
   const amountPaise = v.amount == null ? 0 : Math.round(v.amount * 100);
   // what is owed now, not counting this payment if it is the one being edited
-  const now = row ? row.balancePaise + (editing && editing.adatiId === v.adatiId ? editing.amountPaise : 0) : null;
+  const before = row ? owedBeforePayment(row, editing, v.adatiId) : null;
+  const now = before ? before.owedPaise : null;
 
   const save = useMutation({
     mutationFn: () => {
@@ -175,7 +178,7 @@ export function PaymentDialog({ onClose, editing, adatiId: presetAdati, adatiLab
             <p className="num col-span-3 border-t border-line pt-2 text-[11px] leading-relaxed text-muted">
               {t("pay.owedMadeOf", {
                 opening: f.money(row.openingBalancePaise), amount: f.money(row.goodsPaise), commission: f.money(row.commissionPaise),
-                gaushala: f.money(row.gaushalaPaise), paid: f.money(row.paymentsPaise - (editing && editing.adatiId === v.adatiId ? editing.amountPaise : 0)),
+                gaushala: f.money(row.gaushalaPaise), paid: f.money(before ? before.paidPaise : row.paymentsPaise),
               })}
             </p>
           )}

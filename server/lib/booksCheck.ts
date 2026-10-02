@@ -77,8 +77,9 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
       let t = { commissionPct: 0, gaushalaPerQtl: 0 };
       try { t = { ...t, ...JSON.parse(s.supplier_terms ?? "{}") }; } catch { /* none */ }
       const priced = s.rate_paise_per_qtl > 0;
-      const commission = priced ? Number((BigInt(s.amount_paise) * BigInt(Math.round(t.commissionPct * 1000)) + 50_000n) / 100_000n) : 0;
-      const gaushala = priced ? Number((BigInt(s.net_grams) * BigInt(Math.round(t.gaushalaPerQtl * 1000)) + 500_000n) / 1_000_000n) : 0;
+      // the terms to 4 decimals, as Settings keeps them (0.6667 %, ₹0.0625 a quintal)
+      const commission = priced ? Number((BigInt(s.amount_paise) * BigInt(Math.round(t.commissionPct * 10_000)) + 500_000n) / 1_000_000n) : 0;
+      const gaushala = priced ? Number((BigInt(s.net_grams) * BigInt(Math.round(t.gaushalaPerQtl * 10_000)) + 5_000_000n) / 10_000_000n) : 0;
       const payable = s.amount_paise + commission + gaushala;
       if (commission !== (s.commission_paise ?? 0) || gaushala !== (s.gaushala_paise ?? 0) || payable !== (s.payable_paise ?? 0)) {
         chBad++;

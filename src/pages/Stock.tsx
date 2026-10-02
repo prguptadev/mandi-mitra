@@ -17,7 +17,8 @@ import { Button, Card, CardHeader, Field, Input, Select, Table, Th, Td, Tr, Badg
 import { OwnFirm } from "@/components/OwnFirm.tsx";
 import { NewLoadDialog } from "@/pages/Loads.tsx";
 import { LoadError } from "@/components/LoadError.tsx";
-import { cn } from "@/lib/utils.ts";
+import { cn, todayISO } from "@/lib/utils.ts";
+import { millNow, millsNow } from "@/lib/asOfToday.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
 
 /* Stock per mill = what was bought for it − what trucks took from it. Every
@@ -69,8 +70,8 @@ export function StockPage() {
   const s = useStockFilters();
   const { can } = useSession();
   const list = useQuery({ queryKey: ["stock", "all", s.qs.toString()], queryFn: () => api.get<StockRow[]>(`/stock?${s.qs}`) });
-  // what each mill owes us, for its card — only for those who may see money
-  const money = useQuery({ queryKey: ["mill-ledger", "all"], queryFn: () => api.get<MillLedgerList>("/mill-ledger"), enabled: can("millledger.read") });
+  // what each mill owes us today, for its card — only for those who may see money
+  const money = useQuery({ queryKey: ["mill-ledger", "all", todayISO()], queryFn: () => api.get<MillLedgerList>(millsNow()), enabled: can("millledger.read") });
   const owed = new Map((money.data?.rows ?? []).map((r) => [r.id, r]));
   const rows = list.data ?? [];
   const sort = useSort(rows, {
@@ -220,9 +221,10 @@ export function MillAccountPage({ id }: { id: string }) {
     queryFn: () => api.get<MillAccount>(`/dashboard/mill/${id}?${s.qs}`),
     enabled: !isNone,
   });
+  // what the mill owes today, as the mills list shows it
   const money = useQuery({
-    queryKey: ["mill-ledger", id, "card"],
-    queryFn: () => api.get<{ mill: { openingBalancePaise: number }; totals: { billedPaise: number; shortagePaise: number; receivedPaise: number; deductedPaise: number; closingPaise: number } }>(`/mill-ledger/${id}`),
+    queryKey: ["mill-ledger", id, "card", todayISO()],
+    queryFn: () => api.get<{ mill: { openingBalancePaise: number }; totals: { billedPaise: number; shortagePaise: number; receivedPaise: number; deductedPaise: number; closingPaise: number } }>(millNow(id)),
     enabled: !isNone && can("millledger.read"),
   });
   const [receiving, setReceiving] = useState(false);

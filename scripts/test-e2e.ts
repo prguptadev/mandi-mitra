@@ -90,6 +90,7 @@ try {
   run("scripts/e2e-ca.ts");
   run("scripts/e2e-multi.ts");
   run("scripts/e2e-cloud.ts");
+  run("scripts/e2e-sync-single.ts");
   run("scripts/e2e-emandi.ts");
   run("scripts/e2e-startup.ts");
   run("scripts/e2e-dates.ts");

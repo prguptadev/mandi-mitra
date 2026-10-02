@@ -34,8 +34,8 @@ const avgOver = (rows: { pricedValue: string | number | null; pricedNet: number 
 export type FlagItem = Record<string, string | number | null>;
 export interface Flag { code: string; level: "bad" | "warn" | "info"; items: FlagItem[] }
 
-/** Everything that does not add up, across all dates. */
-async function flags(biz: string, jinsId: string | null, opts: { all: TruckSummary[]; canLedger: boolean }): Promise<Flag[]> {
+/** Everything that does not add up, across all dates (money owed as of `asOf`, when given). */
+async function flags(biz: string, jinsId: string | null, opts: { all: TruckSummary[]; canLedger: boolean; asOf?: string }): Promise<Flag[]> {
   const out: Flag[] = [];
   const mills = await db.select({ id: schema.merchants.id, code: schema.merchants.code }).from(schema.merchants)
     .where(eq(schema.merchants.businessId, biz));
@@ -113,13 +113,17 @@ async function flags(biz: string, jinsId: string | null, opts: { all: TruckSumma
   out.push({ code: "po_over", level: "warn", items: pos.filter((p) => (sent.get(p.id)?.grams ?? 0) > p.qtyGrams).map((p) => ({
     po: poLabel(p), mill: code(p.merchantId), overGrams: (sent.get(p.id)?.grams ?? 0) - p.qtyGrams })) });
 
-  // suppliers paid more than they are owed — only for those allowed to see the ledger
+  /* suppliers paid more than they are owed — only for those allowed to see the
+     ledger. As of `asOf` (the screen asks for today), like the ledger it links
+     to: a post-dated payment has not paid anyone ahead yet. */
   if (opts.canLedger) {
   const suppliers = await db.select({ id: schema.adati.id, nameHi: schema.adati.nameHi, nameHinglish: schema.adati.nameHinglish, opening: schema.adati.openingBalancePaise })
     .from(schema.adati).where(eq(schema.adati.businessId, biz));
-  const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.payablePaise})` }).from(S).where(eq(S.businessId, biz)).groupBy(S.adatiId);
+  const bought = await db.select({ adatiId: S.adatiId, p: sql<number>`sum(${S.payablePaise})` }).from(S)
+    .where(and(eq(S.businessId, biz), ...(opts.asOf ? [lte(S.slipDate, opts.asOf)] : []))).groupBy(S.adatiId);
   const paid = await db.select({ adatiId: schema.payments.adatiId, p: sql<number>`sum(${schema.payments.amountPaise})` })
-    .from(schema.payments).where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt))).groupBy(schema.payments.adatiId);
+    .from(schema.payments).where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt),
+      ...(opts.asOf ? [lte(schema.payments.payDate, opts.asOf)] : []))).groupBy(schema.payments.adatiId);
   const ahead = suppliers.map((s) => ({ s, bal: s.opening + (bought.find((b) => b.adatiId === s.id)?.p ?? 0) - (paid.find((p) => p.adatiId === s.id)?.p ?? 0) }))
     .filter((x) => x.bal < 0);
   out.push({ code: "paid_ahead", level: "warn", items: ahead.map((x) => ({ adatiId: x.s.id, nameHi: x.s.nameHi, name: x.s.nameHinglish, paise: -x.bal })) });
@@ -222,9 +226,13 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
   }).filter((m) => m.slips || m.trucks || m.openingGrams);
 
   const noMill = inRows.filter((r) => !r.merchantId);
-  // what each mill still owes us, all time — money is shown only to those who may see it
+  /* what each mill still owes us, whatever the period: as of ?asOf= (the
+     screen asks for today, so a post-dated cheque is not received yet), else
+     every date — money is shown only to those who may see it */
+  const asOf = c.req.query("asOf") || undefined;
+  if (asOf && !ISO_DATE.test(asOf)) throw bad("Date must be YYYY-MM-DD");
   const canMoney = auth.permissions.has("millledger.read");
-  const owed = canMoney ? await millBalances(biz) : null;
+  const owed = canMoney ? await millBalances(biz, asOf) : null;
   const payments = await db.select({ p: sql<number>`coalesce(sum(${schema.payments.amountPaise}), 0)` }).from(schema.payments)
     .where(and(eq(schema.payments.businessId, biz), isNull(schema.payments.voidedAt), ...(f.from ? [gte(schema.payments.payDate, f.from)] : []), ...(f.to ? [lte(schema.payments.payDate, f.to)] : [])));
 
@@ -251,7 +259,7 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
   const owedBy = new Map((owed?.rows ?? []).map((r) => [r.id, r]));
   const millsOut = perMill.map((m) => ({
     ...m,
-    // all time, whatever the period: a mill's balance does not reset with the filter
+    // as of ?asOf= (else all time), whatever the period: a mill's balance does not reset with the filter
     owedPaise: owed ? owedBy.get(m.merchantId)?.balancePaise ?? 0 : null,
     receivedPaise: owed ? owedBy.get(m.merchantId)?.receivedPaise ?? 0 : null,
   }));
@@ -261,7 +269,7 @@ dashboardRoutes.get("/", can("dashboard.view"), async (c) => {
     period: { from: f.from ?? null, to: f.to ?? null },
     kpis: { ...kpis, avgSalePaisePerQtl: avgSale, billedPaise: bills ? kpis.billedPaise : null },
     mills: millsOut.map((m) => (bills ? m : { ...m, billedPaise: null })),
-    flags: await flags(biz, f.jinsId ?? null, { all: allOut, canLedger: auth.permissions.has("ledger.read") }),
+    flags: await flags(biz, f.jinsId ?? null, { all: allOut, canLedger: auth.permissions.has("ledger.read"), asOf }),
   });
 });
 
@@ -392,7 +400,8 @@ dashboardRoutes.get("/mill/:id", can("stock.read"), async (c) => {
 /**
  * The whole money picture: what suppliers are owed, what mills owe, and where
  * the money on the approved parchas goes (goods, adat and each charge).
- * Balances are as of `to` (default today); flows are within the period.
+ * Balances are as of `to` (every date when none is given; the money card
+ * asks for today at the latest); flows are within the period.
  */
 dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
   const biz = c.get("auth")!.businessId!;
@@ -457,7 +466,12 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
     pricedNet: sql<number>`sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} else 0 end)`,
     pricedValue: sql<string>`cast(sum(case when ${S.ratePaisePerQtl} > 0 then ${S.netGrams} * ${S.ratePaisePerQtl} else 0 end) as text)`,
   }).from(S).where(and(eq(S.businessId, biz), ...upTo)).groupBy(S.merchantId, S.jinsId, S.slipDate);
-  const loadedLines = await linesWithWeights(and(eq(schema.loads.businessId, biz), ...(f.to ? [lte(schema.loads.loadDate, f.to)] : [])));
+  /* Trucks billed as of `to` (their parcha's date). A parcha can be dated
+     before its truck was loaded; from that date the mill owes it, so its
+     goods are off stock from then too — never in hand and owed at once. */
+  const billedBy = f.to ? new Set((await billed(biz, { upTo: f.to })).map((b) => b.loadId)) : null;
+  const loadedLines = (await linesWithWeights(eq(schema.loads.businessId, biz)))
+    .filter((l) => !f.to || l.loadDate <= f.to || billedBy!.has(l.loadId));
   const dayKey = (m: string | null, j: string, d: string) => `${m ?? "-"}|${j}|${d}`;
   const loaded = new Map<string, number>();
   for (const l of loadedLines) loaded.set(dayKey(l.merchantId, l.jinsId, l.stockDate), (loaded.get(dayKey(l.merchantId, l.jinsId, l.stockDate)) ?? 0) + l.weightGrams);
@@ -483,7 +497,6 @@ dashboardRoutes.get("/money", can("ledger.read"), async (c) => {
   /* Not billed as of `to`: a draft, or a truck whose parcha is dated after
      `to` — loaded, off stock, and not yet in what the mill owes, so it counts
      here at its frozen parcha goods. */
-  const billedBy = f.to ? new Set((await billed(biz, { upTo: f.to })).map((b) => b.loadId)) : null;
   const drafts = (await trucks(biz, { to: f.to })).filter((t) => t.status !== "billed" || (billedBy != null && !billedBy.has(t.loadId)));
 
   // what the supplier ledger is made of, all time up to `to` (the "we owe" figure is all time)

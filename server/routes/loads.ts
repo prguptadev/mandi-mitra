@@ -562,13 +562,15 @@ parchaRoutes.get("/", can("parcha.read"), async (c) => {
     .limit(20_000);
   /* What is due on each live parcha, by the mill statement's own rule
      (settle(): money marked against the truck first, then money on account
-     to the oldest parcha), over every bill and receipt of its mill whatever
-     the register's dates — so a parcha shows the same due on every screen. */
+     to the oldest parcha), over every bill and receipt of its mill up to the
+     register's end date, whatever its start — so a parcha shows the due the
+     mill statement to that date shows. With no end date, every date counts. */
   const money = c.get("auth")!.permissions.has("millledger.read");
   const dueOf = new Map<string, DueLine>();
   if (money) {
-    const allBills = await billed(biz);
-    const allRecs = await receipts(biz);
+    const upTo = to && ISO_DATE.test(to) ? to : undefined;
+    const allBills = await billed(biz, { upTo });
+    const allRecs = await receipts(biz, { upTo });
     const openings = await db.select({ id: schema.merchants.id, o: schema.merchants.openingBalancePaise })
       .from(schema.merchants).where(eq(schema.merchants.businessId, biz));
     for (const m of openings) {

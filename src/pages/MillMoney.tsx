@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { useFYRange } from "@/lib/fy.tsx";
+import { useFYRangeToToday } from "@/lib/fyToday.ts";
+import { millNow, millsNow } from "@/lib/asOfToday.ts";
 import { TallyMark, useTallyFlags } from "@/components/TallyMark.tsx";
 import { Link, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -125,10 +127,10 @@ export function ReceiptDialog({ onClose, merchantId: presetMill, loadId: presetL
     loadId: editing?.loadId ?? presetLoad ?? "",
   }));
   const [err, setErr] = useState<string | null>(null);
-  // what is owed now, and on each parcha, as if the receipt being edited were not there
+  // what is owed now (as of today), and on each parcha, as if the receipt being edited were not there
   const st = useQuery({
-    queryKey: ["mill-ledger", v.merchantId, "for-receipt", editing?.id ?? ""],
-    queryFn: () => api.get<MillStatement>(`/mill-ledger/${v.merchantId}${editing ? `?exceptReceipt=${editing.id}` : ""}`),
+    queryKey: ["mill-ledger", v.merchantId, "for-receipt", editing?.id ?? "", todayISO()],
+    queryFn: () => api.get<MillStatement>(millNow(v.merchantId, editing?.id)),
     enabled: Boolean(v.merchantId),
   });
   const amountPaise = v.amount == null ? 0 : Math.round(v.amount * 100);
@@ -243,7 +245,8 @@ export function MillLedgerPage() {
   const [, navigate] = useLocation();
   const [tab, setTab] = useState<"balances" | "receipts">("balances");
   const [receiving, setReceiving] = useState(false);
-  const list = useQuery({ queryKey: ["mill-ledger", "all"], queryFn: () => api.get<MillLedgerList>("/mill-ledger") });
+  // what each mill owes today: a post-dated cheque is not received before its day
+  const list = useQuery({ queryKey: ["mill-ledger", "all", todayISO()], queryFn: () => api.get<MillLedgerList>(millsNow()) });
   const rows = list.data?.rows ?? [];
   const s = useSort(rows, {
     mill: (r) => r.code, opening: (r) => r.openingBalancePaise, parchas: (r) => r.parchas, billed: (r) => r.billedPaise,
@@ -417,8 +420,8 @@ export function MillStatementPage({ id }: { id: string }) {
   const f = useFormat();
   const { can } = useSession();
   const qc = useQueryClient();
-  // the chosen financial year, until other dates are picked
-  const { from, setFrom, to, setTo } = useFYRange();
+  // the chosen financial year up to today, until other dates are picked (dues are as of the end date)
+  const { from, setFrom, to, setTo } = useFYRangeToToday();
   const [receiving, setReceiving] = useState<null | { loadId?: string; editing?: ReceiptRow }>(null);
   const [voiding, setVoiding] = useState<MillEntry | null>(null);
   const [err, setErr] = useState<string | null>(null);
