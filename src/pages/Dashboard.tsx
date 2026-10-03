@@ -350,8 +350,9 @@ export function DashboardPage() {
               `${k.trucks} ${t("stock.trucks")}${k.drafts ? ` · ${k.drafts} ${t("dash.withoutParcha")}` : ""}`,
               `${t("dash.avgSale", { r: k.avgSalePaisePerQtl ? f.rate(k.avgSalePaisePerQtl) : "—" })} · ${t("dash.billed", { amt: f.money(k.billedPaise) })}`,
             ]} />
-          <Kpi icon={Warehouse} label={t("dash.left")} tone={k.leftGrams < 0 ? "bad" : undefined}
-            value={<>{f.weight(k.leftGrams)} <span className="text-[13px] font-normal text-muted">{f.unit}</span></>}
+          {/* left = every mill's stock + the firm's own (slips with no mill), as the money card counts it: received − loaded */}
+          <Kpi icon={Warehouse} label={t("dash.left")} tone={k.leftGrams + k.noMillGrams < 0 ? "bad" : undefined}
+            value={<>{f.weight(k.leftGrams + k.noMillGrams)} <span className="text-[13px] font-normal text-muted">{f.unit}</span></>}
             href="/stock"
             lines={[
               t("dash.leftHelp"),
