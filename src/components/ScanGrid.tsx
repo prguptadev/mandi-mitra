@@ -69,6 +69,9 @@ function flagFor(r: ScanRow, f: Field, t: T): Flag {
       return { level: "bad", why: read ? t("scan.why.grossUnread" as never, { read }) : t("scan.fix.grossMissing" as never) };
     }
     if (has("net_nonpositive")) return { level: "bad", why: t("scan.fix.netNonPositive" as never) };
+    // loose packets ("2+45"): the RST box against the net written beside it, in kg
+    const loose = issue("loose_net") ?? issue("loose_weight");
+    if (!done && loose) return { level: loose.level === "error" ? "bad" : "doubt", why: issueText(t, loose.code, loose.message, loose.params), confirmable: true, key: "gross" };
     if (!done && r.netAgrees === false)
       return { level: "bad", why: t("scan.why.netDiffers" as never, { net: (r.ocr.netQtl ?? 0).toFixed(2) }), confirmable: true, key: "gross" };
     if (!done && has("gross_large")) return { level: "bad", why: t("issue.gross_large" as never), confirmable: true, key: "gross" };

@@ -112,13 +112,13 @@ const RESPONSE_SCHEMA = {
         properties: {
           page: { type: "INTEGER", description: "1-based number of the image this row is on" },
           srNo: { type: "INTEGER", nullable: true, description: "The printed SR NO of the ruled line this row is on" },
-          rstNo: { type: "STRING", nullable: true },
+          rstNo: { type: "STRING", nullable: true, description: "Weighbridge slip number in Latin digits; loose packets exactly as written with their + or - (2+45, 1-64)" },
           adatiName: { type: "STRING", nullable: true },
           supplierMatch: { type: "STRING", nullable: true, description: "Exact name from KNOWN SUPPLIERS (the part before any bracket), or null" },
           village: { type: "STRING", nullable: true, description: "Village or place written beside the name, in Devanagari; null when none" },
           grossQtl: { type: "NUMBER", nullable: true },
           katauti: { type: "NUMBER", nullable: true },
-          netQtl: { type: "NUMBER", nullable: true },
+          netQtl: { type: "NUMBER", nullable: true, description: "NET WEIGHT as written (quintal; kilograms on a loose-packet line)" },
           rate: { type: "NUMBER", nullable: true },
           confidence: { type: "NUMBER", nullable: true },
           struckThrough: { type: "BOOLEAN", nullable: true },
@@ -142,7 +142,7 @@ const RESPONSE_SCHEMA = {
   propertyOrdering: ["date", "millName", "jins", "rows", "totalWeightWritten"],
 } as const;
 
-const PROMPT = `You are reading a handwritten daily purchase register from a grain commission agent (arhtiya) in Uttar Pradesh, India. The form is printed in English; every entry is handwritten, mostly in Devanagari with some Latin digits.
+export const PROMPT = `You are reading a handwritten daily purchase register from a grain commission agent (arhtiya) in Uttar Pradesh, India. The form is printed in English; every entry is handwritten, mostly in Devanagari with some Latin digits.
 
 You are given ONE page of the sheet. Set "page" to 1 on every row.
 
@@ -163,9 +163,10 @@ Columns, left to right:
   Common confusions in this hand: व/ब, न/ण, श/स/ष, ड/ड़, र/ट and a missing anusvara — when a stroke is ambiguous, prefer the reading that is a real Hindi name or a name in KNOWN SUPPLIERS below, and lower the confidence.
   This column is never blank on a real row. If the name is hard to read, give your best reading in Devanagari and lower the confidence for that row rather than returning null.
 - RST NO — the weighbridge (dharam kanta) slip number. It is NOT a row count and is not in sequence. It can be 3 or 4 digits, and one sheet often mixes both, e.g. 626, 627, 1474, 629, 1471. Read every digit; do not drop a leading "1" or "14". Write it with Latin digits 0-9 only, even if it is written in Devanagari digits (६२६ → 626).
+  One exception — LOOSE PACKETS: a few packets that came without a weighbridge slip are written in the RST box as two small numbers joined by "+" or "-", e.g. "2+45" or "1-64" (number of packets, then the last packet's weight in kg). Return rstNo exactly as written with its "+" or "-" ("2+45", "1-64"), in Latin digits (२+४५ → 2+45); never join it into one number like 245 or 2745. Such a line has no DHARAM KANTA and no KATAUTI: return null for both. Its NET WEIGHT is written in kilograms (e.g. 95 or 64): copy it exactly as written, without converting it. Only a "+" or "-" between two numbers makes a line loose packets; every other RST is digits only.
 - DHARAM KANTA — gross weight in quintal, normally two decimal places (e.g. 19.20, 46.95).
 - KATAUTI — a whole number, normally close to the gross weight rounded off.
-- NET WEIGHT — weight in quintal, slightly less than the gross. Always copy this column; it is how the entry is checked. If the column is blank on the paper, return null.
+- NET WEIGHT — weight in quintal, slightly less than the gross (in kilograms on a loose-packet line, as above). Always copy this column; it is how the entry is checked. If the column is blank on the paper, return null.
 - RATE — rupees per quintal, normally a 4 digit number between 2800 and 4200.
 
 Rules:

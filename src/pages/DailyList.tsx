@@ -26,9 +26,9 @@ import { useConfirm } from "@/components/Confirm.tsx";
 import { useFY } from "@/lib/fy.tsx";
 import { slipCharges, defaultSupplierCharges, supplierTermsOf, type SupplierCharges, type SupplierTerms } from "@server/lib/supplierTerms.ts";
 import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
-import { rstKey, numberOnly, grossOdd, rateOdd, DEFAULT_RATE_RANGE, type GrossOdd, type RateRange } from "@server/lib/slipChecks.ts";
+import { rstKey, looseRst, numberOnly, grossOdd, rateOdd, DEFAULT_RATE_RANGE, type GrossOdd, type RateRange } from "@server/lib/slipChecks.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
-import { dailyListFrom, dailyListQuery } from "@/lib/dailyList.ts";
+import { dailyListFrom, dailyListQuery, withRst } from "@/lib/dailyList.ts";
 import { findSuppliers } from "@/lib/ledgerList.ts";
 import {
   Button, Card, Select, Input, Badge, Alert, EmptyState, Dialog, Field, Spinner, Checkbox,
@@ -48,6 +48,8 @@ interface Draft {
   rate: string;
   /** Only while editing a row: its commodity. */
   jinsId?: string;
+  /** The weight the RST box put in for loose packets ("2+45"), while it is still the one shown. */
+  autoGross?: string;
 }
 const emptyDraft = (): Draft => ({ rstNo: "", adatiId: null, adatiName: "", gross: "", katauti: "", rate: "" });
 
@@ -63,16 +65,16 @@ type Row = SlipRow & {
   rstOtherDays?: string[];
   grossOdd?: GrossOdd;
   rateOdd?: RateRange | null;
+  /** Loose packets ("2+45") whose weight is not what the RST box says. */
+  looseOff?: { rst: string; kg: number } | null;
 };
 type Totals = SlipTotals & { rstOtherDayRows?: number; usualRate?: Record<string, RateRange> };
 type OtherSlip = { date: string; rstNo: string; millCode: string | null; nameHi: string; nameHinglish: string };
 /** What the server found when a slip was saved — flags only, the slip is saved. */
-type SavedFlags = { sameDay: OtherSlip[]; otherDays: OtherSlip[]; grossOdd: GrossOdd; rateOdd: RateRange | null };
+type SavedFlags = { sameDay: OtherSlip[]; otherDays: OtherSlip[]; grossOdd: GrossOdd; rateOdd: RateRange | null; looseOff?: { rst: string; kg: number } | null };
 
 /** A box that has something in it which does not read as a number. */
 const unreadable = (s: string) => s.trim() !== "" && parseLooseNumber(s) === null;
-/** The RST box keeps what was typed, with Hindi digits as English ones and no spaces. */
-const rstTyped = (s: string) => s.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "");
 
 const halfUp = (n: number) => Math.sign(n) * Math.round(Math.abs(n));
 
@@ -86,8 +88,10 @@ function derive(draft: Draft, cfg: KatautiConfig) {
   const grossGrams = grossQtl === null ? null : Math.round(grossQtl * GRAMS_PER_QTL);
 
   const typed = parseLooseNumber(draft.katauti);
+  // loose packets ("2+45") have no katauti
   const suggested =
-    grossGrams === null || cfg.mode === "none" ? null
+    grossGrams !== null && looseRst(draft.rstNo) ? 0
+    : grossGrams === null || cfg.mode === "none" ? null
     : cfg.mode === "per_quintal_rounded" ? halfUp(grossGrams / GRAMS_PER_QTL)
     : cfg.mode === "per_quintal_exact" ? grossGrams / GRAMS_PER_QTL
     : 0;
@@ -171,15 +175,21 @@ function displayCell(key: DailyColumnKey, r: Row, i: number, x: CellCtx, flag: T
     case "village": return <span className="text-[12px] text-muted">{lang === "hi" ? (r.adatiVillage ?? "") : (r.adatiVillage ?? "")}</span>;
     case "mill": return r.merchantCode ? <Badge tone="neutral" className="num">{r.merchantCode}</Badge> : <span className="text-faint">—</span>;
     case "jins": return <span className="num text-[12px] text-muted">{r.jinsCode}</span>;
-    case "gross": return r.grossOdd
+    case "gross": return r.looseOff
+      ? <span className="text-warn" title={t("daily.looseOffTip", { rst: r.looseOff.rst, kg: r.looseOff.kg })}>{f.weight(r.grossGrams)} !</span>
+      : r.grossOdd
       ? <span className="text-warn" title={t(r.grossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip")}>{f.weight(r.grossGrams)} !</span>
       : f.weight(r.grossGrams);
-    case "katauti": return (
-      <span className={cn(r.katautiOverride && "text-warn")}>
-        {f.int(r.katautiUnits)}
-        {r.katautiOverride && <span className="ml-0.5 text-[10px]" title={t("daily.katautiEdited")}>*</span>}
-      </span>
-    );
+    case "katauti": {
+      // loose packets carry no katauti: their 0 is the rule, not an edit
+      const edited = r.katautiOverride && !(r.katautiUnits === 0 && looseRst(r.rstNo));
+      return (
+        <span className={cn(edited && "text-warn")}>
+          {f.int(r.katautiUnits)}
+          {edited && <span className="ml-0.5 text-[10px]" title={t("daily.katautiEdited")}>*</span>}
+        </span>
+      );
+    }
     case "deduction": return <span className="text-faint">{f.weight(r.katautiGrams)}</span>;
     case "net": return (
       <span className={cn("font-semibold", r.netMismatchGrams !== 0 && "text-bad")}>
@@ -309,6 +319,7 @@ export function DailyListPage() {
       fl.grossOdd === "large" ? t("daily.flagGrossLarge", { q: f.weight(grossGrams ?? 0) }) : "",
       fl.grossOdd === "small" ? t("daily.flagGrossSmall", { q: f.weight(grossGrams ?? 0) }) : "",
       fl.rateOdd ? t("daily.flagRateFar", { rate: f.rate(ratePaise ?? 0), floor: f.rate(fl.rateOdd.floorPaise), ceil: f.rate(fl.rateOdd.ceilPaise) }) : "",
+      fl.looseOff ? t("daily.flagLoose", { rst: fl.looseOff.rst, kg: fl.looseOff.kg, q: f.weight(grossGrams ?? 0) }) : "",
     ].filter(Boolean);
     setFlagWarn(lines.length ? { rst, lines, saved: true } : null);
   };
@@ -389,7 +400,8 @@ export function DailyListPage() {
      only the rows this filtered list shows — compared as numbers ("0634" is 634). */
   const rstTaken = useMemo(() => {
     const k = rstKey(draft.rstNo);
-    if (!k) return false;
+    // loose packets ("2+45") come again and again: never a repeat
+    if (!k || looseRst(draft.rstNo)) return false;
     const taken = nextRst.data?.taken;
     return taken ? taken.includes(k) : rows.some((r) => rstKey(r.rstNo) === k);
   }, [draft.rstNo, rows, nextRst.data]);
@@ -506,7 +518,10 @@ export function DailyListPage() {
     !draftBad.gross && !draftBad.katauti && !draftBad.rate;
   /* Figures that look like a lost or extra decimal point, while typing: an
      orange box and a reason. A flag only — Enter still saves. */
-  const draftGrossOdd = grossOdd(d.grossGrams);
+  const draftGrossOdd = grossOdd(d.grossGrams, draft.rstNo);
+  // loose packets ("2+45") with a weight typed that is not theirs
+  const draftLoose = looseRst(draft.rstNo);
+  const draftLooseOff = draftLoose && d.grossGrams !== null && d.grossGrams !== draftLoose.netGrams ? draftLoose : null;
   const draftRange = totals?.usualRate?.[jinsId] ?? DEFAULT_RATE_RANGE;
   const draftRateOdd = rateOdd(d.ratePaise, draftRange);
 
@@ -668,7 +683,7 @@ export function DailyListPage() {
     for (const r of rows) m.set(rstKey(r.rstNo), (m.get(rstKey(r.rstNo)) ?? 0) + 1);
     return m;
   }, [rows]);
-  const rstOnDay = (r: Row) => r.rstDay ?? rstCount.get(rstKey(r.rstNo)) ?? 1;
+  const rstOnDay = (r: Row) => r.rstDay ?? (looseRst(r.rstNo) ? 1 : rstCount.get(rstKey(r.rstNo)) ?? 1);
 
   /* Saved rows draw from one context object and call back through stable
      handlers, so typing in the new (or an edited) row leaves them be. */
@@ -716,7 +731,7 @@ export function DailyListPage() {
     switch (key) {
       case "sr": return <span className="num text-[11px] text-faint">{i + 1}</span>;
       case "rstNo": return <input className={cn(CELL, "min-w-[4.5rem] text-left")} value={ed.rstNo} autoFocus
-        onChange={(e) => upd({ rstNo: rstTyped(e.target.value) })} />;
+        onChange={(e) => upd(withRst(ed, e.target.value))} />;
       case "adatiHi":
       case "adatiLatin":
         if (key !== nameCol) return displayCellOf(key, r, i);
@@ -785,7 +800,7 @@ export function DailyListPage() {
           <input ref={rstRef} className={cn(CELL, "min-w-[4.5rem] text-left", rstTaken && "border-2 border-warn")}
             value={draft.rstNo} placeholder={t("daily.rstPlaceholder")}
             title={rstTaken ? t("daily.rstTakenTip") : undefined}
-            onChange={(e) => setDraft((p) => ({ ...p, rstNo: rstTyped(e.target.value) }))}
+            onChange={(e) => { const v = e.target.value; setDraft((p) => withRst(p, v)); }}
             onKeyDown={step("adati")} />
         ) : c.key === nameCol ? (
           <SupplierPicker ref={adatiRef} value={draft.adatiId}
@@ -795,8 +810,10 @@ export function DailyListPage() {
             placeholder={t("daily.typeNameAuto")} />
         ) : c.key === "gross" ? (
           <input ref={grossRef} value={draft.gross} inputMode="decimal" placeholder="19.20"
-            className={cn(CELL, draftBad.gross ? "border-2 border-bad" : draftGrossOdd && "border-2 border-warn")}
-            title={draftBad.gross ? t("daily.boxUnreadable") : draftGrossOdd ? t(draftGrossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip") : undefined}
+            className={cn(CELL, draftBad.gross ? "border-2 border-bad" : (draftGrossOdd || draftLooseOff) && "border-2 border-warn")}
+            title={draftBad.gross ? t("daily.boxUnreadable")
+              : draftLooseOff ? t("daily.looseOffTip", { rst: draftLooseOff.text, kg: draftLooseOff.netGrams / 1000 })
+              : draftGrossOdd ? t(draftGrossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip") : undefined}
             onChange={(e) => setDraft((p) => ({ ...p, gross: numberOnly(e.target.value) }))}
             onKeyDown={step("bags")} />
         ) : c.key === "katauti" ? (

@@ -3,7 +3,30 @@
    than inside the pages, so the checks (scripts/e2e-math-fixes.ts) follow
    exactly the link a screen draws and ask exactly what the list asks. */
 
+import { looseRst } from "@server/lib/slipChecks.ts";
+
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The RST box keeps what was typed, with Hindi digits as English ones and no spaces. */
+export const rstTyped = (s: string) => s.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "");
+
+/**
+ * The RST box as typed. Loose packets ("2+45": 2 packets, the last 45 kg,
+ * the others 50 kg) fill an empty weight box with their weight and katauti
+ * 0; a weight filled so follows the RST while it is typed, and goes if the
+ * RST stops being loose. A weight typed by hand is never changed.
+ */
+export function withRst<D extends { rstNo: string; gross: string; katauti: string; autoGross?: string }>(p: D, typed: string): D {
+  const rstNo = rstTyped(typed);
+  const auto = p.autoGross !== undefined && p.gross === p.autoGross;
+  if (!auto && p.gross.trim() !== "") return { ...p, rstNo };
+  const loose = looseRst(rstNo);
+  if (loose) {
+    const gross = (loose.netGrams / 100_000).toFixed(2);
+    return { ...p, rstNo, gross, katauti: "0", autoGross: gross };
+  }
+  return auto ? { ...p, rstNo, gross: "", katauti: p.katauti === "0" ? "" : p.katauti, autoGross: undefined } : { ...p, rstNo };
+}
 
 const link = (date: string, mill: string, jins: string) =>
   `/daily?${new URLSearchParams({ date, ...(mill ? { mill } : {}), ...(jins ? { jins } : {}) })}`;

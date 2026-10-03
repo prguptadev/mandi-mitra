@@ -21,7 +21,7 @@ import {
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
 import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
-import { normRst, checkPages, slipMarks, hasRate, pageOrder, hundredths, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
+import { normRst, applyLoose, checkPages, slipMarks, hasRate, pageOrder, hundredths, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
 import { GRAMS_PER_QTL } from "../lib/money.ts";
 import { approvedOnDays } from "../lib/parcha.ts";
 import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
@@ -376,8 +376,10 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   /* A sheet read before weights were kept in whole kilograms may hold a
      third decimal (20.205): it is taken to the kilo here, as a new read is,
      so the box, the check and the slip all carry one figure, and it is asked. */
-  const rows = batch.status === "committed" ? stored : stored.map((r) => r.grossGrams !== null && r.grossGrams % 1000 !== 0
-    ? { ...r, grossGrams: hundredths(r.grossGrams / GRAMS_PER_QTL) * (GRAMS_PER_QTL / 100) } : r);
+  /* A line of loose packets ("2+45") read before they were understood gets
+     its weight from the RST box here, as a new read does. */
+  const rows = batch.status === "committed" ? stored : stored.map((r) => applyLoose(r.grossGrams !== null && r.grossGrams % 1000 !== 0
+    ? { ...r, grossGrams: hundredths(r.grossGrams / GRAMS_PER_QTL) * (GRAMS_PER_QTL / 100) } : r));
   const katauti = await katautiFor(businessId, batch.merchantId);
   const resolver = await loadResolver(businessId);
 
@@ -1313,11 +1315,12 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
   }
   const kept = rows.map((r) => {
     const m = r.typedName?.trim() ? made.get(r.typedName.trim()) : null;
-    return {
+    // an RST typed as loose packets ("2+45") brings its weight, and no katauti, into empty boxes
+    return applyLoose({
       ...r, rstNo: normRst(r.rstNo), typedName: null,
       ...(m ? { adatiId: m.id, adatiRawText: r.adatiRawText || m.nameHi, nameCorrected: true } : {}),
       ocr: asRead.get(r.id)?.ocr ?? NOT_READ, modelPick: asRead.get(r.id)?.modelPick ?? null,
-    };
+    }, asRead.get(r.id));
   });
   await db.update(schema.scanBatches).set({
     // the reader owns the rows while it runs; the header is the operator's

@@ -14,7 +14,7 @@ import { approvedOnDays } from "../lib/parcha.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 import { ensureSupplier } from "../lib/supplierFromName.ts";
 import { normRst } from "../lib/scanRows.ts";
-import { rstKey } from "../lib/slipChecks.ts";
+import { rstKey, looseRst } from "../lib/slipChecks.ts";
 import { slipFlags, describeFlags } from "../lib/slipFlags.ts";
 
 /** Supplier, commodity and mill must all be this business's own. */
@@ -46,8 +46,8 @@ const SlipBody = z.object({
   adatiName: z.string().trim().min(1).max(120).optional(),
   jinsId: z.string().min(1, "Pick a commodity"),
   merchantId: z.string().nullish(),
-  /** Dharam kanta, in grams. */
-  grossGrams: z.number().int().min(1, "Gross weight is required").max(LIMIT.grams, "Gross weight is too large — check the decimal point"),
+  /** Dharam kanta, in grams. Left out for loose packets ("2+45"): the RST box gives it. */
+  grossGrams: z.number().int().min(1, "Gross weight is required").max(LIMIT.grams, "Gross weight is too large — check the decimal point").optional(),
   /** Only when the sheet's KATAUTI differs from gross rounded to a quintal. */
   katautiUnits: z.number().int().min(0).max(10_000).nullish(),
   /** Physical bags, when known. Not the same number as katauti. */
@@ -276,6 +276,7 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
       rstOtherDays: fl ? fl.otherDays.map((o) => o.date) : [],
       grossOdd: fl?.grossOdd ?? null,
       rateOdd: fl?.rateOdd ?? null,
+      looseOff: fl?.looseOff ?? null,
     };
   });
 
@@ -388,8 +389,15 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
   if (!jn) throw bad("That commodity does not belong to this business", "bad_jins");
   await checkSlipRefs(biz, { merchantId: body.merchantId });
 
+  /* Loose packets ("2+45" in the RST box): no weighbridge slip, so the
+     weight comes from the packets when none is typed, and there is no
+     katauti. A weight that is typed is kept; a difference is flagged. */
+  const loose = looseRst(body.rstNo);
+  const grossGrams = body.grossGrams ?? loose?.netGrams;
+  if (grossGrams === undefined) throw bad("Gross weight is required", "validation");
+  const katautiUnits = body.katautiUnits ?? (loose ? 0 : null);
   const cfg = await katautiCfg(biz, body.merchantId);
-  const d = deriveSlip(body.grossGrams, cfg, body.ratePaisePerQtl, body.katautiUnits ?? null);
+  const d = deriveSlip(grossGrams, cfg, body.ratePaisePerQtl, katautiUnits);
   if (d.netGrams <= 0) throw bad("Net weight works out to zero or less — check the gross weight", "bad_net");
 
   const id = newId();
@@ -401,9 +409,9 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
     slipDate: body.slipDate, rstNo: body.rstNo,
     adatiId: body.adatiId, jinsId: body.jinsId,
     merchantId: body.merchantId ?? null,
-    grossGrams: body.grossGrams,
+    grossGrams,
     katautiUnits: d.katautiUnits,
-    katautiOverride: body.katautiUnits != null,
+    katautiOverride: katautiUnits != null,
     bagsCount: body.bagsCount ?? null,
     netGrams: d.netGrams,
     ratePaisePerQtl: body.ratePaisePerQtl,
@@ -417,7 +425,7 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
   });
   await enqueueSync(biz, "purchase_slip", id, "insert", values);
   // flags, never a refusal: the same RST today, the same RST and weight on another date, odd figures
-  const fl = (await slipFlags(biz, [{ id, ...body }])).flags[0];
+  const fl = (await slipFlags(biz, [{ id, ...body, grossGrams }])).flags[0];
 
   const claimed = body.netGramsClaimed;
   return c.json({
@@ -466,9 +474,12 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
     bagsCount: body.bagsCount === undefined ? before.bagsCount : (body.bagsCount ?? null),
     ratePaisePerQtl: body.ratePaisePerQtl ?? before.ratePaisePerQtl,
   };
-  const override = body.katautiUnits !== undefined
+  /* Loose packets ("2+45") have no katauti unless one is typed. A weight
+     already on the slip is never replaced from the RST box: a difference
+     is flagged instead. */
+  const override = (body.katautiUnits !== undefined
     ? body.katautiUnits
-    : (before.katautiOverride ? before.katautiUnits : null);
+    : (before.katautiOverride ? before.katautiUnits : null)) ?? (looseRst(merged.rstNo) ? 0 : null);
   /* A slip keeps the katauti terms it was made with, and a corrected weight is
      worked on them too: a later change to the mill's katauti never reaches an
      old slip. Only a move to another mill takes that mill's terms (as
