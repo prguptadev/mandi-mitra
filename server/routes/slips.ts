@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { slipCharges, supplierChargesOf, supplierTermsOf, ownSupplierTerms, termsOnly } from "../lib/supplierCharges.ts";
 import { z } from "zod";
-import { eq, and, asc, desc, sql, inArray, gte, lte } from "drizzle-orm";
+import { eq, and, asc, desc, sql, inArray, gte, lte, isNull } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { rowsOf } from "../db/rows.ts";
 import { newId, nowSec } from "../lib/ids.ts";
@@ -161,7 +161,9 @@ slipRoutes.get("/", can("slip.read"), async (c) => {
     if (from) where.push(gte(schema.purchaseSlips.slipDate, from));
     if (to) where.push(lte(schema.purchaseSlips.slipDate, to));
   }
-  if (merchantId) where.push(eq(schema.purchaseSlips.merchantId, merchantId));
+  // "none": the firm's own slips, the ones with no mill
+  if (merchantId === "none") where.push(isNull(schema.purchaseSlips.merchantId));
+  else if (merchantId) where.push(eq(schema.purchaseSlips.merchantId, merchantId));
   if (jinsId) where.push(eq(schema.purchaseSlips.jinsId, jinsId));
   if (adatiId) where.push(eq(schema.purchaseSlips.adatiId, adatiId));
 

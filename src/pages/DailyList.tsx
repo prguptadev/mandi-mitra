@@ -21,6 +21,7 @@ import { SupplierPicker } from "@/components/SupplierPicker.tsx";
 import { shiftDay } from "@server/lib/parchaLabels.ts";
 import { HindiInput } from "@/components/HindiInput.tsx";
 import { DownloadDialog } from "@/components/DownloadDialog.tsx";
+import { useOwnCode } from "@/components/OwnFirm.tsx";
 import { WhatsAppDialog } from "@/components/WhatsAppDialog.tsx";
 import { useConfirm } from "@/components/Confirm.tsx";
 import { useFY } from "@/lib/fy.tsx";
@@ -280,6 +281,7 @@ export function DailyListPage() {
   const tallyFlags = useTallyFlags("slip", date, date);
   // the dashboard's day-rate card and a mill's stock page link here as /daily?date=…&mill=<id>&jins=<id>
   const [merchantId, setMerchantId] = useState<string>(opened.mill);
+  const ownCode = useOwnCode();
   /** Commodity new rows get. */
   const [jinsId, setJinsId] = useState<string>(opened.jins);
   /** Commodity the list shows; "" = all of them. */
@@ -405,7 +407,7 @@ export function DailyListPage() {
       adatiId: draft.adatiId ?? undefined,
       adatiName: draft.adatiId ? undefined : (draft.adatiName?.trim() || undefined),
       jinsId,
-      merchantId: merchantId || null,
+      merchantId: merchantId && merchantId !== "none" ? merchantId : null,
       grossGrams: d.grossGrams,
       katautiUnits: d.overridden ? d.katautiUnits : null,
       // blank is "rate to be agreed"; anything that does not read as a number never gets here (draftReady)
@@ -930,6 +932,8 @@ export function DailyListPage() {
             <label className="mb-1 block text-[11px] font-medium text-faint">{t("daily.mill")}</label>
             <Select value={merchantId} onChange={(e) => setMerchantId(e.target.value)} className="h-8 text-[13px]">
               <option value="">{t("daily.allMills")}</option>
+              {/* the firm's own slips: read from a sheet with no mill, or typed without one */}
+              {ownCode && <option value="none">{ownCode} — {t("daily.ownSlips")}</option>}
               {mills.data?.map((m) => <option key={m.id} value={m.id}>{m.code} — {pick(m.name, m.nameHi)}</option>)}
             </Select>
           </div>
@@ -1267,11 +1271,11 @@ export function DailyListPage() {
       {/* room under the last line, so the round jump buttons never sit on the totals */}
       {rows.length > 12 && <div className="h-24" aria-hidden />}
       {downloading && (
-        <DownloadDialog open date={date} merchantId={merchantId} mills={mills.data ?? []} jinsId={filterJins} jinsList={jinsList.data ?? []}
+        <DownloadDialog open date={date} merchantId={merchantId === "none" ? "" : merchantId} mills={mills.data ?? []} jinsId={filterJins} jinsList={jinsList.data ?? []}
           initial={downloading} onClose={() => setDownloading(null)} />
       )}
       {sharing && (
-        <WhatsAppDialog open date={date} merchantId={merchantId} mills={mills.data ?? []} jinsId={filterJins} jinsList={jinsList.data ?? []}
+        <WhatsAppDialog open date={date} merchantId={merchantId === "none" ? "" : merchantId} mills={mills.data ?? []} jinsId={filterJins} jinsList={jinsList.data ?? []}
           initial={sharing} onClose={() => setSharing(null)} />
       )}
     </>

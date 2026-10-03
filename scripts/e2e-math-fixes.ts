@@ -306,7 +306,7 @@ const S3 = await A.call("POST", "/adati", { nameHi: "गणित जाँच �
 const M3 = await A.call("POST", "/merchants", { code: "MFX3", name: "Maths Fix Wheat Mill", chargeConfig: lb.chargeConfig });
 const j2 = jinsAll.find((x: any) => x.id !== j.id && x.code !== "1509");
 const DAY = d(-6);
-const slip = async (rst: string, millId: string, jinsId: string, date: string, grossGrams: number, ratePaisePerQtl: number) => {
+const slip = async (rst: string, millId: string | null, jinsId: string, date: string, grossGrams: number, ratePaisePerQtl: number) => {
   const s = await A.call("POST", "/slips", { slipDate: date, rstNo: rst, adatiId: S3.id, jinsId, merchantId: millId, grossGrams, ratePaisePerQtl });
   made.slips.push(s.id);
   return s as { id: string; netGrams: number };
@@ -342,6 +342,17 @@ const slip = async (rst: string, millId: string, jinsId: string, date: string, g
       Boolean(row) && list.totals.rows === row.slips && list.totals.netGrams === row.boughtNet,
       { row: row && [row.slips, row.boughtNet], list: [list.totals.rows, list.totals.netGrams], opened: o });
   }
+}
+
+console.log("\nThe firm's own slips (no mill) can be picked on the daily list");
+{
+  await slip("MFX26", null, j.id, DAY, 700_000, 300_000);
+  const own = await A.call("GET", dailyListQuery(DAY, "none", ""));
+  check("the list for 'own (no mill)' has only slips with no mill", own.rows.length > 0 && own.rows.every((r: any) => r.merchantId === null), own.rows.map((r: any) => [r.rstNo, r.merchantId]));
+  check("  ...including the one just entered", own.rows.some((r: any) => r.rstNo === "MFX26"));
+  const { o } = { o: dailyListFrom(stockDayLink(DAY, "none", "").slice(stockDayLink(DAY, "none", "").indexOf("?"))) };
+  check("  ...and the firm's stock row opens it", o.mill === "none", o);
+  check("  ...as does a day's-rate line of the firm's own", dailyListFrom(dayRateLink(DAY, { millId: null, jinsId: j.id }).split("?")[1] ?? "").mill === "none");
 }
 
 console.log("\nThe dara starts on a commodity the mill bought");

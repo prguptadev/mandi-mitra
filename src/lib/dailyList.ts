@@ -65,15 +65,14 @@ const link = (date: string, mill: string, jins: string) =>
  * The list it opens is that mill's slips of that commodity, so its net,
  * average and amount are the line's.
  */
-export const dayRateLink = (date: string, line: { millId: string | null; jinsId: string }) => link(date, line.millId ?? "", line.jinsId);
+export const dayRateLink = (date: string, line: { millId: string | null; jinsId: string }) => link(date, line.millId ?? "none", line.jinsId);
 
 /**
  * A day row on a mill's stock page, with the commodity picked there ("" = all):
  * the list it opens is that mill's slips of that day and commodity, the row's
- * own. Slips with no mill (id "none") cannot be picked on the list, so that
- * row opens the whole day for the commodity.
+ * own — for the firm's own stock (id "none"), the slips with no mill.
  */
-export const stockDayLink = (date: string, millId: string, jinsId: string) => link(date, millId === "none" ? "" : millId, jinsId);
+export const stockDayLink = (date: string, millId: string, jinsId: string) => link(date, millId, jinsId);
 
 /** What the daily list opens on, from its address: the day, the mill and the commodity ("" = all). */
 export function dailyListFrom(search: string) {
