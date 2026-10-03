@@ -271,7 +271,7 @@ const onScreen = (lang: "en" | "hi") => { const st = lineState(m245, words(lang)
 check("  ...on the screen: amber on the weight, in one line", onScreen("en"), ["look", [["gross", "doubt", "2+45 is 95 kg of loose packets; no net weight was read beside it — ✓ if right"]]]);
 check("  ...in Hindi too", onScreen("hi"), ["look", [["gross", "doubt", "2+45 यानी 95 किलो खुले पैकेट; बगल में शुद्ध वज़न पढ़ा नहीं गया — सही हो तो ✓"]]]);
 check("  ...neither speaks of 'this gross' / dharam kanta", [/gross/i.test(STRINGS.en["issue.loose_unchecked" as never] ?? "gross"), /धर्म कांटा/.test(STRINGS.hi["issue.loose_unchecked" as never] ?? "धर्म कांटा")], [false, false]);
-check("  ...✓ as right: the line is clear", codes(await (async () => { const r = await edit(m245.id, { confirmed: ["gross"] }); return r; })()), []);
+check("  ...✓ as right: the line is clear", codes(await edit(m245.id, { confirmed: ["gross"] })), []);
 check("'1-64': 64 kg from the RST box, no katauti; the kanta read (11.64) kept aside", [...figures(m164), m164.ocr.grossQtl], [64_000, null, 0, 64_000, 222_784, 11.64]);
 check("  ...and flagged: the sheet's net 11.52 is not 64 kg", codes(m164), ["loose_net"]);
 check("'12-43', no weight: 593 kg from the RST box, flagged against the sheet's 11.78", [m1243.grossGrams, m1243.derivedKatautiUnits, codes(m1243)], [593_000, 0, ["loose_net"]]);
