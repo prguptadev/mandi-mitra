@@ -20,6 +20,7 @@ import { amountPaise, weightedAvgRate } from "../server/lib/money.ts";
 import { withRst } from "../src/lib/dailyList.ts";
 
 const BASE = process.env.MANDI_API!;
+const FAKE = process.env.MANDI_GEMINI_BASE!;
 const D = "2026-08-17";     // the sheet's day (a date no other script uses)
 const D_NEXT = "2026-08-18"; // the same sheet read again a day later
 const D_OLD = "2026-08-19";  // a slip saved before loose packets were understood
@@ -116,14 +117,15 @@ const geminiWas = await call("GET", "/settings/gemini");
 await call("PUT", "/settings/gemini", { apiKey: "AIzaFAKE-KEY-ONLY-FOR-THE-LOCAL-STAND-IN", model: "gemini-test-loose", fallbackModel: "gemini-test-loose", backupModels: [] });
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
-async function readSheet(date: string, model: string, tag: string) {
+/** Reads on the model asked for, or (null) as Settings say: the main model, and its fallback for a weak read. */
+async function readSheet(date: string, model: string | null, tag: string) {
   const fd = new FormData();
   fd.append("files", new File([Buffer.concat([PNG, Buffer.from(tag)])], `${tag}.png`, { type: "image/png" }));
   fd.append("slipDate", date);
   fd.append("merchantId", grm.id);
   fd.append("jinsId", j1509.id);
   const { id } = await (await fetch(`${BASE}/scans`, { method: "POST", body: fd, headers: { cookie } })).json() as { id: string };
-  await call("POST", `/scans/${id}/run`, { model });
+  await call("POST", `/scans/${id}/run`, model ? { model } : {});
   for (let i = 0; i < 120; i++) {
     const s = await call("GET", `/scans/${id}`);
     if (s.status !== "reading" && !s.running) return s;
@@ -136,6 +138,26 @@ const figures = (r: any) => [r.grossGrams, r.katautiOverride, r.derivedKatautiUn
 // what a line says about its slip and its weight (a rate unlike the day's other rates is its own matter)
 const codes = (r: any) => r.issues.map((i: any) => i.code).filter((c: string) => c !== "rate_day");
 const says = (r: any) => r.issues.filter((i: any) => i.code !== "rate_day").map((i: any) => i.message);
+
+/* ------------------------------------------------------------ one read */
+
+/* Loose lines have no dharam kanta by design. A page of them is not a page
+   whose weights could not be read: it must not go to the fallback model
+   (gemini-2.5-pro by default) for a second, paid read that is thrown away. */
+console.log("\nA page of mostly loose lines is read once");
+const geminiCalls = async () => (await (await fetch(`${FAKE}/__calls`)).json()) as { model: string }[];
+await call("PUT", "/settings/gemini", { model: "gemini-test-loose", fallbackModel: "gemini-test-loose-qtl", backupModels: [] });
+let callsBefore = (await geminiCalls()).length;
+const once = await readSheet(D_NEXT, null, "loose-once");
+check("2 of 3 lines loose, no kanta on them: one read, on the main model", (await geminiCalls()).slice(callsBefore).map((x) => x.model), ["gemini-test-loose"]);
+check("  ...the page is as read", once.rows.map((r: any) => [r.rstNo, r.grossGrams]), [["1243", 1_190_000], ["2+45", 95_000], ["1-64", 64_000]]);
+await call("DELETE", `/scans/${once.id}`);
+await call("PUT", "/settings/gemini", { model: "gemini-test-loose-nokanta", fallbackModel: "gemini-test-loose-qtl", backupModels: [] });
+callsBefore = (await geminiCalls()).length;
+const noKanta = await readSheet(D_NEXT, null, "loose-nokanta");
+check("the truck's own kanta not read: still read again on the fallback", (await geminiCalls()).slice(callsBefore).map((x) => x.model), ["gemini-test-loose-nokanta", "gemini-test-loose-qtl"]);
+await call("DELETE", `/scans/${noKanta.id}`);
+await call("PUT", "/settings/gemini", { model: "gemini-test-loose", fallbackModel: "gemini-test-loose", backupModels: [] });
 
 /* ------------------------------------------------------------ the sheet */
 

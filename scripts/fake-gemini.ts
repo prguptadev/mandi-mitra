@@ -14,6 +14,7 @@
  *                          truck), "2+45" and "1-64" with their net in kg (95, 64)
  *   gemini-test-loose-qtl  the same, the loose nets given in quintal (0.95, 0.64)
  *   gemini-test-loose-off  the same, "2+45" with 90 written as its net
+ *   gemini-test-loose-nokanta  the same, the truck's dharam kanta (1243) not read
  * GET /__calls lists every request, so tests can count them.
  */
 import http from "node:http";
@@ -81,7 +82,8 @@ const LOOSE_NET_QTL: Record<string, number> = { "2+45": 0.95, "1-64": 0.64 };
 const loosePage = (model: string) => ({
   date: "17/08/26", millName: "A-1", jins: "धान 1509", totalWeightWritten: null,
   rows: LOOSE_ROWS.map((r) => model === "gemini-test-loose-qtl" && r.rstNo in LOOSE_NET_QTL ? { ...r, netQtl: LOOSE_NET_QTL[r.rstNo] }
-    : model === "gemini-test-loose-off" && r.rstNo === "2+45" ? { ...r, netQtl: 90 } : r),
+    : model === "gemini-test-loose-off" && r.rstNo === "2+45" ? { ...r, netQtl: 90 }
+    : model === "gemini-test-loose-nokanta" && r.rstNo === "1243" ? { ...r, grossQtl: null } : r),
 });
 
 export function startFakeGemini(port: number) {

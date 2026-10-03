@@ -23,6 +23,7 @@ import {
 import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
 import { normRst, applyLoose, checkPages, slipMarks, hasRate, pageOrder, hundredths, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
 import { GRAMS_PER_QTL } from "../lib/money.ts";
+import { looseRst } from "../lib/slipChecks.ts";
 import { approvedOnDays } from "../lib/parcha.ts";
 import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
@@ -674,7 +675,8 @@ async function performRead(opts: {
     if (shaky / rows.length > 0.15) return `${shaky} rows read poorly`;
     const missingName = rows.filter((x) => !x.adatiName?.trim()).length;
     if (missingName / rows.length > 0.1) return `${missingName} names not read`;
-    if (rows.filter((x) => x.grossQtl == null).length / rows.length > 0.1) return "weights not read";
+    // loose packets ("2+45") have no dharam kanta by design: their blank is not a weight missed
+    if (rows.filter((x) => x.grossQtl == null && !looseRst(x.rstNo)).length / rows.length > 0.1) return "weights not read";
     if (r.truncated) return "the reply was cut short";
     return null;
   }
