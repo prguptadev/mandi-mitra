@@ -745,7 +745,6 @@ export const STRINGS = {
     "scanSheets.paperSays": "paper: {m}",
     "stock.raceShow": "Show graph", "stock.raceHide": "Hide graph",
     "daily.searchName": "Search adati name", "daily.foundOf": "{n} of {of} rows",
-    "daily.addNewSupplier": "Add new supplier: {name}",
   },
 
   hi: {
@@ -1495,7 +1494,6 @@ export const STRINGS = {
     "scanSheets.paperSays": "पर्चे पर: {m}",
     "stock.raceShow": "ग्राफ़ दिखाएँ", "stock.raceHide": "ग्राफ़ छिपाएँ",
     "daily.searchName": "आढ़ती का नाम खोजें", "daily.foundOf": "{of} में से {n} पंक्तियाँ",
-    "daily.addNewSupplier": "नया आढ़ती जोड़ें: {name}",
   },
 } as const;
 
