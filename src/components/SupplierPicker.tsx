@@ -162,6 +162,14 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
     return true;
   };
 
+  /* Where the page takes a typed name (a sheet line), Enter keeps what was
+     typed: a suggestion is taken only when picked on purpose (arrow keys or a
+     click), or when the typed name is exactly an existing supplier's. */
+  const navigated = useRef(false);
+  const typed = query.trim();
+  const typedHi = asHindi ?? typed;
+  const exactMatch = matches.find((m) => m.nameHi === typedHi || m.nameHinglish.toLowerCase() === typed.toLowerCase());
+
   return (
     <div className="relative">
       <input
@@ -177,6 +185,7 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
         onChange={(e) => {
           // typing always lets go of the supplier that was set, shown or not
           if (value) onChange(null);
+          navigated.current = false;
           setQuery(e.target.value);
           setOpen(true);
           /* Space finishes a word: "amit trading " becomes "अमित ट्रेडिंग " in
@@ -198,11 +207,17 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
         }, 120)}
         onKeyDown={(e) => {
           if (e.key === "ArrowDown") {
-            e.preventDefault(); setOpen(true);
+            e.preventDefault(); setOpen(true); navigated.current = true;
             setActive((i) => Math.min(i + 1, matches.length - 1));
           } else if (e.key === "ArrowUp") {
-            e.preventDefault(); setActive((i) => Math.max(i - 1, 0));
+            e.preventDefault(); navigated.current = true; setActive((i) => Math.max(i - 1, 0));
           } else if (e.key === "Enter") {
+            if (onCommitText && !selected && typed && !navigated.current) {
+              // the typed name is taken as it is; an exact existing name is that supplier
+              e.preventDefault(); e.stopPropagation();
+              if (exactMatch) choose(exactMatch); else commitText();
+              return;
+            }
             if (open && matches[active] && !selected) {
               e.preventDefault(); e.stopPropagation();
               choose(matches[active]);
