@@ -311,6 +311,10 @@ export function checkRow(
       // the weight typed, or (a katauti typed on the packets) what is left of it
       const here = (row.grossGrams !== loose.netGrams ? row.grossGrams : derivedNetGrams ?? 0) / 1000;
       issues.push({ code: "loose_weight", level, message: `${loose.text} is ${kg} kg; the weight here is ${here} kg`, params: { rst: loose.text, kg, here } });
+    } else if (paper == null && !confirmedField(row, "gross")) {
+      /* nothing read in the net column: the weight is the RST's own, so it
+         is a look, never a stop — and there is no gross here to doubt */
+      issues.push({ code: "loose_unchecked", level: "warn", message: `${loose.text} is ${kg} kg of loose packets; no net weight was read beside it`, params: { rst: loose.text, kg } });
     }
   }
   else if (row.grossGrams > 100 * GRAMS_PER_QTL) {
@@ -332,7 +336,8 @@ export function checkRow(
     });
   }
 
-  if (row.grossGrams !== null && row.ocr.netQtl == null && derivedNetGrams !== null && derivedNetGrams > 0) {
+  // loose packets are asked about above, in their own words
+  if (!loose && row.grossGrams !== null && row.ocr.netQtl == null && derivedNetGrams !== null && derivedNetGrams > 0) {
     // nothing on the sheet to check this weight against
     issues.push({
       code: "net_unchecked", level: confirmedField(row, "gross") || opts.pageHasNet === false ? "warn" : "error",

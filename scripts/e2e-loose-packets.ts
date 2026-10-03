@@ -255,14 +255,26 @@ console.log("\nThe sheet misread: '1-64' for RST 1164, '12-43' for 1243");
 const M = await readSheet(D_M, "gemini-test-loose-misread", "loose-m");
 check("four lines read", M.rows.map((r: any) => r.rstNo), ["1243", "2+45", "1-64", "12-43"]);
 const m164 = line(M, "1-64"), m245 = line(M, "2+45"), m1243 = line(M, "12-43");
-check("'1-64': 64 kg from the RST box, no katauti; the kanta read (11.64) kept aside", [...figures(m164), m164.ocr.grossQtl], [64_000, null, 0, 64_000, 222_784, 11.64]);
-check("  ...and flagged: the sheet's net 11.52 is not 64 kg", codes(m164), ["loose_net"]);
-check("'12-43', no weight: 593 kg from the RST box, flagged against the sheet's 11.78", [m1243.grossGrams, m1243.derivedKatautiUnits, codes(m1243)], [593_000, 0, ["loose_net"]]);
 let m = M;
 const edit = async (id: string, change: Record<string, unknown>) => {
   m = await call("PUT", `/scans/${M.id}/rows`, { rows: m.rows.map((r: any) => r.id === id ? { ...r, ...change } : r), rev: m.rev });
   return m.rows.find((r: any) => r.id === id);
 };
+// nothing read in its net column: the weight is the RST's, so a look, never a stop — and never "this gross"
+check("'2+45' with an empty net column: a warning, not a stop", [codes(m245), m245.issues.find((i: any) => i.code === "loose_unchecked")?.level, m245.blocking], [["loose_unchecked"], "warn", false]);
+check("  ...said for loose packets", says(m245), ["2+45 is 95 kg of loose packets; no net weight was read beside it"]);
+const { STRINGS } = await import("../src/lib/strings.ts");
+const { lineState } = await import("../src/components/ScanGrid.tsx");
+const words = (lang: "en" | "hi") => ((k: string, v?: Record<string, string | number>) =>
+  String((STRINGS[lang] as Record<string, string>)[k] ?? k).replace(/\{(\w+)\}/g, (_, n: string) => String(v?.[n] ?? `{${n}}`))) as never;
+const onScreen = (lang: "en" | "hi") => { const st = lineState(m245, words(lang)); return [st.tone, st.flags.map((f) => [f.field, f.flag.level, f.flag.why])]; };
+check("  ...on the screen: amber on the weight, in one line", onScreen("en"), ["look", [["gross", "doubt", "2+45 is 95 kg of loose packets; no net weight was read beside it — ✓ if right"]]]);
+check("  ...in Hindi too", onScreen("hi"), ["look", [["gross", "doubt", "2+45 यानी 95 किलो खुले पैकेट; बगल में शुद्ध वज़न पढ़ा नहीं गया — सही हो तो ✓"]]]);
+check("  ...neither speaks of 'this gross' / dharam kanta", [/gross/i.test(STRINGS.en["issue.loose_unchecked" as never] ?? "gross"), /धर्म कांटा/.test(STRINGS.hi["issue.loose_unchecked" as never] ?? "धर्म कांटा")], [false, false]);
+check("  ...✓ as right: the line is clear", codes(await (async () => { const r = await edit(m245.id, { confirmed: ["gross"] }); return r; })()), []);
+check("'1-64': 64 kg from the RST box, no katauti; the kanta read (11.64) kept aside", [...figures(m164), m164.ocr.grossQtl], [64_000, null, 0, 64_000, 222_784, 11.64]);
+check("  ...and flagged: the sheet's net 11.52 is not 64 kg", codes(m164), ["loose_net"]);
+check("'12-43', no weight: 593 kg from the RST box, flagged against the sheet's 11.78", [m1243.grossGrams, m1243.derivedKatautiUnits, codes(m1243)], [593_000, 0, ["loose_net"]]);
 const r1164 = await edit(m164.id, { rstNo: "1164" });
 check("'1-64' put right to 1164: the kanta read comes back, the mill's katauti 12, net 11.52 = the sheet's",
   [r1164.rstNo, ...figures(r1164), r1164.netAgrees, codes(r1164)], ["1164", 1_164_000, null, 12, 1_152_000, amountPaise(1_152_000, 348_100), true, []]);
