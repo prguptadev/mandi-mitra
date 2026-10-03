@@ -21,7 +21,7 @@ import {
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
 import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
-import { normRst, applyLoose, checkPages, slipMarks, hasRate, pageOrder, hundredths, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
+import { normRst, applyLoose, lineKatauti, checkPages, slipMarks, hasRate, pageOrder, hundredths, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
 import { GRAMS_PER_QTL } from "../lib/money.ts";
 import { looseRst } from "../lib/slipChecks.ts";
 import { approvedOnDays } from "../lib/parcha.ts";
@@ -1317,7 +1317,9 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
   }
   const kept = rows.map((r) => {
     const m = r.typedName?.trim() ? made.get(r.typedName.trim()) : null;
-    // an RST typed as loose packets ("2+45") brings its weight, and no katauti, into empty boxes
+    /* an RST typed as loose packets ("2+45") brings its weight into an empty box; a
+       weight it brought follows the RST, or goes (the kanta read comes back) when
+       the RST is put right to an ordinary slip */
     return applyLoose({
       ...r, rstNo: normRst(r.rstNo), typedName: null,
       ...(m ? { adatiId: m.id, adatiRawText: r.adatiRawText || m.nameHi, nameCorrected: true } : {}),
@@ -1485,7 +1487,9 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
   const whoFor = new Map<string, string>();
   for (const r of toWrite) {
     const adatiId = (r.adatiId ?? r.match?.adatiId)!;
-    const d = deriveSlip(r.grossGrams!, katauti!, r.ratePaisePerQtl ?? 0, r.katautiOverride);
+    // loose packets at their own weight: no katauti, kept on the slip as its own (as one typed on the daily list is)
+    const kat = lineKatauti(r);
+    const d = deriveSlip(r.grossGrams!, katauti!, r.ratePaisePerQtl ?? 0, kat);
     if (d.netGrams <= 0) throw new HttpError(409, `RST ${r.rstNo}: the net weight works out to zero or less — check the gross`, "has_blocking");
     slipRows.push({
       // the same line of the same sheet is the same slip on every computer: added on two, sync keeps one
@@ -1495,7 +1499,7 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
       merchantId: batch.merchantId,
       grossGrams: r.grossGrams!,
       katautiUnits: d.katautiUnits,
-      katautiOverride: r.katautiOverride != null,
+      katautiOverride: kat != null,
       katautiTerms: JSON.stringify(katauti),
       supplierTerms: JSON.stringify(sTerms),
       ...slipCharges(d.amountPaise, d.netGrams, r.ratePaisePerQtl ?? 0, sTerms),

@@ -15,6 +15,9 @@
  *   gemini-test-loose-qtl  the same, the loose nets given in quintal (0.95, 0.64)
  *   gemini-test-loose-off  the same, "2+45" with 90 written as its net
  *   gemini-test-loose-nokanta  the same, the truck's dharam kanta (1243) not read
+ *   gemini-test-loose-misread  the same sheet misread: RST 1164 (11.64, 12, 11.52) read
+ *                          as "1-64", a fourth line's RST 1243 as "12-43" (no kanta
+ *                          read, net 11.78), and nothing read in the net of 2+45
  * GET /__calls lists every request, so tests can count them.
  */
 import http from "node:http";
@@ -79,9 +82,15 @@ export const LOOSE_ROWS = [
   { page: 1, srNo: 3, rstNo: "1-64", adatiName: "लोकपाल सिंह", grossQtl: null, katauti: null, netQtl: 64, rate: 3481, struckThrough: false, lineY: 490, confidence: 0.9 },
 ];
 const LOOSE_NET_QTL: Record<string, number> = { "2+45": 0.95, "1-64": 0.64 };
+const MISREAD_ROWS = [
+  LOOSE_ROWS[0],
+  { ...LOOSE_ROWS[1], netQtl: null },
+  { ...LOOSE_ROWS[2], grossQtl: 11.64, katauti: 12, netQtl: 11.52 },
+  { page: 1, srNo: 4, rstNo: "12-43", adatiName: "जय भारत ट्रेडिंग कंपनी", grossQtl: null, katauti: null, netQtl: 11.78, rate: 3451, struckThrough: false, lineY: 520, confidence: 0.9 },
+];
 const loosePage = (model: string) => ({
   date: "17/08/26", millName: "A-1", jins: "धान 1509", totalWeightWritten: null,
-  rows: LOOSE_ROWS.map((r) => model === "gemini-test-loose-qtl" && r.rstNo in LOOSE_NET_QTL ? { ...r, netQtl: LOOSE_NET_QTL[r.rstNo] }
+  rows: model === "gemini-test-loose-misread" ? MISREAD_ROWS : LOOSE_ROWS.map((r) => model === "gemini-test-loose-qtl" && r.rstNo in LOOSE_NET_QTL ? { ...r, netQtl: LOOSE_NET_QTL[r.rstNo] }
     : model === "gemini-test-loose-off" && r.rstNo === "2+45" ? { ...r, netQtl: 90 }
     : model === "gemini-test-loose-nokanta" && r.rstNo === "1243" ? { ...r, grossQtl: null } : r),
 });

@@ -66,6 +66,46 @@ export function looseRst(v: string | null | undefined): LooseRst | null {
 }
 
 /**
+ * The weight of a line once its RST box changes from `was` to `now`, in
+ * grams — one rule for the daily list and the sheet screen. A weight that
+ * is the old loose packets' own (2+45: 95 kg) came from the RST box and
+ * follows it: to the new packets' weight (2+40: 90 kg) or, once the RST is
+ * no longer loose packets, back to the dharam kanta read for the line
+ * (`kanta`; null when none was read, and the weight is to be typed). An
+ * empty weight takes the packets' weight. Any other weight was typed, and
+ * stays.
+ */
+export function rstWeight(was: string | null | undefined, now: string | null | undefined, grams: number | null, kanta: number | null = null): number | null {
+  const before = looseRst(was), after = looseRst(now);
+  const fromRst = before !== null && grams === before.netGrams;
+  if (after) return grams === null || fromRst ? after.netGrams : grams;
+  return fromRst ? kanta : grams;
+}
+
+/**
+ * Loose packets carry no katauti — while the weight is theirs, or is still
+ * to come from the RST box. A weight that is not ("12-43" with 11.90 typed:
+ * RST 1243 with a stray dash) is some other slip: the mill's katauti
+ * stands, and the difference is flagged.
+ */
+export function looseNoKatauti(rstNo: string | null | undefined, grams: number | null | undefined): boolean {
+  const loose = looseRst(rstNo);
+  return loose !== null && (grams == null || grams === loose.netGrams);
+}
+
+/**
+ * A written figure in hundredths, rounded half up on its digits as written:
+ * 19.205 → 1921, never 1920 from 19.205 × 100 = 1920.4999… in binary.
+ */
+export function hundredths(v: number): number {
+  const n = Math.round(Number(`${v}e2`));
+  return Number.isFinite(n) ? n : Math.round(v * 100);
+}
+
+/** The dharam kanta read for a line (quintal, as written) in grams, to the kilo, as a read line keeps it. */
+export const kantaGrams = (q: number | null | undefined) => q == null ? null : hundredths(q) * (GRAMS_PER_QTL / 100);
+
+/**
  * What a number box keeps of what was typed or pasted: digits (Hindi digits
  * become English ones) and one decimal point. Letters, "/-", "₹", commas and
  * spaces never reach the box, so a rate is always a number.

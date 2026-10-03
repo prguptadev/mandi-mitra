@@ -28,7 +28,7 @@ import { slipCharges, defaultSupplierCharges, supplierTermsOf, type SupplierChar
 import { sortSlips, type SlipSortOrder } from "@server/lib/slipOrder.ts";
 import { rstKey, looseRst, numberOnly, grossOdd, rateOdd, DEFAULT_RATE_RANGE, type GrossOdd, type RateRange } from "@server/lib/slipChecks.ts";
 import { dmy } from "@server/lib/parchaLabels.ts";
-import { dailyListFrom, dailyListQuery, withRst } from "@/lib/dailyList.ts";
+import { dailyListFrom, dailyListQuery, withRst, suggestedKatauti, katautiBox } from "@/lib/dailyList.ts";
 import { findSuppliers } from "@/lib/ledgerList.ts";
 import {
   Button, Card, Select, Input, Badge, Alert, EmptyState, Dialog, Field, Spinner, Checkbox,
@@ -48,8 +48,6 @@ interface Draft {
   rate: string;
   /** Only while editing a row: its commodity. */
   jinsId?: string;
-  /** The weight the RST box put in for loose packets ("2+45"), while it is still the one shown. */
-  autoGross?: string;
 }
 const emptyDraft = (): Draft => ({ rstNo: "", adatiId: null, adatiName: "", gross: "", katauti: "", rate: "" });
 
@@ -76,8 +74,6 @@ type SavedFlags = { sameDay: OtherSlip[]; otherDays: OtherSlip[]; grossOdd: Gros
 /** A box that has something in it which does not read as a number. */
 const unreadable = (s: string) => s.trim() !== "" && parseLooseNumber(s) === null;
 
-const halfUp = (n: number) => Math.sign(n) * Math.round(Math.abs(n));
-
 /**
  * Live arithmetic, mirroring the server. Katauti units come from the gross
  * weight rounded to the nearest quintal unless the operator typed over them.
@@ -88,13 +84,8 @@ function derive(draft: Draft, cfg: KatautiConfig) {
   const grossGrams = grossQtl === null ? null : Math.round(grossQtl * GRAMS_PER_QTL);
 
   const typed = parseLooseNumber(draft.katauti);
-  // loose packets ("2+45") have no katauti
-  const suggested =
-    grossGrams !== null && looseRst(draft.rstNo) ? 0
-    : grossGrams === null || cfg.mode === "none" ? null
-    : cfg.mode === "per_quintal_rounded" ? halfUp(grossGrams / GRAMS_PER_QTL)
-    : cfg.mode === "per_quintal_exact" ? grossGrams / GRAMS_PER_QTL
-    : 0;
+  // loose packets ("2+45") at their own weight have no katauti
+  const suggested = suggestedKatauti(draft.rstNo, grossGrams, cfg);
   const katautiUnits = typed !== null ? Math.round(typed) : suggested;
   const katautiGrams = katautiUnits === null ? null : Math.round(katautiUnits * cfg.kgPerUnit * 1000);
   const netGrams = grossGrams === null || katautiGrams === null ? null : grossGrams - katautiGrams;
@@ -181,8 +172,8 @@ function displayCell(key: DailyColumnKey, r: Row, i: number, x: CellCtx, flag: T
       ? <span className="text-warn" title={t(r.grossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip")}>{f.weight(r.grossGrams)} !</span>
       : f.weight(r.grossGrams);
     case "katauti": {
-      // loose packets carry no katauti: their 0 is the rule, not an edit
-      const edited = r.katautiOverride && !(r.katautiUnits === 0 && looseRst(r.rstNo));
+      // loose packets at their own weight carry no katauti: their 0 is the rule, not an edit
+      const edited = katautiBox(r) !== "";
       return (
         <span className={cn(edited && "text-warn")}>
           {f.int(r.katautiUnits)}
@@ -704,7 +695,7 @@ export function DailyListPage() {
       draft: {
         rstNo: r.rstNo, adatiId: r.adatiId,
         gross: (r.grossGrams / GRAMS_PER_QTL).toFixed(2),
-        katauti: r.katautiOverride ? String(r.katautiUnits) : "",
+        katauti: katautiBox(r),
         rate: (r.ratePaisePerQtl / 100).toFixed(2),
         jinsId: r.jinsId,
       },
@@ -1149,7 +1140,7 @@ export function DailyListPage() {
                      is changed; then the mill's terms of today (r.katautiCfg) apply. */
                   const reweighed = (editing.grossShown === undefined || ed.gross !== editing.grossShown)
                     && parseQtlToGrams(ed.gross) !== r.grossGrams;
-                  const katSame = ed.katauti === (r.katautiOverride ? String(r.katautiUnits) : "");
+                  const katSame = ed.katauti === katautiBox(r);
                   // an untouched gross box shows the weight to 2 places; the server keeps the stored grams, so does the preview
                   const kept = editing.grossShown !== undefined && ed.gross === editing.grossShown ? { ...ed, gross: String(r.grossGrams / GRAMS_PER_QTL) } : ed;
                   const worked = derive(kept, r.katautiCfg);

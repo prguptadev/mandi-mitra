@@ -14,7 +14,7 @@ import { approvedOnDays } from "../lib/parcha.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
 import { ensureSupplier } from "../lib/supplierFromName.ts";
 import { normRst } from "../lib/scanRows.ts";
-import { rstKey, looseRst } from "../lib/slipChecks.ts";
+import { rstKey, looseRst, looseNoKatauti } from "../lib/slipChecks.ts";
 import { slipFlags, describeFlags } from "../lib/slipFlags.ts";
 
 /** Supplier, commodity and mill must all be this business's own. */
@@ -391,11 +391,13 @@ slipRoutes.post("/", can("slip.write"), async (c) => {
 
   /* Loose packets ("2+45" in the RST box): no weighbridge slip, so the
      weight comes from the packets when none is typed, and there is no
-     katauti. A weight that is typed is kept; a difference is flagged. */
+     katauti. A weight that is typed is kept, and a difference is flagged;
+     a weight that is not the packets' ("12-43" with 11.90: RST 1243 with a
+     stray dash) keeps the mill's katauti, never a silent 0. */
   const loose = looseRst(body.rstNo);
   const grossGrams = body.grossGrams ?? loose?.netGrams;
   if (grossGrams === undefined) throw bad("Gross weight is required", "validation");
-  const katautiUnits = body.katautiUnits ?? (loose ? 0 : null);
+  const katautiUnits = body.katautiUnits ?? (looseNoKatauti(body.rstNo, grossGrams) ? 0 : null);
   const cfg = await katautiCfg(biz, body.merchantId);
   const d = deriveSlip(grossGrams, cfg, body.ratePaisePerQtl, katautiUnits);
   if (d.netGrams <= 0) throw bad("Net weight works out to zero or less — check the gross weight", "bad_net");
@@ -474,12 +476,15 @@ slipRoutes.put("/:id", can("slip.write"), async (c) => {
     bagsCount: body.bagsCount === undefined ? before.bagsCount : (body.bagsCount ?? null),
     ratePaisePerQtl: body.ratePaisePerQtl ?? before.ratePaisePerQtl,
   };
-  /* Loose packets ("2+45") have no katauti unless one is typed. A weight
-     already on the slip is never replaced from the RST box: a difference
-     is flagged instead. */
-  const override = (body.katautiUnits !== undefined
-    ? body.katautiUnits
-    : (before.katautiOverride ? before.katautiUnits : null)) ?? (looseRst(merged.rstNo) ? 0 : null);
+  /* Loose packets ("2+45") at their own weight have no katauti unless one
+     is typed. That 0 is the packets' rule, not a figure typed: it goes when
+     the RST stops being loose packets or the weight stops being theirs, and
+     the mill's katauti stands. A weight already on the slip is never
+     replaced from the RST box: a difference is flagged instead. */
+  const typedBefore = before.katautiOverride && !(before.katautiUnits === 0 && looseNoKatauti(before.rstNo, before.grossGrams))
+    ? before.katautiUnits : null;
+  const override = (body.katautiUnits !== undefined ? body.katautiUnits : typedBefore)
+    ?? (looseNoKatauti(merged.rstNo, merged.grossGrams) ? 0 : null);
   /* A slip keeps the katauti terms it was made with, and a corrected weight is
      worked on them too: a later change to the mill's katauti never reaches an
      old slip. Only a move to another mill takes that mill's terms (as

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { deriveKatauti, type Katauti } from "./charges.ts";
 import { amountPaise, GRAMS_PER_QTL } from "./money.ts";
-import { looseRst } from "./slipChecks.ts";
+import { looseRst, looseNoKatauti, rstWeight, kantaGrams, hundredths } from "./slipChecks.ts";
 import type { OcrRow } from "./gemini.ts";
 import type { AdatiSuggestion, AdatiMatch } from "./adatiResolve.ts";
 
@@ -83,33 +83,33 @@ export const normRst = (v: string | null | undefined) =>
 
 /**
  * A line whose RST box says loose packets ("2+45"): no weighbridge slip, so
- * the weight is the packets' (95 kg) and there is no katauti. Fills only what
- * is empty — a weight or katauti the operator typed stays as typed (the check
- * then says where it differs). A weight this filled from the RST before
- * (`prev`) follows a corrected RST.
+ * the weight is the packets' (95 kg). It fills an empty weight, and a weight
+ * it filled follows the RST from what it was (`prev`, the line as saved
+ * before): to the new packets' weight, or — the RST put right to an ordinary
+ * slip ("1-64" read for 1164) — back to the dharam kanta read for the line,
+ * or empty when none was read. A weight the operator typed stays as typed
+ * (the check then says where it differs). Rule of `rstWeight`, shared with
+ * the daily list and the sheet screen's own box.
  */
-export function applyLoose<R extends { rstNo: string; grossGrams: number | null; katautiOverride: number | null }>(
-  row: R, prev?: { rstNo: string; grossGrams: number | null } | null,
+export function applyLoose<R extends { rstNo: string; grossGrams: number | null; ocr: { grossQtl: number | null } }>(
+  row: R, prev?: { rstNo: string } | null,
 ): R {
-  const loose = looseRst(row.rstNo);
-  if (!loose) return row;
-  const was = prev ? looseRst(prev.rstNo) : null;
-  const filledBefore = Boolean(was && prev!.grossGrams === was.netGrams && row.grossGrams === prev!.grossGrams);
-  return {
-    ...row,
-    grossGrams: row.grossGrams === null || filledBefore ? loose.netGrams : row.grossGrams,
-    katautiOverride: row.katautiOverride ?? 0,
-  };
+  const grossGrams = rstWeight(prev ? prev.rstNo : row.rstNo, row.rstNo, row.grossGrams, kantaGrams(row.ocr.grossQtl));
+  return grossGrams === row.grossGrams ? row : { ...row, grossGrams };
 }
 
 /**
- * A written figure in hundredths, rounded half up on its digits as written:
- * 19.205 → 1921, never 1920 from 19.205 × 100 = 1920.4999… in binary.
+ * The katauti a line is worked with: the one typed, else none for loose
+ * packets at their own weight (2+45 at 95 kg), else the mill's (null). The
+ * packets' 0 is never stored as typed, so it goes with them when the RST or
+ * the weight stops being theirs ("12-43" with 11.90 typed keeps the mill's).
  */
-export function hundredths(v: number): number {
-  const n = Math.round(Number(`${v}e2`));
-  return Number.isFinite(n) ? n : Math.round(v * 100);
-}
+export const lineKatauti = (row: { rstNo: string; grossGrams: number | null; katautiOverride: number | null }) =>
+  row.katautiOverride ?? (looseNoKatauti(row.rstNo, row.grossGrams) ? 0 : null);
+
+/** A written figure in hundredths, rounded half up on its digits as written (see slipChecks). */
+export { hundredths };
+
 /** A reading finer than the 0.01 the paper and the grid work in (19.205). */
 export const finerThanHundredths = (v: number) => Math.abs(Number(`${v}e2`) - hundredths(v)) > 1e-6;
 
@@ -223,7 +223,7 @@ export function checkRow(
   let netDiffGrams: number | null = null;
 
   if (row.grossGrams !== null) {
-    const k = deriveKatauti(row.grossGrams, opts.katauti, row.katautiOverride);
+    const k = deriveKatauti(row.grossGrams, opts.katauti, lineKatauti(row));
     derivedKatautiUnits = k.units;
     derivedNetGrams = row.grossGrams - k.deductionGrams;
     if (row.ratePaisePerQtl !== null) {
@@ -308,7 +308,8 @@ export function checkRow(
     if (paper != null && ![Math.round(paper * 1000), qtlToGrams(paper)].some((g) => Math.abs(g - loose.netGrams) <= 500)) {
       issues.push({ code: "loose_net", level, message: `${loose.text} is ${kg} kg; the sheet says ${paper}`, params: { rst: loose.text, kg, sheet: String(paper) } });
     } else if (derivedNetGrams !== loose.netGrams) {
-      const here = (derivedNetGrams ?? 0) / 1000;
+      // the weight typed, or (a katauti typed on the packets) what is left of it
+      const here = (row.grossGrams !== loose.netGrams ? row.grossGrams : derivedNetGrams ?? 0) / 1000;
       issues.push({ code: "loose_weight", level, message: `${loose.text} is ${kg} kg; the weight here is ${here} kg`, params: { rst: loose.text, kg, here } });
     }
   }
