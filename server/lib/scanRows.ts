@@ -87,9 +87,9 @@ export const normRst = (v: string | null | undefined) =>
  * it filled follows the RST from what it was (`prev`, the line as saved
  * before): to the new packets' weight, or — the RST put right to an ordinary
  * slip ("1-64" read for 1164) — back to the dharam kanta read for the line,
- * or empty when none was read. A weight the operator typed stays as typed
- * (the check then says where it differs). Rule of `rstWeight`, shared with
- * the daily list and the sheet screen's own box.
+ * or empty when none was read. A weight the operator typed stays as typed,
+ * and is taken without a word. Rule of `rstWeight`, shared with the daily
+ * list and the sheet screen's own box.
  */
 export function applyLoose<R extends { rstNo: string; grossGrams: number | null; ocr: { grossQtl: number | null } }>(
   row: R, prev?: { rstNo: string } | null,
@@ -100,12 +100,13 @@ export function applyLoose<R extends { rstNo: string; grossGrams: number | null;
 
 /**
  * The katauti a line is worked with: the one typed, else none for loose
- * packets at their own weight (2+45 at 95 kg), else the mill's (null). The
- * packets' 0 is never stored as typed, so it goes with them when the RST or
- * the weight stops being theirs ("12-43" with 11.90 typed keeps the mill's).
+ * goods (a "+" or "-" in the RST box: 2+45, 1-64, 12-43), whatever their
+ * weight, else the mill's (null). The loose goods' 0 is never stored as
+ * typed, so it goes when the RST stops being loose goods (1-64 put right to
+ * 1164 takes the mill's).
  */
-export const lineKatauti = (row: { rstNo: string; grossGrams: number | null; katautiOverride: number | null }) =>
-  row.katautiOverride ?? (looseNoKatauti(row.rstNo, row.grossGrams) ? 0 : null);
+export const lineKatauti = (row: { rstNo: string; katautiOverride: number | null }) =>
+  row.katautiOverride ?? (looseNoKatauti(row.rstNo) ? 0 : null);
 
 /** A written figure in hundredths, rounded half up on its digits as written (see slipChecks). */
 export { hundredths };
@@ -231,10 +232,13 @@ export function checkRow(
     }
     // the cross-check that makes OCR trustworthy
     if (row.ocr.netQtl != null && loose) {
-      // written in kg (95), or given by the reader in quintal (0.95): either is the same 95 kg
-      const near = (g: number) => Math.abs(g - derivedNetGrams!) <= 500;
+      /* loose goods: the net written beside them against the RST box, the
+         paper against the paper — in kg (95), or given by the reader in
+         quintal (0.95): either is the same 95 kg. A weight or katauti typed
+         by hand is the operator's own, and is never checked against it. */
+      const near = (g: number) => Math.abs(g - loose.netGrams) <= 500;
       netAgrees = near(Math.round(row.ocr.netQtl * 1000)) || near(qtlToGrams(row.ocr.netQtl));
-      netDiffGrams = netAgrees ? 0 : Math.round(row.ocr.netQtl * 1000) - derivedNetGrams;
+      netDiffGrams = netAgrees ? 0 : Math.round(row.ocr.netQtl * 1000) - loose.netGrams;
     } else if (row.ocr.netQtl != null) {
       const ocrNet = qtlToGrams(row.ocr.netQtl);
       netDiffGrams = ocrNet - derivedNetGrams;
@@ -300,20 +304,17 @@ export function checkRow(
   else if (derivedNetGrams !== null && derivedNetGrams <= 0) issues.push({ code: "net_nonpositive", level: "error", message: "Net weight works out to zero or less" });
   else if (loose) {
     /* The paper against the paper: the packets in the RST box against the
-       net written beside them, then what will be saved against both. A
-       difference is never guessed at: it is fixed, or ✓'d as right. */
+       net written beside them. A difference is never guessed at: it is
+       fixed, or ✓'d as right. A weight typed by hand is loose goods'
+       weight, taken without a word. */
     const kg = loose.netGrams / 1000;
     const level = confirmedField(row, "gross") ? "warn" : "error";
     const paper = row.ocr.netQtl;
-    if (paper != null && ![Math.round(paper * 1000), qtlToGrams(paper)].some((g) => Math.abs(g - loose.netGrams) <= 500)) {
+    if (paper != null && netAgrees === false) {
       issues.push({ code: "loose_net", level, message: `${loose.text} is ${kg} kg; the sheet says ${paper}`, params: { rst: loose.text, kg, sheet: String(paper) } });
-    } else if (derivedNetGrams !== loose.netGrams) {
-      // the weight typed, or (a katauti typed on the packets) what is left of it
-      const here = (row.grossGrams !== loose.netGrams ? row.grossGrams : derivedNetGrams ?? 0) / 1000;
-      issues.push({ code: "loose_weight", level, message: `${loose.text} is ${kg} kg; the weight here is ${here} kg`, params: { rst: loose.text, kg, here } });
-    } else if (paper == null && !confirmedField(row, "gross")) {
-      /* nothing read in the net column: the weight is the RST's own, so it
-         is a look, never a stop — and there is no gross here to doubt */
+    } else if (paper == null && row.grossGrams === loose.netGrams && !confirmedField(row, "gross")) {
+      /* nothing read in the net column, and the weight is the RST's own: a
+         look, never a stop — and there is no gross here to doubt */
       issues.push({ code: "loose_unchecked", level: "warn", message: `${loose.text} is ${kg} kg of loose packets; no net weight was read beside it`, params: { rst: loose.text, kg } });
     }
   }

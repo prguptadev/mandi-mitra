@@ -73,7 +73,7 @@ export function looseRst(v: string | null | undefined): LooseRst | null {
  * no longer loose packets, back to the dharam kanta read for the line
  * (`kanta`; null when none was read, and the weight is to be typed). An
  * empty weight takes the packets' weight. Any other weight was typed, and
- * stays.
+ * stays, without a word: loose goods take the weight typed for them.
  */
 export function rstWeight(was: string | null | undefined, now: string | null | undefined, grams: number | null, kanta: number | null = null): number | null {
   const before = looseRst(was), after = looseRst(now);
@@ -83,15 +83,11 @@ export function rstWeight(was: string | null | undefined, now: string | null | u
 }
 
 /**
- * Loose packets carry no katauti — while the weight is theirs, or is still
- * to come from the RST box. A weight that is not ("12-43" with 11.90 typed:
- * RST 1243 with a stray dash) is some other slip: the mill's katauti
- * stands, and the difference is flagged.
+ * Loose goods carry no katauti, whatever weight is typed: a "+" or "-" in
+ * the RST box ("2+45", "1-64", even "12-43" with 11.90 typed) means loose
+ * goods, never a weighbridge slip. Only a katauti typed by hand is applied.
  */
-export function looseNoKatauti(rstNo: string | null | undefined, grams: number | null | undefined): boolean {
-  const loose = looseRst(rstNo);
-  return loose !== null && (grams == null || grams === loose.netGrams);
-}
+export const looseNoKatauti = (rstNo: string | null | undefined): boolean => looseRst(rstNo) !== null;
 
 /**
  * A written figure in hundredths, rounded half up on its digits as written:

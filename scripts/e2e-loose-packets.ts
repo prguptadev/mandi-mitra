@@ -9,6 +9,9 @@
  * added, typed on the daily list, and followed into every total. Then the
  * same sheet misread ("1-64" for RST 1164, "12-43" for 1243) and put right,
  * on the sheet screen and on the daily list alike.
+ * The owner's rule: a "+" or "-" in the RST box always means loose goods —
+ * no katauti (unless one is typed), and a weight typed by hand is taken
+ * without a flag.
  * Run through: npm run test:e2e
  */
 import "./_guard.ts";
@@ -102,8 +105,8 @@ check("an ordinary RST fills nothing", shown(typeKeys(empty, "1243")), ["1243", 
 const RULE = { mode: "per_quintal_rounded", kgPerUnit: 1 } as const; // G.R.M's: 1 kg a quintal, rounded
 const kat = (rst: string, grams: number | null) => safe(() => dailyList.suggestedKatauti(rst, grams, RULE));
 check("the katauti it suggests: 2+45 at its own 0.95 has none", kat("2+45", 95_000), 0);
-check("  ...2+45 at 0.90 typed (not its weight): the mill's, 1", kat("2+45", 90_000), 1);
-check("  ...'12-43' with 11.90 typed (RST 1243, a stray dash): the mill's 12, never a silent 0", kat("12-43", 1_190_000), 12);
+check("  ...2+45 at 0.90 typed by hand: still none", kat("2+45", 90_000), 0);
+check("  ...'12-43' with 11.90 typed: + or - means loose goods, none", kat("12-43", 1_190_000), 0);
 check("  ...an ordinary 1243 at 11.90: 12, as always; nothing without a weight", [kat("1243", 1_190_000), kat("2+45", null)], [12, null]);
 
 console.log("\nEditing a saved slip on the daily list");
@@ -115,11 +118,13 @@ check("a saved 2+45 opens at 0.95, its katauti 0 the rule's, not typed", shown(o
 check("  ...RST to 2+40: the weight follows, 0.95 → 0.90", shown(typeKeys(opened(open245), "2+40")), ["2+40", "0.90", ""]);
 check("  ...one key at a time (2+4, 2+40): the same", shown(typeKeys(opened(open245), "2+4", "2+40")), ["2+40", "0.90", ""]);
 check("  ...RST to 1245 (a misread put right): its 0.95 goes, to be typed", shown(typeKeys(opened(open245), "1245")), ["1245", "", ""]);
-const open092: Saved = { rstNo: "2+45", grossGrams: 92_000, katautiUnits: 1, katautiOverride: false };
-check("a weight typed by hand (2+45 at 0.92) stays through 2+40 and 1245", [typeKeys(opened(open092), "2+40"), typeKeys(opened(open092), "1245")].map(shown), [["2+40", "0.92", ""], ["1245", "0.92", ""]]);
+const open092: Saved = { rstNo: "2+45", grossGrams: 92_000, katautiUnits: 0, katautiOverride: true };
+check("a weight typed by hand (2+45 at 0.92) opens with its katauti 0 the rule's", shown(opened(open092)), ["2+45", "0.92", ""]);
+check("  ...and stays through 2+40 and 1245", [typeKeys(opened(open092), "2+40"), typeKeys(opened(open092), "1245")].map(shown), [["2+40", "0.92", ""], ["1245", "0.92", ""]]);
 const openKat: Saved = { rstNo: "2+45", grossGrams: 95_000, katautiUnits: 2, katautiOverride: true };
 check("a katauti typed by hand (2) stays in its box through 1245", shown(typeKeys(opened(openKat), "1245")), ["1245", "", "2"]);
-check("a 0 typed for a weight that is not the packets' is a typed 0", safe(() => dailyList.katautiBox({ rstNo: "12-43", grossGrams: 1_190_000, katautiUnits: 0, katautiOverride: true })), "0");
+check("'12-43' at 11.90 with katauti 0: loose goods, the 0 is the rule's, not typed", safe(() => dailyList.katautiBox({ rstNo: "12-43", grossGrams: 1_190_000, katautiUnits: 0, katautiOverride: true })), "");
+check("  ...a katauti typed on loose goods (1) is a typed 1", safe(() => dailyList.katautiBox({ rstNo: "2+45", grossGrams: 90_000, katautiUnits: 1, katautiOverride: true })), "1");
 check("one rule on both screens (the sheet screen's box uses it too)", safe(() => [
   slipChecks.rstWeight("2+45", "2+40", 95_000), slipChecks.rstWeight("2+45", "1164", 95_000, 1_164_000), slipChecks.rstWeight("2+45", "1245", 95_000),
   slipChecks.rstWeight("2+45", "2+40", 92_000), slipChecks.rstWeight("1245", "2+45", null), slipChecks.rstWeight("1245", "2+45", 1_245_000),
@@ -246,7 +251,8 @@ const fixed = c2.rows.find((r: any) => r.id === off.id);
 check("the RST corrected to 2+40: its weight follows (90 kg), the line is clear", [fixed.rstNo, ...figures(fixed), codes(fixed)], ["2+40", 90_000, null, 0, 90_000, 288_000, []]);
 const typedOver = await call("PUT", `/scans/${C.id}/rows`, { rows: c2.rows.map((r: any) => r.id === off.id ? { ...r, grossGrams: 92_000 } : r), rev: c2.rev });
 const t92 = typedOver.rows.find((r: any) => r.id === off.id);
-check("a weight typed over it is kept, with the mill's katauti (1), and said", [t92.grossGrams, t92.derivedKatautiUnits, says(t92)], [92_000, 1, ["2+40 is 90 kg; the weight here is 92 kg"]]);
+check("a weight typed over it (0.92) is kept: no katauti, net 0.92, nothing said", [t92.grossGrams, t92.katautiOverride, t92.derivedKatautiUnits, t92.derivedNetGrams, codes(t92), t92.netAgrees, t92.blocking],
+  [92_000, null, 0, 92_000, [], true, false]);
 const twice = await call("PUT", `/scans/${C.id}/rows`, { rows: typedOver.rows.map((r: any) => r.rstNo === "1-64" ? { ...r, rstNo: "2+40" } : r.id === off.id ? { ...r, grossGrams: 90_000 } : r), rev: typedOver.rev });
 check("two lines of 2+40 on one sheet: no 'appears twice'", twice.rows.filter((r: any) => r.rstNo === "2+40").map(codes), [[], ["loose_net"]]);
 await call("DELETE", `/scans/${C.id}`);
@@ -275,15 +281,16 @@ check("  ...✓ as right: the line is clear", codes(await edit(m245.id, { confir
 check("'1-64': 64 kg from the RST box, no katauti; the kanta read (11.64) kept aside", [...figures(m164), m164.ocr.grossQtl], [64_000, null, 0, 64_000, 222_784, 11.64]);
 check("  ...and flagged: the sheet's net 11.52 is not 64 kg", codes(m164), ["loose_net"]);
 check("'12-43', no weight: 593 kg from the RST box, flagged against the sheet's 11.78", [m1243.grossGrams, m1243.derivedKatautiUnits, codes(m1243)], [593_000, 0, ["loose_net"]]);
+const grossFlag = (r: any) => lineState(r, words("en")).flags.filter((f) => f.field === "gross").map((f) => f.flag.why);
 const r1164 = await edit(m164.id, { rstNo: "1164" });
 check("'1-64' put right to 1164: the kanta read comes back, the mill's katauti 12, net 11.52 = the sheet's",
   [r1164.rstNo, ...figures(r1164), r1164.netAgrees, codes(r1164)], ["1164", 1_164_000, null, 12, 1_152_000, amountPaise(1_152_000, 348_100), true, []]);
 const r1245 = await edit(m245.id, { rstNo: "1245" });
 check("'2+45' changed to 1245, no kanta read: the 0.95 it put in goes, to be typed", [r1245.grossGrams, r1245.katautiOverride, codes(r1245)], [null, null, ["gross_missing"]]);
 const r1243typed = await edit(m1243.id, { grossGrams: 1_190_000 });
-check("'12-43' with 11.90 typed: the mill's katauti 12, net 11.78 — never a silent 0",
-  [r1243typed.grossGrams, r1243typed.katautiOverride, r1243typed.derivedKatautiUnits, r1243typed.derivedNetGrams], [1_190_000, null, 12, 1_178_000]);
-check("  ...and still asked: 12-43 is 593 kg", says(r1243typed), ["12-43 is 593 kg; the sheet says 11.78"]);
+check("'12-43' with 11.90 typed: + or - means loose goods — no katauti, net 11.90",
+  [r1243typed.grossGrams, r1243typed.katautiOverride, r1243typed.derivedKatautiUnits, r1243typed.derivedNetGrams], [1_190_000, null, 0, 1_190_000]);
+check("  ...the weight typed is never questioned; only the paper's 11.78 against the RST", says(r1243typed), ["12-43 is 593 kg; the sheet says 11.78"]);
 const r1243 = await edit(m1243.id, { rstNo: "1243" });
 check("  ...the RST put right to 1243: the typed 11.90 stays, katauti 12, net 11.78", [r1243.grossGrams, r1243.derivedKatautiUnits, r1243.derivedNetGrams], [1_190_000, 12, 1_178_000]);
 const katSeq: unknown[] = [];
@@ -292,7 +299,8 @@ for (const [rst, k] of [["2+45", 1], ["2+40", undefined], ["1240", undefined]] a
   katSeq.push([r.grossGrams, r.katautiOverride]);
 }
 check("a katauti typed (1) stays as the RST goes 2+45, 2+40, 1240; the weight follows it", katSeq, [[95_000, 1], [90_000, 1], [null, 1]]);
-const w2 = await edit(m245.id, { rstNo: "2+40", grossGrams: 92_000, katautiOverride: null });
+const w2 = await edit(m245.id, { rstNo: "2+40", grossGrams: 92_000, katautiOverride: null, confirmed: [] });
+check("2+40 with 0.92 typed, nothing in the net column: no katauti, net 0.92, no flag", [w2.derivedKatautiUnits, w2.derivedNetGrams, codes(w2), grossFlag(w2)], [0, 92_000, [], []]);
 const w3 = await edit(m245.id, { rstNo: "1240" });
 check("a weight typed (0.92) stays through 2+40 and 1240", [w2.grossGrams, w3.grossGrams], [92_000, 92_000]);
 // the same keys on both screens: the daily list's weight box and the sheet's line end alike
@@ -317,8 +325,8 @@ check("  ...amount ₹45,920.62, everything reconciles", [t.amountPaise, t.misma
 const avg = weightedAvgRate(slipsA.map((s) => ({ netGrams: s.net, ratePaisePerQtl: s.rate })));
 check("  ...weighted rate 3434.60 (Σ net × rate ÷ Σ net, half up)", [t.weightedAvgRatePaise, avg], [343_460, 343_460]);
 const loosesOnList = day.rows.filter((r: any) => looseRst(r.rstNo));
-check("  ...the loose rows carry no flag", loosesOnList.map((r: any) => [r.rstNo, r.rstDay, r.rstOtherDays.length, r.grossOdd, r.looseOff, r.reconciles]),
-  [["2+45", 1, 0, null, null, true], ["1-64", 1, 0, null, null, true]]);
+check("  ...the loose rows carry no flag", loosesOnList.map((r: any) => [r.rstNo, r.rstDay, r.rstOtherDays.length, r.grossOdd, r.reconciles]),
+  [["2+45", 1, 0, null, true], ["1-64", 1, 0, null, true]]);
 
 const ledger = await call("GET", `/ledger/${sup["विशाल बन्धु जैन"]}?from=${D}&to=${D}`);
 const buy = ledger.entries.find((e: any) => e.kind === "purchase");
@@ -346,20 +354,27 @@ const typed = await call("POST", "/slips", { slipDate: D, rstNo: "२ + ४५",
 const typedRow = sqlite.prepare(`select ${SLIP_COLS} from purchase_slips where id = ?`).get(typed.id) as Slip;
 const same = (s: Slip) => [s.rst, s.gross, s.units, s.over, s.net, s.rate, s.amount, s.commission, s.gaushala, s.payable, s.adati];
 check("'२ + ४५' with no weight: the same slip as from the sheet", same(typedRow), same(s245));
-check("  ...and not a repeat of the sheet's 2+45", [typed.rstRepeated, typed.flags.sameDay.length, typed.flags.grossOdd, typed.flags.looseOff], [false, 0, null, null]);
+// what a save says about the slip: nothing of its weight for loose goods
+const said = (fl: any) => [Object.keys(fl).sort(), fl.sameDay.length, fl.otherDays.length, fl.grossOdd];
+const quiet = [["grossOdd", "otherDays", "rateOdd", "sameDay"], 0, 0, null];
+check("  ...and not a repeat of the sheet's 2+45", [typed.rstRepeated, said(typed.flags)], [false, quiet]);
 const t64 = await call("POST", "/slips", { slipDate: D, rstNo: "1-64", adatiId: sup["लोकपाल सिंह"], jinsId: j1509.id, merchantId: grm.id, grossGrams: 64_000, katautiUnits: null, ratePaisePerQtl: 348_100 });
-check("1-64 with 0.64 typed: no katauti, ₹2,227.84", [t64.katautiUnits, t64.netGrams, t64.amountPaise, t64.flags.looseOff], [0, 64_000, 222_784, null]);
+check("1-64 with 0.64 typed: no katauti, ₹2,227.84", [t64.katautiUnits, t64.netGrams, t64.amountPaise, said(t64.flags)], [0, 64_000, 222_784, quiet]);
 const t90 = await call("POST", "/slips", { slipDate: D, rstNo: "2+45", adatiId: sup["विशाल बन्धु जैन"], jinsId: j1509.id, merchantId: grm.id, grossGrams: 90_000, ratePaisePerQtl: 320_000 });
-check("2+45 with 0.90 typed: the weight kept, the mill's katauti (1), and flagged", [t90.katautiUnits, t90.netGrams, t90.amountPaise, t90.flags.looseOff], [1, 89_000, 284_800, { rst: "2+45", kg: 95 }]);
+check("2+45 with 0.90 typed: no katauti, net 0.90 exactly, ₹2,880.00, no flag", [t90.katautiUnits, t90.netGrams, t90.amountPaise, said(t90.flags)], [0, 90_000, 288_000, quiet]);
 const listed = (await call("GET", `/slips?date=${D}&merchantId=${grm.id}`)).rows.find((r: any) => r.id === t90.id);
-check("  ...on the list too", [listed.looseOff, listed.rstDay], [{ rst: "2+45", kg: 95 }, 1]);
+check("  ...on the list too: no flag, reconciles, its 0 not marked as typed", ["looseOff" in listed, listed.grossOdd, listed.rstDay, listed.reconciles, safe(() => dailyList.katautiBox(listed))], [false, null, 1, true, ""]);
 const put = await call("PUT", `/slips/${t90.id}`, { grossGrams: 95_000 });
-check("  ...put right to 0.95: no katauti, the flag goes", [put.katautiUnits, put.netGrams, put.amountPaise, put.flags.looseOff], [0, 95_000, 304_000, null]);
+check("  ...changed to 0.95: no katauti, net 0.95", [put.katautiUnits, put.netGrams, put.amountPaise, said(put.flags)], [0, 95_000, 304_000, quiet]);
 const t1243 = await call("POST", "/slips", { slipDate: D, rstNo: "12-43", adatiId: sup["जय भारत ट्रेडिंग कंपनी"], jinsId: j1509.id, merchantId: grm.id, grossGrams: 1_190_000, ratePaisePerQtl: 345_100 });
-check("'12-43' typed with 11.90 (RST 1243, a stray dash): the mill's katauti 12, net 11.78, flagged as not 593 kg",
-  [t1243.katautiUnits, t1243.netGrams, t1243.flags.looseOff], [12, 1_178_000, { rst: "12-43", kg: 593 }]);
+check("'12-43' typed with 11.90: + or - means loose goods — no katauti, net 11.90, no flag",
+  [t1243.katautiUnits, t1243.netGrams, t1243.amountPaise, said(t1243.flags)], [0, 1_190_000, amountPaise(1_190_000, 345_100), quiet]);
 const reweighed = await call("PUT", `/slips/${typed.id}`, { grossGrams: 90_000 });
-check("a 2+45 slip's weight changed to 0.90 (no katauti sent): its 0 goes, the mill's 1", [reweighed.katautiUnits, reweighed.netGrams], [1, 89_000]);
+check("a 2+45 slip's weight changed to 0.90 (no katauti sent): still none, net 0.90", [reweighed.katautiUnits, reweighed.netGrams, said(reweighed.flags)], [0, 90_000, quiet]);
+const tk = await call("POST", "/slips", { slipDate: D, rstNo: "2+45", adatiId: sup["विशाल बन्धु जैन"], jinsId: j1509.id, merchantId: grm.id, grossGrams: 95_000, katautiUnits: 2, ratePaisePerQtl: 320_000 });
+check("a katauti typed on loose goods (2) is kept: net 93 kg", [tk.katautiUnits, tk.netGrams], [2, 93_000]);
+const tkPut = await call("PUT", `/slips/${tk.id}`, { grossGrams: 90_000 });
+check("  ...and stays when the weight is changed (no katauti sent): net 88 kg", [tkPut.katautiUnits, tkPut.netGrams], [2, 88_000]);
 const renumbered = await call("PUT", `/slips/${t64.id}`, { rstNo: "1164", grossGrams: 1_164_000 });
 check("a 1-64 slip put right to RST 1164 at 11.64 (no katauti sent): the mill's 12, net 11.52", [renumbered.katautiUnits, renumbered.netGrams], [12, 1_152_000]);
 const noGross = await raw("POST", "/slips", { slipDate: D, rstNo: "1250", adatiId: sup["जय भारत ट्रेडिंग कंपनी"], jinsId: j1509.id, merchantId: grm.id, ratePaisePerQtl: 345_100 });
@@ -378,7 +393,7 @@ check("'work the day out again' changes nothing", (await call("POST", "/slips/re
 
 /* ------------------------------------------------------------ clean up */
 
-for (const id of [...slipsA.map((s) => s.id), typed.id, t64.id, t90.id, t1243.id, old.id, ...(minus.json?.id ? [minus.json.id] : [])]) await call("DELETE", `/slips/${id}`);
+for (const id of [...slipsA.map((s) => s.id), typed.id, t64.id, t90.id, t1243.id, tk.id, old.id, ...(minus.json?.id ? [minus.json.id] : [])]) await call("DELETE", `/slips/${id}`);
 sqlite.prepare("delete from scan_batches where id = ?").run(A.id);
 fs.rmSync(path.resolve(process.env.MANDI_DATA_DIR!, "scans", A.id), { recursive: true, force: true });
 for (const id of Object.values(sup)) await call("DELETE", `/adati/${id}`);

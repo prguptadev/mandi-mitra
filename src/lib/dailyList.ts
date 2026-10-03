@@ -35,13 +35,13 @@ const halfUp = (n: number) => Math.sign(n) * Math.round(Math.abs(n));
 
 /**
  * The katauti the box suggests for a weight (grams), when none is typed:
- * none for loose packets at their own weight (2+45 at 0.95), else the
- * mill's rule — "12-43" with 11.90 typed is RST 1243 with a stray dash, not
- * 593 kg of packets, and keeps the mill's 12. The server does the same.
+ * none for loose goods, whatever weight is typed (a "+" or "-" in the RST
+ * box: 2+45 at 0.95 or 0.90, "12-43" at 11.90), else the mill's rule. The
+ * server does the same.
  */
 export function suggestedKatauti(rstNo: string, grossGrams: number | null, cfg: KatautiConfig): number | null {
   if (grossGrams === null) return null;
-  if (looseNoKatauti(rstNo, grossGrams)) return 0;
+  if (looseNoKatauti(rstNo)) return 0;
   return cfg.mode === "none" ? null
     : cfg.mode === "per_quintal_rounded" ? halfUp(grossGrams / 100_000)
     : cfg.mode === "per_quintal_exact" ? grossGrams / 100_000
@@ -50,12 +50,11 @@ export function suggestedKatauti(rstNo: string, grossGrams: number | null, cfg: 
 
 /**
  * The katauti box of a saved slip opened for editing: the katauti typed on
- * it, or empty (the rule, shown faint). The 0 of loose packets at their own
- * weight is their rule, not a figure typed, so it follows the RST and the
- * weight like a new row's does.
+ * it, or empty (the rule, shown faint). The 0 of loose goods is their rule,
+ * not a figure typed, so it follows the RST like a new row's does.
  */
-export function katautiBox(r: { rstNo: string; grossGrams: number; katautiUnits: number; katautiOverride: boolean }): string {
-  return r.katautiOverride && !(r.katautiUnits === 0 && looseNoKatauti(r.rstNo, r.grossGrams)) ? String(r.katautiUnits) : "";
+export function katautiBox(r: { rstNo: string; katautiUnits: number; katautiOverride: boolean }): string {
+  return r.katautiOverride && !(r.katautiUnits === 0 && looseNoKatauti(r.rstNo)) ? String(r.katautiUnits) : "";
 }
 
 const link = (date: string, mill: string, jins: string) =>

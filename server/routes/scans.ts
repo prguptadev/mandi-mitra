@@ -1487,7 +1487,7 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
   const whoFor = new Map<string, string>();
   for (const r of toWrite) {
     const adatiId = (r.adatiId ?? r.match?.adatiId)!;
-    // loose packets at their own weight: no katauti, kept on the slip as its own (as one typed on the daily list is)
+    // loose goods ("2+45", whatever weight): no katauti, kept on the slip as its own (as one typed on the daily list is)
     const kat = lineKatauti(r);
     const d = deriveSlip(r.grossGrams!, katauti!, r.ratePaisePerQtl ?? 0, kat);
     if (d.netGrams <= 0) throw new HttpError(409, `RST ${r.rstNo}: the net weight works out to zero or less — check the gross`, "has_blocking");

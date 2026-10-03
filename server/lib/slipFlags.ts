@@ -29,8 +29,6 @@ export interface SlipFlags {
   grossOdd: GrossOdd;
   /** The day's usual range, when this rate is outside it. */
   rateOdd: RateRange | null;
-  /** Loose packets whose weight is not what the RST box says ("2+45" is 95 kg). */
-  looseOff: { rst: string; kg: number } | null;
 }
 
 const S = schema.purchaseSlips;
@@ -112,7 +110,6 @@ export async function slipFlags(biz: string, targets: SlipTarget[]) {
       otherDays: others.get(String(i)) ?? [],
       grossOdd: grossOdd(t.grossGrams, t.rstNo),
       rateOdd: rateOdd(t.ratePaisePerQtl, range) ? range : null,
-      looseOff: loose && t.grossGrams !== loose.netGrams ? { rst: loose.text, kg: loose.netGrams / 1000 } : null,
     };
   });
   return { flags, usual };
@@ -142,6 +139,5 @@ export async function describeFlags(biz: string, f: SlipFlags) {
     otherDays: f.otherDays.map((o) => one(o.id)).filter((x) => x !== null),
     grossOdd: f.grossOdd,
     rateOdd: f.rateOdd,
-    looseOff: f.looseOff,
   };
 }

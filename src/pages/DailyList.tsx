@@ -63,13 +63,11 @@ type Row = SlipRow & {
   rstOtherDays?: string[];
   grossOdd?: GrossOdd;
   rateOdd?: RateRange | null;
-  /** Loose packets ("2+45") whose weight is not what the RST box says. */
-  looseOff?: { rst: string; kg: number } | null;
 };
 type Totals = SlipTotals & { rstOtherDayRows?: number; usualRate?: Record<string, RateRange> };
 type OtherSlip = { date: string; rstNo: string; millCode: string | null; nameHi: string; nameHinglish: string };
 /** What the server found when a slip was saved — flags only, the slip is saved. */
-type SavedFlags = { sameDay: OtherSlip[]; otherDays: OtherSlip[]; grossOdd: GrossOdd; rateOdd: RateRange | null; looseOff?: { rst: string; kg: number } | null };
+type SavedFlags = { sameDay: OtherSlip[]; otherDays: OtherSlip[]; grossOdd: GrossOdd; rateOdd: RateRange | null };
 
 /** A box that has something in it which does not read as a number. */
 const unreadable = (s: string) => s.trim() !== "" && parseLooseNumber(s) === null;
@@ -84,7 +82,7 @@ function derive(draft: Draft, cfg: KatautiConfig) {
   const grossGrams = grossQtl === null ? null : Math.round(grossQtl * GRAMS_PER_QTL);
 
   const typed = parseLooseNumber(draft.katauti);
-  // loose packets ("2+45") at their own weight have no katauti
+  // loose goods ("2+45") have no katauti, whatever weight is typed
   const suggested = suggestedKatauti(draft.rstNo, grossGrams, cfg);
   const katautiUnits = typed !== null ? Math.round(typed) : suggested;
   const katautiGrams = katautiUnits === null ? null : Math.round(katautiUnits * cfg.kgPerUnit * 1000);
@@ -166,13 +164,11 @@ function displayCell(key: DailyColumnKey, r: Row, i: number, x: CellCtx, flag: T
     case "village": return <span className="text-[12px] text-muted">{lang === "hi" ? (r.adatiVillage ?? "") : (r.adatiVillage ?? "")}</span>;
     case "mill": return r.merchantCode ? <Badge tone="neutral" className="num">{r.merchantCode}</Badge> : <span className="text-faint">—</span>;
     case "jins": return <span className="num text-[12px] text-muted">{r.jinsCode}</span>;
-    case "gross": return r.looseOff
-      ? <span className="text-warn" title={t("daily.looseOffTip", { rst: r.looseOff.rst, kg: r.looseOff.kg })}>{f.weight(r.grossGrams)} !</span>
-      : r.grossOdd
+    case "gross": return r.grossOdd
       ? <span className="text-warn" title={t(r.grossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip")}>{f.weight(r.grossGrams)} !</span>
       : f.weight(r.grossGrams);
     case "katauti": {
-      // loose packets at their own weight carry no katauti: their 0 is the rule, not an edit
+      // loose goods carry no katauti: their 0 is the rule, not an edit
       const edited = katautiBox(r) !== "";
       return (
         <span className={cn(edited && "text-warn")}>
@@ -310,7 +306,6 @@ export function DailyListPage() {
       fl.grossOdd === "large" ? t("daily.flagGrossLarge", { q: f.weight(grossGrams ?? 0) }) : "",
       fl.grossOdd === "small" ? t("daily.flagGrossSmall", { q: f.weight(grossGrams ?? 0) }) : "",
       fl.rateOdd ? t("daily.flagRateFar", { rate: f.rate(ratePaise ?? 0), floor: f.rate(fl.rateOdd.floorPaise), ceil: f.rate(fl.rateOdd.ceilPaise) }) : "",
-      fl.looseOff ? t("daily.flagLoose", { rst: fl.looseOff.rst, kg: fl.looseOff.kg, q: f.weight(grossGrams ?? 0) }) : "",
     ].filter(Boolean);
     setFlagWarn(lines.length ? { rst, lines, saved: true } : null);
   };
@@ -510,9 +505,6 @@ export function DailyListPage() {
   /* Figures that look like a lost or extra decimal point, while typing: an
      orange box and a reason. A flag only — Enter still saves. */
   const draftGrossOdd = grossOdd(d.grossGrams, draft.rstNo);
-  // loose packets ("2+45") with a weight typed that is not theirs
-  const draftLoose = looseRst(draft.rstNo);
-  const draftLooseOff = draftLoose && d.grossGrams !== null && d.grossGrams !== draftLoose.netGrams ? draftLoose : null;
   const draftRange = totals?.usualRate?.[jinsId] ?? DEFAULT_RATE_RANGE;
   const draftRateOdd = rateOdd(d.ratePaise, draftRange);
 
@@ -801,9 +793,8 @@ export function DailyListPage() {
             placeholder={t("daily.typeNameAuto")} />
         ) : c.key === "gross" ? (
           <input ref={grossRef} value={draft.gross} inputMode="decimal" placeholder="19.20"
-            className={cn(CELL, draftBad.gross ? "border-2 border-bad" : (draftGrossOdd || draftLooseOff) && "border-2 border-warn")}
+            className={cn(CELL, draftBad.gross ? "border-2 border-bad" : draftGrossOdd && "border-2 border-warn")}
             title={draftBad.gross ? t("daily.boxUnreadable")
-              : draftLooseOff ? t("daily.looseOffTip", { rst: draftLooseOff.text, kg: draftLooseOff.netGrams / 1000 })
               : draftGrossOdd ? t(draftGrossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip") : undefined}
             onChange={(e) => setDraft((p) => ({ ...p, gross: numberOnly(e.target.value) }))}
             onKeyDown={step("bags")} />
