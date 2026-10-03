@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Printer, ScanLine, Play, Plus, RefreshCw, Stethoscope, Copy, Check } from "lucide-react";
-import { api, ApiError } from "@/lib/api.ts";
+import { api, ApiError, apiStatus } from "@/lib/api.ts";
 import { useI18n } from "@/lib/i18n.tsx";
+import { useSession } from "@/lib/session.tsx";
 import { Alert, Badge, Button, Field, Select, Spinner } from "@/components/ui/index.tsx";
 
 /* Scan straight from the scanner connected to this computer (the Windows
@@ -15,11 +16,27 @@ const saved = (): { deviceId?: string; dpi?: number; color?: boolean } => {
   try { return JSON.parse(localStorage.getItem(LS) ?? "{}"); } catch { return {}; }
 };
 
+type Sheet = { id: string; pages: number };
+/* The sheet being built. A scan runs on the server and outlives this panel, so
+   the sheet is kept per business and user (in the query cache, and in
+   sessionStorage for a reload), not in the panel: coming back mid-scan shows
+   the same sheet, and a page that lands while away still joins it. */
+const sheetSS = (who: string) => `mandi.scanner.sheet.${who}`;
+const storedSheet = (who: string): Sheet | null => {
+  try { return JSON.parse(sessionStorage.getItem(sheetSS(who)) ?? "null"); } catch { return null; }
+};
+
 export function ScannerPanel({ slipDate, merchantId, jinsId }: { slipDate: string; merchantId: string; jinsId: string }) {
   const { t } = useI18n();
   const qc = useQueryClient();
+  const { me } = useSession();
   const [, navigate] = useLocation();
-  const status = useQuery({ queryKey: ["scanner"], queryFn: () => api.get<{ available: boolean }>("/scanner"), staleTime: 300_000 });
+  /* busy: a scan running on the server, which outlives this screen — coming
+     back mid-scan asks again, and asks every 1.5 s until the page is in. */
+  const status = useQuery({
+    queryKey: ["scanner"], queryFn: () => api.get<{ available: boolean; busy: { since: number; sheetId: string | null } | null }>("/scanner"),
+    refetchOnMount: "always", refetchInterval: (q) => (q.state.data?.busy ? 1500 : false),
+  });
   const [showDetails, setShowDetails] = useState(false);
   const [copied, setCopied] = useState(false);
   const details = useQuery({
@@ -31,26 +48,50 @@ export function ScannerPanel({ slipDate, merchantId, jinsId }: { slipDate: strin
     queryFn: () => api.get<{ available: boolean; devices: { id: string; name: string }[] }>("/scanner/devices"),
   });
   const [opts, setOpts] = useState(() => ({ deviceId: saved().deviceId ?? "", dpi: saved().dpi ?? 300, color: saved().color ?? true }));
-  const [sheet, setSheet] = useState<{ id: string; pages: number } | null>(null);
+  const who = `${me?.activeBusinessId ?? ""}.${me?.user.id ?? ""}`;
+  const sheet = useQuery({ queryKey: ["scanner-sheet", who], queryFn: () => storedSheet(who), initialData: () => storedSheet(who), staleTime: Infinity }).data ?? null;
+  const setSheet = (s: Sheet | null) => {
+    qc.setQueryData(["scanner-sheet", who], s);
+    try { if (s) sessionStorage.setItem(sheetSS(who), JSON.stringify(s)); else sessionStorage.removeItem(sheetSS(who)); } catch { /* this sitting only */ }
+  };
   const [err, setErr] = useState<string | null>(null);
   const keep = (next: typeof opts) => { setOpts(next); try { localStorage.setItem(LS, JSON.stringify(next)); } catch { /* ignore */ } };
 
   const scan = useMutation({
-    mutationFn: () => api.post<{ id: string; pages: number }>("/scanner/scan", {
+    mutationFn: () => api.post<Sheet>("/scanner/scan", {
       ...(opts.deviceId ? { deviceId: opts.deviceId } : {}), dpi: opts.dpi, color: opts.color,
       ...(sheet ? { scanId: sheet.id } : { slipDate: slipDate || null, merchantId: merchantId || null, jinsId: jinsId || null }),
     }),
+    // these run even if the screen was left mid-scan: the page joins the kept sheet
     onSuccess: async (r) => { setErr(null); setSheet(r); await qc.invalidateQueries({ queryKey: ["scans"] }); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["scanner"], exact: true }),
   });
   const read = useMutation({
     mutationFn: (id: string) => api.post(`/scans/${id}/run`, {}),
-    onSuccess: (_r, id) => navigate(`/scan/${id}`),
+    // a sheet being read takes no more pages: the next press starts a new one
+    onSuccess: (_r, id) => { setSheet(null); navigate(`/scan/${id}`); },
     onError: (e) => setErr(e instanceof ApiError ? e.message : t("common.somethingWrong")),
   });
 
+  /* The kept sheet as the server has it: on coming back, when the scan running
+     is this user's on a sheet (a reload forgot it), and again once that page is
+     in. A sheet read or deleted meanwhile is let go. */
+  const running = status.data?.busy ?? null;
+  const target = running?.sheetId ?? sheet?.id ?? null;
+  useEffect(() => {
+    if (!target) return;
+    api.get<{ status: string; pages: unknown[] }>(`/scans/${target}`)
+      .then((b) => setSheet(b.status === "uploaded" ? { id: target, pages: b.pages.length } : null))
+      .catch((e) => { if (apiStatus(e) === 404) setSheet(null); });
+  }, [target, Boolean(running)]);
+
   if (!status.data?.available) return null;
   const list = devices.data?.devices ?? [];
+  // a scan is running here or was started before this screen opened; until the
+  // server has said which, nothing is pressed on an old answer
+  const busy = scan.isPending || Boolean(running);
+  const hold = busy || !status.isFetchedAfterMount;
 
   return (
     <div className="space-y-3 rounded-xl border border-line bg-raised/30 p-3">
@@ -110,17 +151,17 @@ export function ScannerPanel({ slipDate, merchantId, jinsId }: { slipDate: strin
       )}
       {list.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant={sheet ? "secondary" : "primary"} loading={scan.isPending} icon={sheet ? <Plus className="h-4 w-4" /> : <ScanLine className="h-4 w-4" />}
+          <Button variant={sheet ? "secondary" : "primary"} loading={busy} disabled={hold} icon={sheet ? <Plus className="h-4 w-4" /> : <ScanLine className="h-4 w-4" />}
             onClick={() => { setErr(null); scan.mutate(); }}>
-            {scan.isPending ? t("scanner.scanning") : sheet ? t("scanner.next", { n: sheet.pages + 1 }) : t("scanner.scan")}
+            {busy ? t("scanner.scanning") : sheet ? t("scanner.next", { n: sheet.pages + 1 }) : t("scanner.scan")}
           </Button>
           {sheet && (
             <>
               <Badge tone="brand">{t("scanner.pages", { n: sheet.pages })}</Badge>
-              <Button variant="primary" loading={read.isPending} disabled={scan.isPending} icon={<Play className="h-4 w-4" />}
+              <Button variant="primary" loading={read.isPending} disabled={hold} icon={<Play className="h-4 w-4" />}
                 onClick={() => read.mutate(sheet.id)}>{t("scanner.readNow")}</Button>
-              <Button variant="ghost" disabled={scan.isPending} onClick={() => navigate(`/scan/${sheet.id}`)}>{t("scanner.open")}</Button>
-              <Button variant="ghost" disabled={scan.isPending} onClick={() => setSheet(null)}>{t("scanner.newSheet")}</Button>
+              <Button variant="ghost" disabled={hold} onClick={() => navigate(`/scan/${sheet.id}`)}>{t("scanner.open")}</Button>
+              <Button variant="ghost" disabled={hold} onClick={() => setSheet(null)}>{t("scanner.newSheet")}</Button>
             </>
           )}
         </div>
