@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { deriveKatauti, type Katauti } from "./charges.ts";
 import { amountPaise, GRAMS_PER_QTL } from "./money.ts";
+import { looseRst, looseNoKatauti, rstWeight, kantaGrams, hundredths } from "./slipChecks.ts";
 import type { OcrRow } from "./gemini.ts";
 import type { AdatiSuggestion, AdatiMatch } from "./adatiResolve.ts";
 
@@ -75,25 +76,49 @@ export interface CheckedRow extends ReviewRow {
 
 export function qtlToGrams(q: number) { return Math.round(q * GRAMS_PER_QTL); }
 
-/** "६२६" or "6 26" → "626": RST numbers compare as the weighbridge prints them. */
+/** "६२६" or "6 26" → "626": RST numbers compare as the weighbridge prints them.
+ *  Loose packets keep their sign: "२ + ४५ kg" → "2+45". */
 export const normRst = (v: string | null | undefined) =>
-  String(v ?? "").replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "");
+  looseRst(v)?.text ?? String(v ?? "").replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "");
 
 /**
- * A written figure in hundredths, rounded half up on its digits as written:
- * 19.205 → 1921, never 1920 from 19.205 × 100 = 1920.4999… in binary.
+ * A line whose RST box says loose packets ("2+45"): no weighbridge slip, so
+ * the weight is the packets' (95 kg). It fills an empty weight, and a weight
+ * it filled follows the RST from what it was (`prev`, the line as saved
+ * before): to the new packets' weight, or — the RST put right to an ordinary
+ * slip ("1-64" read for 1164) — back to the dharam kanta read for the line,
+ * or empty when none was read. A weight the operator typed stays as typed
+ * (the check then says where it differs). Rule of `rstWeight`, shared with
+ * the daily list and the sheet screen's own box.
  */
-export function hundredths(v: number): number {
-  const n = Math.round(Number(`${v}e2`));
-  return Number.isFinite(n) ? n : Math.round(v * 100);
+export function applyLoose<R extends { rstNo: string; grossGrams: number | null; ocr: { grossQtl: number | null } }>(
+  row: R, prev?: { rstNo: string } | null,
+): R {
+  const grossGrams = rstWeight(prev ? prev.rstNo : row.rstNo, row.rstNo, row.grossGrams, kantaGrams(row.ocr.grossQtl));
+  return grossGrams === row.grossGrams ? row : { ...row, grossGrams };
 }
+
+/**
+ * The katauti a line is worked with: the one typed, else none for loose
+ * packets at their own weight (2+45 at 95 kg), else the mill's (null). The
+ * packets' 0 is never stored as typed, so it goes with them when the RST or
+ * the weight stops being theirs ("12-43" with 11.90 typed keeps the mill's).
+ */
+export const lineKatauti = (row: { rstNo: string; grossGrams: number | null; katautiOverride: number | null }) =>
+  row.katautiOverride ?? (looseNoKatauti(row.rstNo, row.grossGrams) ? 0 : null);
+
+/** A written figure in hundredths, rounded half up on its digits as written (see slipChecks). */
+export { hundredths };
+
 /** A reading finer than the 0.01 the paper and the grid work in (19.205). */
 export const finerThanHundredths = (v: number) => Math.abs(Number(`${v}e2`) - hundredths(v)) > 1e-6;
 
 export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
   const gross = r.grossQtl ?? null;
   const unreadable = r.unreadable && Object.keys(r.unreadable).length ? r.unreadable : null;
-  return {
+  // loose packets ("2+45") carry their weight in the RST box: no dharam kanta to read
+  const loose = looseRst(r.rstNo);
+  return applyLoose({
     id: `r${i}`,
     page: r.page ?? 1,
     ocr: {
@@ -116,14 +141,14 @@ export function ocrToReviewRow(r: OcrRow, i: number): ReviewRow {
     adatiRawVillage: (r.village ?? "").trim() || null,
     /* Whole kilograms, as the grid shows them and as a slip typed by hand
        is kept: a third decimal from the reader is never priced unseen. */
-    grossGrams: gross === null ? null : hundredths(gross) * (GRAMS_PER_QTL / 100),
+    grossGrams: gross === null || loose ? null : hundredths(gross) * (GRAMS_PER_QTL / 100),
     katautiOverride: null,
     ratePaisePerQtl: r.rate == null ? null : hundredths(r.rate),
     excluded: r.struckThrough === true,
     nameCorrected: false,
     modelPick: r.supplierMatch?.trim() || null,
     confirmed: [],
-  };
+  });
 }
 
 /**
@@ -188,6 +213,8 @@ export function checkRow(
     ? { match: null as AdatiMatch | null, suggestions: [] as AdatiSuggestion[] }
     : opts.resolve(row.adatiRawText, row.modelPick, row.adatiRawVillage);
   const chosen = row.adatiId ? opts.byId(row.adatiId) : null;
+  // loose packets ("2+45"): the RST box is the weight, and the net column is in kg
+  const loose = looseRst(row.rstNo);
 
   let derivedKatautiUnits: number | null = null;
   let derivedNetGrams: number | null = null;
@@ -196,14 +223,19 @@ export function checkRow(
   let netDiffGrams: number | null = null;
 
   if (row.grossGrams !== null) {
-    const k = deriveKatauti(row.grossGrams, opts.katauti, row.katautiOverride);
+    const k = deriveKatauti(row.grossGrams, opts.katauti, lineKatauti(row));
     derivedKatautiUnits = k.units;
     derivedNetGrams = row.grossGrams - k.deductionGrams;
     if (row.ratePaisePerQtl !== null) {
       derivedAmountPaise = amountPaise(derivedNetGrams, row.ratePaisePerQtl);
     }
     // the cross-check that makes OCR trustworthy
-    if (row.ocr.netQtl != null) {
+    if (row.ocr.netQtl != null && loose) {
+      // written in kg (95), or given by the reader in quintal (0.95): either is the same 95 kg
+      const near = (g: number) => Math.abs(g - derivedNetGrams!) <= 500;
+      netAgrees = near(Math.round(row.ocr.netQtl * 1000)) || near(qtlToGrams(row.ocr.netQtl));
+      netDiffGrams = netAgrees ? 0 : Math.round(row.ocr.netQtl * 1000) - derivedNetGrams;
+    } else if (row.ocr.netQtl != null) {
       const ocrNet = qtlToGrams(row.ocr.netQtl);
       netDiffGrams = ocrNet - derivedNetGrams;
       netAgrees = Math.abs(netDiffGrams) <= 500; // half a kilo
@@ -217,7 +249,7 @@ export function checkRow(
     }
   }
 
-  const grossSuggestGrams = netAgrees === false || (row.grossGrams ?? 0) > 100 * GRAMS_PER_QTL ? decimalFix(row, opts.katauti) : null;
+  const grossSuggestGrams = !loose && (netAgrees === false || (row.grossGrams ?? 0) > 100 * GRAMS_PER_QTL) ? decimalFix(row, opts.katauti) : null;
 
   if (row.excluded) {
     return {
@@ -235,6 +267,8 @@ export function checkRow(
   /* A slip typed by hand cannot be saved without its RST, so neither can a
      scanned one, unless the operator says the paper really has none. */
   if (!row.rstNo) issues.push({ code: "rst_missing", level: confirmedField(row, "rst") ? "warn" : "error", message: "RST number could not be read — type it, or ✓ if the paper has none" });
+  // loose packets ("2+45") come again and again: a repeat says nothing
+  else if (loose) { /* no repeat check */ }
   // shown red on the screen, and counted in the "are you sure" box before saving; never blocks
   else if (opts.existingRst.has(row.rstNo)) issues.push({ code: "rst_exists", level: "warn", message: `RST ${row.rstNo} is already entered for this date`, params: { rst: row.rstNo } });
   else if (opts.dupeInBatch.has(row.rstNo)) issues.push({ code: "rst_dupe", level: "warn", message: `RST ${row.rstNo} appears twice on this sheet`, params: { rst: row.rstNo } });
@@ -264,6 +298,25 @@ export function checkRow(
     });
   }
   else if (derivedNetGrams !== null && derivedNetGrams <= 0) issues.push({ code: "net_nonpositive", level: "error", message: "Net weight works out to zero or less" });
+  else if (loose) {
+    /* The paper against the paper: the packets in the RST box against the
+       net written beside them, then what will be saved against both. A
+       difference is never guessed at: it is fixed, or ✓'d as right. */
+    const kg = loose.netGrams / 1000;
+    const level = confirmedField(row, "gross") ? "warn" : "error";
+    const paper = row.ocr.netQtl;
+    if (paper != null && ![Math.round(paper * 1000), qtlToGrams(paper)].some((g) => Math.abs(g - loose.netGrams) <= 500)) {
+      issues.push({ code: "loose_net", level, message: `${loose.text} is ${kg} kg; the sheet says ${paper}`, params: { rst: loose.text, kg, sheet: String(paper) } });
+    } else if (derivedNetGrams !== loose.netGrams) {
+      // the weight typed, or (a katauti typed on the packets) what is left of it
+      const here = (row.grossGrams !== loose.netGrams ? row.grossGrams : derivedNetGrams ?? 0) / 1000;
+      issues.push({ code: "loose_weight", level, message: `${loose.text} is ${kg} kg; the weight here is ${here} kg`, params: { rst: loose.text, kg, here } });
+    } else if (paper == null && !confirmedField(row, "gross")) {
+      /* nothing read in the net column: the weight is the RST's own, so it
+         is a look, never a stop — and there is no gross here to doubt */
+      issues.push({ code: "loose_unchecked", level: "warn", message: `${loose.text} is ${kg} kg of loose packets; no net weight was read beside it`, params: { rst: loose.text, kg } });
+    }
+  }
   else if (row.grossGrams > 100 * GRAMS_PER_QTL) {
     // likely a lost decimal point (1920 for 19.20): must be confirmed or fixed
     issues.push({
@@ -274,7 +327,7 @@ export function checkRow(
   else if (row.grossGrams < GRAMS_PER_QTL) issues.push({ code: "gross_small", level: "warn", message: "Gross weight is under one quintal — check the decimal point" });
 
   // the reader gave a third decimal: it is rounded to the kilo, and the paper decides
-  if (row.ocr.grossQtl != null && row.grossGrams !== null && finerThanHundredths(row.ocr.grossQtl)
+  if (!loose && row.ocr.grossQtl != null && row.grossGrams !== null && finerThanHundredths(row.ocr.grossQtl)
     && row.grossGrams === hundredths(row.ocr.grossQtl) * (GRAMS_PER_QTL / 100) && !confirmedField(row, "gross")) {
     issues.push({
       code: "gross_rounded", level: "warn",
@@ -283,14 +336,15 @@ export function checkRow(
     });
   }
 
-  if (row.grossGrams !== null && row.ocr.netQtl == null && derivedNetGrams !== null && derivedNetGrams > 0) {
+  // loose packets are asked about above, in their own words
+  if (!loose && row.grossGrams !== null && row.ocr.netQtl == null && derivedNetGrams !== null && derivedNetGrams > 0) {
     // nothing on the sheet to check this weight against
     issues.push({
       code: "net_unchecked", level: confirmedField(row, "gross") || opts.pageHasNet === false ? "warn" : "error",
       message: "The sheet's net weight could not be read, so this gross could not be checked — compare it with the paper",
     });
   }
-  if (netAgrees === false) {
+  if (netAgrees === false && !loose) {
     issues.push({
       // the sheet's own net disagrees: the surest sign of a misread digit
       code: "net_mismatch", level: confirmedField(row, "gross") ? "warn" : "error",
@@ -298,7 +352,7 @@ export function checkRow(
       params: { diff: ((netDiffGrams ?? 0) / GRAMS_PER_QTL).toFixed(2), ...(grossSuggestGrams ? { suggest: (grossSuggestGrams / GRAMS_PER_QTL).toFixed(2) } : {}) },
     });
   }
-  if (row.ocr.katauti != null && derivedKatautiUnits !== null && row.katautiOverride === null
+  if (!loose && row.ocr.katauti != null && derivedKatautiUnits !== null && row.katautiOverride === null
       && Math.abs(row.ocr.katauti - derivedKatautiUnits) > 0.001) {
     issues.push({
       code: "katauti_mismatch", level: "warn",
@@ -357,7 +411,8 @@ export const hasRate = (r: ReviewRow) => (r.ratePaisePerQtl ?? 0) > 0 || Boolean
 export function findDupes(rows: ReviewRow[]): Set<string> {
   const seen = new Map<string, number>();
   for (const r of rows) {
-    if (r.excluded || !r.rstNo) continue;
+    // loose packets ("2+45") recur on any sheet
+    if (r.excluded || !r.rstNo || looseRst(r.rstNo)) continue;
     seen.set(r.rstNo, (seen.get(r.rstNo) ?? 0) + 1);
   }
   return new Set([...seen.entries()].filter(([, n]) => n > 1).map(([k]) => k));
@@ -599,8 +654,8 @@ export function slipMarks(rows: ReviewRow[]): SlipMark[] {
   for (const r of rows) {
     if (r.ocr.struckThrough === true) continue;
     const name = Boolean((r.ocr.adatiName ?? "").trim());
-    // a weight that came back but is not a number ("19-20") is still a weight on this line
-    const figures = r.ocr.grossQtl != null || r.ocr.netQtl != null || Boolean(r.ocr.unreadable?.grossQtl || r.ocr.unreadable?.netQtl);
+    // a weight that came back but is not a number ("19-20") is still a weight on this line, and so are loose packets ("2+45")
+    const figures = r.ocr.grossQtl != null || r.ocr.netQtl != null || Boolean(r.ocr.unreadable?.grossQtl || r.ocr.unreadable?.netQtl) || Boolean(looseRst(r.ocr.rstNo));
     const sr = r.ocr.srNo ?? "?";
     if (name && !figures) marks.push({ page: r.page ?? 1, rowId: r.id, code: "name_only", params: { sr, name: r.ocr.adatiName ?? "" } });
     else if (!name && r.ocr.grossQtl != null) marks.push({ page: r.page ?? 1, rowId: r.id, code: "figures_only", params: { sr } });

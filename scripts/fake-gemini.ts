@@ -10,6 +10,14 @@
  *                          short mid-line, as Google's is at its length limit
  *   gemini-test-pages-whole  the same sheet, the JPEG page read whole: what
  *                          reading that one page again brings back
+ *   gemini-test-loose      the owner's sheet with loose packets: RST 1243 (a
+ *                          truck), "2+45" and "1-64" with their net in kg (95, 64)
+ *   gemini-test-loose-qtl  the same, the loose nets given in quintal (0.95, 0.64)
+ *   gemini-test-loose-off  the same, "2+45" with 90 written as its net
+ *   gemini-test-loose-nokanta  the same, the truck's dharam kanta (1243) not read
+ *   gemini-test-loose-misread  the same sheet misread: RST 1164 (11.64, 12, 11.52) read
+ *                          as "1-64", a fourth line's RST 1243 as "12-43" (no kanta
+ *                          read, net 11.78), and nothing read in the net of 2+45
  * GET /__calls lists every request, so tests can count them.
  */
 import http from "node:http";
@@ -65,6 +73,28 @@ const PAGE_TWO_WHOLE = {
   totalWeightWritten: 73.75,
 };
 
+/* The owner's sheet: RST 1243 is a truck over the dharam kanta (11.90 qtl,
+   katauti 12, net 11.78); "2+45" is 2 loose packets (50 + 45 kg) and "1-64"
+   one packet of 64 kg, with no kanta and no katauti, their net written in kg. */
+export const LOOSE_ROWS = [
+  { page: 1, srNo: 1, rstNo: "1243", adatiName: "जय भारत ट्रेडिंग कंपनी", grossQtl: 11.90, katauti: 12, netQtl: 11.78, rate: 3451, struckThrough: false, lineY: 420, confidence: 0.93 },
+  { page: 1, srNo: 2, rstNo: "2+45", adatiName: "विशाल बन्धु जैन", grossQtl: null, katauti: null, netQtl: 95, rate: 3200, struckThrough: false, lineY: 450, confidence: 0.9 },
+  { page: 1, srNo: 3, rstNo: "1-64", adatiName: "लोकपाल सिंह", grossQtl: null, katauti: null, netQtl: 64, rate: 3481, struckThrough: false, lineY: 490, confidence: 0.9 },
+];
+const LOOSE_NET_QTL: Record<string, number> = { "2+45": 0.95, "1-64": 0.64 };
+const MISREAD_ROWS = [
+  LOOSE_ROWS[0],
+  { ...LOOSE_ROWS[1], netQtl: null },
+  { ...LOOSE_ROWS[2], grossQtl: 11.64, katauti: 12, netQtl: 11.52 },
+  { page: 1, srNo: 4, rstNo: "12-43", adatiName: "जय भारत ट्रेडिंग कंपनी", grossQtl: null, katauti: null, netQtl: 11.78, rate: 3451, struckThrough: false, lineY: 520, confidence: 0.9 },
+];
+const loosePage = (model: string) => ({
+  date: "17/08/26", millName: "A-1", jins: "धान 1509", totalWeightWritten: null,
+  rows: model === "gemini-test-loose-misread" ? MISREAD_ROWS : LOOSE_ROWS.map((r) => model === "gemini-test-loose-qtl" && r.rstNo in LOOSE_NET_QTL ? { ...r, netQtl: LOOSE_NET_QTL[r.rstNo] }
+    : model === "gemini-test-loose-off" && r.rstNo === "2+45" ? { ...r, netQtl: 90 }
+    : model === "gemini-test-loose-nokanta" && r.rstNo === "1243" ? { ...r, grossQtl: null } : r),
+});
+
 export function startFakeGemini(port: number) {
   const calls: { model: string; thinking: boolean; at: number }[] = [];
   const server = http.createServer((req, res) => {
@@ -98,6 +128,9 @@ export function startFakeGemini(port: number) {
         return send(200, page(SHEET_ROWS));
       }
       if (model === "gemini-3.8-flash") return send(200, page(SHEET_ROWS.map((r) => r.rstNo === "902" ? { ...r, grossQtl: 16.50, netQtl: 16.33 } : r)));
+      if (model.startsWith("gemini-test-loose")) {
+        return send(200, { candidates: [{ content: { parts: [{ text: JSON.stringify(loosePage(model)) }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 1500, candidatesTokenCount: 400 } });
+      }
       if (model === "gemini-test-pages" || model === "gemini-test-pages-whole") {
         const parts = (JSON.parse(body || "{}").contents?.[0]?.parts ?? []) as { inlineData?: { mimeType?: string } }[];
         const png = parts.find((x) => x.inlineData)?.inlineData?.mimeType === "image/png";

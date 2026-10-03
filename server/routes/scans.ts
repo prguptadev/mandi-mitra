@@ -21,8 +21,9 @@ import {
   type ReviewRow, type CheckedRow,
 } from "../lib/scanRows.ts";
 import { deriveSlip, katautiCfg, checkSlipRefs } from "./slips.ts";
-import { normRst, checkPages, slipMarks, hasRate, pageOrder, hundredths, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
+import { normRst, applyLoose, lineKatauti, checkPages, slipMarks, hasRate, pageOrder, hundredths, type PageMeta, type HeaderDiffers } from "../lib/scanRows.ts";
 import { GRAMS_PER_QTL } from "../lib/money.ts";
+import { looseRst } from "../lib/slipChecks.ts";
 import { approvedOnDays } from "../lib/parcha.ts";
 import { can, canAll, LIMIT, actor, param, notFound, bad, requireBusiness, HttpError, isoDay, type Env } from "../lib/http.ts";
 import { assertDaysOpen } from "../lib/dayClose.ts";
@@ -376,8 +377,10 @@ async function checkAll(businessId: string, batch: typeof schema.scanBatches.$in
   /* A sheet read before weights were kept in whole kilograms may hold a
      third decimal (20.205): it is taken to the kilo here, as a new read is,
      so the box, the check and the slip all carry one figure, and it is asked. */
-  const rows = batch.status === "committed" ? stored : stored.map((r) => r.grossGrams !== null && r.grossGrams % 1000 !== 0
-    ? { ...r, grossGrams: hundredths(r.grossGrams / GRAMS_PER_QTL) * (GRAMS_PER_QTL / 100) } : r);
+  /* A line of loose packets ("2+45") read before they were understood gets
+     its weight from the RST box here, as a new read does. */
+  const rows = batch.status === "committed" ? stored : stored.map((r) => applyLoose(r.grossGrams !== null && r.grossGrams % 1000 !== 0
+    ? { ...r, grossGrams: hundredths(r.grossGrams / GRAMS_PER_QTL) * (GRAMS_PER_QTL / 100) } : r));
   const katauti = await katautiFor(businessId, batch.merchantId);
   const resolver = await loadResolver(businessId);
 
@@ -672,7 +675,8 @@ async function performRead(opts: {
     if (shaky / rows.length > 0.15) return `${shaky} rows read poorly`;
     const missingName = rows.filter((x) => !x.adatiName?.trim()).length;
     if (missingName / rows.length > 0.1) return `${missingName} names not read`;
-    if (rows.filter((x) => x.grossQtl == null).length / rows.length > 0.1) return "weights not read";
+    // loose packets ("2+45") have no dharam kanta by design: their blank is not a weight missed
+    if (rows.filter((x) => x.grossQtl == null && !looseRst(x.rstNo)).length / rows.length > 0.1) return "weights not read";
     if (r.truncated) return "the reply was cut short";
     return null;
   }
@@ -1313,11 +1317,14 @@ scanRoutes.put("/:id/rows", can("scan.review"), async (c) => {
   }
   const kept = rows.map((r) => {
     const m = r.typedName?.trim() ? made.get(r.typedName.trim()) : null;
-    return {
+    /* an RST typed as loose packets ("2+45") brings its weight into an empty box; a
+       weight it brought follows the RST, or goes (the kanta read comes back) when
+       the RST is put right to an ordinary slip */
+    return applyLoose({
       ...r, rstNo: normRst(r.rstNo), typedName: null,
       ...(m ? { adatiId: m.id, adatiRawText: r.adatiRawText || m.nameHi, nameCorrected: true } : {}),
       ocr: asRead.get(r.id)?.ocr ?? NOT_READ, modelPick: asRead.get(r.id)?.modelPick ?? null,
-    };
+    }, asRead.get(r.id));
   });
   await db.update(schema.scanBatches).set({
     // the reader owns the rows while it runs; the header is the operator's
@@ -1480,7 +1487,9 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
   const whoFor = new Map<string, string>();
   for (const r of toWrite) {
     const adatiId = (r.adatiId ?? r.match?.adatiId)!;
-    const d = deriveSlip(r.grossGrams!, katauti!, r.ratePaisePerQtl ?? 0, r.katautiOverride);
+    // loose packets at their own weight: no katauti, kept on the slip as its own (as one typed on the daily list is)
+    const kat = lineKatauti(r);
+    const d = deriveSlip(r.grossGrams!, katauti!, r.ratePaisePerQtl ?? 0, kat);
     if (d.netGrams <= 0) throw new HttpError(409, `RST ${r.rstNo}: the net weight works out to zero or less — check the gross`, "has_blocking");
     slipRows.push({
       // the same line of the same sheet is the same slip on every computer: added on two, sync keeps one
@@ -1490,7 +1499,7 @@ scanRoutes.post("/:id/commit", canAll("scan.review", "slip.write"), async (c) =>
       merchantId: batch.merchantId,
       grossGrams: r.grossGrams!,
       katautiUnits: d.katautiUnits,
-      katautiOverride: r.katautiOverride != null,
+      katautiOverride: kat != null,
       katautiTerms: JSON.stringify(katauti),
       supplierTerms: JSON.stringify(sTerms),
       ...slipCharges(d.amountPaise, d.netGrams, r.ratePaisePerQtl ?? 0, sTerms),

@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { amountPaise, divHalfUp } from "./money.ts";
 import { deriveKatauti, type Katauti } from "./charges.ts";
 import type { ParchaDoc } from "./parcha.ts";
-import { rstKey, dayGap, RST_WINDOW_DAYS } from "./slipChecks.ts";
+import { rstKey, looseRst, dayGap, RST_WINDOW_DAYS } from "./slipChecks.ts";
 import { fyNumberLabel } from "./parchaLabels.ts";
 
 /* An independent audit of every rupee and quintal, read-only. It does not
@@ -104,12 +104,14 @@ export function checkBooks(db: Database.Database, onlyBusiness?: string): BooksC
     if (unpriced.length) note(`${unpriced.length} slip(s) have no rate yet and count as ₹0 until priced`);
     /* 1c. the same weighbridge slip on the books twice. RST numbers repeat, so
        across dates only the same RST with the same gross weight counts — the
-       same sheet entered again. Each is for a person to open, not an error. */
+       same sheet entered again. Each is for a person to open, not an error.
+       Loose packets ("2+45") are no weighbridge slip: they recur, and are left out. */
     {
       const supplierOf = new Map(all<{ id: string; name_hi: string }>("select id, name_hi from adati where business_id = ?", biz.id).map((a) => [a.id, a.name_hi]));
       const byDay = new Map<string, Slip[]>();
       const byWeight = new Map<string, Slip[]>();
       for (const s of slips) {
+        if (looseRst(s.rst_no)) continue;
         const k = rstKey(s.rst_no);
         const dk = `${s.slip_date}|${k}`;
         if (!byDay.has(dk)) byDay.set(dk, []);

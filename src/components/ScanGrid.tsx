@@ -2,6 +2,7 @@ import { forwardRef, Fragment, memo, useCallback, useEffect, useImperativeHandle
 import { FileText, Trash2, RotateCcw, Sparkles, Check, ArrowDown, ListChecks, List, AlertTriangle, AlertCircle, FileQuestion } from "lucide-react";
 import type { PageCheck, ScanRow } from "@/lib/api.ts";
 import { toHinglish } from "@server/lib/translit.ts";
+import { rstWeight, kantaGrams } from "@server/lib/slipChecks.ts";
 import { STRINGS } from "@/lib/strings.ts";
 import { useI18n } from "@/lib/i18n.tsx";
 import { useFormat, GRAMS_PER_QTL } from "@/lib/format.tsx";
@@ -69,6 +70,9 @@ function flagFor(r: ScanRow, f: Field, t: T): Flag {
       return { level: "bad", why: read ? t("scan.why.grossUnread" as never, { read }) : t("scan.fix.grossMissing" as never) };
     }
     if (has("net_nonpositive")) return { level: "bad", why: t("scan.fix.netNonPositive" as never) };
+    // loose packets ("2+45"): the RST box against the net written beside it, in kg (or nothing read there)
+    const loose = issue("loose_net") ?? issue("loose_weight") ?? issue("loose_unchecked");
+    if (!done && loose) return { level: loose.level === "error" ? "bad" : "doubt", why: issueText(t, loose.code, loose.message, loose.params), confirmable: true, key: "gross" };
     if (!done && r.netAgrees === false)
       return { level: "bad", why: t("scan.why.netDiffers" as never, { net: (r.ocr.netQtl ?? 0).toFixed(2) }), confirmable: true, key: "gross" };
     if (!done && has("gross_large")) return { level: "bad", why: t("issue.gross_large" as never), confirmable: true, key: "gross" };
@@ -497,7 +501,11 @@ const GridLine = memo(function GridLine({ r, no, st, sel, editing, refused, lock
           <div className="relative">
             <input value={r.rstNo} disabled={dead} placeholder="RST" title={fl.rst?.why}
               data-row={r.id} data-cell="rst"
-              onChange={(e) => lc.patch(r.id, { rstNo: e.target.value.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "") })}
+              onChange={(e) => {
+                const rstNo = e.target.value.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "");
+                // as on the daily list: a weight from loose packets ("2+45") follows the RST, or goes (the kanta read comes back)
+                lc.patch(r.id, { rstNo, grossGrams: rstWeight(r.rstNo, rstNo, r.grossGrams, kantaGrams(r.ocr.grossQtl)) });
+              }}
               className={cn(CELL, "text-left", cellClass(fl.rst))} />
             {!dead && <Accept flag={fl.rst} label={t("scan.acceptValue")} onAccept={() => lc.patch(r.id, {}, "rst")} />}
           </div>

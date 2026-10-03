@@ -20,6 +20,91 @@ export function rstKey(v: string | null | undefined): string {
   return s.replace(/^0+(?=\d)/, "");
 }
 
+/** Loose packets: every packet but the last weighs this much. */
+export const LOOSE_PACKET_KG = 50;
+/** Past these, "N+K" is not read as loose packets (a slip number, or a misread). */
+export const LOOSE_MAX_PACKETS = 50;
+export const LOOSE_MAX_LAST_KG = 100;
+
+export interface LooseRst {
+  /** How many packets came. */
+  packets: number;
+  /** What the last packet weighs, in kg. */
+  lastKg: number;
+  /** 50 kg for each packet but the last, plus the last: 2+45 is 95 kg. */
+  netGrams: number;
+  /** How it is kept and shown: "2+45", "1-64". */
+  text: string;
+}
+
+/**
+ * Loose packets that came without a weighbridge slip are written in the RST
+ * box as "N+K" or "N-K": N packets, the last of them K kg, every other one
+ * 50 kg. "2+45" is 95 kg, "1-64" is 64 kg, "3+40" 140 kg. Spaces, Hindi
+ * digits and a trailing "kg" are allowed ("२ + ४५ kg"), and so is any dash
+ * a keyboard or a phone puts in (the minus sign "1−64", "1–64", "1－64").
+ * Anything else — an ordinary slip number, N outside 1–50, K outside
+ * 1–100 — is null.
+ */
+export function looseRst(v: string | null | undefined): LooseRst | null {
+  const s = String(v ?? "")
+    .replace(/[०-९]/g, (d) => String(HINDI_DIGITS.indexOf(d)))
+    .replace(/\s+/g, "")
+    .replace(/(kgs?|किलो|कि\.?ग्रा)\.?$/i, "")
+    // hyphens and dashes (U+2010–2015), the minus sign, their small and full-width forms; a full-width plus
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, "-")
+    .replace(/[\uFE62\uFF0B]/g, "+");
+  const m = s.match(/^(\d{1,2})([+-])(\d{1,3})$/);
+  if (!m) return null;
+  const packets = Number(m[1]), lastKg = Number(m[3]);
+  if (packets < 1 || packets > LOOSE_MAX_PACKETS || lastKg < 1 || lastKg > LOOSE_MAX_LAST_KG) return null;
+  return {
+    packets, lastKg,
+    netGrams: (LOOSE_PACKET_KG * (packets - 1) + lastKg) * 1000,
+    text: `${packets}${m[2]}${lastKg}`,
+  };
+}
+
+/**
+ * The weight of a line once its RST box changes from `was` to `now`, in
+ * grams — one rule for the daily list and the sheet screen. A weight that
+ * is the old loose packets' own (2+45: 95 kg) came from the RST box and
+ * follows it: to the new packets' weight (2+40: 90 kg) or, once the RST is
+ * no longer loose packets, back to the dharam kanta read for the line
+ * (`kanta`; null when none was read, and the weight is to be typed). An
+ * empty weight takes the packets' weight. Any other weight was typed, and
+ * stays.
+ */
+export function rstWeight(was: string | null | undefined, now: string | null | undefined, grams: number | null, kanta: number | null = null): number | null {
+  const before = looseRst(was), after = looseRst(now);
+  const fromRst = before !== null && grams === before.netGrams;
+  if (after) return grams === null || fromRst ? after.netGrams : grams;
+  return fromRst ? kanta : grams;
+}
+
+/**
+ * Loose packets carry no katauti — while the weight is theirs, or is still
+ * to come from the RST box. A weight that is not ("12-43" with 11.90 typed:
+ * RST 1243 with a stray dash) is some other slip: the mill's katauti
+ * stands, and the difference is flagged.
+ */
+export function looseNoKatauti(rstNo: string | null | undefined, grams: number | null | undefined): boolean {
+  const loose = looseRst(rstNo);
+  return loose !== null && (grams == null || grams === loose.netGrams);
+}
+
+/**
+ * A written figure in hundredths, rounded half up on its digits as written:
+ * 19.205 → 1921, never 1920 from 19.205 × 100 = 1920.4999… in binary.
+ */
+export function hundredths(v: number): number {
+  const n = Math.round(Number(`${v}e2`));
+  return Number.isFinite(n) ? n : Math.round(v * 100);
+}
+
+/** The dharam kanta read for a line (quintal, as written) in grams, to the kilo, as a read line keeps it. */
+export const kantaGrams = (q: number | null | undefined) => q == null ? null : hundredths(q) * (GRAMS_PER_QTL / 100);
+
 /**
  * What a number box keeps of what was typed or pasted: digits (Hindi digits
  * become English ones) and one decimal point. Letters, "/-", "₹", commas and
@@ -41,8 +126,10 @@ export const GROSS_LARGE_GRAMS = 100 * GRAMS_PER_QTL;
 export const GROSS_SMALL_GRAMS = GRAMS_PER_QTL;
 
 export type GrossOdd = "large" | "small" | null;
-export function grossOdd(grossGrams: number | null | undefined): GrossOdd {
+/** A loose-packet slip (rstNo "2+45") is small by nature: never "small". */
+export function grossOdd(grossGrams: number | null | undefined, rstNo?: string | null): GrossOdd {
   if (grossGrams == null || grossGrams <= 0) return null;
+  if (looseRst(rstNo)) return null;
   if (grossGrams > GROSS_LARGE_GRAMS) return "large";
   if (grossGrams < GROSS_SMALL_GRAMS) return "small";
   return null;

@@ -3,7 +3,60 @@
    than inside the pages, so the checks (scripts/e2e-math-fixes.ts) follow
    exactly the link a screen draws and ask exactly what the list asks. */
 
+import { looseNoKatauti, rstWeight } from "@server/lib/slipChecks.ts";
+import type { KatautiConfig } from "@/lib/api.ts";
+
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The RST box keeps what was typed, with Hindi digits as English ones and no spaces. */
+export const rstTyped = (s: string) => s.replace(/[०-९]/g, (d) => String("०१२३४५६७८९".indexOf(d))).replace(/\s+/g, "");
+
+/**
+ * The RST box as typed — on a new row and on a saved one being edited.
+ * Loose packets ("2+45": 2 packets, the last 45 kg, the others 50 kg) fill
+ * an empty weight box with their weight; a weight that is the packets' own
+ * follows the RST while it is typed (2+45 → 2+40: 0.95 → 0.90), and goes
+ * when the RST stops being loose packets (2+45 → 1245: to be typed). A
+ * weight typed by hand is never changed, and neither is the katauti box:
+ * the packets' 0 is the rule (suggestedKatauti), never typed in for them.
+ * The same rule as the sheet screen (rstWeight).
+ */
+export function withRst<D extends { rstNo: string; gross: string }>(p: D, typed: string): D {
+  const rstNo = rstTyped(typed);
+  const n = p.gross.trim() === "" ? null : Number(p.gross);
+  // something in the box that is not a number yet (".") is the operator's
+  if (n !== null && !Number.isFinite(n)) return { ...p, rstNo };
+  const grams = n === null ? null : Math.round(n * 100_000);
+  const next = rstWeight(p.rstNo, rstNo, grams);
+  return next === grams ? { ...p, rstNo } : { ...p, rstNo, gross: next === null ? "" : (next / 100_000).toFixed(2) };
+}
+
+const halfUp = (n: number) => Math.sign(n) * Math.round(Math.abs(n));
+
+/**
+ * The katauti the box suggests for a weight (grams), when none is typed:
+ * none for loose packets at their own weight (2+45 at 0.95), else the
+ * mill's rule — "12-43" with 11.90 typed is RST 1243 with a stray dash, not
+ * 593 kg of packets, and keeps the mill's 12. The server does the same.
+ */
+export function suggestedKatauti(rstNo: string, grossGrams: number | null, cfg: KatautiConfig): number | null {
+  if (grossGrams === null) return null;
+  if (looseNoKatauti(rstNo, grossGrams)) return 0;
+  return cfg.mode === "none" ? null
+    : cfg.mode === "per_quintal_rounded" ? halfUp(grossGrams / 100_000)
+    : cfg.mode === "per_quintal_exact" ? grossGrams / 100_000
+    : 0;
+}
+
+/**
+ * The katauti box of a saved slip opened for editing: the katauti typed on
+ * it, or empty (the rule, shown faint). The 0 of loose packets at their own
+ * weight is their rule, not a figure typed, so it follows the RST and the
+ * weight like a new row's does.
+ */
+export function katautiBox(r: { rstNo: string; grossGrams: number; katautiUnits: number; katautiOverride: boolean }): string {
+  return r.katautiOverride && !(r.katautiUnits === 0 && looseNoKatauti(r.rstNo, r.grossGrams)) ? String(r.katautiUnits) : "";
+}
 
 const link = (date: string, mill: string, jins: string) =>
   `/daily?${new URLSearchParams({ date, ...(mill ? { mill } : {}), ...(jins ? { jins } : {}) })}`;

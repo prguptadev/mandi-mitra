@@ -1,14 +1,16 @@
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { db, schema } from "../db/client.ts";
 import { shiftDay } from "./parchaLabels.ts";
-import { rstKey, grossOdd, usualRate, rateOdd, dayGap, RST_WINDOW_DAYS, type GrossOdd, type RateRange } from "./slipChecks.ts";
+import { rstKey, looseRst, grossOdd, usualRate, rateOdd, dayGap, RST_WINDOW_DAYS, type GrossOdd, type RateRange } from "./slipChecks.ts";
 
 /* The same weighbridge slip entered twice is the costliest slip of all: the
    supplier is owed for it twice. RST numbers repeat (every kanta's counter
    rolls over), so a repeat on another date only means something when the
    weight is the same to the gram — that is the same sheet entered again.
-   On the same date any repeat is shown, whatever the weight. Everything here
-   is a flag for a person; nothing stops a save. */
+   On the same date any repeat is shown, whatever the weight. Loose packets
+   ("2+45" in the RST box) are no weighbridge slip: the same packets come
+   again on any day, so they are never a repeat. Everything here is a flag
+   for a person; nothing stops a save. */
 
 export interface SlipTarget {
   /** Left out of its own matches. */
@@ -27,6 +29,8 @@ export interface SlipFlags {
   grossOdd: GrossOdd;
   /** The day's usual range, when this rate is outside it. */
   rateOdd: RateRange | null;
+  /** Loose packets whose weight is not what the RST box says ("2+45" is 95 kg). */
+  looseOff: { rst: string; kg: number } | null;
 }
 
 const S = schema.purchaseSlips;
@@ -42,7 +46,7 @@ export async function sameSlipOtherDays(
   opts: { exceptBatch?: string } = {},
 ): Promise<Map<string, { id: string; date: string }[]>> {
   const out = new Map<string, { id: string; date: string }[]>();
-  const live = targets.filter((t) => t.slipDate && t.rstNo && t.grossGrams);
+  const live = targets.filter((t) => t.slipDate && t.rstNo && t.grossGrams && !looseRst(t.rstNo));
   if (!live.length) return out;
   const dates = live.map((t) => t.slipDate).sort();
   const from = shiftDay(dates[0], -RST_WINDOW_DAYS);
@@ -85,8 +89,10 @@ export async function slipFlags(biz: string, targets: SlipTarget[]) {
   const rates = new Map<string, number[]>();
   for (const s of day) {
     const k = `${s.date}|${rstKey(s.rst)}`;
-    if (!byRst.has(k)) byRst.set(k, []);
-    byRst.get(k)!.push(s.id);
+    if (!looseRst(s.rst)) {
+      if (!byRst.has(k)) byRst.set(k, []);
+      byRst.get(k)!.push(s.id);
+    }
     const rk = `${s.date}|${s.jins}`;
     if (!rates.has(rk)) rates.set(rk, []);
     rates.get(rk)!.push(s.rate);
@@ -96,15 +102,17 @@ export async function slipFlags(biz: string, targets: SlipTarget[]) {
   const others = await sameSlipOtherDays(biz, targets.map((t, i) => ({ key: String(i), slipDate: t.slipDate, rstNo: t.rstNo, grossGrams: t.grossGrams, id: t.id })));
 
   const flags: SlipFlags[] = targets.map((t, i) => {
-    const same = (byRst.get(`${t.slipDate}|${rstKey(t.rstNo)}`) ?? []).filter((id) => id !== t.id);
+    const loose = looseRst(t.rstNo);
+    const same = loose ? [] : (byRst.get(`${t.slipDate}|${rstKey(t.rstNo)}`) ?? []).filter((id) => id !== t.id);
     const range = t.jinsId ? usual.get(`${t.slipDate}|${t.jinsId}`) ?? usualRate([]) : usualRate([]);
     return {
       // a slip not saved yet (no id) counts itself in
       rstDay: same.length + 1,
       sameDayIds: same,
       otherDays: others.get(String(i)) ?? [],
-      grossOdd: grossOdd(t.grossGrams),
+      grossOdd: grossOdd(t.grossGrams, t.rstNo),
       rateOdd: rateOdd(t.ratePaisePerQtl, range) ? range : null,
+      looseOff: loose && t.grossGrams !== loose.netGrams ? { rst: loose.text, kg: loose.netGrams / 1000 } : null,
     };
   });
   return { flags, usual };
@@ -134,5 +142,6 @@ export async function describeFlags(biz: string, f: SlipFlags) {
     otherDays: f.otherDays.map((o) => one(o.id)).filter((x) => x !== null),
     grossOdd: f.grossOdd,
     rateOdd: f.rateOdd,
+    looseOff: f.looseOff,
   };
 }
