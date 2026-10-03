@@ -61,6 +61,14 @@ check("Hindi digits: १-६४", L("१-६४"), [1, 64, 64_000, "1-64"]);
 check("a unit written after it: 2+45 kg", L("2+45 kg"), [2, 45, 95_000, "2+45"]);
 check("a long dash: 1–64", L("1–64"), [1, 64, 64_000, "1-64"]);
 check("the largest taken: 50+100 = 49 × 50 + 100 kg", L("50+100"), [50, 100, 2_550_000, "50+100"]);
+// a phone or a word processor puts in its own dash: the minus sign above all ("1−64")
+for (const [name, dash] of [["the minus sign U+2212", "\u2212"], ["a hyphen U+2010", "\u2010"], ["a non-breaking hyphen U+2011", "\u2011"],
+  ["a figure dash U+2012", "\u2012"], ["an em dash U+2014", "\u2014"], ["a horizontal bar U+2015", "\u2015"],
+  ["a small hyphen-minus U+FE63", "\uFE63"], ["a full-width hyphen-minus U+FF0D", "\uFF0D"]]) {
+  check(`1${dash}64 with ${name}: 1 packet of 64 kg`, L(`1${dash}64`), [1, 64, 64_000, "1-64"]);
+}
+check("a full-width plus: 2\uFF0B45 is 95 kg", L("2\uFF0B45"), [2, 45, 95_000, "2+45"]);
+check("  ...kept as 1-64 and 2+45", ["1\u221264", "\u0967 \u2212 \u096C\u096A", "2\uFF0B45"].map(normRst), ["1-64", "1-64", "2+45"]);
 for (const no of ["1243", "245", "2745", "", "0+45", "2+0", "51+10", "2+101", "2+45+3", "a+45", "2+", "+45", "2.5+45", "12-13-14", "RST 2+45"]) {
   check(`not loose packets: "${no}"`, looseRst(no), null);
 }
@@ -234,6 +242,9 @@ const put = await call("PUT", `/slips/${t90.id}`, { grossGrams: 95_000 });
 check("  ...put right to 0.95: the flag goes", [put.netGrams, put.amountPaise, put.flags.looseOff], [95_000, 304_000, null]);
 const noGross = await raw("POST", "/slips", { slipDate: D, rstNo: "1250", adatiId: sup["जय भारत ट्रेडिंग कंपनी"], jinsId: j1509.id, merchantId: grm.id, ratePaisePerQtl: 345_100 });
 check("an ordinary RST still needs its weight", [noGross.status, noGross.json?.error], [400, "Gross weight is required"]);
+const minus = await raw("POST", "/slips", { slipDate: D, rstNo: "1\u221264", adatiId: sup["लोकपाल सिंह"], jinsId: j1509.id, merchantId: grm.id, ratePaisePerQtl: 348_100 });
+const minusRow = minus.json?.id ? sqlite.prepare("select rst_no rst, gross_grams gross, katauti_units units, net_grams net from purchase_slips where id = ?").get(minus.json.id) as { rst: string } : null;
+check("'1\u221264' typed with the minus sign, no weight: kept as 1-64, 64 kg, no katauti", [minus.status, minusRow], [200, { rst: "1-64", gross: 64_000, units: 0, net: 64_000 }]);
 
 console.log("\nA slip saved before this, untouched");
 // as v0.3.19 saved "2+45" typed with 0.95: katauti 1 worked out from the weight, net 0.94
@@ -245,7 +256,7 @@ check("'work the day out again' changes nothing", (await call("POST", "/slips/re
 
 /* ------------------------------------------------------------ clean up */
 
-for (const id of [...slipsA.map((s) => s.id), typed.id, t64.id, t90.id, old.id]) await call("DELETE", `/slips/${id}`);
+for (const id of [...slipsA.map((s) => s.id), typed.id, t64.id, t90.id, old.id, ...(minus.json?.id ? [minus.json.id] : [])]) await call("DELETE", `/slips/${id}`);
 sqlite.prepare("delete from scan_batches where id = ?").run(A.id);
 fs.rmSync(path.resolve(process.env.MANDI_DATA_DIR!, "scans", A.id), { recursive: true, force: true });
 for (const id of Object.values(sup)) await call("DELETE", `/adati/${id}`);

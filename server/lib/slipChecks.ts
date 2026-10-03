@@ -41,22 +41,27 @@ export interface LooseRst {
  * Loose packets that came without a weighbridge slip are written in the RST
  * box as "N+K" or "N-K": N packets, the last of them K kg, every other one
  * 50 kg. "2+45" is 95 kg, "1-64" is 64 kg, "3+40" 140 kg. Spaces, Hindi
- * digits and a trailing "kg" are allowed ("२ + ४५ kg"). Anything else —
- * an ordinary slip number, N outside 1–50, K outside 1–100 — is null.
+ * digits and a trailing "kg" are allowed ("२ + ४५ kg"), and so is any dash
+ * a keyboard or a phone puts in (the minus sign "1−64", "1–64", "1－64").
+ * Anything else — an ordinary slip number, N outside 1–50, K outside
+ * 1–100 — is null.
  */
 export function looseRst(v: string | null | undefined): LooseRst | null {
   const s = String(v ?? "")
     .replace(/[०-९]/g, (d) => String(HINDI_DIGITS.indexOf(d)))
     .replace(/\s+/g, "")
-    .replace(/(kgs?|किलो|कि\.?ग्रा)\.?$/i, "");
-  const m = s.match(/^(\d{1,2})([+\-–—])(\d{1,3})$/);
+    .replace(/(kgs?|किलो|कि\.?ग्रा)\.?$/i, "")
+    // hyphens and dashes (U+2010–2015), the minus sign, their small and full-width forms; a full-width plus
+    .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, "-")
+    .replace(/[\uFE62\uFF0B]/g, "+");
+  const m = s.match(/^(\d{1,2})([+-])(\d{1,3})$/);
   if (!m) return null;
   const packets = Number(m[1]), lastKg = Number(m[3]);
   if (packets < 1 || packets > LOOSE_MAX_PACKETS || lastKg < 1 || lastKg > LOOSE_MAX_LAST_KG) return null;
   return {
     packets, lastKg,
     netGrams: (LOOSE_PACKET_KG * (packets - 1) + lastKg) * 1000,
-    text: `${packets}${m[2] === "+" ? "+" : "-"}${lastKg}`,
+    text: `${packets}${m[2]}${lastKg}`,
   };
 }
 
