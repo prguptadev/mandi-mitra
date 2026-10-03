@@ -162,6 +162,20 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
     return true;
   };
 
+  /* A name that is none of the suggestions can always be added as a new
+     supplier: the last line of the list says so, and Enter on it saves it.
+     Only where the page can take a new name (a sheet line or a create). */
+  const typed = query.trim();
+  const typedHi = asHindi ?? typed;
+  const exact = matches.some((m) => m.nameHi === typedHi || m.nameHinglish.toLowerCase() === typed.toLowerCase());
+  const canAddNew = Boolean((onCommitText || onCreate) && typed && !selected && !exact);
+  const addNewAt = matches.length; // the line after the suggestions
+  const addNew = () => {
+    if (onCommitText) { commitText(); return; }
+    onCreate?.(typedHi);
+    setQuery(""); setOpen(false);
+  };
+
   return (
     <div className="relative">
       <input
@@ -199,10 +213,15 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
         onKeyDown={(e) => {
           if (e.key === "ArrowDown") {
             e.preventDefault(); setOpen(true);
-            setActive((i) => Math.min(i + 1, matches.length - 1));
+            setActive((i) => Math.min(i + 1, canAddNew ? addNewAt : matches.length - 1));
           } else if (e.key === "ArrowUp") {
             e.preventDefault(); setActive((i) => Math.max(i - 1, 0));
           } else if (e.key === "Enter") {
+            if (open && canAddNew && active === addNewAt) {
+              e.preventDefault(); e.stopPropagation();
+              addNew();
+              return;
+            }
             if (open && matches[active] && !selected) {
               e.preventDefault(); e.stopPropagation();
               choose(matches[active]);
@@ -245,13 +264,12 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
                   <span lang="hi" className="text-[14px] text-ink">{asHindi}</span>
                 </p>
               )}
-              {onCreate && query.trim() && !results.isFetching && (
+              {canAddNew && !results.isFetching && (
                 <button type="button"
                   onMouseDown={(e) => {
                     e.preventDefault();
                     // always create in Devanagari, whatever was typed
-                    onCreate(asHindi ?? query.trim());
-                    setQuery(""); setOpen(false);
+                    addNew();
                   }}
                   className="mt-1.5 inline-flex items-center gap-1.5 text-[12px] font-medium text-brand hover:underline">
                   <Plus className="h-3 w-3" />
@@ -278,6 +296,18 @@ export const SupplierPicker = forwardRef<HTMLInputElement, {
                   {s.id === value && <Check className="h-3.5 w-3.5 shrink-0 text-brand" />}
                 </button>
               ))}
+              {canAddNew && (
+                <button type="button" data-i={addNewAt}
+                  onMouseEnter={() => setActive(addNewAt)}
+                  onMouseDown={(e) => { e.preventDefault(); addNew(); }}
+                  className={cn(
+                    "flex w-full items-center gap-1.5 border-t border-line px-2.5 py-1.5 text-left text-[12px] font-medium text-brand",
+                    active === addNewAt ? "bg-brand/12" : "hover:bg-raised",
+                  )}>
+                  <Plus className="h-3 w-3 shrink-0" />
+                  <span lang="hi" className="min-w-0 truncate">{t("daily.addNewSupplier", { name: typedHi })}</span>
+                </button>
+              )}
               {results.data?.truncated && (
                 <p className="border-t border-line px-2.5 py-1.5 text-[10px] text-faint">
                   {t("adati.showingOf", { n: matches.length, total })} · {t("adati.typeToSearch")}
