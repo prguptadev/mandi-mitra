@@ -96,6 +96,8 @@ check("  ...kept as written with + or -, never one number", /exactly as written 
 check("  ...no kanta, no katauti, net in kg as written", /no DHARAM KANTA and no KATAUTI: return null for both/.test(PROMPT) && /NET WEIGHT is written in kilograms/.test(PROMPT), true);
 check("  ...every other RST is still digits only", PROMPT.includes("Write it with Latin digits 0-9 only") && /every other RST is digits only/.test(PROMPT), true);
 check("  ...the other rules stand", PROMPT.includes("1920 almost certainly means 19.20") && PROMPT.includes("Report what is WRITTEN"), true);
+check("the owner's worked example of an ordinary line sits with the decimal rule",
+  /1920 almost certainly means 19\.20\.[^\n]*RST 1243, DHARAM KANTA written 1190 means 11\.90 quintal, KATAUTI 12, NET 11\.78/.test(PROMPT), true);
 
 /* ------------------------------------------------------------ set up */
 

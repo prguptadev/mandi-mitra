@@ -177,7 +177,7 @@ Rules:
 - confidence is YOUR certainty about that whole row, 0 to 1. Be strict: use below 0.6 when any digit or letter is genuinely unclear. An honest low score is more useful than a confident guess, because low-confidence pages are read again with a stronger model.
 - A ditto mark (〃, ", ,, or "do") actually written in a cell means "same as the row above": return the value from the row above. This is the ONLY case where a value comes from another line.
 - One cell crossed out and rewritten is NOT a struck-through row: return the rewritten value and set struckThrough false. Only a line through the whole row means struckThrough true.
-- Decimal points in this handwriting are often faint. A gross weight is nearly always between 1 and 60 quintal with two decimals, so 1920 almost certainly means 19.20.
+- Decimal points in this handwriting are often faint. A gross weight is nearly always between 1 and 60 quintal with two decimals, so 1920 almost certainly means 19.20. A worked example of an ordinary line: RST 1243, DHARAM KANTA written 1190 means 11.90 quintal, KATAUTI 12, NET 11.78.
 - Numbers only in the number columns: a weight or rate is a plain number like 19.20 or 3450, never with "/-", "Rs" or a unit. A cell you cannot read as a number is null.
 - lineY is where the ruled line sits on the image, from 0 at the top edge to 1000 at the bottom edge. An estimate is fine; it only points the operator to the line.
 
