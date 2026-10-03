@@ -151,10 +151,16 @@ jobs:
           Start-Process -FilePath $old -ArgumentList "/S" -Wait
           $installed = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Depth 1 -Filter MandiMitra.exe | Select-Object -First 1
           if (-not $installed) { throw "$prev did not install" }
-          # it makes its books (made-up first-run data; versions before v0.3.19 use the real data folder in a smoke test)
+          # it starts. Versions before v0.3.19 make their first-run books in the real data folder in a smoke
+          # test; from v0.3.19 the smoke test keeps to a throwaway folder, so the shop's books are put in
+          # place from the fixture made above (books one database update behind), as a shop PC has them
           Start-Process -FilePath $installed.FullName -ArgumentList "--smoke-test" -Wait -NoNewWindow
           $books = Join-Path $env:APPDATA "mandi-mitra\data\mandi.db"
-          if (-not (Test-Path $books)) { throw "$prev made no books" }
+          if (-not (Test-Path $books)) {
+            New-Item -ItemType Directory -Force (Split-Path $books) | Out-Null
+            Copy-Item upgrade-fixture/mandi.db $books
+          }
+          if (-not (Test-Path $books)) { throw "no books in place for $prev" }
           New-Item -ItemType Directory -Force older | Out-Null
           Copy-Item "$books*" older/
           # this build's installer over it, quietly, as the app's own update runs it
