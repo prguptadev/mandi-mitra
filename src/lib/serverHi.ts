@@ -123,6 +123,7 @@ const EXACT: Record<string, string> = {
   "PO date is required": "PO की तारीख़ ज़रूरी है",
   "Pick a day, or a from and to date": "एक दिन चुनें, या ‘से’ और ‘तक’ की तारीख़",
   "Scanning from the scanner works in the Windows app, on the computer the scanner is connected to. Here, upload the scan as a file.": "स्कैनर से स्कैन Windows ऐप में, उसी कंप्यूटर पर होता है जिससे स्कैनर जुड़ा है। यहाँ स्कैन फ़ाइल के रूप में अपलोड करें।",
+  "A scan is already running on this scanner.": "इस स्कैनर पर एक स्कैन पहले से चल रहा है।",
   "Scan not found": "स्कैन नहीं मिला",
   "Page not found": "पेज नहीं मिला",
   "No file reached the server. Pick the scan again — if it still fails, try dragging the file onto the box.": "कोई फ़ाइल नहीं पहुँची। स्कैन फिर से चुनें — फिर भी न हो तो फ़ाइल को बॉक्स पर खींचकर छोड़ें।",

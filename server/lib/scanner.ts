@@ -240,7 +240,31 @@ export async function listScanners(): Promise<{ id: string; name: string }[]> {
   }
 }
 
-let busy = false;
+/* The scan in progress. The scanner takes one page at a time, and a scan
+ * outlives the screen that asked for it: a screen opened again mid-scan asks
+ * here (GET /api/scanner) rather than trusting what it remembers. Held from
+ * the press until the page is saved, and let go when the scan ends — or after
+ * five minutes (MANDI_SCAN_LIMIT_MS, for tests) if it hangs, so a stuck driver
+ * never locks the scanner for good. */
+export type ScanRun = { since: number; deviceId: string | null; businessId: string; userId: string; sheetId: string | null };
+let running: ScanRun | null = null;
+const limitMs = () => Number(process.env.MANDI_SCAN_LIMIT_MS) || 5 * 60_000;
+
+export function scanRunning(): ScanRun | null {
+  if (running && Date.now() - running.since > limitMs()) running = null;
+  return running;
+}
+/** Takes the scanner for one page; null when a scan is already running. */
+export function beginScan(r: Omit<ScanRun, "since">): ScanRun | null {
+  if (scanRunning()) return null;
+  running = { ...r, since: Date.now() };
+  return running;
+}
+/** Lets go of the scanner, unless a hung scan was already let go and another one took it. */
+export function endScan(r: ScanRun) {
+  if (running === r) running = null;
+}
+
 /** What the scanner and its driver say about themselves, for fixing a problem on the spot. */
 export async function scannerDetails(): Promise<string> {
   if (fake()) return JSON.stringify({ ok: true, windows: "test", devices: [{ index: 1, type: 1, id: "fake", name: "Test scanner" }], canGive: ["jpeg"] }, null, 1);
@@ -250,29 +274,24 @@ export async function scannerDetails(): Promise<string> {
   try { return JSON.stringify(JSON.parse(r.out), null, 1); } catch { return r.out || "(the scanner said nothing)"; }
 }
 
-/** One page from the glass, as JPEG bytes (or as the driver gave it). One scan at a time. */
+/** One page from the glass, as JPEG bytes (or as the driver gave it). The caller holds the scanner (beginScan). */
 export async function scanPage(o: { deviceId?: string; dpi: number; color: boolean }): Promise<Buffer> {
-  if (busy) throw new ScanError("The scanner is already scanning. Wait for that page to finish.");
-  busy = true;
-  try {
-    const f = fake();
-    if (f) {
-      await new Promise((r) => setTimeout(r, 150));
-      return fs.readFileSync(f);
-    }
-    if (process.platform !== "win32") throw new ScanError("Scanning from the scanner works in the Windows app. On this computer, upload the scan as a file.");
-    const out = path.join(os.tmpdir(), `mandi-scan-${process.pid}-${Date.now()}.jpg`);
-    const r = await runScript(["-Out", out, "-Dpi", String(o.dpi), "-Intent", o.color ? "1" : "2", ...(o.deviceId ? ["-DeviceId", o.deviceId] : [])], 180_000);
-    if (r.code !== 0 || !fs.existsSync(out)) throw new ScanError(explain(r.err || r.out));
-    const bytes = fs.readFileSync(out);
-    fs.rmSync(out, { force: true });
-    // only JPEG and PNG can be read further; anything else means the driver gave
-    // something Windows could not convert, and a half-readable page helps nobody
-    const jpg = bytes[0] === 0xff && bytes[1] === 0xd8;
-    const png = bytes[0] === 0x89 && bytes[1] === 0x50;
-    if (!jpg && !png) throw new ScanError("The scanner gave the page in a form Windows could not turn into a picture the app can read. Press \"What the scanner says\" below and send those details.");
-    return bytes;
-  } finally {
-    busy = false;
+  const f = fake();
+  if (f) {
+    // MANDI_FAKE_SCANNER_DELAY_MS: a slow (or stuck) scanner, for tests
+    await new Promise((r) => setTimeout(r, Number(process.env.MANDI_FAKE_SCANNER_DELAY_MS) || 150));
+    return fs.readFileSync(f);
   }
+  if (process.platform !== "win32") throw new ScanError("Scanning from the scanner works in the Windows app. On this computer, upload the scan as a file.");
+  const out = path.join(os.tmpdir(), `mandi-scan-${process.pid}-${Date.now()}.jpg`);
+  const r = await runScript(["-Out", out, "-Dpi", String(o.dpi), "-Intent", o.color ? "1" : "2", ...(o.deviceId ? ["-DeviceId", o.deviceId] : [])], 180_000);
+  if (r.code !== 0 || !fs.existsSync(out)) throw new ScanError(explain(r.err || r.out));
+  const bytes = fs.readFileSync(out);
+  fs.rmSync(out, { force: true });
+  // only JPEG and PNG can be read further; anything else means the driver gave
+  // something Windows could not convert, and a half-readable page helps nobody
+  const jpg = bytes[0] === 0xff && bytes[1] === 0xd8;
+  const png = bytes[0] === 0x89 && bytes[1] === 0x50;
+  if (!jpg && !png) throw new ScanError("The scanner gave the page in a form Windows could not turn into a picture the app can read. Press \"What the scanner says\" below and send those details.");
+  return bytes;
 }

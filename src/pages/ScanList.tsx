@@ -101,9 +101,11 @@ export function ScanListPage() {
       /* One page reads straight away. Several pages stop at the order step
          first, so the order is seen before a read is spent. A picture already
          held on another sheet is not read either until the warning about it
-         has been seen: it is only a warning, and "Read" is one tap. */
+         has been seen: it is only a warning, and "Read" is one tap. Awaited
+         (the read itself runs on): the review screen then opens on "reading",
+         never on a "Read the sheet" button for a read already started. */
       if (gemini.data?.configured && r.pages === 1 && !r.samePictures) {
-        api.post(`/scans/${r.id}/run`, {}).catch(() => { /* the review screen reports it */ });
+        await api.post(`/scans/${r.id}/run`, {}).catch(() => { /* the review screen reports it */ });
       }
       navigate(`/scan/${r.id}`);
     },

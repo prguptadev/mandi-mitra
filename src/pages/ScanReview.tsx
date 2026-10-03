@@ -144,8 +144,8 @@ function PageImage({ src, alt, zoom, heic, line }: { src: string; alt: string; z
 }
 
 /** Before reading: put the pages in the order they belong. */
-function PageOrderer({ scanId, pages, onRead, reading }: {
-  scanId: string; pages: ScanBatch["pages"]; onRead: () => void; reading: boolean;
+function PageOrderer({ scanId, pages, onRead, reading, ready }: {
+  scanId: string; pages: ScanBatch["pages"]; onRead: () => void; reading: boolean; ready: boolean;
 }) {
   const { t } = useI18n();
   const qc = useQueryClient();
@@ -207,7 +207,7 @@ function PageOrderer({ scanId, pages, onRead, reading }: {
         {changed && (
           <Button onClick={() => setOrder(pages.map((_, i) => i))}>{t("common.cancel")}</Button>
         )}
-        <Button variant="primary" size="lg" loading={save.isPending || reading}
+        <Button variant="primary" size="lg" loading={save.isPending || reading} disabled={!ready}
           icon={<ScanLine className="h-4 w-4" />}
           onClick={async () => {
             setErr(null);
@@ -340,8 +340,10 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
     queryFn: () => api.get<ScanBatch>(`/scans/${scanId}`),
     /* The read runs on the server, detached from any request, and pages land
        one at a time. Polling shows each page as it arrives, and means leaving
-       this screen loses nothing. */
+       this screen loses nothing. Coming back always asks again: a copy held
+       from before may say "not read yet" while a read runs. */
     refetchInterval: (q) => (q?.state?.data?.status === "reading" ? 1500 : false),
+    refetchOnMount: "always",
     refetchOnWindowFocus: true,
     retry: (count, e) => apiStatus(e) !== 404 && count < 2,
   });
@@ -688,6 +690,8 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
     );
   }
   const b = batch.data;
+  // a read starts only on the server's answer since this screen opened, never on a copy held from before
+  const fresh = batch.isFetchedAfterMount;
 
   if (done) {
     return (
@@ -744,7 +748,7 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
         {b.warningText && <Alert tone="warn" className="mb-3">{sayServer(b.warningText, lang)}</Alert>}
         {err && <Alert tone="bad" className="mb-3">{err}</Alert>}
         <GeminiUsageBar className="mb-3" />
-        <PageOrderer scanId={scanId} pages={b.pages} reading={run.isPending} onRead={() => run.mutate(undefined)} />
+        <PageOrderer scanId={scanId} pages={b.pages} reading={run.isPending} ready={fresh} onRead={() => run.mutate(undefined)} />
       </>
     );
   }
@@ -836,7 +840,7 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
               <div className="mt-2 max-w-sm space-y-2">
                 <p className="text-[12px] text-warn">{t("scan.notRunningHere")}</p>
                 {can("scan.create") && (
-                  <Button size="sm" variant="secondary" icon={<RotateCcw className="h-3.5 w-3.5" />} loading={run.isPending}
+                  <Button size="sm" variant="secondary" icon={<RotateCcw className="h-3.5 w-3.5" />} loading={run.isPending} disabled={!fresh}
                     onClick={() => { setErr(null); run.mutate(undefined); }}>{t("scan.readAgain")}</Button>
                 )}
               </div>
@@ -911,7 +915,7 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
             <p className="mt-0.5 break-words leading-relaxed">{sayServer(b.errorText, lang)}</p>
             <div className="mt-2 flex flex-wrap gap-2 empty:hidden">
               {b.status === "failed" && can("scan.create") && (
-                <Button size="sm" variant="secondary" icon={<RotateCcw className="h-3.5 w-3.5" />} loading={run.isPending}
+                <Button size="sm" variant="secondary" icon={<RotateCcw className="h-3.5 w-3.5" />} loading={run.isPending} disabled={!fresh}
                   onClick={() => { setErr(null); run.mutate(undefined); }}>{t("scan.readAgain")}</Button>
               )}
               {/^Google rejected/.test(b.errorText) && can("business.read") && (
@@ -925,7 +929,7 @@ function ScanReviewScreen({ scanId }: { scanId: string }) {
       {b.status === "uploaded" ? (
         <Card className="flex flex-col items-center gap-3 p-4">
           {can("scan.create") && (
-            <Button variant="primary" size="lg" loading={run.isPending} icon={<ScanLine className="h-4 w-4" />}
+            <Button variant="primary" size="lg" loading={run.isPending} disabled={!fresh} icon={<ScanLine className="h-4 w-4" />}
               onClick={() => run.mutate(undefined)}>{t("scan.read")}</Button>
           )}
           {b.pages.map((p, i) => (
