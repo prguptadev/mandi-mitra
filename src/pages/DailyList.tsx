@@ -165,9 +165,8 @@ function displayCell(key: DailyColumnKey, r: Row, i: number, x: CellCtx, flag: T
     case "village": return <span className="text-[12px] text-muted">{lang === "hi" ? (r.adatiVillage ?? "") : (r.adatiVillage ?? "")}</span>;
     case "mill": return r.merchantCode ? <Badge tone="neutral" className="num">{r.merchantCode}</Badge> : <span className="text-faint">—</span>;
     case "jins": return <span className="num text-[12px] text-muted">{r.jinsCode}</span>;
-    case "gross": return r.grossOdd
-      ? <span className="text-warn" title={t(r.grossOdd === "large" ? "daily.grossLargeTip" : "daily.grossSmallTip")}>{f.weight(r.grossGrams)} !</span>
-      : f.weight(r.grossGrams);
+    // checked while typing and named once on saving; a saved weight is taken as right (big slips happen)
+    case "gross": return f.weight(r.grossGrams);
     case "katauti": {
       // loose goods carry no katauti: their 0 is the rule, not an edit
       const edited = katautiBox(r) !== "";
