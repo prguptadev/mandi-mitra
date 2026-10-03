@@ -60,6 +60,10 @@ const capped = { error: { code: 429, status: "RESOURCE_EXHAUSTED",
   message: "Your project has exceeded its monthly spending cap. Please go to AI Studio at https://ai.studio/spend to manage your project spend cap." } };
 const qc = parseQuota(capped);
 check("a spend cap is not read as a daily quota", qc?.kind === "spend_cap" && qc.spendCap === true, qc);
+// a project Google has stopped (its billing account closed): say so plainly, not "this model"
+const stopped = explainGeminiError(403, "Your project has been denied access. Please contact support.", "AIzaX");
+check("a stopped project is named as such, with where to fix it", /stopped this key's project/.test(stopped) && /Billing/.test(stopped), stopped);
+check("…an ordinary refusal keeps the model/billing wording", /may not have access to this model/.test(explainGeminiError(403, "Permission denied on model", "AIzaX")), null);
 const capMsg = explainGeminiError(429, "Your project has exceeded its monthly spending cap.", "AIzaX", capped);
 check("…and the message names the spend limit and where to raise it",
   /monthly spending limit/.test(capMsg) && /ai\.studio\/spend/.test(capMsg) && /no other model/.test(capMsg), capMsg);

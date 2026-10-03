@@ -338,6 +338,10 @@ export function explainGeminiError(status: number, message: string, apiKey?: str
       ? "Google rejected the key. It does not look like an API key — an AI Studio key starts with \"AIza\". A temporary sign-in token works for a short while and then stops. Create a proper API key at aistudio.google.com/apikey and save it in Settings."
       : "Google rejected the API key. Check it in Settings, or create a new one at aistudio.google.com/apikey.";
   }
+  if (status === 403 && /denied access|contact support|billing account|suspend/i.test(message)) {
+    // the whole project is stopped (seen when its billing account is closed): no model or retry helps
+    return "Google has stopped this key's project: its billing account is closed or out of balance. Open Google Cloud › Billing for that project, or save a key from another project.";
+  }
   if (status === 403) {
     return "Google refused the request. The key may not have access to this model, or billing is not enabled on that Google project.";
   }

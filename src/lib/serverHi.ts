@@ -181,6 +181,7 @@ const EXACT: Record<string, string> = {
   "Google took too long to answer.": "Google ने जवाब देने में बहुत देर की।",
   "Unknown error": "अनजानी गड़बड़",
   "Google rejected the API key. Check it in Settings, or create a new one at aistudio.google.com/apikey.": "Google ने API कुंजी नहीं मानी। सेटिंग में जाँचें, या aistudio.google.com/apikey पर नई बनाएँ।",
+  "Google has stopped this key's project: its billing account is closed or out of balance. Open Google Cloud › Billing for that project, or save a key from another project.": "Google ने इस कुंजी का प्रोजेक्ट रोक दिया है: उसका बिलिंग खाता बंद है या उसमें पैसा नहीं है। उस प्रोजेक्ट के लिए Google Cloud › Billing खोलें, या किसी दूसरे प्रोजेक्ट की कुंजी सेव करें।",
   "Google refused the request. The key may not have access to this model, or billing is not enabled on that Google project.": "Google ने मना कर दिया। हो सकता है कुंजी को इस मॉडल की अनुमति न हो, या उस Google प्रोजेक्ट पर बिलिंग चालू न हो।",
   "Google's Gemini limit was reached. Check the quota at ai.dev/rate-limit.": "Google Gemini की सीमा पूरी हो गई। सीमा ai.dev/rate-limit पर देखें।",
   "That model name is not available on this key. Pick a different model in Settings.": "यह मॉडल इस कुंजी पर नहीं है। सेटिंग में दूसरा मॉडल चुनें।",
